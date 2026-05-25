@@ -37,7 +37,7 @@ This reads [`scripts/skills.json`](./scripts/skills.json) and installs the agent
 Clone the repo and run the installer; it symlinks the agent, command, and each skill into `~/.claude` (override with `CLAUDE_CONFIG_DIR`):
 
 ```
-git clone https://github.com/adams100111/qa-e2e-pilot
+git clone -b main https://github.com/adams100111/qa-e2e-pilot
 bash qa-e2e-pilot/scripts/install.sh
 ```
 

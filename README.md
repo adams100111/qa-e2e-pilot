@@ -78,11 +78,11 @@ npx skills@latest add adams100111/qa-e2e-pilot
 
 **C — Manual (symlink into ~/.claude):**
 ```
-git clone https://github.com/adams100111/qa-e2e-pilot
+git clone -b main https://github.com/adams100111/qa-e2e-pilot
 bash qa-e2e-pilot/scripts/install.sh
 ```
 
-Then restart Claude Code (or run `/agents`) to pick up the agent, the `/qa-run` command, and the skills.
+Methods A and B install from the repo's default branch (`main`). Then restart Claude Code (or run `/agents`) to pick up the agent, the `/qa-run` command, and the skills.
 
 ---
 
