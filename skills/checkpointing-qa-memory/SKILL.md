@@ -43,7 +43,7 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **What IS allowed (optional):** one durable entry per project-under-test in personal memory — a pointer to the latest run-id and any known-flaky areas. One entry, never per-criterion.
 
-**Future note:** a Mem0/vector backend is a documented optional swap for the `.qa/` file store — not a v1 dependency. The file-based layout is the interface; the storage backend is pluggable.
+**Optional cross-run recall:** when `memory.backend: "mem0"` is set in `.qa/config.json`, run `bash scripts/memory-sync.sh <run-id>` (top-level scripts) after a run to write-through ONLY the durable artifacts — bug-log entries + one per-project pointer — to a Mem0/vector endpoint for cross-run recall. It NEVER syncs per-criterion checkpoints (those are transient; ADR-0002), and the `.qa/runs/<run-id>/checkpoint.json` file stays the authoritative resume cursor. Default `backend: "file"` makes it a no-op. The file-based layout is the interface; the storage backend is pluggable — see [extending-drivers.md](../../docs/extending-drivers.md).
 
 ---
 

@@ -33,6 +33,25 @@ For CI, use the **managed** driver (zero-config, headless-capable) — attended 
 
 Keep verification **sequential** (the default) in CI — most criteria are order-dependent against a shared backend. Drive a run by invoking the agent non-interactively with a checklist that already exists in the repo (no human-in-the-loop checklist review).
 
+## Turnkey wrapper: `scripts/qa-ci.sh`
+
+`qa-ci.sh` chains the whole thing — pre-flight → drive the agent headless → export JUnit XML → exit with the right code:
+
+```bash
+bash scripts/qa-ci.sh "founders flow" .qa/checklist.md
+```
+
+It's overridable via env so it fits any Claude Code CI setup (and is testable with a mock):
+
+| env | default | purpose |
+|---|---|---|
+| `QA_AGENT_CMD` | `claude -p "/qa-run \"$QA_TARGET\" $QA_CHECKLIST"` | how to drive the agent headless (`QA_TARGET`/`QA_CHECKLIST` are exported) |
+| `QA_PREFLIGHT_CMD` | the bundled `preflight.sh` | how to run pre-flight |
+| `QA_SKIP_PREFLIGHT` | `0` | set `1` if CI already guarantees app/auth liveness |
+| `QA_JUNIT_OUT` | `qa-results.xml` | JUnit output path |
+
+It exits non-zero if pre-flight fails, the agent command fails, no run is produced, or the run has any `fail`/`error` criterion — so the job fails the build automatically.
+
 ## Example — GitHub Actions
 
 ```yaml
@@ -53,14 +72,8 @@ jobs:
           echo "$QA_STORAGE_STATE" > .qa/auth/storageState.json
         env:
           QA_STORAGE_STATE: ${{ secrets.QA_STORAGE_STATE }}
-      - name: Run qa-e2e-pilot
-        run: |          # drive the agent headless with a committed checklist
-          claude -p "/qa-run \"$FEATURE\" .qa/checklist.md"
-        env:
-          FEATURE: "founders flow"
-      - name: Export JUnit XML
-        if: always()
-        run: bash scripts/report-to-junit.sh "$(ls -t .qa/runs | head -1)" qa-results.xml
+      - name: Run qa-e2e-pilot (pre-flight -> agent -> JUnit)
+        run: bash scripts/qa-ci.sh "founders flow" .qa/checklist.md
       - name: Publish results
         if: always()
         uses: mikepenz/action-junit-report@v4
@@ -68,7 +81,7 @@ jobs:
           report_paths: qa-results.xml
 ```
 
-The last two steps run `if: always()` so results publish even when the QA step fails the build. `report-to-junit.sh`'s exit code already failed the job on a real `fail`/`error`.
+`qa-ci.sh` runs pre-flight, drives the agent, and exports `qa-results.xml`, failing the job on any `fail`/`error`. The publish step uses `if: always()` so results show up even when the QA step fails the build.
 
 ## Caveats
 

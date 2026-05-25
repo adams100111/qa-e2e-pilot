@@ -25,5 +25,13 @@
     { "role": "reference", "path": "/home/dev/projects/elevator/governance" }
   ],
   "allowApiWrites": false,
-  "seedableEnvMarker": "QA_DISPOSABLE_ENV"
+  "seedableEnvMarker": "QA_DISPOSABLE_ENV",
+  "memory": {
+    "backend": "file",
+    "mem0": {
+      "endpoint": "",
+      "apiKeyEnv": "MEM0_API_KEY",
+      "userId": "qa-e2e-pilot"
+    }
+  }
 }

@@ -39,7 +39,7 @@ The agent (`agents/qa-e2e-pilot.md`) lists its `tools`. Add the new server's bro
 
 Pre-flight enumerates and pings every configured driver. Verification still runs **sequentially on one driver by default** (ADR-0003); a second driver only earns its keep on the narrow parallel path — see the `fanning-out-criteria` skill. New drivers are usable there immediately because the skills never named a server directly.
 
-> **Capability gaps:** if a new MCP lacks a capability a skill relies on (e.g. it can't read a network **response body**), that skill's probing/baking step falls back or records `blocked` for that criterion rather than faking a pass. Prefer a driver that can read the network and run in-page `evaluate` for the full differentiated flow.
+> **Capability gaps:** if a new MCP lacks a capability a skill relies on (e.g. it can't read a network **response body**), that skill's probing/baking step falls back or records `blocked` for that criterion rather than faking a pass. Prefer a driver that can read the network and run in-page `evaluate` for the full differentiated flow. The exact per-driver capability table (Playwright/CDP vs Stagehand vs browser-use, with the diagnostic-tier gaps marked) lives in [`skills/driving-browser-qa/references/driver-capabilities.md`](../skills/driving-browser-qa/references/driver-capabilities.md) — consult it to decide which criteria a new driver can carry.
 
 ---
 

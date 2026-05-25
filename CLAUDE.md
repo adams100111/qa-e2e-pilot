@@ -36,11 +36,11 @@ scripts/{install.sh,skills.json}                 manual + npx install paths
 - Bundle **scripts** (executed) and **templates** (copied) — don't inline large artifacts into the body.
 - Include **≥3 mini-evals** drawn from the 14 real session bugs (see the plan / the existing skills for the bug list).
 
-There are **11 skills** (9 core + v1.1 `fanning-out-criteria` and spec-kit `ingesting-spec-kit`). `scripts/report-to-junit.sh` is a top-level CI export tool (not a skill). Docs `running-in-ci.md` and `extending-drivers.md` cover the later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
+There are **11 skills** (9 core + v1.1 `fanning-out-criteria` and spec-kit `ingesting-spec-kit`). Top-level `scripts/` (not skills): `report-to-junit.sh` (CI export), `qa-ci.sh` (turnkey CI: preflight→agent→junit, pluggable via `QA_AGENT_CMD`/`QA_PREFLIGHT_CMD`), `memory-sync.sh` (gated Mem0/vector write-through of durable artifacts only). Drivers map to tools via `skills/driving-browser-qa/references/driver-capabilities.md`. Docs `running-in-ci.md` and `extending-drivers.md` cover later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
 
 ## Bundled scripts depend on jq OR python3
 
-`checkpoint.sh` and `preflight.sh` prefer `jq`, fall back to `python3`, and error clearly if neither is present; `report-to-junit.sh` and `find-spec-kit.sh` use `python3`/`jq` similarly. Browser-context JS (`react-set-input.js`, `click-by-text.js`, `backend-probe.js`) is injected via the evaluate tool — write it as dependency-free browser code (`document`/`window`/`fetch`).
+`checkpoint.sh` and `preflight.sh` prefer `jq`, fall back to `python3`, and error clearly if neither is present; `report-to-junit.sh`, `memory-sync.sh`, and `find-spec-kit.sh` use `python3`/`jq` similarly (`memory-sync.sh` also needs `curl` for a real send). Browser-context JS (`react-set-input.js`, `click-by-text.js`, `backend-probe.js`) is injected via the evaluate tool — write it as dependency-free browser code (`document`/`window`/`fetch`).
 
 ## Validate before committing
 

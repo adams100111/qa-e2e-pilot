@@ -43,7 +43,7 @@ Read `drivers` from `.qa/config.json`. Default driver is the **managed Playwrigh
 
 **Sequential by default.** Only criteria tagged `independent`/`read-only` in the checklist, or deliberate race tests, fan out across the pool. Never parallelize write criteria.
 
-Reference browser tools by **capability** — the Playwright MCP tool name is in parentheses so a new driver drops in by changing only the config.
+Reference browser tools by **capability** — the Playwright MCP tool name is in parentheses so a new driver drops in by changing only the config. For the exact capability→tool mapping per driver (Playwright/CDP, Stagehand, browser-use) and which drivers lack the **diagnostic tier** (`evaluate`, console, network response body) the differentiators need, see [`references/driver-capabilities.md`](./references/driver-capabilities.md). Put any criterion whose verdict depends on baking / API reconciliation / probing on a driver with the diagnostic tier (Playwright/CDP); if a configured driver lacks a needed capability, record that step `blocked` — never a faked pass.
 
 ## Session Lifecycle
 

@@ -39,7 +39,7 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
 commands/         qa-run.md            — /qa-run <target> [checklist|spec]
 skills/           11 skills (see below)
-scripts/          install.sh + skills.json + report-to-junit.sh
+scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
 .qa/              config.json.example + per-run output
 docs/adr/         0001–0004 architecture decisions
 docs/             running-in-ci.md · extending-drivers.md
@@ -172,9 +172,9 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 
 - **v1 — done:** the verify/report/memory skills, pre-flight, hand-authored-checklist ingest, single managed driver (attended CDP opt-in), sequential.
 - **v1.1 — done:** `analyzing-feature-ui` + `generating-qa-checklist` (auto-plan incl. cross-tenant + concurrency cases); narrow parallel multi-driver fan-out (`fanning-out-criteria`).
-- **Spec-kit & CI — done:** `ingesting-spec-kit` imports `constitution.md`/`spec.md`/`tasks.md` as the oracle and builds a traceability matrix; [`scripts/report-to-junit.sh`](./scripts/report-to-junit.sh) exports JUnit-XML for CI (see [running-in-ci.md](./docs/running-in-ci.md)).
-- **Documented optional swaps:** additional browser MCPs (Stagehand, browser-use) as drivers, and a Mem0/vector memory backend — see [extending-drivers.md](./docs/extending-drivers.md). These are designed-in extension points, not wired by default.
-- **Still future:** turnkey unattended CI driving. CLI/artisan verification stays out of browser scope (covered indirectly via API-probing).
+- **Spec-kit & CI — done:** `ingesting-spec-kit` imports `constitution.md`/`spec.md`/`tasks.md` as the oracle and builds a traceability matrix; [`scripts/report-to-junit.sh`](./scripts/report-to-junit.sh) exports JUnit-XML and [`scripts/qa-ci.sh`](./scripts/qa-ci.sh) is a turnkey unattended wrapper (pre-flight → agent → JUnit → exit code) — see [running-in-ci.md](./docs/running-in-ci.md).
+- **Pluggable extension points — wired:** any browser MCP drops in via a [capability map](./skills/driving-browser-qa/references/driver-capabilities.md) (Stagehand/browser-use included), and [`scripts/memory-sync.sh`](./scripts/memory-sync.sh) write-throughs durable memory to a Mem0/vector backend (config-gated, off by default) — see [extending-drivers.md](./docs/extending-drivers.md). External services (a real Mem0 endpoint, a Stagehand/browser-use MCP) are yours to supply.
+- **Still future:** CLI/artisan verification stays out of browser scope (covered indirectly via API-probing).
 
 ---
 

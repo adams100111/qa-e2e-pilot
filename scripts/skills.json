@@ -1,7 +1,7 @@
 {
   "name": "qa-e2e-pilot",
   "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "agents": [
     { "name": "qa-e2e-pilot", "path": "agents/qa-e2e-pilot.md" }
   ],
