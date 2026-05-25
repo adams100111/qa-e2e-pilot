@@ -1,0 +1,22 @@
+{
+  "name": "qa-e2e-pilot",
+  "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
+  "version": "0.1.0",
+  "agents": [
+    { "name": "qa-e2e-pilot", "path": "agents/qa-e2e-pilot.md" }
+  ],
+  "commands": [
+    { "name": "qa-run", "path": "commands/qa-run.md" }
+  ],
+  "skills": [
+    { "name": "analyzing-feature-ui", "path": "skills/analyzing-feature-ui/SKILL.md", "category": "plan" },
+    { "name": "generating-qa-checklist", "path": "skills/generating-qa-checklist/SKILL.md", "category": "plan" },
+    { "name": "driving-browser-qa", "path": "skills/driving-browser-qa/SKILL.md", "category": "verify" },
+    { "name": "verifying-backend-persistence", "path": "skills/verifying-backend-persistence/SKILL.md", "category": "verify" },
+    { "name": "verifying-computed-logic", "path": "skills/verifying-computed-logic/SKILL.md", "category": "verify" },
+    { "name": "walking-multistep-flows", "path": "skills/walking-multistep-flows/SKILL.md", "category": "verify" },
+    { "name": "probing-apis-through-browser", "path": "skills/probing-apis-through-browser/SKILL.md", "category": "verify" },
+    { "name": "writing-qa-reports", "path": "skills/writing-qa-reports/SKILL.md", "category": "report" },
+    { "name": "checkpointing-qa-memory", "path": "skills/checkpointing-qa-memory/SKILL.md", "category": "memory" }
+  ]
+}

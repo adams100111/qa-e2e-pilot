@@ -1,0 +1,22 @@
+{
+  "name": "qa-e2e-pilot",
+  "description": "Browser-driven end-to-end QA that verifies a feature's full stack, not just the screen: drives the UI, bakes (reads persisted state back at multiplicity 0/1/N), independently recomputes the feature's calculations and business rules against the spec oracle, probes the backend when the UI lies, and checkpoints a resumable memory trail. Use to QA a feature end-to-end, regression-test in the browser, or verify a UI write actually persisted and computed correctly.",
+  "version": "0.1.0",
+  "author": {
+    "name": "adams100111"
+  },
+  "homepage": "https://github.com/adams100111/qa-e2e-pilot",
+  "repository": "https://github.com/adams100111/qa-e2e-pilot",
+  "license": "MIT",
+  "keywords": [
+    "qa",
+    "e2e",
+    "testing",
+    "browser",
+    "playwright",
+    "verification",
+    "backend",
+    "persistence",
+    "regression"
+  ]
+}

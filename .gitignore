@@ -1,0 +1,11 @@
+# Per-project QA runtime — only the .example is tracked
+.qa/config.json
+.qa/runs/
+.qa/auth/
+
+# Node / npx installer
+node_modules/
+*.log
+
+# OS
+.DS_Store

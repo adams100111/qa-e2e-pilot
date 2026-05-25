@@ -1,0 +1,28 @@
+{
+  "_doc": "Copy to .qa/config.json and edit. Driver presets resolve the browser endpoint: managed (zero-config built-in Playwright, any OS), windows+wsl (attach to Windows Chrome from WSL), windows, wsl, linux, mac. The managed driver is the default; attended CDP is opt-in. repos are all optional (single-repo works); skills read them by role. allowApiWrites is OFF by default — direct API writes/seeding are gated behind it AND a disposable-env marker.",
+  "baseUrl": "http://localhost:3000",
+  "auth": {
+    "storageState": ".qa/auth/storageState.json"
+  },
+  "drivers": [
+    {
+      "id": "managed",
+      "server": "playwright",
+      "preset": "managed"
+    },
+    {
+      "id": "mine",
+      "server": "playwright-cdp",
+      "preset": "windows+wsl",
+      "cdpEndpoint": "http://localhost:9222"
+    }
+  ],
+  "maxParallel": 3,
+  "repos": [
+    { "role": "frontend", "path": "/home/dev/projects/elevator/pioneer-dashboard" },
+    { "role": "backend", "path": "/home/dev/projects/elevator/backend" },
+    { "role": "reference", "path": "/home/dev/projects/elevator/governance" }
+  ],
+  "allowApiWrites": false,
+  "seedableEnvMarker": "QA_DISPOSABLE_ENV"
+}
