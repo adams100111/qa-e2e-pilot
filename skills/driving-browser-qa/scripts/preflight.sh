@@ -84,9 +84,15 @@ resolve_cdp_endpoint() {
   local preset="$1"
   case "$preset" in
     managed)       echo "managed" ;;
-    windows+wsl)   echo "http://host.docker.internal:9222" ;;
+    windows+wsl)
+      # Reach the Windows host's Chrome from inside WSL. On mirrored networking,
+      # localhost bridges to Windows (set cdpEndpoint to override with localhost);
+      # on NAT-mode WSL2 the Windows host is the resolv.conf nameserver.
+      local host
+      host=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+      [[ -n "$host" ]] && echo "http://${host}:9222" || echo "http://localhost:9222" ;;
     windows)       echo "http://localhost:9222" ;;
-    wsl)           echo "http://$(cat /etc/resolv.conf 2>/dev/null | awk '/^nameserver/{print $2;exit}'):9222" ;;
+    wsl)           echo "http://localhost:9222" ;;   # a CDP server running inside WSL itself
     linux)         echo "http://localhost:9222" ;;
     mac)           echo "http://localhost:9222" ;;
     *)             echo "http://localhost:9222" ;;
@@ -113,21 +119,23 @@ ping_driver() {
 if command -v jq &>/dev/null; then
   DRIVER_COUNT=$(jq '.drivers | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
   for idx in $(seq 0 $((DRIVER_COUNT - 1))); do
-    DRV_LABEL=$(jq -r ".drivers[$idx].label // \"driver-$idx\"" "$CONFIG_FILE")
+    DRV_ID=$(jq -r ".drivers[$idx].id // \"driver-$idx\"" "$CONFIG_FILE")
     DRV_PRESET=$(jq -r ".drivers[$idx].preset // \"managed\"" "$CONFIG_FILE")
-    ENDPOINT=$(resolve_cdp_endpoint "$DRV_PRESET")
-    ping_driver "$DRV_LABEL" "$ENDPOINT"
+    DRV_CDP=$(jq -r ".drivers[$idx].cdpEndpoint // empty" "$CONFIG_FILE")
+    # An explicit cdpEndpoint overrides the preset-resolved endpoint.
+    if [[ -n "$DRV_CDP" ]]; then ENDPOINT="$DRV_CDP"; else ENDPOINT=$(resolve_cdp_endpoint "$DRV_PRESET"); fi
+    ping_driver "$DRV_ID" "$ENDPOINT"
   done
 elif command -v node &>/dev/null; then
   node -e "
     const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));
     const drivers = c.drivers || [];
     drivers.forEach((d,i) => {
-      process.stdout.write((d.label||'driver-'+i) + '|' + (d.preset||'managed') + '\n');
+      process.stdout.write((d.id||'driver-'+i) + '|' + (d.preset||'managed') + '|' + (d.cdpEndpoint||'') + '\n');
     });
-  " 2>/dev/null | while IFS='|' read -r label preset; do
-    ENDPOINT=$(resolve_cdp_endpoint "$preset")
-    ping_driver "$label" "$ENDPOINT"
+  " 2>/dev/null | while IFS='|' read -r id preset cdp; do
+    if [[ -n "$cdp" ]]; then ENDPOINT="$cdp"; else ENDPOINT=$(resolve_cdp_endpoint "$preset"); fi
+    ping_driver "$id" "$ENDPOINT"
   done
 else
   warn "jq and node not found — skipping driver enumeration; defaulting to managed Playwright"

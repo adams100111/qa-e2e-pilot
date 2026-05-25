@@ -85,10 +85,12 @@ To **attend your own logged-in Chrome** (opt-in), add a CDP driver with the pres
 | Preset | Resolves to | Use when |
 |---|---|---|
 | `managed` | the built-in Playwright browser | default, any OS, zero-config |
-| `windows+wsl` | the Windows host's Chrome from inside WSL | you run Claude Code in WSL, Chrome on Windows |
+| `windows+wsl` | the Windows host (`/etc/resolv.conf` nameserver) `:9222` | Claude Code in WSL, Chrome on Windows |
 | `windows` | `http://localhost:9222` | native Windows |
-| `wsl` | the WSL host nameserver | Linux Chrome reachable from WSL |
+| `wsl` | `http://localhost:9222` | a CDP server running inside WSL itself |
 | `linux` / `mac` | `http://localhost:9222` | native Linux/macOS |
+
+For `windows+wsl` on **mirrored** WSL2 networking (where `localhost` already bridges to Windows), set `cdpEndpoint` to `http://localhost:9222` — an explicit `cdpEndpoint` always overrides the preset.
 
 Start Chrome with remote debugging first, e.g.:
 
