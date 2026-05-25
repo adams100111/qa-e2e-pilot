@@ -1,7 +1,7 @@
 {
   "name": "qa-e2e-pilot",
   "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "agents": [
     { "name": "qa-e2e-pilot", "path": "agents/qa-e2e-pilot.md" }
   ],
@@ -11,7 +11,9 @@
   "skills": [
     { "name": "analyzing-feature-ui", "path": "skills/analyzing-feature-ui/SKILL.md", "category": "plan" },
     { "name": "generating-qa-checklist", "path": "skills/generating-qa-checklist/SKILL.md", "category": "plan" },
+    { "name": "ingesting-spec-kit", "path": "skills/ingesting-spec-kit/SKILL.md", "category": "plan" },
     { "name": "driving-browser-qa", "path": "skills/driving-browser-qa/SKILL.md", "category": "verify" },
+    { "name": "fanning-out-criteria", "path": "skills/fanning-out-criteria/SKILL.md", "category": "verify" },
     { "name": "verifying-backend-persistence", "path": "skills/verifying-backend-persistence/SKILL.md", "category": "verify" },
     { "name": "verifying-computed-logic", "path": "skills/verifying-computed-logic/SKILL.md", "category": "verify" },
     { "name": "walking-multistep-flows", "path": "skills/walking-multistep-flows/SKILL.md", "category": "verify" },

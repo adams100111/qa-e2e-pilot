@@ -36,7 +36,7 @@ Run these phases in order. Each phase is a skill — invoke it and follow it. **
 
 1. **Analyze** — invoke **analyzing-feature-ui**. Build a `surface-map.json`: routes/tabs, interactive elements, dialogs/forms/fields, and per-surface states (empty/loading/error/populated/multi-row). Cross-reference the **backend** repo (by role) to map each surface/action → its endpoint + source-of-truth model/service/migration. *(v1.1 — if a checklist is supplied, you may skip straight to phase 3.)*
 
-2. **Generate** — invoke **generating-qa-checklist**. From the surface map (+ code + optional spec-kit artifacts) produce a testable, human-editable **checklist**: happy path, multiplicity (0/1/N), edge/empty/error, **backend-baking assertions**, **computed-logic assertions** (expected values + business-rule outcomes + downstream cascades), plus **cross-tenant isolation** and **concurrency/race** cases. **If a checklist/spec is supplied, ingest it instead of generating.** *(v1: hand-authored checklist is the norm.)*
+2. **Generate** — invoke **generating-qa-checklist**. From the surface map (+ code + optional spec-kit artifacts) produce a testable, human-editable **checklist**: happy path, multiplicity (0/1/N), edge/empty/error, **backend-baking assertions**, **computed-logic assertions** (expected values + business-rule outcomes + downstream cascades), plus **cross-tenant isolation** and **concurrency/race** cases. **If a checklist/spec is supplied, ingest it instead of generating.** If the project has spec-kit artifacts (`constitution.md`/`spec.md`/`tasks.md`), invoke **ingesting-spec-kit** to import them as the oracle and seed the traceability matrix. *(v1: hand-authored checklist is the norm.)*
 
 3. **Verify** — run criteria **sequentially on one driver by default** (ADR-0003). For each criterion, drive its **steps** and roll them into **one verdict**:
    - **Drive UI** (**driving-browser-qa**): snapshot → act → wait → assert; check `browser_console_messages` + `browser_network_requests` after each step.
@@ -45,7 +45,7 @@ Run these phases in order. Each phase is a skill — invoke it and follow it. **
    - **Walk multi-step flows** (**walking-multistep-flows**) when the criterion is a wizard/form/state machine: verify each step's persistence and the final state transition.
    - **Probe** (**probing-apis-through-browser**) only when the UI masks an error: **read-only by default**; gated writes only when `allowApiWrites` + the disposable-env marker is set.
    - Emit one verdict (+ confidence). On failure, record the **suspected layer** (FE / route / service / migration / DB). Write the criterion's evidence dir, then **checkpoint** (phase 5) before the next criterion.
-   - Parallel fan-out across drivers is a **narrow opt-in**: only criteria tagged independent/read-only and deliberate concurrency tests, capped at `maxParallel`. Everything that writes shared backend state stays sequential.
+   - Parallel fan-out across drivers is a **narrow opt-in** (invoke **fanning-out-criteria**): only criteria tagged independent/read-only and deliberate concurrency/race tests, capped at `maxParallel`. Everything that writes shared backend state stays sequential.
 
 4. **Report** — invoke **writing-qa-reports**. Per run: `report.md` + single-file `report.html` (verdict cards + screenshots) + per-criterion evidence; honest **DEFERRED — reason**; a traceability column to spec-kit artifacts when present.
 

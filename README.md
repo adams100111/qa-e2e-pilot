@@ -38,10 +38,11 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 .claude-plugin/   plugin.json + marketplace.json
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
 commands/         qa-run.md            — /qa-run <target> [checklist|spec]
-skills/           9 skills (see below)
-scripts/          install.sh + skills.json (manual + npx install)
+skills/           11 skills (see below)
+scripts/          install.sh + skills.json + report-to-junit.sh
 .qa/              config.json.example + per-run output
 docs/adr/         0001–0004 architecture decisions
+docs/             running-in-ci.md · extending-drivers.md
 CONTEXT.md        the ubiquitous language (read this first)
 ```
 
@@ -51,8 +52,8 @@ CONTEXT.md        the ubiquitous language (read this first)
 |---|---|---|
 | 0 Pre-flight | `driving-browser-qa` (`preflight.sh`) | app live? auth present? enumerate+ping drivers; record build/deploy id |
 | 1 Analyze *(v1.1)* | `analyzing-feature-ui` | build `surface-map.json`: routes, elements, per-surface states; cross-map to backend |
-| 2 Generate *(v1.1)* | `generating-qa-checklist` | derive a human-editable checklist (or ingest one), each criterion carrying its oracle |
-| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser` | drive → bake → recompute/reconcile → probe → one verdict + confidence |
+| 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle |
+| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `fanning-out-criteria` | drive → bake → recompute/reconcile → probe → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
 | 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
 | 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/` |
 
@@ -85,6 +86,64 @@ Then restart Claude Code (or run `/agents`) to pick up the agent, the `/qa-run` 
 
 ---
 
+## Quickstart
+
+A full pass against one feature, end to end. (Example: the cap-table "add founders" flow.)
+
+**1. Point it at your app.** In the repo you want to QA:
+
+```bash
+mkdir -p .qa
+cp <plugin>/.qa/config.json.example .qa/config.json
+```
+
+```jsonc
+// .qa/config.json — minimal, zero-config managed browser
+{
+  "baseUrl": "http://localhost:3000",
+  "auth": { "storageState": ".qa/auth/storageState.json" },
+  "drivers": [ { "id": "managed", "server": "playwright", "preset": "managed" } ],
+  "repos": [ { "role": "backend", "path": "../backend" } ],
+  "allowApiWrites": false
+}
+```
+
+**2. Write a tiny checklist** — each criterion carries its **oracle** (the expected value/rule), plus a **baking** assertion (what to read back). `.qa/checklist.md`:
+
+```markdown
+## C-1 — Add a founder persists a 1-of-N shareholder
+- steps: open Founders → Add → name "Ada", 250,000 shares → Save
+- expected (oracle): a shareholder "Ada" exists with 250,000 shares
+- bake: re-open the Founders list → exactly 1 founder row (multiplicity 1)
+- tags: []
+
+## C-2 — Three founders, ownership % sums to 100
+- steps: add 3 founders with 250k / 250k / 500k shares
+- expected (oracle): FD% = shares / 1,000,000 → 25% / 25% / 50%, sum = 100%
+- bake: read the cap-table back; multiplicity = 3; recompute each % independently
+- tags: []
+
+## C-3 — Empty state shows zero founders
+- steps: open Founders on a fresh project
+- expected (oracle): empty-state, 0 rows (run this BEFORE C-1/C-2 — multiplicity is ordered)
+- bake: list read-back returns 0
+- tags: [independent, read-only]
+```
+
+**3. Run it:**
+
+```
+/qa-run "founders flow" .qa/checklist.md
+```
+
+The agent pre-flights (app live? auth? build id?), then verifies each criterion **sequentially**: drives the UI → **bakes** (reads the founder back, forces multiplicity 0/1/N) → **recomputes** the ownership % independently and reconciles FE vs API vs DB → emits one verdict + confidence → checkpoints.
+
+**4. Read the result:** `.qa/runs/<run-id>/report.html` (+ `report.md` and per-criterion `evidence/`). You'll get a per-verdict tally and, for any `fail`, a bug-report with the **suspected layer** (`FE | route | service | migration | DB`). If the app dies mid-run, just re-run the same target — it reads the last checkpoint and **skips completed criteria**.
+
+> No checklist yet? `/qa-run "founders flow"` will analyze the UI and **auto-generate** one (v1.1) for you to review first. Have a spec-kit `spec.md`? Point at it and it's ingested with a traceability matrix.
+
+---
+
 ## Use
 
 1. In the project you want to QA, copy the config and edit it:
@@ -111,9 +170,11 @@ Then restart Claude Code (or run `/agents`) to pick up the agent, the `/qa-run` 
 
 ## Scope
 
-- **v1 (now):** the verify/report/memory skills, pre-flight, hand-authored-checklist ingest, single managed driver (attended CDP opt-in), sequential.
-- **v1.1:** `analyzing-feature-ui` + `generating-qa-checklist` (auto-plan incl. cross-tenant + concurrency cases), narrow parallel multi-driver fan-out.
-- **Later (out of v1 scope):** spec-kit artifact ingestion + traceability matrix; Mem0/vector memory backend; CI/unattended + JUnit-XML; additional browser MCPs (Stagehand, browser-use). CLI/artisan verification stays out of browser scope (covered indirectly via API-probing).
+- **v1 — done:** the verify/report/memory skills, pre-flight, hand-authored-checklist ingest, single managed driver (attended CDP opt-in), sequential.
+- **v1.1 — done:** `analyzing-feature-ui` + `generating-qa-checklist` (auto-plan incl. cross-tenant + concurrency cases); narrow parallel multi-driver fan-out (`fanning-out-criteria`).
+- **Spec-kit & CI — done:** `ingesting-spec-kit` imports `constitution.md`/`spec.md`/`tasks.md` as the oracle and builds a traceability matrix; [`scripts/report-to-junit.sh`](./scripts/report-to-junit.sh) exports JUnit-XML for CI (see [running-in-ci.md](./docs/running-in-ci.md)).
+- **Documented optional swaps:** additional browser MCPs (Stagehand, browser-use) as drivers, and a Mem0/vector memory backend — see [extending-drivers.md](./docs/extending-drivers.md). These are designed-in extension points, not wired by default.
+- **Still future:** turnkey unattended CI driving. CLI/artisan verification stays out of browser scope (covered indirectly via API-probing).
 
 ---
 
