@@ -68,6 +68,10 @@ _Avoid_: skipped, n/a, partial. "blocked" = the environment stopped us; "error" 
 An orthogonal attribute on a pass/fail verdict — **low** when the expected value could only be derived from backend code (no spec/domain oracle), **high** otherwise. Not a verdict value.
 _Avoid_: certainty, weight.
 
+**Suspected layer**:
+The layer a **fail** is localized to — exactly one of: **FE** (frontend render/format/wiring), **route** (wrong/missing endpoint or path), **service** (the computed formula or business-rule predicate), **migration** (schema/column precision/constraints definition), **DB** (the stored row or runtime constraint violation). The deliverable of a fail: it tells the fixer where to look and is the value the report's suspected-layer field and the bug-log carry. Reconciliation produces it.
+_Avoid_: backend (too coarse — pick service / migration / DB), backend-routing / backend-validation / state-machine (use the five canonical values).
+
 **Probing**:
 Going underneath a lying UI to get the truth — reading the network response body, or doing an API read-back with the session's cookies. **Read-only by default.** Direct API *writes* (seeding) are an opt-in gated behind a config flag and a disposable/seedable env marker; cross-origin capability is detected at preflight, never assumed.
 _Avoid_: seeding (that is the gated write path, not probing itself).

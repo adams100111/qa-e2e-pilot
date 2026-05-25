@@ -1,6 +1,7 @@
 {
-  "_doc": "Copy to .qa/config.json and edit. Driver presets resolve the browser endpoint: managed (zero-config built-in Playwright, any OS), windows+wsl (attach to Windows Chrome from WSL), windows, wsl, linux, mac. The managed driver is the default; attended CDP is opt-in. repos are all optional (single-repo works); skills read them by role. allowApiWrites is OFF by default — direct API writes/seeding are gated behind it AND a disposable-env marker.",
+  "_doc": "Copy to .qa/config.json and edit. Driver presets resolve the browser endpoint: managed (zero-config built-in Playwright, any OS), windows+wsl (attach to Windows Chrome from WSL), windows, wsl, linux, mac. The managed driver is the default; attended CDP is opt-in. apiOrigin is optional — set it only when the backend API is served from a different origin than baseUrl (enables cross-origin probing; leave \"\" for same-origin). repos are all optional (single-repo works); skills read them by role. allowApiWrites is OFF by default — direct API writes/seeding are gated behind it AND a disposable-env marker.",
   "baseUrl": "http://localhost:3000",
+  "apiOrigin": "",
   "auth": {
     "storageState": ".qa/auth/storageState.json"
   },

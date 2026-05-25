@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QA Report — {{FEATURE}} — {{RUN_ID}}</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f8fafc; color: #1e293b; line-height: 1.5; padding: 2rem 1rem; }
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.15rem; font-weight: 600; margin: 2rem 0 0.75rem; color: #334155; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.35rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; }
+  p, li { font-size: 0.9rem; }
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.82rem;
+         background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 3px; padding: 0 4px; }
+  pre { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+        padding: 0.75rem 1rem; overflow-x: auto; font-size: 0.82rem; margin: 0.5rem 0; }
+  img { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; margin: 0.5rem 0; display: block; }
+
+  /* ── Layout ── */
+  .container { max-width: 960px; margin: 0 auto; }
+  .meta { color: #64748b; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .meta span { margin-right: 1.5rem; }
+
+  /* ── Tally bar ── */
+  .tally { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 2rem; }
+  .tally-chip { display: flex; align-items: center; gap: 0.35rem; border-radius: 999px;
+                padding: 0.3rem 0.85rem; font-size: 0.82rem; font-weight: 600; color: #fff; }
+  .tally-chip .count { font-size: 1rem; }
+  .chip-pass    { background: #16a34a; }
+  .chip-fail    { background: #dc2626; }
+  .chip-blocked { background: #d97706; }
+  .chip-deferred{ background: #6b7280; }
+  .chip-error   { background: #7c3aed; }
+  .chip-total   { background: #1e293b; }
+
+  /* ── Verdict cards ── */
+  .cards { display: flex; flex-direction: column; gap: 1rem; }
+  .card { border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0;
+          background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .card-header { display: flex; align-items: center; gap: 0.6rem; padding: 0.65rem 1rem; }
+  .badge { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+           border-radius: 4px; padding: 0.2rem 0.55rem; color: #fff; white-space: nowrap; }
+  .badge-pass    { background: #16a34a; }
+  .badge-fail    { background: #dc2626; }
+  .badge-blocked { background: #d97706; }
+  .badge-deferred{ background: #6b7280; }
+  .badge-error   { background: #7c3aed; }
+  .card-id { font-size: 0.78rem; color: #94a3b8; font-family: monospace; }
+  .card-title { font-weight: 600; font-size: 0.95rem; flex: 1; }
+  .conf-badge { font-size: 0.7rem; border: 1px solid #e2e8f0; border-radius: 999px;
+                padding: 0.1rem 0.5rem; color: #64748b; white-space: nowrap; }
+  .conf-low { border-color: #fbbf24; color: #92400e; background: #fffbeb; }
+
+  .card-body { padding: 0.75rem 1rem 1rem; border-top: 1px solid #f1f5f9; }
+  .field-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 0.75rem; }
+  .field-table td { padding: 0.3rem 0.5rem; vertical-align: top; }
+  .field-table td:first-child { font-weight: 500; color: #475569; white-space: nowrap; width: 120px; }
+  .field-table tr:nth-child(even) td { background: #f8fafc; }
+  .layer-badge { display: inline-block; font-size: 0.72rem; font-weight: 600;
+                 background: #fee2e2; color: #991b1b; border-radius: 4px; padding: 0.1rem 0.45rem; }
+
+  .evidence-list { list-style: none; margin-top: 0.5rem; }
+  .evidence-list li { font-size: 0.82rem; color: #475569; margin-bottom: 0.2rem; }
+  .evidence-list li::before { content: "→ "; color: #94a3b8; }
+
+  .screenshot-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+  .screenshot-grid figure { margin: 0; }
+  .screenshot-grid figcaption { font-size: 0.75rem; color: #94a3b8; margin-top: 0.2rem; text-align: center; }
+
+  /* ── Deferred section ── */
+  .deferred-card { border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb;
+                   padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+  .deferred-card .reason { font-size: 0.85rem; color: #374151; margin-top: 0.35rem; }
+
+  /* ── Bug appendix ── */
+  .bug-card { border: 1px solid #fecaca; border-radius: 8px; background: #fff5f5;
+              padding: 1rem; margin-bottom: 1rem; }
+  .bug-card h3 { color: #dc2626; }
+  .bug-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0 0.75rem; font-size: 0.8rem; }
+  .bug-meta span { background: #fee2e2; color: #991b1b; border-radius: 4px; padding: 0.15rem 0.5rem; }
+  .severity-critical { background: #7f1d1d !important; color: #fff !important; }
+  .severity-high     { background: #dc2626 !important; color: #fff !important; }
+  .severity-medium   { background: #f97316 !important; color: #fff !important; }
+  .severity-low      { background: #fbbf24 !important; color: #1c1917 !important; }
+  .steps ol { padding-left: 1.4rem; font-size: 0.85rem; }
+  .steps li { margin-bottom: 0.2rem; }
+  .expected-actual { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.75rem 0; }
+  .ea-box { border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.85rem; }
+  .ea-expected { background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .ea-actual   { background: #fef2f2; border: 1px solid #fecaca; }
+  .ea-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+              margin-bottom: 0.25rem; }
+  .ea-expected .ea-label { color: #15803d; }
+  .ea-actual   .ea-label { color: #dc2626; }
+
+  /* ── Traceability ── */
+  .trace-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .trace-table th { background: #f1f5f9; text-align: left; padding: 0.4rem 0.6rem;
+                    font-weight: 600; color: #475569; border-bottom: 2px solid #e2e8f0; }
+  .trace-table td { padding: 0.35rem 0.6rem; border-bottom: 1px solid #f1f5f9; }
+  .trace-table tr:hover td { background: #f8fafc; }
+
+  /* ── Low-confidence callout ── */
+  .callout { border-left: 4px solid #fbbf24; background: #fffbeb; border-radius: 0 6px 6px 0;
+             padding: 0.6rem 0.85rem; font-size: 0.85rem; color: #78350f; margin-bottom: 1rem; }
+  .callout strong { display: block; margin-bottom: 0.15rem; }
+
+  /* ── Footer ── */
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e2e8f0;
+           font-size: 0.78rem; color: #94a3b8; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ── Header ── -->
+  <h1>QA Report — {{FEATURE}}</h1>
+  <div class="meta">
+    <span><strong>Run ID:</strong> {{RUN_ID}}</span>
+    <span><strong>Date:</strong> {{DATE}}</span>
+    <span><strong>Build:</strong> {{BUILD_ID}}</span>
+  </div>
+
+  <!-- ── Tally ── -->
+  <div class="tally">
+    <div class="tally-chip chip-pass"><span class="count">{{TALLY_PASS}}</span> pass</div>
+    <div class="tally-chip chip-fail"><span class="count">{{TALLY_FAIL}}</span> fail</div>
+    <div class="tally-chip chip-blocked"><span class="count">{{TALLY_BLOCKED}}</span> blocked</div>
+    <div class="tally-chip chip-deferred"><span class="count">{{TALLY_DEFERRED}}</span> deferred</div>
+    <div class="tally-chip chip-error"><span class="count">{{TALLY_ERROR}}</span> error</div>
+    <div class="tally-chip chip-total"><span class="count">{{TALLY_TOTAL}}</span> total</div>
+  </div>
+
+  {{LOW_CONFIDENCE_CALLOUT}}
+  <!--
+    Replace {{LOW_CONFIDENCE_CALLOUT}} with the block below when low-confidence verdicts exist,
+    or remove it entirely when all verdicts are high-confidence:
+
+    <div class="callout">
+      <strong>Confidence: LOW on {{TALLY_LOW_CONFIDENCE}} verdict(s)</strong>
+      Expected value derived from backend code — can catch precision/propagation bugs, not formula correctness.
+    </div>
+  -->
+
+  <!-- ── Verdict cards ── -->
+  <h2>Criteria</h2>
+  <div class="cards">
+
+    {{CRITERIA_CARDS}}
+    <!--
+      Replace {{CRITERIA_CARDS}} with one block per criterion, e.g.:
+
+      <div class="card">
+        <div class="card-header">
+          <span class="badge badge-fail">fail</span>
+          <span class="card-id">GOV-09</span>
+          <span class="card-title">Issuance amount stored correctly at sub-cent price</span>
+          <span class="conf-badge conf-low">confidence: low</span>
+        </div>
+        <div class="card-body">
+          <table class="field-table">
+            <tr><td>Oracle</td><td>amount = shares × price_per_share (domain rule)</td></tr>
+            <tr><td>Expected</td><td>4,000,000 × $0.001 = <strong>$4,000.00</strong></td></tr>
+            <tr><td>Actual</td><td><strong>$4.00</strong> — value truncated on storage</td></tr>
+            <tr><td>Suspected layer</td><td><span class="layer-badge">DB / migration</span></td></tr>
+            <tr><td>Bug report</td><td><a href="#bug-09">BUG-09</a></td></tr>
+          </table>
+          <ul class="evidence-list">
+            <li><a href="evidence/GOV-09/screenshot-before.png">screenshot-before.png</a></li>
+            <li><a href="evidence/GOV-09/screenshot-after.png">screenshot-after.png</a></li>
+            <li><a href="evidence/GOV-09/bake-read-back.json">bake-read-back.json</a></li>
+            <li><a href="evidence/GOV-09/recompute.md">recompute.md</a></li>
+          </ul>
+          <div class="screenshot-grid">
+            <figure>
+              <img src="evidence/GOV-09/screenshot-after.png" alt="GOV-09 screenshot after">
+              <figcaption>After submission</figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+
+      Verdict badge classes: badge-pass / badge-fail / badge-blocked / badge-deferred / badge-error
+      Confidence badge class: conf-low (add only when confidence is low; omit span for high)
+    -->
+
+  </div>
+
+  <!-- ── Deferred ── -->
+  <h2>Deferred</h2>
+  {{DEFERRED_CARDS}}
+  <!--
+    Replace {{DEFERRED_CARDS}} with one block per deferred criterion:
+
+    <div class="deferred-card">
+      <strong>DEFERRED — GOV-12: Round-close pro-rata math</strong>
+      <p class="reason"><strong>Reason:</strong> Round-close math requires a completed round — not available in this env. Verify in staging after round close.</p>
+    </div>
+
+    Or, if nothing was deferred:
+    <p><em>No criteria were deferred this run.</em></p>
+  -->
+
+  <!-- ── Traceability (optional) ── -->
+  {{TRACEABILITY_SECTION}}
+  <!--
+    Include this section ONLY when spec-kit artifacts (constitution.md / spec.md / tasks.md) exist.
+    Remove entirely when no spec-kit artifacts are present.
+
+    <h2>Traceability</h2>
+    <table class="trace-table">
+      <thead>
+        <tr>
+          <th>Criterion</th>
+          <th>Spec section</th>
+          <th>Task ID</th>
+          <th>Verdict</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>GOV-01</td>
+          <td>spec.md §3.1 — Shareholder creation</td>
+          <td>TASK-042</td>
+          <td><span class="badge badge-pass">pass</span></td>
+        </tr>
+      </tbody>
+    </table>
+  -->
+
+  <!-- ── Bug appendix ── -->
+  <h2>Bugs</h2>
+  {{BUG_CARDS}}
+  <!--
+    Replace {{BUG_CARDS}} with one block per failing criterion:
+
+    <div class="bug-card" id="bug-09">
+      <h3>BUG-09 — Issuance amount truncated at sub-cent price</h3>
+      <div class="bug-meta">
+        <span class="severity-high">severity: high</span>
+        <span class="layer-badge">DB / migration</span>
+        <span>GOV-09</span>
+      </div>
+
+      <div class="steps">
+        <strong>Steps to reproduce:</strong>
+        <ol>
+          <li>Log in as admin.</li>
+          <li>Navigate to Governance &rarr; Issuances &rarr; New Issuance.</li>
+          <li>Enter Shares: 4,000,000 and Price per share: 0.001.</li>
+          <li>Submit the form.</li>
+          <li>Open the issuance detail view and observe the Amount field.</li>
+        </ol>
+      </div>
+
+      <div class="expected-actual">
+        <div class="ea-box ea-expected">
+          <div class="ea-label">Expected (oracle)</div>
+          4,000,000 &times; $0.001 = <strong>$4,000.00</strong><br>
+          <small>domain rule: amount = shares &times; price_per_share</small>
+        </div>
+        <div class="ea-box ea-actual">
+          <div class="ea-label">Actual</div>
+          <strong>$4.00</strong> displayed and stored.<br>
+          <small>Value truncated — decimal(10,2) column cannot represent $0.001/share.</small>
+        </div>
+      </div>
+
+      <p><strong>Suggested fix:</strong> Alter <code>issuances.amount</code> to <code>decimal(15,4)</code> and add a migration test asserting no truncation at price &lt; $0.01/share.</p>
+
+      <ul class="evidence-list">
+        <li><a href="evidence/GOV-09/screenshot-after.png">screenshot-after.png</a></li>
+        <li><a href="evidence/GOV-09/bake-read-back.json">bake-read-back.json</a></li>
+        <li><a href="evidence/GOV-09/recompute.md">recompute.md</a></li>
+      </ul>
+    </div>
+
+    If no failures occurred:
+    <p><em>No bugs recorded this run.</em></p>
+  -->
+
+  <footer>
+    Generated by qa-e2e-pilot &mdash; run <code>{{RUN_ID}}</code> &mdash; {{DATE}}
+  </footer>
+
+</div>
+</body>
+</html>
