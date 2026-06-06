@@ -39,7 +39,7 @@ Reference evidence files by relative path from the run dir (`evidence/<criterion
 
 ### 1. Read run artifacts
 
-Read `run-manifest.json` and `checkpoint.json` to get the full criterion list, their verdicts, confidence flags, evidence refs, and any bug entries.
+Read `run-manifest.json` and `checkpoint.json` to get the full criterion list, their verdicts, confidence flags, evidence refs, and any bug entries. Also read `stack-profile.json` and fill the report's **Detected stack** header (`{{STACK}}`, `{{STACK_TIER}}` = the `playbook`, `{{STACK_SIGNAL}}` = the primary component `signal`); when `mode` is `black-box`/`source-drift` or any component is `signal: weak`, fill `{{STACK_DRIFT_NOTE}}` with an honest one-liner instead of removing it.
 
 ### 2. Compute the summary tally
 

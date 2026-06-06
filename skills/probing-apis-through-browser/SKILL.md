@@ -16,6 +16,7 @@ This skill gets that truth. It reads existing traffic first, falls back to an au
 - **Probing**: going under a lying UI to read the truth — network response body or API read-back with the session's cookies.
 - **Session**: the isolated browser context whose storageState (cookies, localStorage) carries the authenticated identity.
 - **allowApiWrites / seedableEnvMarker**: the two config flags in `.qa/config.json` that must both be true before any write is issued.
+- **auth scheme**: read `auth.scheme` / `auth.csrf` from the run's `stack-profile.json` to form requests correctly — `session-cookie` (in-page fetch carries cookies with `credentials:'include'`; for `csrf: laravel-xsrf` send `X-XSRF-TOKEN` from the `XSRF-TOKEN` cookie), or `bearer` (send the `Authorization` header captured from the session). In **production** mode, writes are hard-off regardless of the flags above.
 
 ---
 

@@ -4,6 +4,15 @@
 **Date:** {{DATE}}
 **Feature / Target:** {{FEATURE}}
 **Build / Deploy ID:** {{BUILD_ID}}
+**Detected stack:** {{STACK}}  (playbook tier: {{STACK_TIER}}, detection signal: {{STACK_SIGNAL}})
+
+{{STACK_DRIFT_NOTE}}
+
+> Replace `{{STACK}}` from the run's `stack-profile.json` (e.g. "laravel + inertia (server-bridge)").
+> `{{STACK_TIER}}` = the playbook used (laravel / openapi-generic / generic).
+> `{{STACK_SIGNAL}}` = strong | weak. If weak or `mode`/`environment` warrant it, replace
+> `{{STACK_DRIFT_NOTE}}` with a line like "> **Note:** black-box production target, no local
+> source — code-derived facts are signal: weak." Otherwise remove the line.
 
 ---
 

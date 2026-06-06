@@ -29,7 +29,7 @@ Rule of thumb: if the bytes you are reading never left the browser, it is not ba
 ## The Checklist: plan → read-back → reconcile (turn each into a todo)
 
 ### 1. Plan (before the write)
-- [ ] Name the **entity** and the **fields** that must persist — including every **NOT-NULL / required** column. Get these from the **oracle** (the checklist's expected shape) and, where you need exact column names/precision, from the **backend repo** (`.qa/config.json` → `repos[].role == "backend"`): read the migration/schema for required columns, enums, `decimal(p,s)` scale.
+- [ ] Name the **entity** and the **fields** that must persist — including every **NOT-NULL / required** column. Get these from the **oracle** (the checklist's expected shape) and, where you need exact column names/precision, from the **backend repo**: read the migration/schema for required columns, enums, `decimal(p,s)` scale. Locate the model/migration via the run's `stack-profile.json` — `components[].orm.modelsPath` and `orm.migrationsPath` (e.g. Laravel → `app/Models`, `database/migrations`) — instead of guessing the table. In **black-box** mode (no repo, `signal: weak`) there is no migration oracle: bake by read-back only and mark numeric/shape expectations `confidence: low`.
 - [ ] State the **expected count delta** (e.g. +1 founder; finalize → 2 share classes, 3 founders, 2 board members).
 - [ ] Decide the **read-back path** up front: which VIEW (list/detail route) or which API GET, and how you'll authenticate it (storageState cookies).
 - [ ] If a 0-state applies, schedule it FIRST (multiplicity is ordered — see below).
