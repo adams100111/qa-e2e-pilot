@@ -37,6 +37,15 @@ OUT4="$(mktemp)"
 bash "$ENGINE" --no-code --base-url "https://app.example.com" --headers-file "$FIX/server/laravel-headers.txt" --out "$OUT4" >/dev/null 2>&1
 check "prod env"  "$(get "$OUT4" '.environment')" "production"
 check "prod mode" "$(get "$OUT4" '.mode')"        "black-box"
+check "prod writes off" "$(get "$OUT4" '.notes | index("allowApiWrites forced off (production)") != null')" "true"
+check "prod guardrails" "$(get "$OUT4" '.guardrails.requireWriteConfirm')" "true"
+check "prod crawl off"  "$(get "$OUT4" '.guardrails.blackboxCrawl')"       "false"
+
+# Case 5: disposable local target → no production guardrails
+OUT5="$(mktemp)"
+QA_REPOS="$FIX/laravel" bash "$ENGINE" --no-runtime --base-url "http://localhost:8000" --out "$OUT5" >/dev/null 2>&1
+check "local env"        "$(get "$OUT5" '.environment')"        "disposable"
+check "local guardrails" "$(get "$OUT5" '.guardrails')"         "null"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

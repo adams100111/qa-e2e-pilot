@@ -198,10 +198,22 @@ main() {
   local repoRoot="null"
   [[ "$mode" == "local-matched" ]] && repoRoot="$(jq -c '[.[] | .path] | map(select(. != null)) | (.[0] // null)' <<< "$comps")"
 
+  # Production guardrails (ADR / design): writes hard-off, write-confirm required,
+  # black-box crawl off unless explicitly allowed in config.
+  local notes="[]" guardrails="null"
+  if [[ "$env" == "production" ]]; then
+    notes='["allowApiWrites forced off (production)","recommend a dedicated test account/tenant"]'
+    local crawl="false"
+    [[ "$(cfg '.allowBlackboxCrawl' 'false')" == "true" ]] && crawl="true"
+    guardrails="$(jq -n --argjson crawl "$crawl" '{allowApiWrites:false, requireWriteConfirm:true, blackboxCrawl:$crawl}')"
+  fi
+
   jq -n --arg ts "$ts" --arg mode "$mode" --arg env "$env" \
-        --argjson comps "$comps" --argjson pb "$pb" --argjson pf "$pf" --argjson root "$repoRoot" '{
+        --argjson comps "$comps" --argjson pb "$pb" --argjson pf "$pf" --argjson root "$repoRoot" \
+        --argjson notes "$notes" --argjson guardrails "$guardrails" '{
     generatedAt:$ts, mode:$mode, environment:$env, repoRoot:$root,
-    components:$comps, primary:{ backend:$pb, frontend:$pf }, notes:[] }' | emit
+    components:$comps, primary:{ backend:$pb, frontend:$pf },
+    guardrails:$guardrails, notes:$notes }' | emit
 }
 
 main
