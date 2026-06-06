@@ -33,6 +33,12 @@ json_str() {
   printf '%s' "$s"
 }
 
+# Portable PCRE extraction. macOS/BSD grep has no `-P`; fall back to perl
+# (always present on macOS, Git Bash, Linux). Reads stdin, prints each match.
+if printf 'x' | grep -qoP 'x' 2>/dev/null; then _HAVE_GREP_P=1; else _HAVE_GREP_P=0; fi
+oP()  { if [[ "$_HAVE_GREP_P" -eq 1 ]]; then grep -oP "$1"; else PAT="$1" perl -ne 'print "$&\n" while /$ENV{PAT}/g'; fi; }
+oPi() { if [[ "$_HAVE_GREP_P" -eq 1 ]]; then grep -oiP "$1"; else PAT="$1" perl -ne 'print "$&\n" while /$ENV{PAT}/gi'; fi; }
+
 # ── config resolution ─────────────────────────────────────────────────────────
 
 FRONTEND_PATH=""
@@ -203,9 +209,9 @@ collect_react_router_routes() {
     local content="${line#*:*:}"
     # Extract path value — single-quoted or double-quoted
     local rpath
-    rpath=$(printf '%s' "$content" | grep -oP "(?<=path=')[^']+" | head -1 || true)
+    rpath=$(printf '%s' "$content" | oP "(?<=path=')[^']+" | head -1 || true)
     if [[ -z "$rpath" ]]; then
-      rpath=$(printf '%s' "$content" | grep -oP '(?<=path=")[^"]+' | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP '(?<=path=")[^"]+' | head -1 || true)
     fi
     [[ -z "$rpath" ]] && continue
     entries="${entries}{\"route\":\"$(json_str "$rpath")\",\"source\":\"$(json_str "$fpath")\",\"kind\":\"react-router\"},"
@@ -224,15 +230,15 @@ collect_generic_routes() {
     local content="${line#*:*:}"
     local rpath
     # Try href= single-quoted, then double-quoted, then to= variants
-    rpath=$(printf '%s' "$content" | grep -oP "(?<=href=')[^'?#]+" | head -1 || true)
+    rpath=$(printf '%s' "$content" | oP "(?<=href=')[^'?#]+" | head -1 || true)
     if [[ -z "$rpath" ]]; then
-      rpath=$(printf '%s' "$content" | grep -oP '(?<=href=")[^"?#]+' | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP '(?<=href=")[^"?#]+' | head -1 || true)
     fi
     if [[ -z "$rpath" ]]; then
-      rpath=$(printf '%s' "$content" | grep -oP "(?<= to=')[^'?#]+" | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP "(?<= to=')[^'?#]+" | head -1 || true)
     fi
     if [[ -z "$rpath" ]]; then
-      rpath=$(printf '%s' "$content" | grep -oP '(?<= to=")[^"?#]+' | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP '(?<= to=")[^"?#]+' | head -1 || true)
     fi
     [[ -z "$rpath" || "${rpath:0:1}" != "/" ]] && continue
     entries="${entries}{\"route\":\"$(json_str "$rpath")\",\"source\":\"$(json_str "$fpath")\",\"kind\":\"href\"},"
@@ -256,7 +262,7 @@ collect_server_bridge_routes() {
       local fpath="${line%%:*}"
       local content="${line#*:*:}"
       local rpath
-      rpath=$(printf '%s' "$content" | grep -oP "(?<=')[^']+" | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP "(?<=')[^']+" | head -1 || true)
       [[ -z "$rpath" ]] && continue
       entries="${entries}{\"route\":\"/$(json_str "${rpath#/}")\",\"source\":\"$(json_str "$fpath")\",\"kind\":\"server-bridge\"},"
     done < <(grep -rn --include="*.php" -E 'Route::(get|inertia)' "$bpath/routes" 2>/dev/null | head -200 || true)
@@ -280,12 +286,12 @@ collect_selectors() {
     local fpath="${line%%:*}"
     local content="${line#*:*:}"
     local label role
-    label=$(printf '%s' "$content" | grep -oP '(?<=aria-label=")[^"]+' | head -1 || true)
+    label=$(printf '%s' "$content" | oP '(?<=aria-label=")[^"]+' | head -1 || true)
     if [[ -z "$label" ]]; then
-      label=$(printf '%s' "$content" | grep -oP '(?<=aria-label='\'')[^'\'']+' | head -1 || true)
+      label=$(printf '%s' "$content" | oP '(?<=aria-label='\'')[^'\'']+' | head -1 || true)
     fi
     if [[ -z "$label" ]]; then
-      label=$(printf '%s' "$content" | grep -oP '(?<=>)[A-Z][a-zA-Z0-9 ]{2,40}(?=</)' | head -1 || true)
+      label=$(printf '%s' "$content" | oP '(?<=>)[A-Z][a-zA-Z0-9 ]{2,40}(?=</)' | head -1 || true)
     fi
     [[ -z "$label" ]] && continue
     role="interactive"
@@ -317,10 +323,10 @@ collect_backend_endpoints() {
       local content="${line#*:*:}"
       local method rpath
       method=$(printf '%s' "$content" \
-               | grep -oiP 'Route::\K(get|post|put|patch|delete|apiResource)' \
+               | oPi 'Route::\K(get|post|put|patch|delete|apiResource)' \
                | head -1 || true)
       # Extract first single-quoted string value (the route path)
-      rpath=$(printf '%s' "$content" | grep -oP "(?<=')[^']+" | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP "(?<=')[^']+" | head -1 || true)
       [[ -z "$method" || -z "$rpath" ]] && continue
       method="${method^^}"
       entries="${entries}{\"method\":\"$(json_str "$method")\",\"path\":\"$(json_str "$rpath")\",\"source\":\"$(json_str "$fpath")\",\"lang\":\"laravel\"},"
@@ -340,9 +346,9 @@ collect_backend_endpoints() {
       local content="${line#*:*:}"
       local method rpath
       method=$(printf '%s' "$content" \
-               | grep -oP '(?:app|router)\.\K(get|post|put|patch|delete)' \
+               | oP '(?:app|router)\.\K(get|post|put|patch|delete)' \
                | head -1 || true)
-      rpath=$(printf '%s' "$content" | grep -oP "(?<=')[^'()]+" | head -1 || true)
+      rpath=$(printf '%s' "$content" | oP "(?<=')[^'()]+" | head -1 || true)
       [[ -z "$method" || -z "$rpath" ]] && continue
       method="${method^^}"
       entries="${entries}{\"method\":\"$(json_str "$method")\",\"path\":\"$(json_str "$rpath")\",\"source\":\"$(json_str "$fpath")\",\"lang\":\"express\"},"
@@ -361,7 +367,7 @@ collect_backend_endpoints() {
       local content="${line#*:*:}"
       local proc kind
       proc=$(printf '%s' "$content" \
-             | grep -oP '\w+(?=:\s*(?:t\.)?(?:publicProcedure|protectedProcedure|procedure))' \
+             | oP '\w+(?=:\s*(?:t\.)?(?:publicProcedure|protectedProcedure|procedure))' \
              | head -1 || true)
       [[ -z "$proc" ]] && continue
       kind="query"

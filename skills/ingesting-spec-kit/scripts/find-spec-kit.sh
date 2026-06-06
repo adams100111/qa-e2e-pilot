@@ -110,7 +110,12 @@ if [ -f "$CONFIG_FILE" ]; then
       # Last resort: grep for quoted path/root values (best-effort, may over-match).
       while IFS= read -r repo_path; do
         [ -n "$repo_path" ] && SEARCH_ROOTS+=("$repo_path")
-      done < <(grep -oP '"(?:path|root)"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || true)
+      done < <( \
+        if printf 'x' | grep -qoP 'x' 2>/dev/null; then \
+          grep -oP '"(?:path|root)"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null; \
+        else \
+          PAT='"(?:path|root)"\s*:\s*"\K[^"]+' perl -ne 'print "$&\n" while /$ENV{PAT}/g' "$CONFIG_FILE" 2>/dev/null; \
+        fi || true)
     fi
   fi
 fi
