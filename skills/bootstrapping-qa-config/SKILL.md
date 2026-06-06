@@ -1,0 +1,96 @@
+---
+name: bootstrapping-qa-config
+description: Use at the start of a Run when `.qa/config.json` is missing — instead of aborting with "create it from the example", interactively bootstrap it. Infers sensible defaults (DDEV/localhost baseUrl, single-repo, detected stack) via init-config.sh --suggest, asks the user only the gaps (base URL, environment, how to authenticate, whether writes are allowed), then WRITES a valid config deterministically with the script (never hand-authored JSON). Optionally captures a logged-in storageState. Git-ignores `.qa/` automatically.
+---
+
+# Bootstrapping the QA Config
+
+## Overview
+
+A first Run in a new project has no `.qa/config.json`. Rather than telling the
+user to copy a template by hand, **ask them the few things that can't be inferred
+and write the config for them**. The JSON is always produced by
+`scripts/init-config.sh` — never hand-authored — so it is guaranteed valid.
+
+## When to Use
+
+- The `/qa-run` command or the agent's pre-flight finds **no `.qa/config.json`**.
+- The user explicitly asks to (re)configure qa-e2e-pilot for a project.
+
+## The Process
+
+### Step 1 — Infer defaults (silent)
+
+```
+bash skills/bootstrapping-qa-config/scripts/init-config.sh --suggest
+```
+
+Returns `{ "baseUrl": "<guess>", "repos": ".", "stack": "<framework>" }`. The
+guess comes from `.ddev/config.yaml` (→ `https://<name>.ddev.site`), else an
+`artisan`/`package.json` localhost default; `stack` comes from the detector.
+
+### Step 2 — Ask only the gaps (use the host's question UI)
+
+Ask these, each **pre-filled** with the inference from Step 1. In Claude Code use
+`AskUserQuestion`; elsewhere ask in plain text:
+
+1. **Base URL** — where the app is served. Default = the inferred guess.
+2. **Environment** — `auto` (infer), `disposable` (safe to write/seed), or
+   `production` (writes hard-off, conservative). Default `auto`.
+3. **Authentication** — one of:
+   - **Capture now** — drive a browser login and save a `storageState`.
+   - **Use existing** — a path to a Playwright `storageState.json`.
+   - **None** — public pages only.
+4. **Allow API writes?** — default **no**. If environment resolves to
+   `production`, do not offer this — writes stay off.
+
+Do not ask about drivers (default = managed Playwright) or the stack (detected).
+
+### Step 3 — Write the config (deterministic)
+
+```
+bash skills/bootstrapping-qa-config/scripts/init-config.sh \
+  --base-url "<answer>" --environment "<answer>" --repos "." \
+  --storage-state ".qa/auth/storageState.json" \
+  [--allow-writes true]
+```
+
+This writes `.qa/config.json`, creates `.qa/auth` and `.qa/runs`, and appends
+`.qa/` to `.gitignore`. **Never write the JSON yourself** — always call the script.
+
+### Step 4 — Capture auth if requested
+
+If the user chose **Capture now**: use **driving-browser-qa** to open the login
+page, let the user (or supplied credentials) sign in, then save the browser
+context's `storageState` to the path above. Never print credentials or cookies.
+If they chose **Use existing**, pass that path to `--storage-state` in Step 3.
+
+### Step 5 — Hand off
+
+Confirm the written `.qa/config.json` back to the user in one line, then continue
+the Run (pre-flight → detect-stack → analyze → …).
+
+## Guardrails
+
+- **JSON is script-generated, never hand-authored.** Malformed config is a class
+  of bug this skill exists to prevent.
+- **Never enable `allowApiWrites` on a production or unknown environment.**
+- **Secrets stay in the browser** — auth persists via `storageState`, never
+  echoed to output, the config, or the report.
+- `.qa/` (config, auth, runs) is git-ignored automatically — never commit it.
+
+## Mini-Evals (given → outcome)
+
+1. **DDEV project, no config.** *Given* a repo with `.ddev/config.yaml`
+   `name: mayocrm` and no `.qa/config.json`. *Outcome* `--suggest` returns
+   `baseUrl: https://mayocrm.ddev.site`; the user confirms; a valid
+   `.qa/config.json` is written and `.qa/` is git-ignored — the Run proceeds
+   without any manual file editing.
+2. **Production target, writes refused.** *Given* the user sets environment
+   `production` (or a non-localhost baseUrl with no seed marker). *Outcome* the
+   "allow writes?" question is not offered and `allowApiWrites` stays `false`;
+   pre-flight later warns it is a real environment.
+3. **Malformed-config prevention.** *Given* answers containing characters that
+   would break naive hand-authored JSON. *Outcome* `init-config.sh` emits valid
+   JSON via `jq`, so the config always parses (the bug class of a hand-edited
+   trailing comma never occurs).

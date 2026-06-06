@@ -27,7 +27,7 @@ Use Opus for analysis/reconciliation-heavy runs (lots of math or cross-repo loca
 
 ## Configuration
 
-Read `.qa/config.json` (see `.qa/config.json.example`): `baseUrl`, `auth.storageState`, the `drivers` pool (each with a platform preset), `maxParallel`, `repos` by role (`frontend`/`backend`/`reference`, all optional), `allowApiWrites` (default off), `seedableEnvMarker`. If absent, ask the user for `baseUrl` and proceed with a single managed driver.
+Read `.qa/config.json` (see `.qa/config.json.example`): `baseUrl`, `auth.storageState`, the `drivers` pool (each with a platform preset), `maxParallel`, `repos` by role (`frontend`/`backend`/`reference`, all optional), `allowApiWrites` (default off), `seedableEnvMarker`, `environment`/`allowBlackboxCrawl`. **If `.qa/config.json` is absent, invoke `bootstrapping-qa-config` first** — it infers defaults, asks the user only the gaps, and writes a valid config (never abort telling the user to copy the example).
 
 ## The 6-phase pipeline
 
