@@ -15,7 +15,7 @@ Full input: `$ARGUMENTS`
 
 ## What to do
 
-1. Read `.qa/config.json` (or `.qa/config.json.example` if no config exists yet) to learn `baseUrl`, the driver pool, `repos` by role, and `allowApiWrites`. If there is no config and no `baseUrl` can be inferred, ask the user for the base URL before proceeding.
+1. Read `.qa/config.json` to learn `baseUrl`, the driver pool, `repos` by role, and `allowApiWrites`. **If `.qa/config.json` does not exist, invoke the `bootstrapping-qa-config` skill** — it infers defaults (DDEV/localhost baseUrl, single-repo, detected stack), asks the user only the gaps (base URL, environment, auth, allow-writes), and writes a valid config for them. Do not abort with "create it from the example"; bootstrap it.
 2. Dispatch the **qa-e2e-pilot** agent (via the Agent/Task tool, `subagent_type: qa-e2e-pilot`) with:
    - the **target** (`$1`),
    - the **checklist/spec path** (`$2`) if provided — instruct the agent to **ingest** it rather than generate,
