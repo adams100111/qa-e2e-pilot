@@ -38,10 +38,10 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 .claude-plugin/   plugin.json + marketplace.json
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
 commands/         qa-run.md            — /qa-run <target> [checklist|spec]
-skills/           11 skills (see below)
+skills/           13 skills (see below)
 scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
 .qa/              config.json.example + per-run output
-docs/adr/         0001–0004 architecture decisions
+docs/adr/         0001–0005 architecture decisions
 docs/             running-in-ci.md · extending-drivers.md
 CONTEXT.md        the ubiquitous language (read this first)
 ```
@@ -50,8 +50,8 @@ CONTEXT.md        the ubiquitous language (read this first)
 
 | Phase | Skill | Does |
 |---|---|---|
-| 0 Pre-flight | `driving-browser-qa` (`preflight.sh`) | app live? auth present? enumerate+ping drivers; record build/deploy id |
-| 1 Analyze *(v1.1)* | `analyzing-feature-ui` | build `surface-map.json`: routes, elements, per-surface states; cross-map to backend |
+| 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one (infer + ask only the gaps + write it)** |
+| 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep) |
 | 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle |
 | 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `fanning-out-criteria` | drive → bake → recompute/reconcile → probe → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
 | 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
@@ -90,20 +90,23 @@ Methods A and B install from the repo's default branch (`main`). Then restart Cl
 
 A full pass against one feature, end to end. (Example: the cap-table "add founders" flow.)
 
-**1. Point it at your app.** In the repo you want to QA:
+**1. Point it at your app — no manual config needed.** On the first run in a
+repo with no `.qa/config.json`, the agent (`bootstrapping-qa-config`) **infers**
+sensible defaults (DDEV/localhost base URL, single-repo, the detected stack),
+**asks you only the gaps** (base URL, environment, how to authenticate, whether
+writes are allowed), and **writes a valid `.qa/config.json` for you** — then
+git-ignores `.qa/`. Just run `/qa-run` and answer the prompts.
 
-```bash
-mkdir -p .qa
-cp <plugin>/.qa/config.json.example .qa/config.json
-```
+Prefer to hand-write it? Copy `.qa/config.json.example` to `.qa/config.json`; a
+minimal config is:
 
 ```jsonc
-// .qa/config.json — minimal, zero-config managed browser
 {
-  "baseUrl": "http://localhost:3000",
+  "baseUrl": "https://myapp.ddev.site",
   "auth": { "storageState": ".qa/auth/storageState.json" },
   "drivers": [ { "id": "managed", "server": "playwright", "preset": "managed" } ],
-  "repos": [ { "role": "backend", "path": "../backend" } ],
+  "repos": [ { "role": "backend", "path": "." } ],
+  "environment": "auto",
   "allowApiWrites": false
 }
 ```
@@ -146,11 +149,12 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 
 ## Use
 
-1. In the project you want to QA, copy the config and edit it:
-   ```
-   mkdir -p .qa && cp <plugin>/.qa/config.json.example .qa/config.json
-   ```
-   Set `baseUrl`, your `auth.storageState` path, and (optionally) `repos` by role and an attended-CDP driver.
+1. In the project you want to QA, just run `/qa-run` — if there's no
+   `.qa/config.json`, the agent **bootstraps one interactively** (infers the
+   defaults, asks only the gaps, writes it, git-ignores `.qa/`). To pre-seed it
+   by hand instead: `mkdir -p .qa && cp <plugin>/.qa/config.json.example
+   .qa/config.json` and set `baseUrl`, `auth.storageState`, and (optionally)
+   `repos` by role.
 2. Run a pass:
    ```
    /qa-run governance wizard                          # auto-plan (v1.1) or prompt for a checklist
@@ -165,6 +169,7 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 - `repos[]` — `{role: frontend|backend|reference, path}`, all optional (single-repo works); skills read them by role.
 - `maxParallel` — cap on the narrow parallel path (most verification is **sequential by default** — see [ADR-0003](./docs/adr/0003-sequential-verification-narrow-pool.md)).
 - `allowApiWrites` (default **off**) + `seedableEnvMarker` — gate any direct API write/seed behind both.
+- `environment` (`auto`|`disposable`|`production`) + `allowBlackboxCrawl` — production targets force writes off, keep fingerprinting to a tiny serialized allowlist, and require opt-in before any black-box crawl. `fingerprintPaths` / `noProbePaths` / `crawlDenyPatterns` / `maxRequestsPerSecond` tune the prod-safety behavior.
 
 ---
 
@@ -174,7 +179,10 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 - **v1.1 — done:** `analyzing-feature-ui` + `generating-qa-checklist` (auto-plan incl. cross-tenant + concurrency cases); narrow parallel multi-driver fan-out (`fanning-out-criteria`).
 - **Spec-kit & CI — done:** `ingesting-spec-kit` imports `constitution.md`/`spec.md`/`tasks.md` as the oracle and builds a traceability matrix; [`scripts/report-to-junit.sh`](./scripts/report-to-junit.sh) exports JUnit-XML and [`scripts/qa-ci.sh`](./scripts/qa-ci.sh) is a turnkey unattended wrapper (pre-flight → agent → JUnit → exit code) — see [running-in-ci.md](./docs/running-in-ci.md).
 - **Pluggable extension points — wired:** any browser MCP drops in via a [capability map](./skills/driving-browser-qa/references/driver-capabilities.md) (Stagehand/browser-use included), and [`scripts/memory-sync.sh`](./scripts/memory-sync.sh) write-throughs durable memory to a Mem0/vector backend (config-gated, off by default) — see [extending-drivers.md](./docs/extending-drivers.md). External services (a real Mem0 endpoint, a Stagehand/browser-use MCP) are yours to supply.
-- **Still future:** CLI/artisan verification stays out of browser scope (covered indirectly via API-probing).
+- **Stack auto-detection — done:** `detecting-stack-profile` dual-source detects the target (local manifests + runtime fingerprint, Wappalyzer-style) and adapts every phase to it. Tier-1 playbooks for **Laravel** (incl. Inertia/Livewire server-bridge routing) and any **OpenAPI/Swagger** backend; recognition + graceful `signal:weak` fallback for .NET, Django, FastAPI, Hono, Rails, Spring, Express, Next, and more. Works against local dev *or* a bare production URL with no repo (black-box, prod-safe). Add a stack by editing `stack-signatures.json` — no engine code (see [ADR-0005](./docs/adr/0005-stack-profile-cache.md)).
+- **Auto-bootstrap config — done:** no `.qa/config.json`? `bootstrapping-qa-config` infers defaults, asks only the gaps, and writes a valid config — zero manual setup.
+- **Cross-platform:** runs on **Windows, macOS, and Linux** (scripts fall back to `perl` where macOS/BSD grep lacks `-P`; see [INSTALL.md](./INSTALL.md) for deps).
+- **Still future:** CLI/artisan verification stays out of browser scope (covered indirectly via API-probing); dedicated .NET/Django/FastAPI/Hono playbooks (they work via the OpenAPI playbook today).
 
 ---
 
