@@ -107,7 +107,31 @@ else
     FW="react-router"
   fi
 fi
-info "Framework detected: $FW"
+info "Framework heuristic: $FW (fallback only)"
+
+# ── stack-profile (authoritative routing classification) ──────────────────────
+# detecting-stack-profile is the single source of truth for the frontend routing
+# model. The FW heuristic above is used ONLY when no profile is present.
+QA_PROFILE="${QA_PROFILE:-}"
+if [[ -z "$QA_PROFILE" ]]; then
+  QA_PROFILE="$(ls -1t .qa/runs/*/stack-profile.json 2>/dev/null | head -1)"
+fi
+FRONTEND_ROUTING=""
+if [[ -n "$QA_PROFILE" && -f "$QA_PROFILE" ]] && command -v jq &>/dev/null; then
+  FRONTEND_ROUTING="$(jq -r '.components[(.primary.frontend // 0)].frontend.routing // empty' "$QA_PROFILE" 2>/dev/null)"
+  info "Stack profile: $QA_PROFILE (frontend.routing=${FRONTEND_ROUTING:-unknown})"
+fi
+
+# Resolve the routing class: profile wins; else map the FW heuristic.
+ROUTING="$FRONTEND_ROUTING"
+if [[ -z "$ROUTING" ]]; then
+  case "$FW" in
+    nextjs)       ROUTING="file-based" ;;
+    react-router) ROUTING="config-router" ;;
+    *)            ROUTING="black-box" ;;
+  esac
+fi
+info "Routing class: $ROUTING"
 
 # ── frontend: route collection ────────────────────────────────────────────────
 
@@ -220,10 +244,31 @@ collect_generic_routes() {
   ROUTES_JSON="${entries%,}"
 }
 
-case "$FW" in
-  nextjs)       collect_nextjs_routes ;;
-  react-router) collect_react_router_routes ;;
-  *)            collect_generic_routes ;;
+# Server-bridge (Inertia/Livewire/Hotwire/Django): the frontend surface list IS
+# the backend GET-route list. Derive routes by static-parsing the backend route
+# files (the static-parse rung; the agent's deterministic rung-1 uses the
+# playbook, e.g. `php artisan route:list --json`).
+collect_server_bridge_routes() {
+  local entries="" bpath="$BACKEND_PATH"
+  [[ -z "$bpath" ]] && bpath="$FRONTEND_PATH"
+  if [[ -d "$bpath/routes" ]]; then
+    while IFS= read -r line; do
+      local fpath="${line%%:*}"
+      local content="${line#*:*:}"
+      local rpath
+      rpath=$(printf '%s' "$content" | grep -oP "(?<=')[^']+" | head -1 || true)
+      [[ -z "$rpath" ]] && continue
+      entries="${entries}{\"route\":\"/$(json_str "${rpath#/}")\",\"source\":\"$(json_str "$fpath")\",\"kind\":\"server-bridge\"},"
+    done < <(grep -rn --include="*.php" -E 'Route::(get|inertia)' "$bpath/routes" 2>/dev/null | head -200 || true)
+  fi
+  ROUTES_JSON="${entries%,}"
+}
+
+case "$ROUTING" in
+  server-bridge) collect_server_bridge_routes ;;
+  file-based)    collect_nextjs_routes ;;
+  config-router) collect_react_router_routes ;;
+  *)             collect_generic_routes ;;
 esac
 
 # ── frontend: interactive selector scan ──────────────────────────────────────

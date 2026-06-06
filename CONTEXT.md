@@ -76,6 +76,22 @@ _Avoid_: backend (too coarse — pick service / migration / DB), backend-routing
 Going underneath a lying UI to get the truth — reading the network response body, or doing an API read-back with the session's cookies. **Read-only by default.** Direct API *writes* (seeding) are an opt-in gated behind a config flag and a disposable/seedable env marker; cross-origin capability is detected at preflight, never assumed.
 _Avoid_: seeding (that is the gated write path, not probing itself).
 
+**Stack-profile**:
+The detected, reviewable description of the target's stack for a Run — per component: language, framework, packages, ORM model/migration paths, auth scheme, and frontend routing model. Produced by `detecting-stack-profile` (dual-source) as the first action of Analyze and written to `.qa/runs/<run-id>/stack-profile.json`. Every later phase adapts to it.
+_Avoid_: stack, config (the profile is detected facts, not the user's `.qa/config.json`).
+
+**Playbook**:
+A per-stack executable recipe (`references/playbooks/<id>.md`) the agent walks to enumerate routes, bake, and probe for that framework. Selected by the profile's `playbook` field. Data lives in `stack-signatures.json`; procedure lives in the playbook; the profile is the resolved instance joining them.
+_Avoid_: driver (a Driver is a browser provider), strategy.
+
+**Signal**:
+How sure *detection* is about the stack — `strong | weak`. **Distinct from Confidence** (a verdict attribute). One-way mapping only: a `weak` signal, or a missing shape-oracle, *causes* a dependent criterion's verdict **Confidence** to be `low`; never the reverse, never the same field.
+_Avoid_: confidence (that is the verdict attribute), certainty.
+
+**Runtime fingerprint / code-based detection**:
+The two detection sources. *Runtime fingerprint* = read-only GETs to `baseUrl` (headers, cookies, HTML markers, OpenAPI probe) describing the running app — the only source against a bare production target. *Code-based* = reading local manifests from `repos[]`, authoritative for the shape oracle. Merged: runtime wins on live identity, code wins on the shape oracle; disagreement is recorded as drift.
+_Avoid_: scan (the fingerprint is a tiny allowlist, never a path scan).
+
 ## Flagged ambiguities
 
 - **"backend"** previously named two things: the app under test, and a browser-MCP pool entry. Resolved: **Backend** = app under test only; a pool entry is a **Driver**, and the browser context it spawns is a **Session**.

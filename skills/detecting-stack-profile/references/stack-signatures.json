@@ -1,0 +1,170 @@
+{
+  "_credit": "Runtime fingerprint patterns inspired by Wappalyzer (MIT). Add a stack by appending a row here — no engine code changes.",
+  "stacks": [
+    {
+      "id": "laravel", "language": "php", "role": "backend",
+      "manifest": "composer.json", "packages": ["laravel/framework"],
+      "implies": [{ "package": "inertiajs/inertia-laravel", "frontendRouting": "server-bridge" }],
+      "runtime": { "cookies": ["laravel_session", "XSRF-TOKEN"], "headers": {} },
+      "playbook": "laravel",
+      "router": { "strategy": "local-cli", "rung1": "php artisan route:list --json" },
+      "frontendRouting": "server-bridge",
+      "orm": { "name": "eloquent", "modelsPath": "app/Models", "migrationsPath": "database/migrations" },
+      "auth": { "scheme": "session-cookie", "csrf": "laravel-xsrf" },
+      "commands": { "dev": "composer dev", "test": "composer test", "build": "npm run build" }
+    },
+    {
+      "id": "symfony", "language": "php", "role": "backend",
+      "manifest": "composer.json", "packages": ["symfony/framework-bundle"],
+      "runtime": { "cookies": ["PHPSESSID"], "headers": { "X-Debug-Token": "" } },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "local-cli", "rung1": "php bin/console debug:router --format=json" },
+      "frontendRouting": "server-bridge",
+      "orm": { "name": "doctrine", "modelsPath": "src/Entity", "migrationsPath": "migrations" },
+      "auth": { "scheme": "session-cookie", "csrf": "symfony-csrf" },
+      "commands": { "dev": "symfony serve", "test": "php bin/phpunit", "build": "" }
+    },
+    {
+      "id": "django", "language": "python", "role": "backend",
+      "manifest": "pyproject.toml", "packages": ["django", "Django"],
+      "runtime": { "cookies": ["csrftoken", "sessionid"], "headers": {} },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "local-cli", "rung1": "python manage.py show_urls" },
+      "frontendRouting": "server-bridge",
+      "orm": { "name": "django-orm", "modelsPath": ".", "migrationsPath": "migrations" },
+      "auth": { "scheme": "session-cookie", "csrf": "django-csrf" },
+      "commands": { "dev": "python manage.py runserver", "test": "pytest", "build": "" }
+    },
+    {
+      "id": "fastapi", "language": "python", "role": "backend",
+      "manifest": "pyproject.toml", "packages": ["fastapi"],
+      "runtime": { "headers": {}, "openapiPaths": ["/openapi.json"] },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "runtime-openapi", "rung1": "GET /openapi.json" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "sqlalchemy", "modelsPath": ".", "migrationsPath": "alembic/versions" },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "uvicorn app:app --reload", "test": "pytest", "build": "" }
+    },
+    {
+      "id": "flask", "language": "python", "role": "backend",
+      "manifest": "requirements.txt", "packages": ["Flask", "flask"],
+      "runtime": { "cookies": ["session"], "headers": { "Server": "Werkzeug" } },
+      "playbook": "generic",
+      "router": { "strategy": "local-cli", "rung1": "flask routes" },
+      "frontendRouting": "server-bridge",
+      "orm": { "name": "sqlalchemy", "modelsPath": ".", "migrationsPath": "migrations" },
+      "auth": { "scheme": "session-cookie", "csrf": "flask-wtf" },
+      "commands": { "dev": "flask run", "test": "pytest", "build": "" }
+    },
+    {
+      "id": "aspnet", "language": "csharp", "role": "backend",
+      "manifest": "*.csproj", "packages": ["Microsoft.AspNetCore"],
+      "runtime": { "headers": { "X-Powered-By": "ASP.NET" }, "openapiPaths": ["/swagger/v1/swagger.json"] },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "runtime-openapi", "rung1": "GET /swagger/v1/swagger.json" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "ef-core", "modelsPath": ".", "migrationsPath": "Migrations" },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "dotnet run", "test": "dotnet test", "build": "dotnet build" }
+    },
+    {
+      "id": "spring", "language": "java", "role": "backend",
+      "manifest": "pom.xml", "packages": ["spring-boot"],
+      "runtime": { "cookies": ["JSESSIONID"], "headers": {}, "openapiPaths": ["/v3/api-docs"] },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "runtime-openapi", "rung1": "GET /v3/api-docs" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "jpa", "modelsPath": "src/main/java", "migrationsPath": "src/main/resources/db/migration" },
+      "auth": { "scheme": "session-cookie", "csrf": "spring-csrf" },
+      "commands": { "dev": "mvn spring-boot:run", "test": "mvn test", "build": "mvn package" }
+    },
+    {
+      "id": "rails", "language": "ruby", "role": "backend",
+      "manifest": "Gemfile", "packages": ["rails"],
+      "runtime": { "cookies": ["_session_id"], "headers": {} },
+      "playbook": "generic",
+      "router": { "strategy": "local-cli", "rung1": "bin/rails routes" },
+      "frontendRouting": "server-bridge",
+      "orm": { "name": "active-record", "modelsPath": "app/models", "migrationsPath": "db/migrate" },
+      "auth": { "scheme": "session-cookie", "csrf": "rails-csrf" },
+      "commands": { "dev": "bin/rails server", "test": "bin/rails test", "build": "" }
+    },
+    {
+      "id": "express", "language": "javascript", "role": "backend",
+      "manifest": "package.json", "packages": ["express"],
+      "runtime": { "cookies": ["connect.sid"], "headers": { "X-Powered-By": "Express" } },
+      "playbook": "generic",
+      "router": { "strategy": "static-parse", "rung1": "grep app.get/post" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
+    },
+    {
+      "id": "nestjs", "language": "typescript", "role": "backend",
+      "manifest": "package.json", "packages": ["@nestjs/core"],
+      "runtime": { "headers": {}, "openapiPaths": ["/api-json", "/openapi.json"] },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "runtime-openapi", "rung1": "GET /api-json" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "typeorm", "modelsPath": "src", "migrationsPath": "src/migrations" },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "npm run start:dev", "test": "npm test", "build": "npm run build" }
+    },
+    {
+      "id": "hono", "language": "javascript", "role": "backend",
+      "manifest": "package.json", "packages": ["hono"],
+      "implies": [{ "package": "@hono/zod-openapi", "openapiPaths": ["/doc", "/openapi.json"] }],
+      "runtime": { "headers": {} },
+      "playbook": "openapi-generic",
+      "router": { "strategy": "runtime-openapi", "rung1": "GET /openapi.json" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "drizzle", "modelsPath": ".", "migrationsPath": "drizzle" },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
+    },
+    {
+      "id": "go", "language": "go", "role": "backend",
+      "manifest": "go.mod", "packages": ["github.com/gin-gonic/gin", "github.com/go-chi/chi"],
+      "runtime": { "headers": {}, "openapiPaths": ["/openapi.json", "/swagger/doc.json"] },
+      "playbook": "generic",
+      "router": { "strategy": "static-parse", "rung1": "grep router.GET/POST" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "migrations" },
+      "auth": { "scheme": "bearer", "csrf": null },
+      "commands": { "dev": "go run .", "test": "go test ./...", "build": "go build" }
+    },
+    {
+      "id": "nextjs", "language": "typescript", "role": "frontend",
+      "manifest": "package.json", "packages": ["next"],
+      "runtime": { "html": ["__NEXT_DATA__"], "headers": {} },
+      "playbook": "generic",
+      "router": { "strategy": "static-parse", "rung1": "file-based app/pages dir" },
+      "frontendRouting": "file-based",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "auth": { "scheme": "none", "csrf": null },
+      "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
+    },
+    {
+      "id": "react-router", "language": "typescript", "role": "frontend",
+      "manifest": "package.json", "packages": ["react-router-dom", "react-router"],
+      "runtime": { "html": [], "headers": {} },
+      "playbook": "generic",
+      "router": { "strategy": "static-parse", "rung1": "parse router config" },
+      "frontendRouting": "config-router",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "auth": { "scheme": "none", "csrf": null },
+      "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
+    }
+  ],
+  "_fallback": {
+    "id": "generic", "language": "unknown", "role": "fullstack",
+    "playbook": "generic",
+    "router": { "strategy": "live-nav", "rung1": "browse + snapshot" },
+    "frontendRouting": "black-box",
+    "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+    "auth": { "scheme": "none", "csrf": null },
+    "commands": { "dev": "", "test": "", "build": "" }
+  }
+}

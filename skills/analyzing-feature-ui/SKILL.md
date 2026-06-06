@@ -21,6 +21,17 @@ Outputs: `.qa/runs/<run-id>/surface-map.json` — human-reviewable, consumed by 
 
 ## The Process
 
+### Step 0 — Detect the stack profile (first, unconditional)
+
+Before anything else, invoke **detecting-stack-profile** (its
+`scripts/detect-stack.sh`) and write `.qa/runs/<run-id>/stack-profile.json`. Run
+it **even when a checklist is supplied** — bake/probe need the profile too.
+Validate it (mode/environment/`primary` components/`signal`). The profile's
+`frontend.routing` and `router.strategy` drive Steps 1–5; for a **server-bridge**
+target (Inertia/Livewire/Hotwire/Django) the frontend surface list is the backend
+GET-route list, so do **not** href-grep. Open the chosen
+`references/playbooks/<playbook>.md` and follow its enumeration ladder.
+
 ### Step 1 — Static Route + Selector Inventory
 
 Run `scripts/index-routes.sh` against the frontend repo (and backend repo when configured):
