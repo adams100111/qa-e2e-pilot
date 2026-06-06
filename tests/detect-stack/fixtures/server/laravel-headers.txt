@@ -1,0 +1,4 @@
+HTTP/1.1 200 OK
+Set-Cookie: XSRF-TOKEN=eyJ...; path=/
+Set-Cookie: laravel_session=abc; path=/; httponly
+Content-Type: text/html
