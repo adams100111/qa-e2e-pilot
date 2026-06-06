@@ -181,9 +181,13 @@ main() {
     mode="local-matched"
   fi
 
-  # environment inference.
+  # environment: explicit config override (disposable|production) wins; "auto"
+  # (or unset) infers production from a non-localhost baseUrl with no seed marker.
+  local env_cfg; env_cfg="$(cfg '.environment' 'auto')"
   local env="disposable"
-  if [[ -n "$BASE_URL" ]]; then
+  if [[ "$env_cfg" == "production" || "$env_cfg" == "disposable" ]]; then
+    env="$env_cfg"
+  elif [[ -n "$BASE_URL" ]]; then
     case "$BASE_URL" in
       *localhost*|*127.0.0.1*|*.ddev.site*) env="disposable" ;;
       *) [[ -z "$(cfg '.seedableEnvMarker' '')" ]] && env="production" ;;

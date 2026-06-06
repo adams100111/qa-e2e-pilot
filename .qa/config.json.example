@@ -26,6 +26,13 @@
   ],
   "allowApiWrites": false,
   "seedableEnvMarker": "QA_DISPOSABLE_ENV",
+  "_stackDoc": "Stack detection + production safety. environment: 'auto' infers production from a non-localhost baseUrl with no seedableEnvMarker (forces writes off, conservative fingerprint, crawl off); set 'disposable' or 'production' to override. allowBlackboxCrawl: only true lets the agent live-crawl a non-disposable target (else it verifies only checklist-named surfaces). fingerprintPaths: <=4 well-known doc paths probed read-only during detection. noProbePaths: paths never to fetch. crawlDenyPatterns: extra link patterns to skip on a black-box crawl (logout/delete/etc. are always skipped). maxRequestsPerSecond: throttle for fingerprint/crawl GETs.",
+  "environment": "auto",
+  "allowBlackboxCrawl": false,
+  "fingerprintPaths": ["/openapi.json", "/swagger/v1/swagger.json"],
+  "noProbePaths": [],
+  "crawlDenyPatterns": [],
+  "maxRequestsPerSecond": 2,
   "memory": {
     "backend": "file",
     "mem0": {
