@@ -199,6 +199,24 @@ else
   warn "Could not detect build/deploy ID — cannot confirm fix is live"
 fi
 
+# ── 7b. Production-target safety warning ──────────────────────────────────────
+# Mirror detect-stack.sh's environment inference: explicit config wins; else infer
+# production from a non-localhost baseUrl with no seedable-env marker.
+ENV_CFG=$(jq_get '.environment' 'auto')
+SEED_MARKER=$(jq_get '.seedableEnvMarker' '')
+IS_PROD=0
+if [[ "$ENV_CFG" == "production" ]]; then
+  IS_PROD=1
+elif [[ "$ENV_CFG" != "disposable" ]]; then
+  case "$BASE_URL" in
+    *localhost*|*127.0.0.1*|*.ddev.site*) IS_PROD=0 ;;
+    *) [[ -z "$SEED_MARKER" ]] && IS_PROD=1 ;;
+  esac
+fi
+if [[ "$IS_PROD" -eq 1 ]]; then
+  warn "PRODUCTION target ($BASE_URL): API writes will be forced OFF and black-box crawl stays off unless allowBlackboxCrawl=true. Use a DEDICATED test account/tenant — the run drives a real authenticated session against real data."
+fi
+
 # ── 8. Final verdict ─────────────────────────────────────────────────────────
 info "Pre-flight complete — app is live, drivers enumerated. Proceed with the run."
 exit 0
