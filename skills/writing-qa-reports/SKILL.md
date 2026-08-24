@@ -1,6 +1,7 @@
 ---
 name: writing-qa-reports
-description: Use when phase 4 (Report) of the qa-e2e-pilot pipeline is reached. Produces the structured run report: report.md, single-file report.html with verdict cards and screenshot slots, per-criterion evidence, honest DEFERRED entries with stated reasons, and an optional spec-kit traceability column when constitution/spec/tasks artifacts are present.
+description: >-
+  Use when phase 4 (Report) of the qa-e2e-pilot pipeline is reached. Produces the structured run report: report.md, single-file report.html with verdict cards and screenshot slots, per-criterion evidence, honest DEFERRED entries with stated reasons, and an optional spec-kit traceability column when constitution/spec/tasks artifacts are present.
 ---
 
 # Writing QA Reports

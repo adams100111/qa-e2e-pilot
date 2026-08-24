@@ -1,6 +1,7 @@
 ---
 name: checkpointing-qa-memory
-description: Use when starting, running, or resuming a qa-e2e-pilot Run. Manages all resumable memory-spec artifacts (run-manifest, checkpoint, bug-log, traceability) as plain files under `.qa/runs/<run-id>/`. Ensures a long Run survives context compaction by checkpointing every criterion to disk so completed work is skipped on resume. Enforces ADR-0002: per-criterion state NEVER goes to the agent's personal memory.
+description: >-
+  Use when starting, running, or resuming a qa-e2e-pilot Run. Manages all resumable memory-spec artifacts (run-manifest, checkpoint, bug-log, traceability) as plain files under `.qa/runs/<run-id>/`. Ensures a long Run survives context compaction by checkpointing every criterion to disk so completed work is skipped on resume. Enforces ADR-0002: per-criterion state NEVER goes to the agent's personal memory.
 ---
 
 # Checkpointing QA Memory
