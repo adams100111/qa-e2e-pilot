@@ -1,0 +1,29 @@
+[
+  {
+    "id": "FIN-HOLDINGS-NOT-PERSISTED",
+    "title": "Finalize flips round status to COMPLETE but never persists holdings",
+    "expected": "Clicking Finalize creates a holding for every founder and persists a captable:holdings key; the holdings table then lists each founder's holding shares (e.g. Alice 302000, Carol 100000).",
+    "actual": "Started with roundStatus forced to OPEN, reloaded (UI showed 'status: OPEN'), then clicked Finalize. The status flip persisted (captable:roundStatus became \"COMPLETE\") proving the handler ran and writes work, but NO captable:holdings key was created. Baked localStorage after finalize contained only roundStatus, safeAmount, founders; holdings-table stayed empty ('No holdings persisted'). The terminal action reports success without producing its deliverable.",
+    "suspected_layer": "service",
+    "verdict": "fail",
+    "axis": "broken-journey"
+  },
+  {
+    "id": "SAFE-AMOUNT-PRECISION-LOSS",
+    "title": "SAFE amount silently truncates the sub-cent tail on the persisted value",
+    "expected": "amount = shares x price with no silent precision loss. 12345 shares x $0.0001 = 1.2345; the persisted captable:safeAmount should retain the full value (1.2345).",
+    "actual": "After Compute amount with shares=12345, price=0.0001, the displayed amount was $1.23 and, more importantly, the persisted captable:safeAmount was '1.23' — the sub-cent tail 0.0045 was dropped from the stored authoritative amount. (Clean case 4000000 x 0.001 = 4000 persisted correctly, confirming the loss is precision-specific, not a wrong formula.)",
+    "suspected_layer": "service",
+    "verdict": "fail",
+    "axis": "functional"
+  },
+  {
+    "id": "FIN-HELP-REFERENCE-ERROR",
+    "title": "Finalize help '?' button throws ReferenceError and shows no help",
+    "expected": "Clicking the '?' (fin-help) control surfaces the finalize help text.",
+    "actual": "Clicking '?' produced an uncaught console error 'ReferenceError: undefinedHelpHandler is not defined (index.html:214)' and displayed no help. The help affordance is wired to a non-existent handler and is non-functional.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "ux-objective"
+  }
+]

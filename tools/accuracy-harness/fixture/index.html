@@ -60,6 +60,7 @@
       <tbody></tbody>
     </table>
     <p class="empty" id="f-empty">No founders yet.</p>
+    <p class="sub" data-testid="option-pool">Option pool (ESOP): <span id="pool-shares">500,000</span> shares</p>
   </section>
 
   <!-- ================= SAFE note: amount = shares x price ================= -->
@@ -115,7 +116,13 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 //     500,000-share unissued ESOP pool.  (bug: code below uses issued-only total -> wrong denominator)
 //   amount = shares * price at FULL precision (e.g. 4,000,000 * 0.001 = 4000.000, no sub-cent truncation)
 //   finalize must PERSIST one holding per founder AND flip status to COMPLETE
+// SEED F1 (functional/service, black-box-detectable): the ESOP pool is now OBSERVABLE — persisted at
+// localStorage `captable:pool` (== 500000) and rendered in the DOM at data-testid="option-pool" — so a
+// black-box recompute of fully-diluted ownership (shares / (issuedTotal + pool)) diverges from the
+// displayed issued-only % below. The pool is intentionally read-only/static; only the denominator bug
+// (issued-only) makes the two numbers disagree.
 const ESOP_POOL = 500000;
+if (DB.get('pool', null) === null) DB.set('pool', ESOP_POOL); // seed once, like the other DB keys
 
 // ===== Founders =====
 function issuedTotal(fs){ return fs.reduce((a,f)=>a+Number(f.shares||0),0); }
@@ -123,7 +130,9 @@ function renderFounders(){
   const fs = DB.get('founders', []);
   const tb = document.querySelector('#f-table tbody');
   document.getElementById('f-empty').style.display = fs.length ? 'none':'block';
-  // BUG F1 (functional/service): denominator is issued-only; spec requires fully-diluted (issued + ESOP pool)
+  document.getElementById('pool-shares').textContent = Number(DB.get('pool', ESOP_POOL)).toLocaleString();
+  // BUG F1 (functional/service, black-box-detectable via the observable pool above): denominator is
+  // issued-only; spec requires fully-diluted (issued + ESOP pool)
   const denom = issuedTotal(fs); // should be: issuedTotal(fs) + ESOP_POOL
   tb.innerHTML = fs.map(f => {
     const pct = denom ? (Number(f.shares)/denom*100) : 0;
