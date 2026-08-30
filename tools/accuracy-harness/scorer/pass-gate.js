@@ -1,6 +1,30 @@
 #!/usr/bin/env node
 /*
- * pass-gate.js — reference implementation of the EXECUTION-ENFORCEMENT seam (plan §fix-3a).
+ * pass-gate.js — SUPERSEDED prototype. Kept for reference only; not wired into the pipeline.
+ *
+ * The REAL evidence gate (ADR-0010) lives in
+ * `skills/checkpointing-qa-memory/scripts/checkpoint.sh` (`cmd_upsert` / `gate_pass`), enforced
+ * inside the single chokepoint every verdict flows through, paired with
+ * `skills/checkpointing-qa-memory/scripts/record-evidence.sh` as the evidence writer. That shipped
+ * gate differs from this file in every load-bearing way:
+ *   - field names are **snake_case** (`evidence_refs`, `kinds`), not the camelCase
+ *     (`evidenceRefs`, `kinds`, `probeNeeded`) used below;
+ *   - `kinds` is a CSV subset of `bake|computed|probe` (see `generating-qa-checklist/SKILL.md`'s
+ *     `Kind`+`Tags` derivation table), not the ad-hoc `write`/`computed` values this prototype checks;
+ *   - the shipped gate is **content-aware**: it requires each kind's canonical artifact
+ *     (`evidence/<crit>/{bake-read-back,recompute,network-response}.json`) to exist, be non-empty,
+ *     parse as valid JSON, AND contain that kind's required keys — a mere filename match (what this
+ *     prototype's regexes do, below) is NOT sufficient there; an empty or touch-created artifact file
+ *     is correctly rejected by checkpoint.sh but would pass this prototype's `rx.test(refs)` check
+ *     since it only tests the joined evidenceRefs STRING, never opens the files;
+ *   - the shipped gate rejects with a stderr message and writes nothing; it does not "downgrade" a
+ *     verdict (no code path silently rewrites `pass` to `blocked`) — the comment further down in this
+ *     file describing a downgrade is aspirational/inaccurate relative to what shipped.
+ * This file originally proposed the seam (plan §fix-3a); the shipped design in checkpoint.sh is the
+ * one in force. It is left here, unmodified in shape, as the original standalone spec/reference —
+ * do not import it, do not treat its schema as current. See ADR-0010 for the full rationale.
+ *
+ * ---- Original prototype doc (historical, schema below does NOT match the shipped gate) ----
  *
  * Invariant enforced: "a green toast is not a pass" becomes machine-checkable. A `pass` verdict is
  * INVALID unless the criterion recorded the evidence classes its kind requires:
@@ -9,8 +33,9 @@
  *   - a probe was needed          -> a network/probe artifact (evidence/<id>/network-response.json)
  * Missing evidence => the pass is downgraded to `blocked` (env/precondition) or flagged INVALID for
  * the agent to fix, never silently accepted. blocked/deferred/error/fail are exempt (they are honest
- * non-passes). This is the seam the plan proposes wiring into checkpoint.sh (PLAN-ONLY there); this
- * standalone node script proves it works and can be adopted verbatim.
+ * non-passes). This is the seam the plan proposed wiring into checkpoint.sh; checkpoint.sh's actual
+ * implementation supersedes this file (see header above) — this standalone node script is the
+ * original proof that the seam works, kept for reference only.
  *
  * Usage:
  *   node pass-gate.js <criterion.json>
@@ -18,6 +43,8 @@
  *                   "probeNeeded": false,
  *                   "evidenceRefs":["evidence/GOV-01/bake-read-back.json", ...] }
  * exit 0 = valid pass (or non-pass verdict); exit 1 = INVALID pass (evidence missing).
+ * NOTE: this checks filename patterns against the joined evidenceRefs list only — it never opens or
+ * validates the referenced files. The shipped gate in checkpoint.sh checks file content; this does not.
  */
 'use strict';
 const fs = require('fs');
