@@ -23,13 +23,20 @@
   /* U1 (seed): low-contrast helper text — #b9b9b9 on #fff ~ 1.9:1, fails WCAG AA 4.5 */
   .helper { color:#b9b9b9; font-size:12px; }
   /* U2 (seed): fixed-width cell clips long computed amounts (overflow hidden, no ellipsis reflow) */
-  td.amount { max-width: 90px; overflow: hidden; white-space: nowrap; }
+  /* SEED P2: clean-adjacent ux-perceptual defect — amount is right-aligned while the "Amount" header
+     label stays left-aligned, so the row visually misreads as unrelated (vision-pass only, not axe) */
+  td.amount { max-width: 90px; overflow: hidden; white-space: nowrap; text-align: right; }
   /* U3 (seed): icon button below the 24x24 WCAG 2.2 minimum target size */
   button.tiny { width:16px; height:16px; padding:0; font-size:10px; line-height:16px; }
+  /* SEED N2: clean control, must NOT be flagged — #1a1a1a on #ffffff (~17:1) passes WCAG AA */
+  #f-add.btn-primary-clean { background:#ffffff; color:#1a1a1a; border:1px solid #1a1a1a; }
   /* S1 (seed, subjective/advisory): inconsistent, garish accent + erratic spacing on this panel only */
   section#finalize { background: #fdf0ff; }
   section#finalize h2 { color: #e11d9b; letter-spacing: 3px; }
   section#finalize button { background: #ff7a00; margin-top: 2px; }
+  /* SEED P1: ux-perceptual defect (advisory-eligible, vision-pass only) — overrides the CTA back to a
+     plain, unstyled button with no visual affordance so it reads as non-interactive/not primary */
+  section#finalize #fin-go { background:#fff; color:#333; border:1px solid #ccc; box-shadow:none; font-weight:normal; }
 </style>
 </head>
 <body>
@@ -44,14 +51,20 @@
     <label for="f-shares">Shares</label>
     <input id="f-shares" data-testid="founder-shares" type="number" value="250000">
     <div style="margin-top:10px">
-      <button id="f-add" data-testid="add-founder">Add founder</button>
+      <button id="f-add" class="btn-primary-clean" data-testid="add-founder">Add founder</button>
       <span class="helper">Adds a founder and re-computes ownership.</span>
     </div>
+    <!-- SEED N3: clean control, must NOT be flagged — editing a persisted founder DOES persist -->
     <table id="f-table" data-testid="founders-table">
       <thead><tr><th>Name</th><th>Shares</th><th>Ownership %</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="empty" id="f-empty">No founders yet.</p>
+    <!-- SEED N1: clean control, must NOT be flagged — Founder-B, 250k of 750k fully-diluted -->
+    <div class="helper" data-testid="founder-b-reference">
+      Reference: Founder-B — 250,000 shares / 750,000 fully-diluted =
+      <strong data-testid="founder-b-pct">33.33%</strong> ownership (correct)
+    </div>
   </section>
 
   <!-- ================= SAFE note: amount = shares x price ================= -->
@@ -70,6 +83,10 @@
       </tr></tbody>
     </table>
   </section>
+
+  <!-- SEED P1: ux-perceptual defect (advisory-eligible, vision-pass only) — spacer pushes the
+       Finalize CTA below the fold; the button itself is styled with no visual affordance -->
+  <div style="height:900px" aria-hidden="true"></div>
 
   <!-- ================= Finalize wizard (broken journey) ================= -->
   <section id="finalize">
@@ -116,7 +133,8 @@ function renderFounders(){
   tb.innerHTML = fs.map(f => {
     const pct = denom ? (Number(f.shares)/denom*100) : 0;
     return `<tr><td>${f.name}</td><td>${f.shares}</td><td data-testid="ownership">${pct.toFixed(2)}%</td>
-            <td><button class="secondary" data-del="${f.id}">x</button></td></tr>`;
+            <td><button class="secondary" data-edit="${f.id}" data-testid="edit-founder">edit</button>
+            <button class="secondary" data-del="${f.id}">x</button></td></tr>`;
   }).join('');
 }
 let addClicks = 0;
@@ -139,6 +157,19 @@ document.getElementById('f-add').addEventListener('click', () => {
   document.getElementById('f-name').value='';
 });
 document.querySelector('#f-table').addEventListener('click', (e)=>{
+  const editId = e.target.getAttribute('data-edit');
+  if(editId){
+    const fs = DB.get('founders', []);
+    const f = fs.find(x=>x.id===editId);
+    if(f){
+      f.shares = Number(f.shares) + 1000; // deterministic edit for the fixture
+      // SEED N3: clean control, must NOT be flagged — this write DOES persist (no silent drop)
+      DB.set('founders', fs);
+      toast('Founder updated');
+      renderFounders();
+    }
+    return;
+  }
   const id = e.target.getAttribute('data-del'); if(!id) return;
   DB.set('founders', DB.get('founders',[]).filter(f=>f.id!==id)); renderFounders();
 });

@@ -5,7 +5,8 @@
     "functionalRecallMin": 0.70,
     "uxObjectiveRecallMin": 0.75,
     "overallVerdictRecallMin": 0.70,
-    "_note": "Absolute per-axis recall (see plan). Subjective advisory stream is reported but NOT gated."
+    "precisionMin": 0.80,
+    "_note": "Absolute per-axis recall + overall precision. Negative-control seeds (polarity:negative) must NOT be flagged; flagging one is a false positive. Subjective advisory stream reported, not gated."
   },
   "seeds": [
     {
@@ -79,6 +80,23 @@
       "title": "Finalize panel: garish orange/magenta accents + erratic spacing, inconsistent with the rest of the app",
       "suspectedLayer": "FE", "closes": "detection",
       "match": ["aesthetic", "garish", "inconsistent", "spacing", "visual polish", "styling", "advisory"]
-    }
+    },
+    { "id": "N1", "axis": "functional", "polarity": "negative",
+      "title": "Founder with 250k of 750k FD shows 33.33% correctly — MUST NOT be flagged",
+      "match": ["33.33 wrong", "ownership incorrect", "denominator bug on founder-b"] },
+    { "id": "N2", "axis": "ux-objective", "polarity": "negative",
+      "title": "Primary button label #1a1a1a on #ffffff (~17:1) passes AA — MUST NOT be flagged",
+      "match": ["primary button contrast", "label unreadable"] },
+    { "id": "N3", "axis": "broken-journey", "polarity": "negative",
+      "title": "Editing a persisted founder DOES persist — MUST NOT be flagged as a silent drop",
+      "match": ["edit not persisted", "edit silent drop"] },
+    { "id": "P1", "axis": "ux-perceptual", "polarity": "positive", "stream": "advisory-eligible",
+      "title": "Finalize CTA sits below the fold with no visual affordance; primary action not discoverable",
+      "suspectedLayer": "FE",
+      "match": ["not discoverable", "below the fold", "no affordance", "hierarchy", "primary action hidden"] },
+    { "id": "P2", "axis": "ux-perceptual", "polarity": "positive", "stream": "advisory-eligible",
+      "title": "Amount column right-aligned, labels left-aligned, rows visually misread as unrelated",
+      "suspectedLayer": "FE",
+      "match": ["misaligned", "alignment", "visually unrelated", "hard to scan"] }
   ]
 }
