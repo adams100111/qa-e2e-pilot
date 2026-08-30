@@ -52,6 +52,20 @@
       "match": ["silent drop", "n-1", "multiplicity", "count", "dropped", "exactly 3", "third"]
     },
     {
+      "id": "F4", "axis": "functional", "kind": "no-input-validation", "polarity": "positive",
+      "title": "Add-founder accepts a negative share count with no validation; ownership% goes negative and/or exceeds 100% for other rows",
+      "oracle": "shares must be a positive quantity; a negative value must be rejected before persist, never fed into issuedTotal()/the ownership denominator",
+      "suspectedLayer": "FE", "closes": "coverage+execution",
+      "match": ["negative shares", "negative share count", "negative ownership", "over 100", "exceeds 100", "validation", "invalid input"]
+    },
+    {
+      "id": "J4", "axis": "broken-journey", "kind": "silent-stall", "polarity": "positive",
+      "title": "Adding a founder with 0 shares shows a false 'Founder added' success toast but persists nothing",
+      "oracle": "baking: read localStorage captable:founders back; a 0-share submit must not add an entry, and the toast must not claim success",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["0 shares", "zero shares", "false success", "toast lied", "not persisted", "silently rejected"]
+    },
+    {
       "id": "U1", "axis": "ux-objective", "kind": "contrast",
       "title": "Helper text #b9b9b9 on white ~1.9:1 fails WCAG AA 4.5:1 (SC 1.4.3)",
       "suspectedLayer": "FE", "closes": "detection",
@@ -82,8 +96,9 @@
       "match": ["aesthetic", "garish", "inconsistent", "spacing", "visual polish", "styling", "advisory"]
     },
     { "id": "N1", "axis": "functional", "polarity": "negative",
-      "title": "Founder with 250k of 750k FD shows 33.33% correctly — MUST NOT be flagged",
-      "match": ["33.33 wrong", "ownership incorrect", "denominator bug on founder-b"] },
+      "title": "SAFE amount for 1,000 shares @ $1.00/share computes AND persists exactly $1000.00 — MUST NOT be flagged",
+      "oracle": "amount = shares * price = 1,000 * $1.00 = $1000.00 exactly; a whole-cent product, so F2's floor-to-cent truncation (Math.floor(shares*price*100)/100) causes zero loss on this specific input; captable:safeAmount reads back 1000 exactly",
+      "match": ["1000 shares wrong", "safe amount incorrect", "1000.00 wrong", "amount not persisted", "1000 mismatch"] },
     { "id": "N2", "axis": "ux-objective", "polarity": "negative",
       "title": "Primary button label #1a1a1a on #ffffff (~17:1) passes AA — MUST NOT be flagged",
       "match": ["primary button contrast", "label unreadable"] },

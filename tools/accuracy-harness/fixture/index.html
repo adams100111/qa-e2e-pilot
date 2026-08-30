@@ -117,16 +117,6 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 //   finalize must PERSIST one holding per founder AND flip status to COMPLETE
 const ESOP_POOL = 500000;
 
-// SEED N1: clean control, must NOT be flagged — Founder-B is a genuine founders-table row rendered
-// through a CORRECT per-row fully-diluted formula (shares / (issued + ESOP pool)). It is seed data,
-// not part of the `fs` array below, so it never feeds the buggy issued-only denominator used for
-// real (agent-added) founders — the F1 bug stays fully reproducible for those rows.
-const FOUNDER_B_SHARES = 250000;
-function founderBRow(){
-  const correctPct = FOUNDER_B_SHARES / (FOUNDER_B_SHARES + ESOP_POOL) * 100; // 250,000 / 750,000
-  return `<tr><td>Founder-B</td><td>${FOUNDER_B_SHARES}</td><td data-testid="ownership">${correctPct.toFixed(2)}%</td><td></td></tr>`;
-}
-
 // ===== Founders =====
 function issuedTotal(fs){ return fs.reduce((a,f)=>a+Number(f.shares||0),0); }
 function renderFounders(){
@@ -140,11 +130,15 @@ function renderFounders(){
     return `<tr><td>${f.name}</td><td>${f.shares}</td><td data-testid="ownership">${pct.toFixed(2)}%</td>
             <td><button class="secondary" data-edit="${f.id}" data-testid="edit-founder">edit</button>
             <button class="secondary" data-del="${f.id}">x</button></td></tr>`;
-  }).join('') + founderBRow();
+  }).join('');
 }
 let addClicks = 0;
 document.getElementById('f-add').addEventListener('click', () => {
   const name = document.getElementById('f-name').value.trim();
+  // BUG F4 (functional/FE, no-input-validation): shares is never range-checked — a negative value
+  // sails straight into the fs array and skews issuedTotal(), so the negative row's own ownership%
+  // goes negative and other rows can be pushed over 100%. Spec requires rejecting shares <= 0... but
+  // see BUG J4 below: only the ==0 case is (silently, dishonestly) special-cased; negative is not.
   const shares = Number(document.getElementById('f-shares').value);
   if(!name){ return; }
   const fs = DB.get('founders', []);
@@ -153,7 +147,10 @@ document.getElementById('f-add').addEventListener('click', () => {
   const silentDrop = (addClicks % 3 === 0);
   // BUG J1 (broken-journey): a founder named exactly "Ghost" toasts success but is NEVER persisted
   const ghost = (name.toLowerCase() === 'ghost');
-  if(!silentDrop && !ghost){
+  // BUG J4 (broken-journey): a 0-share add is silently rejected (no persist) but still gets the
+  // green success toast below — "Founder added" lied. Negative shares are NOT caught here (see F4).
+  const zeroShares = (shares === 0);
+  if(!silentDrop && !ghost && !zeroShares){
     fs.push({ id: 'f'+Date.now(), name, shares });
     DB.set('founders', fs);
   }
@@ -180,6 +177,11 @@ document.querySelector('#f-table').addEventListener('click', (e)=>{
 });
 
 // ===== SAFE amount =====
+// SEED N1: clean control, must NOT be flagged — this same handler is where BUG F2 lives (see below),
+// but F2 only bites when shares*price leaves a sub-cent remainder. A whole-cent input (e.g. 1,000
+// shares @ $1.00) hits Math.floor(...*100)/100 on an already-integer number of cents, so it computes
+// AND persists exactly $1000.00 — genuinely correct, honestly reachable through the real (buggy) code
+// path, unlike the old phantom Founder-B row this replaced.
 document.getElementById('s-calc').addEventListener('click', () => {
   const shares = Number(document.getElementById('s-shares').value);
   const price = Number(document.getElementById('s-price').value);
