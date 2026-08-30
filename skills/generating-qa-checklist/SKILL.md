@@ -146,6 +146,22 @@ Apply these tags to every criterion in the checklist:
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
 
+**Derive `Kinds` — the evidence the gate will require**
+
+Every criterion also carries a derived **`Kinds`** field: a CSV subset of `bake|computed|probe`, computed deterministically from its `Kind` + `Tags` above. This is not optional metadata — `checkpoint.sh ... --kinds <csv>` refuses to record a `pass` unless each listed kind's artifact (written by `record-evidence.sh`) exists and validates (see `checkpointing-qa-memory`). Derive it with this table:
+
+| Criterion `Kind` / `Tag` | Required evidence kind(s) | Artifact |
+|---|---|---|
+| `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
+| `multiplicity-0/1/N`, `happy-path`, `downstream-cascade`, or any criterion that performs a WRITE | `bake` | `evidence/<crit>/bake-read-back.json` |
+| `Kind: cross-tenant` / `Tag: cross-tenant`, or a criterion that needs backend probing | `probe` | `evidence/<crit>/network-response.json` |
+
+A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion matching none of these rows (read-only/pure-display, e.g. `empty-state`, `loading-state`) derives `Kinds: none` and is legitimately un-gated.
+
+- [ ] Set `Kinds` to the union of matched rows, as CSV, in the order `bake,computed,probe`.
+- [ ] Set `probeNeeded: true` whenever the `probe` kind was derived, so the verifier knows to invoke `probing-apis-through-browser` rather than relying on the UI alone.
+- [ ] Record both fields in the criterion's summary row — the verifier reads `Kinds` straight into `checkpoint.sh --kinds` at pass time; do not leave it to be inferred later.
+
 ---
 
 ### Step 7 — Emit and Stop
@@ -178,17 +194,17 @@ Do not proceed to driving-browser-qa until the checklist has been reviewed. The 
 **Eval 1 — NOT-NULL baking (bug #7)**
 Given: finalize governance wizard completes, a green "Success" toast appears.
 Without this skill: criterion passes on the toast.
-With this skill: the baking assertion for `finalize` names every NOT-NULL field on the `holdings` table. Read-back reveals rows exist but `issued_at` is NULL — pass → fail. The oracle was the migration schema, not the toast.
+With this skill: the baking assertion for `finalize` names every NOT-NULL field on the `holdings` table; `Kind: downstream-cascade` derives `Kinds: bake`. Read-back reveals rows exist but `issued_at` is NULL — pass → fail. The oracle was the migration schema, not the toast. Because `Kinds: bake` was set, `checkpoint.sh` would have refused a `pass` without `evidence/<crit>/bake-read-back.json` on file anyway.
 
 **Eval 2 — Decimal precision (bug #9)**
 Given: SAFE note with `4,000,000 shares × $0.001 price`.
 Without this skill: criterion reads the displayed `$4,000` and calls it correct (matches rounded display).
-With this skill: the oracle states `4,000,000 × 0.001 = 4,000.000 — tolerance 0`. The API response body returns `3999.999` due to a `decimal(10,2)` column truncating the intermediate product. Divergence caught at the API layer; FE looked fine.
+With this skill: `Kind: computed-logic` derives `Kinds: computed`. The oracle states `4,000,000 × 0.001 = 4,000.000 — tolerance 0`. The API response body returns `3999.999` due to a `decimal(10,2)` column truncating the intermediate product. Divergence caught at the API layer; FE looked fine, and the gate would have rejected a `pass` without a `recompute.json` showing `match: false` resolved to `fail`.
 
 **Eval 3 — Cross-tenant isolation (bug #12)**
 Given: a draft share class is created in Tenant A.
 Without this skill: the checklist has no cross-tenant criterion; the draft is only verified in Tenant A.
-With this skill: the cross-tenant heuristic generates a required sub-step — re-read the draft's list endpoint authenticated as Tenant B. The API returns the draft (tenant_id filter missing on the query). Caught only because the heuristic is mandatory, not optional.
+With this skill: the cross-tenant heuristic generates a required sub-step — re-read the draft's list endpoint authenticated as Tenant B; `Tag: cross-tenant` derives `Kinds: bake,probe` and `probeNeeded: true`. The API returns the draft (tenant_id filter missing on the query). Caught only because the heuristic is mandatory, not optional, and the derived `probe` kind forced a `network-response.json` read-back rather than trusting the UI.
 
 **Eval 4 — Business-rule gate (bug #3)**
 Given: governance setup wizard completes finalize step.

@@ -33,6 +33,8 @@
 | Surface | <!-- route + sub-tab, e.g. /governance/setup → Finalize step --> |
 | Kind | <!-- happy-path / multiplicity-0 / multiplicity-1 / multiplicity-N / empty-state / loading-state / error-state / computed-logic / business-rule / downstream-cascade / cross-tenant / race --> |
 | Tags | <!-- independent / read-only / race / cross-tenant — or "sequential (default)" --> |
+| Kinds | <!-- derived: bake / computed / probe (csv), per the Kind+Tags mapping table in generating-qa-checklist Step 6; read-only/pure-display → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
+| probeNeeded | <!-- true if Kinds includes probe (cross-tenant / backend-probe criteria) — else false --> |
 | Confidence hint | <!-- high — oracle from spec/domain rule; OR low — oracle derived from backend code only --> |
 | Source | <!-- generated / ingested / hand-authored --> |
 
@@ -87,9 +89,9 @@
 
 ## Checklist Summary
 
-| # | ID | Title | Kind | Tags | Confidence | Status |
-|---|---|---|---|---|---|---|
-| 1 | C-EXAMPLE-01 | [title] | happy-path | sequential | high | pending |
+| # | ID | Title | Kind | Tags | Kinds | Confidence | Status |
+|---|---|---|---|---|---|---|---|
+| 1 | C-EXAMPLE-01 | [title] | happy-path | sequential | bake | high | pending |
 <!-- Add one row per criterion -->
 
 ---
