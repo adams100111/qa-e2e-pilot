@@ -76,6 +76,17 @@ Typing directly into a React-managed `<input>` often does not update component s
 
 The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement prototype value setter to bypass React's synthetic tracking, then dispatches bubbling `input` and `change` events. Verify the returned value equals what you passed before proceeding.
 
+### Out-of-Range / Negative Numeric Inputs (`type="number"`)
+
+`browser_type`/fill on an `<input type="number">` sends the value keystroke-by-keystroke through the browser's native number parser. A value the input rejects mid-entry — `-500` (many browsers accept the leading `-` only once a digit follows, some reject it entirely), a bare `-`, a leading `.`, or a value colliding with `min`/`max`/`step` — can silently coerce to an **empty string**, not to `-500`. The app then reads `Number('')` → `NaN` or falls through to `0`, and a criterion asserting "negative share count is rejected" wrongly passes: the agent never actually entered a negative value, it entered nothing, and the missing validation bug is masked as a pass (see bug F4: negative share count accepted as 0-share ownership).
+
+**Fix — set via `browser_evaluate`, then read the value back:**
+1. Inject `scripts/react-set-input.js` with the target selector/ref and the exact out-of-range string (e.g. `"-500"`). This sets `.value` through the native setter and dispatches `input`+`change`, bypassing the native number-input keystroke parser entirely.
+2. The script returns `el.value` — **assert it equals the value you intended** before doing anything else. If it comes back empty or truncated, the input rejected the value at the DOM level and you have not yet tested the scenario; do not proceed to assert on the app's response.
+3. Only once the readback confirms the field holds `-500` (not `''`, not `0`) should you submit and assert the app's behavior (reject vs. accept) against the oracle.
+
+**Rule:** for any criterion testing an out-of-range numeric (negative, zero, decimal-where-integer-expected, huge value), the verdict is unverified until you have read the field's value back and confirmed it holds the intended input — a "rejected" or "zero" outcome observed without that readback is not evidence of validation, it may just be evidence of a swallowed keystroke.
+
 ## Finding Clickable Elements by Text (RTL/Arabic)
 
 `scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. Inject via `browser_evaluate`.
@@ -149,3 +160,8 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 
 **Situation:** A sub-cent precision bug (bug #9: `decimal(…,2)` truncation) was patched and deployed. The agent is re-running the precision criterion.  
 **The skill should:** In pre-flight, compare the build ID from the `x-vercel-deployment-id` header to `.qa/runs/.last-build-id`. If they match, warn in the run report that the build ID is unchanged and the fix may not be live before running the criterion. If the criterion then passes, note the build ID in the evidence; if it fails despite the same build ID, that is expected (fix not deployed).
+
+### Eval 6 — Negative numeric input silently emptied (bug F4: negative share count accepted)
+
+**Situation:** The criterion asserts that entering a negative share count (`-500`) into a `type="number"` field is rejected. The agent types `-500` via `browser_type`, submits, and the app accepts it with a 0-share ownership record — the agent is about to conclude "verdict: pass, negative rejected (coerced to 0)."  
+**The skill should:** Before trusting that outcome, inject `scripts/react-set-input.js` for the field with `"-500"` and check the returned value. If a prior `browser_type` attempt is suspected of having produced an empty/zero value, redo entry via the evaluate-set path and read back `el.value`. Only after confirming the field genuinely holds `-500` should the agent submit and assert against the oracle (negative share count must be rejected). If the app still accepts it as a valid write with a confirmed `-500` in the field, record a `fail` with suspected layer `service` (missing server-side validation) — not a `pass`.
