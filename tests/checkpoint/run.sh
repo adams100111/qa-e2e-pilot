@@ -215,5 +215,136 @@ check "record-evidence never echoes secret values" "$(echo "$RE_SECRET_OUT" | gr
 check "record-evidence secret value still written to disk" \
   "$(get "$RE_C1_DIR/../C-secret/recompute.json" '.oracle')" "$SECRET_VALUE"
 
+# --- Case 14: evidence gate — pass --kinds bake with NO bake artifact --------
+GATE_RUN_ID="test-run-gate"
+GATE_CKPT_FILE="$WORK/.qa/runs/${GATE_RUN_ID}/checkpoint.json"
+
+GATE_NOEV_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE_RUN_ID" G1 pass --kinds bake 2>&1 >/dev/null)"
+RC_GATE_NOEV=$?
+check "gate: no-evidence pass exits nonzero" "$([[ "$RC_GATE_NOEV" -ne 0 ]] && echo yes)" "yes"
+check "gate: no-evidence stderr names bake-read-back.json" \
+  "$(echo "$GATE_NOEV_ERR" | grep -qF 'bake-read-back.json' && echo yes)" "yes"
+check "gate: no-evidence stderr has blocked reminder" \
+  "$(echo "$GATE_NOEV_ERR" | grep -qF 'record `blocked`' && echo yes)" "yes"
+check "gate: no-evidence record not written" \
+  "$([[ ! -f "$GATE_CKPT_FILE" ]] && echo yes || echo "$(get "$GATE_CKPT_FILE" '.criteria | length')")" "yes"
+
+# --- Case 15: evidence gate — pass --kinds bake with an EMPTY bake file ------
+GATE_EVID_DIR="$WORK/.qa/runs/${GATE_RUN_ID}/evidence/G1"
+mkdir -p "$GATE_EVID_DIR"
+touch "$GATE_EVID_DIR/bake-read-back.json"
+
+GATE_EMPTY_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE_RUN_ID" G1 pass --kinds bake 2>&1 >/dev/null)"
+RC_GATE_EMPTY=$?
+check "gate: empty bake file exits nonzero" "$([[ "$RC_GATE_EMPTY" -ne 0 ]] && echo yes)" "yes"
+check "gate: empty bake file stderr names bake-read-back.json" \
+  "$(echo "$GATE_EMPTY_ERR" | grep -qF 'bake-read-back.json' && echo yes)" "yes"
+check "gate: empty bake file record not written" \
+  "$([[ ! -f "$GATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 16: evidence gate — bake file missing required key (multiplicity) -
+echo '{"readBack": {"x": 1}}' > "$GATE_EVID_DIR/bake-read-back.json"
+
+GATE_MISSKEY_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE_RUN_ID" G1 pass --kinds bake 2>&1 >/dev/null)"
+RC_GATE_MISSKEY=$?
+check "gate: missing-key bake file exits nonzero" "$([[ "$RC_GATE_MISSKEY" -ne 0 ]] && echo yes)" "yes"
+check "gate: missing-key stderr names bake-read-back.json" \
+  "$(echo "$GATE_MISSKEY_ERR" | grep -qF 'bake-read-back.json' && echo yes)" "yes"
+check "gate: missing-key record not written" \
+  "$([[ ! -f "$GATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 17: valid bake evidence via record-evidence.sh -> pass ACCEPTED ---
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE_RUN_ID" G1 bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+
+GATE_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE_RUN_ID" G1 pass --kinds bake 2>&1)"
+RC_GATE_OK=$?
+check "gate: valid bake evidence accepted (exit 0)" "$RC_GATE_OK" "0"
+check "gate: valid bake evidence record written" \
+  "$([[ -f "$GATE_CKPT_FILE" ]] && echo yes)" "yes"
+check "gate: valid bake evidence criteria count 1" "$(get "$GATE_CKPT_FILE" '.criteria | length')" "1"
+check "gate: valid bake evidence verdict pass" "$(get "$GATE_CKPT_FILE" '.criteria[0].verdict')" "pass"
+check "gate: valid bake evidence stored kinds contains bake" \
+  "$(get "$GATE_CKPT_FILE" '.criteria[0].kinds | index("bake") != null')" "true"
+
+# --- Case 18: blocked --kinds bake with NO evidence -> ACCEPTED (non-pass exempt)
+GATE2_RUN_ID="test-run-gate-2"
+GATE2_CKPT_FILE="$WORK/.qa/runs/${GATE2_RUN_ID}/checkpoint.json"
+GATE2_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE2_RUN_ID" G2 blocked --kinds bake 2>&1)"
+RC_GATE2=$?
+check "gate: blocked with --kinds and no evidence accepted" "$RC_GATE2" "0"
+check "gate: blocked record written" "$([[ -f "$GATE2_CKPT_FILE" ]] && echo yes)" "yes"
+check "gate: blocked verdict stored" "$(get "$GATE2_CKPT_FILE" '.criteria[0].verdict')" "blocked"
+check "gate: blocked stored kinds contains bake" \
+  "$(get "$GATE2_CKPT_FILE" '.criteria[0].kinds | index("bake") != null')" "true"
+
+# --- Case 19: pass with NO --kinds -> accepted + stderr un-gated note -------
+GATE3_RUN_ID="test-run-gate-3"
+GATE3_CKPT_FILE="$WORK/.qa/runs/${GATE3_RUN_ID}/checkpoint.json"
+GATE3_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE3_RUN_ID" G3 pass 2>&1 >/dev/null)"
+RC_GATE3=$?
+check "gate: pass with no --kinds accepted" "$RC_GATE3" "0"
+check "gate: pass with no --kinds record written" "$([[ -f "$GATE3_CKPT_FILE" ]] && echo yes)" "yes"
+check "gate: pass with no --kinds un-gated stderr note" \
+  "$(echo "$GATE3_ERR" | grep -qi 'un-gated\|ungated\|no evidence required\|no --kinds' && echo yes)" "yes"
+check "gate: pass with no --kinds stored kinds is empty" \
+  "$(get "$GATE3_CKPT_FILE" '.criteria[0].kinds')" "[]"
+
+# --- Case 20: multi-kind pass requires BOTH artifacts -----------------------
+GATE4_RUN_ID="test-run-gate-4"
+GATE4_CKPT_FILE="$WORK/.qa/runs/${GATE4_RUN_ID}/checkpoint.json"
+
+# only bake evidence present -> still rejected (missing computed)
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE4_RUN_ID" G4 bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+GATE4_PARTIAL_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE4_RUN_ID" G4 pass --kinds bake,computed 2>&1 >/dev/null)"
+RC_GATE4_PARTIAL=$?
+check "gate: multi-kind partial evidence rejected" "$([[ "$RC_GATE4_PARTIAL" -ne 0 ]] && echo yes)" "yes"
+check "gate: multi-kind partial stderr names recompute.json" \
+  "$(echo "$GATE4_PARTIAL_ERR" | grep -qF 'recompute.json' && echo yes)" "yes"
+check "gate: multi-kind partial record not written" \
+  "$([[ ! -f "$GATE4_CKPT_FILE" ]] && echo yes)" "yes"
+
+# add computed evidence too -> accepted
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE4_RUN_ID" G4 computed --oracle 1 --observed 1 --match true >/dev/null)
+GATE4_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE4_RUN_ID" G4 pass --kinds bake,computed 2>&1)"
+RC_GATE4_OK=$?
+check "gate: multi-kind full evidence accepted" "$RC_GATE4_OK" "0"
+check "gate: multi-kind full evidence stored kinds has both" \
+  "$(get "$GATE4_CKPT_FILE" '.criteria[0].kinds | (index("bake") != null) and (index("computed") != null)')" "true"
+
+# --- Case 21: evidence gate exercised under the jq-masked python3 fallback --
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYGATE_RUN_ID="test-run-py-gate"
+  PYGATE_CKPT_FILE="$WORK/.qa/runs/${PYGATE_RUN_ID}/checkpoint.json"
+
+  # reject case: no evidence
+  PYGATE_REJ_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_RUN_ID" PG1 pass --kinds bake 2>&1 >/dev/null)"
+  RC_PYGATE_REJ=$?
+  check "py-fallback gate: no-evidence pass exits nonzero" "$([[ "$RC_PYGATE_REJ" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback gate: no-evidence stderr names bake-read-back.json" \
+    "$(echo "$PYGATE_REJ_ERR" | grep -qF 'bake-read-back.json' && echo yes)" "yes"
+  check "py-fallback gate: no-evidence record not written" \
+    "$([[ ! -f "$PYGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  # accept case: write evidence via python3 fallback record-evidence.sh, then pass
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_RUN_ID" PG1 bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+  PYGATE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_RUN_ID" PG1 pass --kinds bake 2>&1)"
+  RC_PYGATE_OK=$?
+  check "py-fallback gate: valid bake evidence accepted" "$RC_PYGATE_OK" "0"
+  check "py-fallback gate: stored kinds contains bake" \
+    "$(python3 -c "import json;d=json.load(open('$PYGATE_CKPT_FILE'));print('bake' in d['criteria'][0]['kinds'])" 2>/dev/null)" "True"
+
+  echo "note - evidence-gate jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - evidence-gate jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

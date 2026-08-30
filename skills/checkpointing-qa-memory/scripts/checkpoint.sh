@@ -19,6 +19,21 @@
 #   --last-action <text>        One-line description of the final action taken
 #   --evidence-refs <a,b,c>     Comma-separated relative paths under .qa/runs/<run-id>/
 #   --bug-ref <bug-id>          Bug log entry id if verdict is fail|error
+#   --kinds <bake,computed,probe>
+#                               CSV subset of evidence kinds this criterion is
+#                               backed by. Stored on the record. On a `pass`
+#                               verdict, EACH kind's canonical artifact under
+#                               .qa/runs/<run-id>/evidence/<criterion-id>/ is
+#                               required to exist, be non-empty, parse as
+#                               JSON, and contain that kind's required keys
+#                               (see record-evidence.sh) — "a green toast is
+#                               not a pass". Any miss REJECTS the upsert
+#                               (non-zero exit, nothing written) before the
+#                               record is touched. Non-`pass` verdicts skip
+#                               this gate entirely. Omitting --kinds on a
+#                               `pass` is back-compat for untagged criteria —
+#                               no evidence is required, but a stderr note
+#                               flags the pass as un-gated.
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
@@ -83,7 +98,7 @@ EOF
 
 upsert_jq() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
-  local last_action="$6" evidence_refs_json="$7" bug_ref="$8"
+  local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
   local now
   now="$(ts)"
 
@@ -97,6 +112,7 @@ upsert_jq() {
      --arg last_action "$last_action" \
      --argjson evidence_refs "$evidence_refs_json" \
      --arg bug_ref "$bug_ref" \
+     --argjson kinds "$kinds_json" \
      --arg now "$now" \
   '
     .updated_at = $now |
@@ -110,6 +126,7 @@ upsert_jq() {
           .last_action    = $last_action    |
           .evidence_refs  = $evidence_refs  |
           .bug_ref        = (if $bug_ref == "" then null else $bug_ref end) |
+          .kinds          = $kinds          |
           .checkpointed_at = $now
         else . end
       ]
@@ -122,6 +139,7 @@ upsert_jq() {
         "last_action":    $last_action,
         "evidence_refs":  $evidence_refs,
         "bug_ref":        (if $bug_ref == "" then null else $bug_ref end),
+        "kinds":          $kinds,
         "checkpointed_at": $now
       }]
     end
@@ -134,19 +152,23 @@ upsert_jq() {
 
 upsert_py() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
-  local last_action="$6" evidence_refs_json="$7" bug_ref="$8"
+  local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
   local now
   now="$(ts)"
 
   python3 - "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-            "$last_action" "$evidence_refs_json" "$bug_ref" "$now" <<'PYEOF'
+            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$now" <<'PYEOF'
 import json, sys
 (file_path, cid, verdict, confidence, phase,
- last_action, evidence_refs_json, bug_ref, now) = sys.argv[1:10]
+ last_action, evidence_refs_json, bug_ref, kinds_json, now) = sys.argv[1:11]
 try:
     evidence_refs = json.loads(evidence_refs_json) if evidence_refs_json else []
 except json.JSONDecodeError:
     evidence_refs = []
+try:
+    kinds = json.loads(kinds_json) if kinds_json else []
+except json.JSONDecodeError:
+    kinds = []
 with open(file_path) as f:
     data = json.load(f)
 entry = {
@@ -157,6 +179,7 @@ entry = {
     "last_action":     last_action,
     "evidence_refs":   evidence_refs,
     "bug_ref":         bug_ref or None,
+    "kinds":           kinds,
     "checkpointed_at": now,
 }
 data["updated_at"] = now
@@ -245,6 +268,136 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
+# evidence gate — on a `pass` upsert, require each --kinds entry's canonical
+# artifact to exist, be non-empty, parse as JSON, and contain its required
+# keys. "A green toast is not a pass": this is what makes that a machine fact.
+# ---------------------------------------------------------------------------
+
+# trim leading/trailing whitespace using pure bash parameter expansion (no
+# `tr`/`awk` dependency — checkpoint.sh's documented deps are bash, coreutils,
+# and jq-or-python3 only).
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  echo "$s"
+}
+
+# convert a CSV string ("a, b,c") into a JSON array string (["a","b","c"]),
+# using pure bash (no awk) so it works even when only coreutils are on PATH.
+csv_to_json_array() {
+  local csv="$1"
+  local -a arr
+  IFS=',' read -ra arr <<< "$csv"
+  local out="[" first=1 item
+  for item in "${arr[@]}"; do
+    item="$(trim "$item")"
+    [[ -z "$item" ]] && continue
+    if [[ "$first" -eq 1 ]]; then first=0; else out+=","; fi
+    out+="\"${item}\""
+  done
+  out+="]"
+  echo "$out"
+}
+
+# artifact filename for a given kind (mirrors record-evidence.sh's mapping)
+kind_artifact() {
+  case "$1" in
+    bake)     echo "bake-read-back.json" ;;
+    computed) echo "recompute.json" ;;
+    probe)    echo "network-response.json" ;;
+    *) die "Invalid kind '$1' in --kinds. Must be a CSV subset of: bake | computed | probe" ;;
+  esac
+}
+
+# space-separated required keys for a given kind (key PRESENCE only — no
+# value/type comparisons, since record-evidence.sh writes e.g. `status` as a
+# JSON number and `multiplicity` as a string like "N").
+kind_required_keys() {
+  case "$1" in
+    bake)     echo "readBack multiplicity" ;;
+    computed) echo "oracle observed match" ;;
+    probe)    echo "status shape" ;;
+  esac
+}
+
+# true (exit 0) iff $1 is a syntactically valid JSON document.
+json_is_valid() {
+  local file="$1"
+  if has_jq; then
+    jq -e . "$file" >/dev/null 2>&1
+  else
+    python3 -c "import json,sys
+json.load(open(sys.argv[1]))" "$file" >/dev/null 2>&1
+  fi
+}
+
+# true (exit 0) iff $1 is a JSON object containing key $2.
+json_has_key() {
+  local file="$1" key="$2"
+  if has_jq; then
+    [[ "$(jq -r --arg k "$key" 'if type == "object" then (has($k) | tostring) else "false" end' "$file" 2>/dev/null)" == "true" ]]
+  else
+    python3 -c "import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    sys.exit(0 if isinstance(d, dict) and sys.argv[2] in d else 1)
+except Exception:
+    sys.exit(1)" "$file" "$key" >/dev/null 2>&1
+  fi
+}
+
+# print the reject message for one kind/artifact/reason to stderr.
+gate_reject() {
+  local crit_id="$1" kind="$2" rel_path="$3" reason="$4"
+  echo "EVIDENCE GATE: pass rejected for criterion '${crit_id}' — kind '${kind}' artifact '${rel_path}' is ${reason}. Supply the evidence (record-evidence.sh) or record \`blocked\`." >&2
+}
+
+# Validate every kind in the CSV `$3` for criterion `$2` under run `$1`.
+# Returns 0 if all pass the gate; returns 1 (having already printed a
+# gate_reject message) on the FIRST failure — called before any record is
+# written, so a rejected pass mutates nothing.
+gate_pass() {
+  local run_id="$1" crit_id="$2" kinds_csv="$3"
+  local kind artifact rel_path full_path required_keys key
+
+  local -a kinds_arr
+  IFS=',' read -ra kinds_arr <<< "$kinds_csv"
+
+  for kind in "${kinds_arr[@]}"; do
+    kind="$(trim "$kind")"
+    [[ -z "$kind" ]] && continue
+
+    artifact="$(kind_artifact "$kind")"
+    rel_path="evidence/${crit_id}/${artifact}"
+    full_path="$(run_dir "$run_id")/${rel_path}"
+
+    if [[ ! -f "$full_path" ]]; then
+      gate_reject "$crit_id" "$kind" "$rel_path" "missing"
+      return 1
+    fi
+    if [[ ! -s "$full_path" ]]; then
+      gate_reject "$crit_id" "$kind" "$rel_path" "empty"
+      return 1
+    fi
+    if ! json_is_valid "$full_path"; then
+      gate_reject "$crit_id" "$kind" "$rel_path" "not valid JSON"
+      return 1
+    fi
+
+    required_keys="$(kind_required_keys "$kind")"
+    for key in $required_keys; do
+      if ! json_has_key "$full_path" "$key"; then
+        gate_reject "$crit_id" "$kind" "$rel_path" "missing required key '${key}'"
+        return 1
+      fi
+    done
+  done
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # upsert mode
 # ---------------------------------------------------------------------------
 
@@ -257,6 +410,7 @@ cmd_upsert() {
   local last_action=""
   local evidence_refs="[]"
   local bug_ref=""
+  local kinds_csv=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -272,6 +426,7 @@ cmd_upsert() {
         fi
         shift 2 ;;
       --bug-ref)      bug_ref="$2";       shift 2 ;;
+      --kinds)        kinds_csv="$2";     shift 2 ;;
       *) die "Unknown option: $1" ;;
     esac
   done
@@ -288,6 +443,22 @@ cmd_upsert() {
     *) die "Invalid confidence '${confidence}'. Must be: high | low" ;;
   esac
 
+  local kinds_json="[]"
+  if [[ -n "$kinds_csv" ]]; then
+    kinds_json="$(csv_to_json_array "$kinds_csv")"
+  fi
+
+  # The evidence gate: only `pass` is gated; non-pass verdicts (fail|blocked|
+  # deferred|error) are exempt regardless of --kinds. Absent --kinds on a
+  # pass is back-compat (untagged criteria) but un-gated — note it and move on.
+  if [[ "$verdict" == "pass" ]]; then
+    if [[ -z "$kinds_csv" ]]; then
+      echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
+    else
+      gate_pass "$run_id" "$crit_id" "$kinds_csv" || exit 1
+    fi
+  fi
+
   ensure_run_dir "$run_id"
   init_checkpoint "$run_id"
 
@@ -296,10 +467,10 @@ cmd_upsert() {
 
   if has_jq; then
     upsert_jq "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json"
   elif has_py; then
     upsert_py "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json"
   else
     die "checkpoint.sh needs either 'jq' or 'python3' to update JSON safely; neither was found on PATH."
   fi
