@@ -24,11 +24,11 @@
       "match": ["amount", "precision", "sub-cent", "subcent", "truncat", "4000", "decimal", "4,000"]
     },
     {
-      "id": "F3", "axis": "functional", "kind": "broken-state-transition",
-      "title": "Deleting a founder does not re-reconcile totals against 100% (stale aggregate)",
-      "oracle": "after any founders mutation, sum(ownership%) over persisted founders must reconcile to the FD basis",
+      "id": "F3", "axis": "functional", "kind": "stale-cached-aggregate", "polarity": "positive",
+      "title": "Cached total-issued-shares summary is updated on add but NOT re-derived on delete (stale aggregate)",
+      "oracle": "captable:totalIssued (rendered at data-testid=\"total-issued\") must always equal a fresh sum(shares) over the currently-persisted captable:founders array; after deleting a founder it must drop to the recomputed remaining total, not keep the pre-delete value",
       "suspectedLayer": "service", "closes": "coverage",
-      "match": ["reconcile", "sum to 100", "aggregate", "totals stale", "cascade", "re-sum"]
+      "match": ["total-issued", "totalIssued", "total issued", "cached total", "stale aggregate", "stale summary", "stale total", "not recomputed on delete"]
     },
     {
       "id": "J1", "axis": "broken-journey", "kind": "silent-stall",
