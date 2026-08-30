@@ -1,0 +1,10 @@
+{
+  "source": "BASELINE — current qa-e2e-pilot pipeline (v1.1, pre-overhaul)",
+  "estimated": true,
+  "_doc": "ESTIMATED projection of what the CURRENT pipeline catches on the fixture, derived from the miss taxonomy in docs/plans/accuracy-overhaul.md. Rationale per finding in 'why'. Functional ~33% (flagship recompute fires only when execution-discipline holds; broken-journey often deferred). UX ~25% here = only the console-surfaced a11y issue (U4); pure-visual U1/U2/U3 are invisible to a functional-only pipeline (real-world broad-UX recall ~15%). Replace this file with a real run's converted bug-log.json to get MEASURED numbers.",
+  "findings": [
+    { "seedId": "F1", "axis": "functional", "verdict": "fail", "text": "ownership % wrong denominator: recomputed fully-diluted 33.33% vs displayed 100%; suspected layer service" },
+    { "seedId": "F2", "axis": "functional", "verdict": "fail", "text": "SAFE amount precision: recomputed 4,000,000 x 0.001 = $4000.000 vs displayed truncated value; sub-cent truncation" },
+    { "seedId": "U4", "axis": "ux-objective", "verdict": "fail", "text": "console error (ReferenceError, undefinedHelpHandler is not defined) thrown when clicking help; suspected layer FE" }
+  ]
+}

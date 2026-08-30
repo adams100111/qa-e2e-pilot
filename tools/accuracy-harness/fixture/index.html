@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CapTable Mini — QA accuracy fixture (planted bugs)</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#555; --line:#e2e2e2; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; color: var(--fg); margin: 0; padding: 24px; max-width: 860px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  section { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display:block; font-size: 13px; margin: 8px 0 3px; }
+  input, select { padding: 6px 8px; font-size: 14px; border:1px solid var(--line); border-radius:5px; width: 220px; }
+  button { background: var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#eee; color:#222; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 6px 8px; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background:#16a34a; color:#fff; padding:10px 16px; border-radius:6px; display:none; }
+  .empty { color: var(--muted); font-style: italic; font-size: 13px; }
+  /* U1 (seed): low-contrast helper text — #b9b9b9 on #fff ~ 1.9:1, fails WCAG AA 4.5 */
+  .helper { color:#b9b9b9; font-size:12px; }
+  /* U2 (seed): fixed-width cell clips long computed amounts (overflow hidden, no ellipsis reflow) */
+  td.amount { max-width: 90px; overflow: hidden; white-space: nowrap; }
+  /* U3 (seed): icon button below the 24x24 WCAG 2.2 minimum target size */
+  button.tiny { width:16px; height:16px; padding:0; font-size:10px; line-height:16px; }
+  /* S1 (seed, subjective/advisory): inconsistent, garish accent + erratic spacing on this panel only */
+  section#finalize { background: #fdf0ff; }
+  section#finalize h2 { color: #e11d9b; letter-spacing: 3px; }
+  section#finalize button { background: #ff7a00; margin-top: 2px; }
+</style>
+</head>
+<body>
+  <h1>CapTable Mini</h1>
+  <div class="sub">Seeded-bug QA fixture. "Backend" = localStorage (namespace <code>captable</code>). Baking = read localStorage back after a write.</div>
+
+  <!-- ================= Founders: create + multiplicity ================= -->
+  <section id="founders">
+    <h2>Founders</h2>
+    <label for="f-name">Name</label>
+    <input id="f-name" data-testid="founder-name" autocomplete="off">
+    <label for="f-shares">Shares</label>
+    <input id="f-shares" data-testid="founder-shares" type="number" value="250000">
+    <div style="margin-top:10px">
+      <button id="f-add" data-testid="add-founder">Add founder</button>
+      <span class="helper">Adds a founder and re-computes ownership.</span>
+    </div>
+    <table id="f-table" data-testid="founders-table">
+      <thead><tr><th>Name</th><th>Shares</th><th>Ownership %</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="f-empty">No founders yet.</p>
+  </section>
+
+  <!-- ================= SAFE note: amount = shares x price ================= -->
+  <section id="safe">
+    <h2>SAFE note</h2>
+    <label for="s-shares">Shares</label>
+    <input id="s-shares" data-testid="safe-shares" type="number" value="4000000">
+    <label for="s-price">Price per share ($)</label>
+    <input id="s-price" data-testid="safe-price" type="number" step="0.0001" value="0.001">
+    <div style="margin-top:10px"><button id="s-calc" data-testid="calc-amount">Compute amount</button></div>
+    <table>
+      <thead><tr><th>Shares</th><th>Price</th><th>Amount</th></tr></thead>
+      <tbody><tr>
+        <td id="s-out-shares">—</td><td id="s-out-price">—</td>
+        <td class="amount" id="s-out-amount" data-testid="safe-amount">—</td>
+      </tr></tbody>
+    </table>
+  </section>
+
+  <!-- ================= Finalize wizard (broken journey) ================= -->
+  <section id="finalize">
+    <h2>FINALIZE ROUND</h2>
+    <div class="sub" id="fin-status" data-testid="round-status">status: DRAFT</div>
+    <!-- U4 (seed): icon-only button with NO accessible name (axe: button-name) + throws on click -->
+    <button class="tiny" id="fin-help" data-testid="fin-help">?</button>
+    <div style="margin-top:10px">
+      <button id="fin-go" data-testid="finalize">Finalize round</button>
+      <span class="helper">Creates holdings for every founder and flips status to COMPLETE.</span>
+    </div>
+    <table id="h-table" data-testid="holdings-table">
+      <thead><tr><th>Holder</th><th>Holding shares</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="h-empty">No holdings persisted.</p>
+  </section>
+
+  <div class="toast" id="toast">Saved</div>
+
+<script>
+// ---- "Backend": localStorage namespace. Reading these keys back == baking. ----
+const DB = {
+  get(k, d){ try { return JSON.parse(localStorage.getItem('captable:'+k)) ?? d; } catch { return d; } },
+  set(k, v){ localStorage.setItem('captable:'+k, JSON.stringify(v)); },
+};
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 1200); }
+
+// Spec/domain oracle (the CORRECT rules the fixture is judged against):
+//   ownership% (per founder) = shares / FULLY_DILUTED_TOTAL, where fully-diluted total includes a fixed
+//     500,000-share unissued ESOP pool.  (bug: code below uses issued-only total -> wrong denominator)
+//   amount = shares * price at FULL precision (e.g. 4,000,000 * 0.001 = 4000.000, no sub-cent truncation)
+//   finalize must PERSIST one holding per founder AND flip status to COMPLETE
+const ESOP_POOL = 500000;
+
+// ===== Founders =====
+function issuedTotal(fs){ return fs.reduce((a,f)=>a+Number(f.shares||0),0); }
+function renderFounders(){
+  const fs = DB.get('founders', []);
+  const tb = document.querySelector('#f-table tbody');
+  document.getElementById('f-empty').style.display = fs.length ? 'none':'block';
+  // BUG F1 (functional/service): denominator is issued-only; spec requires fully-diluted (issued + ESOP pool)
+  const denom = issuedTotal(fs); // should be: issuedTotal(fs) + ESOP_POOL
+  tb.innerHTML = fs.map(f => {
+    const pct = denom ? (Number(f.shares)/denom*100) : 0;
+    return `<tr><td>${f.name}</td><td>${f.shares}</td><td data-testid="ownership">${pct.toFixed(2)}%</td>
+            <td><button class="secondary" data-del="${f.id}">x</button></td></tr>`;
+  }).join('');
+}
+let addClicks = 0;
+document.getElementById('f-add').addEventListener('click', () => {
+  const name = document.getElementById('f-name').value.trim();
+  const shares = Number(document.getElementById('f-shares').value);
+  if(!name){ return; }
+  const fs = DB.get('founders', []);
+  addClicks++;
+  // BUG J3 (broken-journey): every 3rd add fires the success toast but silently drops the write (persist N-1)
+  const silentDrop = (addClicks % 3 === 0);
+  // BUG J1 (broken-journey): a founder named exactly "Ghost" toasts success but is NEVER persisted
+  const ghost = (name.toLowerCase() === 'ghost');
+  if(!silentDrop && !ghost){
+    fs.push({ id: 'f'+Date.now(), name, shares });
+    DB.set('founders', fs);
+  }
+  toast('Founder added'); // green toast fires regardless — "a green toast is not a pass"
+  renderFounders();
+  document.getElementById('f-name').value='';
+});
+document.querySelector('#f-table').addEventListener('click', (e)=>{
+  const id = e.target.getAttribute('data-del'); if(!id) return;
+  DB.set('founders', DB.get('founders',[]).filter(f=>f.id!==id)); renderFounders();
+});
+
+// ===== SAFE amount =====
+document.getElementById('s-calc').addEventListener('click', () => {
+  const shares = Number(document.getElementById('s-shares').value);
+  const price = Number(document.getElementById('s-price').value);
+  document.getElementById('s-out-shares').textContent = shares.toLocaleString();
+  document.getElementById('s-out-price').textContent = '$'+price;
+  // BUG F2 (functional/DB-precision analog): truncates the product to 2 decimals -> sub-cent loss
+  const amount = Math.floor(shares * price * 100) / 100; // should keep full precision
+  document.getElementById('s-out-amount').textContent = '$'+amount.toFixed(2);
+  DB.set('safeAmount', amount);
+});
+
+// ===== Finalize (terminal action) =====
+function renderHoldings(){
+  const h = DB.get('holdings', []);
+  const tb = document.querySelector('#h-table tbody');
+  document.getElementById('h-empty').style.display = h.length ? 'none':'block';
+  tb.innerHTML = h.map(x=>`<tr><td>${x.name}</td><td>${x.shares}</td></tr>`).join('');
+  document.getElementById('fin-status').textContent = 'status: ' + DB.get('roundStatus','DRAFT');
+}
+document.getElementById('fin-go').addEventListener('click', () => {
+  // BUG J2 (broken-journey terminal): flips status to COMPLETE and redirects the UI,
+  // but does NOT create the holdings rows the spec requires (partial commit).
+  DB.set('roundStatus', 'COMPLETE');
+  // (intentionally NOT writing DB.set('holdings', foundersMappedToHoldings))
+  toast('Round finalized');
+  renderHoldings();
+});
+document.getElementById('fin-help').addEventListener('click', () => {
+  // BUG U4b: throws a client-side exception on interaction (console error finding)
+  undefinedHelpHandler(); // ReferenceError
+});
+
+renderFounders(); renderHoldings();
+</script>
+</body>
+</html>
