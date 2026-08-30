@@ -10,6 +10,7 @@
   ],
   "skills": [
     { "name": "analyzing-feature-ui", "path": "skills/analyzing-feature-ui/SKILL.md", "category": "plan" },
+    { "name": "discovering-user-roles", "path": "skills/discovering-user-roles/SKILL.md", "category": "plan" },
     { "name": "generating-qa-checklist", "path": "skills/generating-qa-checklist/SKILL.md", "category": "plan" },
     { "name": "ingesting-spec-kit", "path": "skills/ingesting-spec-kit/SKILL.md", "category": "plan" },
     { "name": "driving-browser-qa", "path": "skills/driving-browser-qa/SKILL.md", "category": "verify" },
