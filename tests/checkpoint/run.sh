@@ -2,9 +2,13 @@
 # Characterization tests for checkpoint.sh — pin TODAY's behavior (before the
 # Phase 1 evidence-gate migration) so the migration can't silently regress
 # upsert/resume/list semantics. Must PASS against the unmodified script.
+#
+# Also covers record-evidence.sh (Task 1.2) — the structured evidence writer
+# the Phase 1 gate will content-check against.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"
+RECORD_SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/record-evidence.sh"
 PASS=0; FAIL=0
 get() { jq -r "$2" "$1" 2>/dev/null; }
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
@@ -108,9 +112,80 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "$(echo "$PY_LIST_OUT" | awk -F'\t' '$1=="C1"{print "yes"}')" "yes"
 
   echo "note - jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+
+  # --- record-evidence.sh python3-fallback sub-case (reuses the same fakebin,
+  # which already excludes jq and provides date/mkdir/python3) --------------
+  RE_RUN_ID="test-run-re-py-fallback"
+  RE_EVID_DIR="$WORK/.qa/runs/${RE_RUN_ID}/evidence/C1"
+
+  RE_PY_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 bake --read-back '{"founders":3}' --multiplicity N 2>&1)"
+  check "py-fallback record-evidence: bake file created" \
+    "$([[ -f "$RE_EVID_DIR/bake-read-back.json" ]] && echo yes)" "yes"
+  check "py-fallback record-evidence: valid json" \
+    "$(python3 -c "import json; json.load(open('$RE_EVID_DIR/bake-read-back.json')); print('ok')" 2>/dev/null)" "ok"
+  check "py-fallback record-evidence: readBack parsed as object" \
+    "$(python3 -c "import json;d=json.load(open('$RE_EVID_DIR/bake-read-back.json'));print(d['readBack']['founders'])" 2>/dev/null)" "3"
+  check "py-fallback record-evidence: multiplicity N" \
+    "$(python3 -c "import json;d=json.load(open('$RE_EVID_DIR/bake-read-back.json'));print(d['multiplicity'])" 2>/dev/null)" "N"
+  check "py-fallback record-evidence: stdout is the evidence-relative path" \
+    "$RE_PY_OUT" "evidence/C1/bake-read-back.json"
+
+  echo "note - record-evidence.sh jq-fallback sub-case: RAN (same restricted fakebin)"
 else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
+
+# --- Case 8: record-evidence.sh bake -> bake-read-back.json ------------------
+RE_RUN_ID="test-run-evidence"
+RE_C1_DIR="$WORK/.qa/runs/${RE_RUN_ID}/evidence/C1"
+BAKE_FILE="$RE_C1_DIR/bake-read-back.json"
+
+BAKE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 bake --read-back '{"founders":3}' --multiplicity N)"
+check "record-evidence bake: exits zero"        "$?" "0"
+check "record-evidence bake: file exists"       "$([[ -f "$BAKE_FILE" ]] && echo yes)" "yes"
+check "record-evidence bake: non-empty"         "$([[ -s "$BAKE_FILE" ]] && echo yes)" "yes"
+check "record-evidence bake: valid json"        "$(jq -e . "$BAKE_FILE" >/dev/null 2>&1 && echo ok)" "ok"
+check "record-evidence bake: readBack.founders" "$(get "$BAKE_FILE" '.readBack.founders')" "3"
+check "record-evidence bake: multiplicity == N" "$(get "$BAKE_FILE" '.multiplicity')" "N"
+check "record-evidence bake: stdout is evidence-relative path" "$BAKE_STDOUT" "evidence/C1/bake-read-back.json"
+
+# --- Case 9: record-evidence.sh computed -> recompute.json -------------------
+RECOMPUTE_FILE="$RE_C1_DIR/recompute.json"
+COMPUTED_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 computed --oracle 33.33 --observed 33.4 --match false)"
+check "record-evidence computed: file exists"   "$([[ -f "$RECOMPUTE_FILE" ]] && echo yes)" "yes"
+check "record-evidence computed: valid json"    "$(jq -e . "$RECOMPUTE_FILE" >/dev/null 2>&1 && echo ok)" "ok"
+check "record-evidence computed: oracle"        "$(get "$RECOMPUTE_FILE" '.oracle')" "33.33"
+check "record-evidence computed: observed"      "$(get "$RECOMPUTE_FILE" '.observed')" "33.4"
+check "record-evidence computed: match"         "$(get "$RECOMPUTE_FILE" '.match')" "false"
+check "record-evidence computed: stdout is evidence-relative path" "$COMPUTED_STDOUT" "evidence/C1/recompute.json"
+
+# --- Case 10: record-evidence.sh probe -> network-response.json --------------
+NETWORK_FILE="$RE_C1_DIR/network-response.json"
+PROBE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}')"
+check "record-evidence probe: file exists"      "$([[ -f "$NETWORK_FILE" ]] && echo yes)" "yes"
+check "record-evidence probe: valid json"       "$(jq -e . "$NETWORK_FILE" >/dev/null 2>&1 && echo ok)" "ok"
+check "record-evidence probe: status"           "$(get "$NETWORK_FILE" '.status')" "200"
+check "record-evidence probe: shape.ok"         "$(get "$NETWORK_FILE" '.shape.ok')" "true"
+check "record-evidence probe: stdout is evidence-relative path" "$PROBE_STDOUT" "evidence/C1/network-response.json"
+
+# --- Case 11: unknown kind exits non-zero and writes nothing -----------------
+RE_UNKNOWN_DIR="$WORK/.qa/runs/${RE_RUN_ID}/evidence/C-unknown"
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C-unknown bogus >/dev/null 2>&1)
+RC_UNKNOWN_KIND=$?
+check "record-evidence unknown kind exits nonzero" "$([[ "$RC_UNKNOWN_KIND" -ne 0 ]] && echo yes)" "yes"
+check "record-evidence unknown kind writes nothing" "$([[ ! -d "$RE_UNKNOWN_DIR" ]] && echo yes)" "yes"
+
+# --- Case 12: missing required flag for a known kind exits non-zero ----------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C-missing bake --multiplicity N >/dev/null 2>&1)
+RC_MISSING_FLAG=$?
+check "record-evidence missing --read-back exits nonzero" "$([[ "$RC_MISSING_FLAG" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 13: secret values are never echoed to stdout or stderr -------------
+SECRET_VALUE="sk_live_super_secret_token_zzz"
+RE_SECRET_OUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C-secret computed --oracle "$SECRET_VALUE" --observed "$SECRET_VALUE" --match true 2>&1)"
+check "record-evidence never echoes secret values" "$(echo "$RE_SECRET_OUT" | grep -qF "$SECRET_VALUE" && echo LEAKED || echo safe)" "safe"
+check "record-evidence secret value still written to disk" \
+  "$(get "$RE_C1_DIR/../C-secret/recompute.json" '.oracle')" "$SECRET_VALUE"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
