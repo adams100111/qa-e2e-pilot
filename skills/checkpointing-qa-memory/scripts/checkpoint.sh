@@ -19,11 +19,25 @@
 #   --last-action <text>        One-line description of the final action taken
 #   --evidence-refs <a,b,c>     Comma-separated relative paths under .qa/runs/<run-id>/
 #   --bug-ref <bug-id>          Bug log entry id if verdict is fail|error
+#   --persona <id>              OPTIONAL. When role-sensitive criteria are run
+#                               per persona (e.g. super-admin vs participant),
+#                               the record's IDENTITY becomes the PAIR
+#                               (criterion-id, persona) — a pass for C1 under
+#                               persona A and any verdict for C1 under persona
+#                               B are TWO SEPARATE records; upserting one never
+#                               replaces the other. Omitting --persona keeps
+#                               today's behavior exactly: identity is
+#                               criterion-id alone (persona stored as "").
+#                               --resume/--list surface the persona so a
+#                               resumed run never reads one persona's pass as
+#                               covering another persona's untested case.
 #   --kinds <bake,computed,probe>
 #                               CSV subset of evidence kinds this criterion is
 #                               backed by. Stored on the record. On a `pass`
 #                               verdict, EACH kind's canonical artifact under
-#                               .qa/runs/<run-id>/evidence/<criterion-id>/ is
+#                               .qa/runs/<run-id>/evidence/<criterion-id>/ (or,
+#                               when --persona is set, under
+#                               evidence/<persona>/<criterion-id>/) is
 #                               required to exist, be non-empty, parse as
 #                               JSON, and contain that kind's required keys
 #                               (see record-evidence.sh) — "a green toast is
@@ -99,12 +113,19 @@ EOF
 upsert_jq() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
   local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
+  local persona="${10}"
   local now
   now="$(ts)"
 
   local tmp
   tmp="${file}.tmp.$$"
 
+  # Identity for matching an existing record is the PAIR (criterion_id,
+  # persona). persona defaults to "" (back-compat: identity is criterion_id
+  # alone, exactly today's behavior) — compare via `(.persona // "")` so
+  # records written before this field existed (none should exist within a
+  # single run created by this script, but this keeps the filter total) are
+  # treated as persona "".
   jq --arg cid "$crit_id" \
      --arg verdict "$verdict" \
      --arg confidence "$confidence" \
@@ -113,13 +134,14 @@ upsert_jq() {
      --argjson evidence_refs "$evidence_refs_json" \
      --arg bug_ref "$bug_ref" \
      --argjson kinds "$kinds_json" \
+     --arg persona "$persona" \
      --arg now "$now" \
   '
     .updated_at = $now |
-    if any(.criteria[]; .criterion_id == $cid) then
+    if any(.criteria[]; .criterion_id == $cid and ((.persona // "") == $persona)) then
       .criteria = [
         .criteria[] |
-        if .criterion_id == $cid then
+        if .criterion_id == $cid and ((.persona // "") == $persona) then
           .verdict        = $verdict        |
           .confidence     = $confidence     |
           .phase          = $phase          |
@@ -127,6 +149,7 @@ upsert_jq() {
           .evidence_refs  = $evidence_refs  |
           .bug_ref        = (if $bug_ref == "" then null else $bug_ref end) |
           .kinds          = $kinds          |
+          .persona        = $persona        |
           .checkpointed_at = $now
         else . end
       ]
@@ -140,6 +163,7 @@ upsert_jq() {
         "evidence_refs":  $evidence_refs,
         "bug_ref":        (if $bug_ref == "" then null else $bug_ref end),
         "kinds":          $kinds,
+        "persona":        $persona,
         "checkpointed_at": $now
       }]
     end
@@ -153,14 +177,15 @@ upsert_jq() {
 upsert_py() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
   local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
+  local persona="${10}"
   local now
   now="$(ts)"
 
   python3 - "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$now" <<'PYEOF'
+            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$persona" "$now" <<'PYEOF'
 import json, sys
 (file_path, cid, verdict, confidence, phase,
- last_action, evidence_refs_json, bug_ref, kinds_json, now) = sys.argv[1:11]
+ last_action, evidence_refs_json, bug_ref, kinds_json, persona, now) = sys.argv[1:12]
 try:
     evidence_refs = json.loads(evidence_refs_json) if evidence_refs_json else []
 except json.JSONDecodeError:
@@ -180,12 +205,16 @@ entry = {
     "evidence_refs":   evidence_refs,
     "bug_ref":         bug_ref or None,
     "kinds":           kinds,
+    "persona":         persona,
     "checkpointed_at": now,
 }
 data["updated_at"] = now
 criteria = data.setdefault("criteria", [])
+# Identity for matching an existing record is the PAIR (criterion_id,
+# persona). persona defaults to "" (back-compat: identity is criterion_id
+# alone, exactly today's behavior).
 for i, c in enumerate(criteria):
-    if c.get("criterion_id") == cid:
+    if c.get("criterion_id") == cid and (c.get("persona") or "") == persona:
         criteria[i] = entry
         break
 else:
@@ -219,7 +248,8 @@ cmd_resume() {
       ($c.kinds // []) as $kinds |
       (if ($kinds | length) > 0 then ($kinds | join(",")) else "-" end) as $kinds_str |
       (if $c.verdict == "pass" then (if ($kinds | length) > 0 then "complete" else "ungated" end) else "n/a" end) as $evidence |
-      "RESUME cursor:\n  criterion_id:  \($c.criterion_id)\n  verdict:       \($c.verdict)\n  confidence:    \($c.confidence)\n  phase:         \($c.phase)\n  last_action:   \($c.last_action)\n  checkpointed:  \($c.checkpointed_at)\n  kinds:         \($kinds_str)\n  evidence:      \($evidence)"
+      (($c.persona // "") | if . == "" then "(none)" else . end) as $persona_str |
+      "RESUME cursor:\n  criterion_id:  \($c.criterion_id)\n  verdict:       \($c.verdict)\n  confidence:    \($c.confidence)\n  phase:         \($c.phase)\n  last_action:   \($c.last_action)\n  checkpointed:  \($c.checkpointed_at)\n  persona:       \($persona_str)\n  kinds:         \($kinds_str)\n  evidence:      \($evidence)"
     ' "$file"
     echo ""
     echo "Skip all criteria up to and including: $(jq -r '.criteria | last | .criterion_id' "$file")"
@@ -242,6 +272,8 @@ if c.get("verdict") == "pass":
     evidence = "complete" if kinds else "ungated"
 else:
     evidence = "n/a"
+persona_str = c.get("persona") or "(none)"
+print(f"  persona: {persona_str}")
 print(f"  kinds: {kinds_str}")
 print(f"  evidence: {evidence}")
 print()
@@ -262,6 +294,13 @@ cmd_list() {
   file="$(checkpoint_file "$run_id")"
   [[ -f "$file" ]] || { echo "No checkpoint file found for run: ${run_id}" >&2; exit 1; }
 
+  # NOTE on `persona`: the TSV header/column-count is byte-identical to
+  # today's (back-compat pins this — see tests/checkpoint/run.sh "list:
+  # header row"). Persona is surfaced by decorating the criterion_id CELL as
+  # "<criterion_id>@<persona>" when persona is non-empty, so two personas of
+  # the same criterion appear as distinct rows/keys without adding a column.
+  # persona == "" (back-compat / no --persona) renders the cell exactly as
+  # today: the bare criterion_id.
   if has_jq; then
     echo "criterion_id	verdict	confidence	checkpointed_at	kinds	evidence"
     jq -r '
@@ -270,7 +309,9 @@ cmd_list() {
       ($c.kinds // []) as $kinds |
       (if ($kinds | length) > 0 then ($kinds | join(",")) else "-" end) as $kinds_str |
       (if $c.verdict == "pass" then (if ($kinds | length) > 0 then "complete" else "ungated" end) else "n/a" end) as $evidence |
-      [$c.criterion_id, $c.verdict, $c.confidence, $c.checkpointed_at, $kinds_str, $evidence] | @tsv
+      (($c.persona // "")) as $persona |
+      (if $persona == "" then $c.criterion_id else ($c.criterion_id + "@" + $persona) end) as $cid_disp |
+      [$cid_disp, $c.verdict, $c.confidence, $c.checkpointed_at, $kinds_str, $evidence] | @tsv
     ' "$file"
   elif has_py; then
     python3 - "$file" <<'PYEOF'
@@ -285,7 +326,10 @@ for c in data.get("criteria", []):
         evidence = "complete" if kinds else "ungated"
     else:
         evidence = "n/a"
-    row = [str(c.get(k, "")) for k in ("criterion_id", "verdict", "confidence", "checkpointed_at")]
+    persona = c.get("persona") or ""
+    cid = c.get("criterion_id", "")
+    cid_disp = cid if persona == "" else f"{cid}@{persona}"
+    row = [cid_disp] + [str(c.get(k, "")) for k in ("verdict", "confidence", "checkpointed_at")]
     row += [kinds_str, evidence]
     print("\t".join(row))
 PYEOF
@@ -382,11 +426,16 @@ gate_reject() {
 }
 
 # Validate every kind in the CSV `$3` for criterion `$2` under run `$1`.
+# Optional `$4` is the persona: when set, the gate looks for each artifact
+# under the persona-scoped path evidence/<persona>/<crit>/<artifact>.json
+# (matching record-evidence.sh's --persona-scoped write path) instead of the
+# default evidence/<crit>/<artifact>.json — so two personas' bakes never
+# collide or satisfy each other's gate.
 # Returns 0 if all pass the gate; returns 1 (having already printed a
 # gate_reject message) on the FIRST failure — called before any record is
 # written, so a rejected pass mutates nothing.
 gate_pass() {
-  local run_id="$1" crit_id="$2" kinds_csv="$3"
+  local run_id="$1" crit_id="$2" kinds_csv="$3" persona="${4:-}"
   local kind artifact rel_path full_path required_keys key
 
   local -a kinds_arr
@@ -413,7 +462,11 @@ gate_pass() {
     esac
 
     artifact="$(kind_artifact "$kind")"
-    rel_path="evidence/${crit_id}/${artifact}"
+    if [[ -n "$persona" ]]; then
+      rel_path="evidence/${persona}/${crit_id}/${artifact}"
+    else
+      rel_path="evidence/${crit_id}/${artifact}"
+    fi
     full_path="$(run_dir "$run_id")/${rel_path}"
 
     if [[ ! -f "$full_path" ]]; then
@@ -455,6 +508,7 @@ cmd_upsert() {
   local evidence_refs="[]"
   local bug_ref=""
   local kinds_csv=""
+  local persona=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -471,6 +525,7 @@ cmd_upsert() {
         shift 2 ;;
       --bug-ref)      bug_ref="$2";       shift 2 ;;
       --kinds)        kinds_csv="$2";     shift 2 ;;
+      --persona)      persona="$2";       shift 2 ;;
       *) die "Unknown option: $1" ;;
     esac
   done
@@ -499,7 +554,7 @@ cmd_upsert() {
     if [[ -z "$kinds_csv" ]]; then
       echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
     else
-      gate_pass "$run_id" "$crit_id" "$kinds_csv" || exit 1
+      gate_pass "$run_id" "$crit_id" "$kinds_csv" "$persona" || exit 1
     fi
   fi
 
@@ -511,15 +566,19 @@ cmd_upsert() {
 
   if has_jq; then
     upsert_jq "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona"
   elif has_py; then
     upsert_py "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona"
   else
     die "checkpoint.sh needs either 'jq' or 'python3' to update JSON safely; neither was found on PATH."
   fi
 
-  echo "Checkpointed: run=${run_id} criterion=${crit_id} verdict=${verdict} confidence=${confidence}"
+  if [[ -n "$persona" ]]; then
+    echo "Checkpointed: run=${run_id} criterion=${crit_id} persona=${persona} verdict=${verdict} confidence=${confidence}"
+  else
+    echo "Checkpointed: run=${run_id} criterion=${crit_id} verdict=${verdict} confidence=${confidence}"
+  fi
 }
 
 # ---------------------------------------------------------------------------
