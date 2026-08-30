@@ -36,7 +36,7 @@
 | Kind | <!-- happy-path / multiplicity-0 / multiplicity-1 / multiplicity-N / empty-state / loading-state / error-state / computed-logic / business-rule / downstream-cascade / cross-tenant / race --> |
 | Tags | <!-- independent / read-only / race / cross-tenant / probe-needed — or "sequential (default)" --> |
 | Kinds | <!-- derived: bake / computed / probe (csv), per the Kind+Tags mapping table in generating-qa-checklist Step 6 — `probe` comes ONLY from Tag: cross-tenant or Tag: probe-needed (never guessed); read-only/pure-display with neither tag → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
-| probeNeeded | <!-- true if Kinds includes probe (cross-tenant / backend-probe criteria) — else false --> |
+| probeNeeded | <!-- INPUT tag: set true when the oracle is server-only OR the UI could mask the real state (per Step 6 rule); Kinds: probe is DERIVED from it. Do NOT read this back from Kinds. --> |
 | Confidence hint | <!-- high — oracle from spec/domain rule; OR low — oracle derived from backend code only --> |
 | Source | <!-- generated / ingested / hand-authored --> |
 
