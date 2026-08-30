@@ -46,6 +46,12 @@ Ask these, each **pre-filled** with the inference from Step 1. In Claude Code us
 
 Do not ask about drivers (default = managed Playwright) or the stack (detected).
 
+The 4 questions above are independent, so one flat batch is correct here. For
+tree-shaped HITL confirmation instead (e.g. role/persona confirmation, where
+confirming/editing one decision changes the options for a later one), use
+[references/hitl-rounds.md](./references/hitl-rounds.md) instead of this flat
+form.
+
 ### Step 3 — Write the config (deterministic)
 
 ```
