@@ -60,11 +60,6 @@
       <tbody></tbody>
     </table>
     <p class="empty" id="f-empty">No founders yet.</p>
-    <!-- SEED N1: clean control, must NOT be flagged — Founder-B, 250k of 750k fully-diluted -->
-    <div class="helper" data-testid="founder-b-reference">
-      Reference: Founder-B — 250,000 shares / 750,000 fully-diluted =
-      <strong data-testid="founder-b-pct">33.33%</strong> ownership (correct)
-    </div>
   </section>
 
   <!-- ================= SAFE note: amount = shares x price ================= -->
@@ -122,6 +117,16 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 //   finalize must PERSIST one holding per founder AND flip status to COMPLETE
 const ESOP_POOL = 500000;
 
+// SEED N1: clean control, must NOT be flagged — Founder-B is a genuine founders-table row rendered
+// through a CORRECT per-row fully-diluted formula (shares / (issued + ESOP pool)). It is seed data,
+// not part of the `fs` array below, so it never feeds the buggy issued-only denominator used for
+// real (agent-added) founders — the F1 bug stays fully reproducible for those rows.
+const FOUNDER_B_SHARES = 250000;
+function founderBRow(){
+  const correctPct = FOUNDER_B_SHARES / (FOUNDER_B_SHARES + ESOP_POOL) * 100; // 250,000 / 750,000
+  return `<tr><td>Founder-B</td><td>${FOUNDER_B_SHARES}</td><td data-testid="ownership">${correctPct.toFixed(2)}%</td><td></td></tr>`;
+}
+
 // ===== Founders =====
 function issuedTotal(fs){ return fs.reduce((a,f)=>a+Number(f.shares||0),0); }
 function renderFounders(){
@@ -135,7 +140,7 @@ function renderFounders(){
     return `<tr><td>${f.name}</td><td>${f.shares}</td><td data-testid="ownership">${pct.toFixed(2)}%</td>
             <td><button class="secondary" data-edit="${f.id}" data-testid="edit-founder">edit</button>
             <button class="secondary" data-del="${f.id}">x</button></td></tr>`;
-  }).join('');
+  }).join('') + founderBRow();
 }
 let addClicks = 0;
 document.getElementById('f-add').addEventListener('click', () => {
