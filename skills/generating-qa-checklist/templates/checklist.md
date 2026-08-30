@@ -26,10 +26,12 @@
      (probe-needed: set when the expected state can't be confirmed via the visible UI alone —
       see generating-qa-checklist Step 7. probe-needed OR cross-tenant derives Kinds: probe.
      Edge-case criteria (0-value, negative, every-Nth, named/boundary, delete-reconcile,
-     cross-role/tenant absence) are REQUIRED per write-bearing surface — generating-qa-checklist
-     Step 3. Each is an ordinary block below with Kind/Tags set per that step's table (never
-     hand-set Kinds); a type that doesn't apply to a surface still gets a block, with
-     Status: deferred and the reason in EXPECTED — never a silently missing row. -->
+     cross-role/tenant absence, terminal/locked-state repeat action, input-boundary:
+     oversized/decimal-boundary/unicode/whitespace-only) are REQUIRED per write-bearing
+     surface — generating-qa-checklist Step 3. Each is an ordinary block below with Kind/Tags
+     set per that step's table (never hand-set Kinds); a type that doesn't apply to a surface
+     still gets a block, with Status: deferred and the reason in EXPECTED — never a silently
+     missing row. -->
 
 ---
 
