@@ -1,0 +1,13 @@
+{
+  "source": "MEASURED baseline — black-box qa-e2e-pilot agent (current system) vs fixture at http://localhost:8099, 2026-08-30",
+  "estimated": false,
+  "_attribution": "Findings attributed to seeds by the controller acting as judge (production path: convert-buglog.js -> attribute.js with a model judgeFn). Raw run: tools/accuracy-harness/findings/measured-baseline-run.json (6 bugs). captable-003 (0-share false toast) and captable-004 (negative-share ownership) are real but UNSEEDED (neither TP nor FP). captable-001 flags N1 -> exposes N1 as a broken negative control (see report).",
+  "findings": [
+    { "judgedSeedId": "N1", "verdict": "fail", "suspectedLayer": "FE", "text": "captable-001: phantom Founder-B row rendered but never persisted; ownership sums >100% (flags the N1 control)" },
+    { "judgedSeedId": "F2", "verdict": "fail", "suspectedLayer": "FE", "text": "captable-002: SAFE amount loses precision on exact half-cent 1.005 -> persisted 1.00" },
+    { "verdict": "fail", "suspectedLayer": "FE", "text": "captable-003: 'Founder added' success toast on a silently-rejected 0-share add (unseeded real bug)" },
+    { "verdict": "fail", "suspectedLayer": "FE", "text": "captable-004: negative share count accepted -> negative and >100% ownership (unseeded real bug)" },
+    { "judgedSeedId": "U4", "verdict": "fail", "suspectedLayer": "FE", "text": "captable-005: '?' help button throws uncaught ReferenceError on click" },
+    { "judgedSeedId": "J2", "verdict": "fail", "suspectedLayer": "FE", "text": "captable-006: Finalize flips status COMPLETE but never persists any holdings" }
+  ]
+}

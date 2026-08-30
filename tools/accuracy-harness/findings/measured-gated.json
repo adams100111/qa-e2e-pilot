@@ -1,0 +1,10 @@
+{
+  "source": "MEASURED gated run B — general-purpose agent following the branch's execution-enforcement gated flow (independent recompute + baking), black-box vs fixture at http://localhost:8099, 2026-08-30",
+  "estimated": false,
+  "_attribution": "Controller-as-judge. Raw run: findings/measured-gated-run.json (3 bugs). Ran AFTER fixture hardening (18-seed set). Notes: B independently recomputed ownership% at multiplicity 0/1/N and found NO F1 divergence — the fixture surfaces no ESOP pool in observable state, so fully-diluted==issued-only black-box (F1 is not black-box-detectable without the spec/pool → fixture limitation). F3 did not manifest (delete reconciled to 100%). J1/J3/J4/F4 require specific edge-case inputs (Ghost name / every-3rd / 0-share / negative) B did not systematically fuzz. U1-U3 need a visual/a11y detector (Phase 3/4). Zero negative-control false positives → precision 100%.",
+  "findings": [
+    { "judgedSeedId": "J2", "verdict": "fail", "suspectedLayer": "service", "text": "Finalize flips roundStatus to COMPLETE but never persists a captable:holdings key (baked from forced-OPEN reload)" },
+    { "judgedSeedId": "F2", "verdict": "fail", "suspectedLayer": "service", "text": "SAFE amount silent precision loss: 12345 x 0.0001 = 1.2345 persisted as 1.23 (sub-cent dropped); clean whole-cent case persisted correctly" },
+    { "judgedSeedId": "U4", "verdict": "fail", "suspectedLayer": "FE", "text": "fin-help '?' button throws ReferenceError: undefinedHelpHandler is not defined; no help shown" }
+  ]
+}

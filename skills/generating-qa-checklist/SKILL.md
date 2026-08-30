@@ -143,8 +143,36 @@ Apply these tags to every criterion in the checklist:
 | `read-only: true` | No write to backend | May fan out (rarely) |
 | `race: true` | Deliberate concurrency test | Fan out — two drivers, same backend entity |
 | `cross-tenant: true` | Reads back as a second tenant | Sequential; second auth session on same driver |
+| `probe-needed: true` | Expected state cannot be confirmed through the visible UI alone | Sequential; `probing-apis-through-browser` invoked, evidence required |
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
+
+**Setting `probe-needed` (generation-time rule, mechanical)**
+
+Set `probe-needed: true` when the criterion's expected state cannot be confirmed through the visible UI alone — i.e. either condition holds:
+
+- [ ] The oracle value lives only server-side (a computed/derived field, an internal ID, a timestamp, or a status the UI never displays).
+- [ ] The UI renders a value that could mask the real state (a generic "Success" toast, a rounded/truncated display value, or an error banner that could hide a 2xx-with-wrong-body response).
+
+If neither holds, leave `probe-needed` unset — the criterion is confirmable from the UI/bake read-back alone.
+
+**Derive `Kinds` — the evidence the gate will require**
+
+Every criterion also carries a derived **`Kinds`** field: a CSV subset of `bake|computed|probe`, computed deterministically from its `Kind` + `Tags` above. This is not optional metadata — `checkpoint.sh ... --kinds <csv>` refuses to record a `pass` unless each listed kind's artifact (written by `record-evidence.sh`) exists and validates (see `checkpointing-qa-memory`). Derive it with this table:
+
+| Criterion `Kind` / `Tag` | Required evidence kind(s) | Artifact |
+|---|---|---|
+| `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
+| `multiplicity-0/1/N`, `happy-path`, `downstream-cascade`, or any criterion NOT tagged `read-only` | `bake` | `evidence/<crit>/bake-read-back.json` |
+| `Tag: cross-tenant` OR `Tag: probe-needed` | `probe` | `evidence/<crit>/network-response.json` |
+
+A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion tagged `read-only` with no computed logic and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
+
+`Kinds` is always **derived from tags**, never the reverse: `probe-needed` (set at generation time, per the rule above) is the INPUT; `Kinds: probe` is the OUTPUT the table derives from it. The same direction applies to `cross-tenant`. Do not treat `Kinds` as something you inspect to decide whether probing was needed — decide `probe-needed` first, from the criterion itself, then let the table derive `Kinds`.
+
+- [ ] Set `Kinds` to the union of matched rows, as CSV, in the order `bake,computed,probe`.
+- [ ] Set `probeNeeded: true` whenever `Tag: probe-needed` or `Tag: cross-tenant` is set (i.e. whenever the `probe` kind was derived), so the verifier knows to invoke `probing-apis-through-browser` rather than relying on the UI alone.
+- [ ] Record both fields in the criterion's summary row — the verifier reads `Kinds` straight into `checkpoint.sh --kinds` at pass time; do not leave it to be inferred later.
 
 ---
 
@@ -178,17 +206,17 @@ Do not proceed to driving-browser-qa until the checklist has been reviewed. The 
 **Eval 1 — NOT-NULL baking (bug #7)**
 Given: finalize governance wizard completes, a green "Success" toast appears.
 Without this skill: criterion passes on the toast.
-With this skill: the baking assertion for `finalize` names every NOT-NULL field on the `holdings` table. Read-back reveals rows exist but `issued_at` is NULL — pass → fail. The oracle was the migration schema, not the toast.
+With this skill: the baking assertion for `finalize` names every NOT-NULL field on the `holdings` table; `Kind: downstream-cascade` derives `Kinds: bake`. Read-back reveals rows exist but `issued_at` is NULL — pass → fail. The oracle was the migration schema, not the toast. Because `Kinds: bake` was set, `checkpoint.sh` would have refused a `pass` without `evidence/<crit>/bake-read-back.json` on file anyway.
 
 **Eval 2 — Decimal precision (bug #9)**
 Given: SAFE note with `4,000,000 shares × $0.001 price`.
 Without this skill: criterion reads the displayed `$4,000` and calls it correct (matches rounded display).
-With this skill: the oracle states `4,000,000 × 0.001 = 4,000.000 — tolerance 0`. The API response body returns `3999.999` due to a `decimal(10,2)` column truncating the intermediate product. Divergence caught at the API layer; FE looked fine.
+With this skill: `Kind: computed-logic` derives `Kinds: computed`. The oracle states `4,000,000 × 0.001 = 4,000.000 — tolerance 0`. The API response body returns `3999.999` due to a `decimal(10,2)` column truncating the intermediate product. Divergence caught at the API layer; FE looked fine, and the gate would have rejected a `pass` without a `recompute.json` showing `match: false` resolved to `fail`.
 
 **Eval 3 — Cross-tenant isolation (bug #12)**
 Given: a draft share class is created in Tenant A.
 Without this skill: the checklist has no cross-tenant criterion; the draft is only verified in Tenant A.
-With this skill: the cross-tenant heuristic generates a required sub-step — re-read the draft's list endpoint authenticated as Tenant B. The API returns the draft (tenant_id filter missing on the query). Caught only because the heuristic is mandatory, not optional.
+With this skill: the cross-tenant heuristic generates a required sub-step — re-read the draft's list endpoint authenticated as Tenant B; `Tag: cross-tenant` derives `Kinds: bake,probe` and `probeNeeded: true`. The API returns the draft (tenant_id filter missing on the query). Caught only because the heuristic is mandatory, not optional, and the derived `probe` kind forced a `network-response.json` read-back rather than trusting the UI.
 
 **Eval 4 — Business-rule gate (bug #3)**
 Given: governance setup wizard completes finalize step.

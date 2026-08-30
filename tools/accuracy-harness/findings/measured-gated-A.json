@@ -1,0 +1,12 @@
+{
+  "source": "MEASURED gated run A — the REAL registered qa-e2e-pilot agent (full 6-phase pipeline) with the shipped evidence gate, black-box vs fixture, run-id remeasure-gated-A, 2026-08-30",
+  "estimated": false,
+  "_attribution": "Controller-as-judge. Raw: .qa/runs/remeasure-gated-A/bug-log.json (5 bugs). GATE PROVEN end-to-end: a self-test pass without evidence was REJECTED (exit 1, nothing written); all 5 real passes wrote bake-read-back.json + recompute.json via record-evidence.sh then passed the gate; race deferred (not forced). A caught J4 (0-share persistence) that B missed — its checklist systematically generated the 0-share edge criterion (coverage effect). A MISSED F4 (negative shares): a type=number input gotcha coerced the negative to 0 (tripping the zero-share path) so A never actually persisted a negative — F4 is a real fixture bug (line 142-156, no min, negatives bypass guards). BUG-004 (finalize-while-COMPLETE silent lock) is a real UNSEEDED terminal-idempotency bug (not a negative control). Ownership recompute matched at every multiplicity; no observable ESOP pool so F1 not black-box-detectable (fixture limit).",
+  "findings": [
+    { "judgedSeedId": "J2", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-001: roundStatus=COMPLETE but captable:holdings=null on load (baked)" },
+    { "judgedSeedId": "F2", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-003: 7 x 0.001 = 0.007 truncated to 0.00, stored safeAmount='0'; isolated to sub-cent via 3 combos" },
+    { "judgedSeedId": "J4", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-002: 0-share add not persisted despite the add flow (baked localStorage: no row added)" },
+    { "judgedSeedId": "U4", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-005: fin-help '?' throws ReferenceError: undefinedHelpHandler is not defined" },
+    { "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-004: clicking Finalize while already COMPLETE is a silent no-op that permanently locks out holdings creation (unseeded terminal-idempotency bug)" }
+  ]
+}

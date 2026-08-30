@@ -1,0 +1,117 @@
+{
+  "_doc": "Ground-truth planted bugs in fixture/index.html. The scorer matches a findings file against these seeds and prints true bug-recall PER AXIS. axis roll-ups: 'functional' = functional + broken-journey (the '~40%' north-star); 'ux' = ux-objective + ux-subjective (the '~15%'). ux-subjective is ADVISORY only (ADR-0008) and is scored in a separate advisory stream, never in the verdict-recall gate. A finding is credited to a seed ONLY via finding.seedId or finding.judgedSeedId (set by attribute.js's judge). seed.match keywords are a HINT the judge uses to pick candidate seeds — they are NEVER credited by the scorer directly (no keyword-only matching).",
+  "fixture": "captable-mini",
+  "gate": {
+    "functionalRecallMin": 0.70,
+    "uxObjectiveRecallMin": 0.75,
+    "overallVerdictRecallMin": 0.70,
+    "precisionMin": 0.80,
+    "_note": "Absolute per-axis recall + overall precision. Negative-control seeds (polarity:negative) must NOT be flagged; flagging one is a false positive. Subjective advisory stream reported, not gated."
+  },
+  "seeds": [
+    {
+      "id": "F1", "axis": "functional", "kind": "wrong-computation",
+      "title": "Ownership % uses issued-only denominator; spec requires fully-diluted (issued + 500k ESOP pool)",
+      "oracle": "pct = shares / (issued + ESOP_POOL); single 250k founder of 250k issued -> 33.33% (750k FD), NOT 100%",
+      "suspectedLayer": "service", "closes": "coverage+execution",
+      "match": ["ownership", "denominator", "fully-diluted", "fully diluted", "esop", "33.33", "wrong denominator"]
+    },
+    {
+      "id": "F2", "axis": "functional", "kind": "wrong-computation",
+      "title": "SAFE amount truncates shares*price to 2 decimals (sub-cent loss)",
+      "oracle": "4,000,000 x $0.001 = $4000.000 exactly, tolerance 0; Math.floor(...*100)/100 truncates",
+      "suspectedLayer": "FE", "closes": "execution",
+      "match": ["amount", "precision", "sub-cent", "subcent", "truncat", "4000", "decimal", "4,000"]
+    },
+    {
+      "id": "F3", "axis": "functional", "kind": "broken-state-transition",
+      "title": "Deleting a founder does not re-reconcile totals against 100% (stale aggregate)",
+      "oracle": "after any founders mutation, sum(ownership%) over persisted founders must reconcile to the FD basis",
+      "suspectedLayer": "service", "closes": "coverage",
+      "match": ["reconcile", "sum to 100", "aggregate", "totals stale", "cascade", "re-sum"]
+    },
+    {
+      "id": "J1", "axis": "broken-journey", "kind": "silent-stall",
+      "title": "Founder named 'Ghost' fires green success toast but is NEVER persisted to localStorage",
+      "oracle": "baking: read localStorage captable:founders back; the created founder must be present",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["ghost", "toast lied", "not persisted", "green toast", "baking", "read-back", "silent"]
+    },
+    {
+      "id": "J2", "axis": "broken-journey", "kind": "terminal-no-persist",
+      "title": "Finalize flips status to COMPLETE and redirects UI but creates NO holdings rows",
+      "oracle": "finalize must persist one holding per founder AND status COMPLETE; holdings must read back non-empty",
+      "suspectedLayer": "DB", "closes": "execution",
+      "match": ["finalize", "holdings", "terminal", "not persisted", "no holdings", "partial commit", "empty holdings"]
+    },
+    {
+      "id": "J3", "axis": "broken-journey", "kind": "silent-drop",
+      "title": "Every 3rd Add-founder toasts success but silently drops the write (persists N-1)",
+      "oracle": "multiplicity: create 3 -> read back exactly 3; a drop yields 2",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["silent drop", "n-1", "multiplicity", "count", "dropped", "exactly 3", "third"]
+    },
+    {
+      "id": "F4", "axis": "functional", "kind": "no-input-validation", "polarity": "positive",
+      "title": "Add-founder accepts a negative share count with no validation; ownership% goes negative and/or exceeds 100% for other rows",
+      "oracle": "shares must be a positive quantity; a negative value must be rejected before persist, never fed into issuedTotal()/the ownership denominator",
+      "suspectedLayer": "FE", "closes": "coverage+execution",
+      "match": ["negative shares", "negative share count", "negative ownership", "over 100", "exceeds 100", "validation", "invalid input"]
+    },
+    {
+      "id": "J4", "axis": "broken-journey", "kind": "silent-stall", "polarity": "positive",
+      "title": "Adding a founder with 0 shares shows a false 'Founder added' success toast but persists nothing",
+      "oracle": "baking: read localStorage captable:founders back; a 0-share submit must not add an entry, and the toast must not claim success",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["0 shares", "zero shares", "false success", "toast lied", "not persisted", "silently rejected"]
+    },
+    {
+      "id": "U1", "axis": "ux-objective", "kind": "contrast",
+      "title": "Helper text #b9b9b9 on white ~1.9:1 fails WCAG AA 4.5:1 (SC 1.4.3)",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["contrast", "1.4.3", "4.5", "helper", "low-contrast", "low contrast", "b9b9b9"]
+    },
+    {
+      "id": "U2", "axis": "ux-objective", "kind": "overflow",
+      "title": "SAFE amount cell (max-width:90px, overflow:hidden) clips the computed value",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["overflow", "clip", "clipped", "truncated display", "scrollwidth", "cut off"]
+    },
+    {
+      "id": "U3", "axis": "ux-objective", "kind": "target-size",
+      "title": "16x16 icon button below WCAG 2.2 AA 24x24 target-size (SC 2.5.8)",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["target size", "target-size", "2.5.8", "24x24", "24 x 24", "touch target", "too small", "16x16"]
+    },
+    {
+      "id": "U4", "axis": "ux-objective", "kind": "a11y-name-and-console",
+      "title": "Icon-only '?' button has no accessible name (axe button-name) AND throws a console error on click",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["accessible name", "button-name", "aria-label", "referenceerror", "console error", "uncaught", "not defined", "a11y"]
+    },
+    {
+      "id": "S1", "axis": "ux-subjective", "kind": "aesthetic", "stream": "advisory",
+      "title": "Finalize panel: garish orange/magenta accents + erratic spacing, inconsistent with the rest of the app",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["aesthetic", "garish", "inconsistent", "spacing", "visual polish", "styling", "advisory"]
+    },
+    { "id": "N1", "axis": "functional", "polarity": "negative",
+      "title": "SAFE amount for 1,000 shares @ $1.00/share computes AND persists exactly $1000.00 — MUST NOT be flagged",
+      "oracle": "amount = shares * price = 1,000 * $1.00 = $1000.00 exactly; a whole-cent product, so F2's floor-to-cent truncation (Math.floor(shares*price*100)/100) causes zero loss on this specific input; captable:safeAmount reads back 1000 exactly",
+      "match": ["1000 shares wrong", "safe amount incorrect", "1000.00 wrong", "amount not persisted", "1000 mismatch"] },
+    { "id": "N2", "axis": "ux-objective", "polarity": "negative",
+      "title": "Primary button label #1a1a1a on #ffffff (~17:1) passes AA — MUST NOT be flagged",
+      "match": ["primary button contrast", "label unreadable"] },
+    { "id": "N3", "axis": "broken-journey", "polarity": "negative",
+      "title": "Editing a persisted founder DOES persist — MUST NOT be flagged as a silent drop",
+      "match": ["edit not persisted", "edit silent drop"] },
+    { "id": "P1", "axis": "ux-perceptual", "polarity": "positive", "stream": "advisory-eligible",
+      "title": "Finalize CTA sits below the fold with no visual affordance; primary action not discoverable",
+      "suspectedLayer": "FE",
+      "match": ["not discoverable", "below the fold", "no affordance", "hierarchy", "primary action hidden"] },
+    { "id": "P2", "axis": "ux-perceptual", "polarity": "positive", "stream": "advisory-eligible",
+      "title": "Amount column right-aligned, labels left-aligned, rows visually misread as unrelated",
+      "suspectedLayer": "FE",
+      "match": ["misaligned", "alignment", "visually unrelated", "hard to scan"] }
+  ]
+}
