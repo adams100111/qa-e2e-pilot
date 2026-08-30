@@ -215,7 +215,11 @@ cmd_resume() {
     jq -r '
       .criteria |
       last |
-      "RESUME cursor:\n  criterion_id:  \(.criterion_id)\n  verdict:       \(.verdict)\n  confidence:    \(.confidence)\n  phase:         \(.phase)\n  last_action:   \(.last_action)\n  checkpointed:  \(.checkpointed_at)"
+      . as $c |
+      ($c.kinds // []) as $kinds |
+      (if ($kinds | length) > 0 then ($kinds | join(",")) else "-" end) as $kinds_str |
+      (if $c.verdict == "pass" then (if ($kinds | length) > 0 then "complete" else "ungated" end) else "n/a" end) as $evidence |
+      "RESUME cursor:\n  criterion_id:  \($c.criterion_id)\n  verdict:       \($c.verdict)\n  confidence:    \($c.confidence)\n  phase:         \($c.phase)\n  last_action:   \($c.last_action)\n  checkpointed:  \($c.checkpointed_at)\n  kinds:         \($kinds_str)\n  evidence:      \($evidence)"
     ' "$file"
     echo ""
     echo "Skip all criteria up to and including: $(jq -r '.criteria | last | .criterion_id' "$file")"
@@ -232,6 +236,14 @@ c = criteria[-1]
 print("RESUME cursor:")
 for k in ("criterion_id", "verdict", "confidence", "phase", "last_action", "checkpointed_at"):
     print(f"  {k}: {c.get(k)}")
+kinds = c.get("kinds") or []
+kinds_str = ",".join(kinds) if kinds else "-"
+if c.get("verdict") == "pass":
+    evidence = "complete" if kinds else "ungated"
+else:
+    evidence = "n/a"
+print(f"  kinds: {kinds_str}")
+print(f"  evidence: {evidence}")
 print()
 print(f"Skip all criteria up to and including: {c.get('criterion_id')}")
 PYEOF
@@ -251,16 +263,31 @@ cmd_list() {
   [[ -f "$file" ]] || { echo "No checkpoint file found for run: ${run_id}" >&2; exit 1; }
 
   if has_jq; then
-    echo "criterion_id	verdict	confidence	checkpointed_at"
-    jq -r '.criteria[] | [.criterion_id, .verdict, .confidence, .checkpointed_at] | @tsv' "$file"
+    echo "criterion_id	verdict	confidence	checkpointed_at	kinds	evidence"
+    jq -r '
+      .criteria[] |
+      . as $c |
+      ($c.kinds // []) as $kinds |
+      (if ($kinds | length) > 0 then ($kinds | join(",")) else "-" end) as $kinds_str |
+      (if $c.verdict == "pass" then (if ($kinds | length) > 0 then "complete" else "ungated" end) else "n/a" end) as $evidence |
+      [$c.criterion_id, $c.verdict, $c.confidence, $c.checkpointed_at, $kinds_str, $evidence] | @tsv
+    ' "$file"
   elif has_py; then
     python3 - "$file" <<'PYEOF'
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
-print("criterion_id\tverdict\tconfidence\tcheckpointed_at")
+print("criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence")
 for c in data.get("criteria", []):
-    print("\t".join(str(c.get(k, "")) for k in ("criterion_id", "verdict", "confidence", "checkpointed_at")))
+    kinds = c.get("kinds") or []
+    kinds_str = ",".join(kinds) if kinds else "-"
+    if c.get("verdict") == "pass":
+        evidence = "complete" if kinds else "ungated"
+    else:
+        evidence = "n/a"
+    row = [str(c.get(k, "")) for k in ("criterion_id", "verdict", "confidence", "checkpointed_at")]
+    row += [kinds_str, evidence]
+    print("\t".join(row))
 PYEOF
   else
     die "checkpoint.sh --list needs either 'jq' or 'python3'."

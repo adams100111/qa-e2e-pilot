@@ -57,11 +57,16 @@ RC_RESUME_MISSING=$?
 check "resume: missing run exits nonzero" "$([[ "$RC_RESUME_MISSING" -ne 0 ]] && echo yes)" "yes"
 
 # --- Case 4: --list TSV includes both criteria, with the header the code emits
+# NOTE: header intentionally updated for Task 1.4 (append-only: kinds + evidence
+# trailing columns added). This is a deliberate change to a prior assertion —
+# see task-1.4-report.md.
 LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$RUN_ID")"
-check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at')"
+check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
 check "list: row count == 2" "$(echo "$LIST_OUT" | tail -n +2 | grep -c .)" "2"
 check "list: C1 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C1"{print $1","$2","$3}')" "C1,fail,high"
 check "list: C2 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C2"{print $1","$2","$3}')" "C2,blocked,low"
+check "list: C1 (fail, no kinds) kinds+evidence" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C1"{print $5","$6}')" "-,n/a"
+check "list: C2 (blocked, no kinds) kinds+evidence" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C2"{print $5","$6}')" "-,n/a"
 
 # --- Case 5: invalid verdict exits non-zero and does not mutate the file -----
 (cd "$WORK" && bash "$SCRIPT" "$RUN_ID" C3 foo >/dev/null 2>&1)
@@ -406,6 +411,93 @@ check "gate: invalid kind record not written" \
   "$([[ ! -f "$GATE6_CKPT_FILE" ]] && echo yes)" "yes"
 check "gate: invalid kind emits exactly one gate/diagnostic line" \
   "$(echo "$GATE6_ERR" | grep -cE 'EVIDENCE GATE|Invalid kind')" "1"
+
+# --- Case 25: --resume surfaces kinds + evidence:complete for a gated pass ---
+# GATE_RUN_ID/G1 (Case 17) is a `pass` with --kinds bake backed by valid evidence.
+RESUME_GATED_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$GATE_RUN_ID")"
+check "resume: gated pass shows kinds bake" \
+  "$(echo "$RESUME_GATED_OUT" | grep -qE 'kinds:[[:space:]]+bake' && echo yes)" "yes"
+check "resume: gated pass shows evidence complete" \
+  "$(echo "$RESUME_GATED_OUT" | grep -qE 'evidence:[[:space:]]+complete' && echo yes)" "yes"
+
+# --- Case 26: --list surfaces kinds + evidence columns for a gated pass -----
+LIST_GATED_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$GATE_RUN_ID")"
+check "list: gated pass row kinds+evidence" \
+  "$(echo "$LIST_GATED_OUT" | awk -F'\t' '$1=="G1"{print $5","$6}')" "bake,complete"
+
+# --- Case 27: blocked criterion (with kinds) shows evidence n/a, resume+list -
+# GATE2_RUN_ID/G2 (Case 18) is `blocked` with --kinds bake but no evidence on
+# disk — non-pass verdicts are exempt from the gate, so the record exists, but
+# evidence status must read n/a (the gate never ran/enforced it).
+RESUME_BLOCKED_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$GATE2_RUN_ID")"
+check "resume: blocked shows evidence n/a" \
+  "$(echo "$RESUME_BLOCKED_OUT" | grep -qE 'evidence:[[:space:]]+n/a' && echo yes)" "yes"
+check "resume: blocked still shows its kinds" \
+  "$(echo "$RESUME_BLOCKED_OUT" | grep -qE 'kinds:[[:space:]]+bake' && echo yes)" "yes"
+
+LIST_BLOCKED_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$GATE2_RUN_ID")"
+check "list: blocked row shows evidence n/a" \
+  "$(echo "$LIST_BLOCKED_OUT" | awk -F'\t' '$1=="G2"{print $6}')" "n/a"
+
+# --- Case 28: pass with no --kinds shows evidence:ungated, kinds: - --------
+# GATE3_RUN_ID/G3 (Case 19) is a `pass` recorded with no --kinds at all.
+RESUME_UNGATED_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$GATE3_RUN_ID")"
+check "resume: ungated pass shows kinds -" \
+  "$(echo "$RESUME_UNGATED_OUT" | grep -qE 'kinds:[[:space:]]+-' && echo yes)" "yes"
+check "resume: ungated pass shows evidence ungated" \
+  "$(echo "$RESUME_UNGATED_OUT" | grep -qE 'evidence:[[:space:]]+ungated' && echo yes)" "yes"
+
+LIST_UNGATED_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$GATE3_RUN_ID")"
+check "list: ungated pass row kinds+evidence" \
+  "$(echo "$LIST_UNGATED_OUT" | awk -F'\t' '$1=="G3"{print $5","$6}')" "-,ungated"
+
+# --- Case 29: kinds/evidence parity under the jq-masked python3 fallback ---
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  # complete: PYGATE_RUN_ID/PG1 (Case 21) is a gated pass w/ valid bake evidence
+  PY_RESUME_COMPLETE="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" --resume "$PYGATE_RUN_ID" 2>&1)"
+  check "py-fallback resume: gated pass shows kinds bake" \
+    "$(echo "$PY_RESUME_COMPLETE" | grep -qE 'kinds:[[:space:]]*bake' && echo yes)" "yes"
+  check "py-fallback resume: gated pass shows evidence complete" \
+    "$(echo "$PY_RESUME_COMPLETE" | grep -qE 'evidence:[[:space:]]*complete' && echo yes)" "yes"
+
+  PY_LIST_COMPLETE="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" --list "$PYGATE_RUN_ID" 2>&1)"
+  check "py-fallback list: gated pass row kinds+evidence" \
+    "$(echo "$PY_LIST_COMPLETE" | awk -F'\t' '$1=="PG1"{print $5","$6}')" "bake,complete"
+
+  # ungated: a fresh `pass` with no --kinds, written entirely under the
+  # fallback (PY_RUN_ID/C1 from Case 7 is unsuitable — it gets replaced to
+  # `fail` later in that same case, so its final verdict is not `pass`).
+  PYUNGATED_RUN_ID="test-run-py-ungated"
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYUNGATED_RUN_ID" PU1 pass >/dev/null 2>&1)
+  PY_RESUME_UNGATED="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" --resume "$PYUNGATED_RUN_ID" 2>&1)"
+  check "py-fallback resume: ungated pass shows kinds -" \
+    "$(echo "$PY_RESUME_UNGATED" | grep -qE 'kinds:[[:space:]]*-' && echo yes)" "yes"
+  check "py-fallback resume: ungated pass shows evidence ungated" \
+    "$(echo "$PY_RESUME_UNGATED" | grep -qE 'evidence:[[:space:]]*ungated' && echo yes)" "yes"
+
+  # n/a: a fresh blocked-with-kinds record written entirely under the fallback
+  PYBLOCK_RUN_ID="test-run-py-blocked"
+  PYBLOCK_CKPT_FILE="$WORK/.qa/runs/${PYBLOCK_RUN_ID}/checkpoint.json"
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYBLOCK_RUN_ID" PB1 blocked --kinds bake >/dev/null 2>&1)
+  PY_RESUME_NA="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" --resume "$PYBLOCK_RUN_ID" 2>&1)"
+  check "py-fallback resume: blocked shows evidence n/a" \
+    "$(echo "$PY_RESUME_NA" | grep -qE 'evidence:[[:space:]]*n/a' && echo yes)" "yes"
+  PY_LIST_NA="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" --list "$PYBLOCK_RUN_ID" 2>&1)"
+  check "py-fallback list: blocked row shows evidence n/a" \
+    "$(echo "$PY_LIST_NA" | awk -F'\t' '$1=="PB1"{print $6}')" "n/a"
+
+  echo "note - kinds/evidence jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - kinds/evidence jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
