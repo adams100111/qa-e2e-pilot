@@ -9,20 +9,23 @@ It plants **known** bugs in a self-contained app, then scores any QA run's findi
 fixture/index.html        self-contained app (no build) with 11 planted bugs; "backend" = localStorage
 seeds.json                ground-truth planted bugs + match rules + the acceptance gate thresholds
 scorer/score.js           matches a findings file to seeds -> recall per axis + gate check
+scorer/convert-buglog.js  converts a real run's bug-log.json -> a MEASURED findings file
 scorer/pass-gate.js       reference impl of the execution-enforcement seam ("green toast != pass")
 detectors/ux-detectors.js dependency-free in-page OBJECTIVE UX detectors (contrast/overflow/target/name)
 detectors/observe.js      the consolidated observe-round payload (ADR-0006): 1 evaluate call per round
-findings/baseline.json    ESTIMATED: what the current pipeline catches (~30% overall)
-findings/after-fixed.json ESTIMATED: what the overhauled pipeline is designed to catch (~90% overall, gate PASS)
+findings/                 empty until you convert a real run (see "MEASURED vs ESTIMATED" below);
+                          the hand-authored baseline.json/after-fixed.json ESTIMATED projections were
+                          removed — measurement must be real, not a hand-typed projection
 run-baseline.sh           one-command runner
 ```
 
 ## Quick start
 
 ```bash
-./run-baseline.sh                 # score bundled baseline + after-fixed projections (ESTIMATED)
 ./run-baseline.sh --serve         # serve the fixture at http://localhost:8099
-node scorer/score.js findings/after-fixed.json --gate   # exit 1 if the acceptance gate fails
+# then convert + score a real run (see "MEASURED vs ESTIMATED" below):
+node scorer/convert-buglog.js <run>/bug-log.json > findings/measured-<run>.json
+node scorer/score.js findings/measured-<run>.json --gate   # exit 1 if the acceptance gate fails
 ```
 
 ## The 11 planted bugs (axes)
@@ -43,23 +46,26 @@ node scorer/score.js findings/after-fixed.json --gate   # exit 1 if the acceptan
 
 ## MEASURED vs ESTIMATED
 
-The bundled `findings/*.json` are **ESTIMATED** projections derived from the miss taxonomy (they carry
-`"estimated": true`, and the scorer prints `(ESTIMATED)`). To get **MEASURED** numbers:
+Earlier, bundled `findings/*.json` were **ESTIMATED** projections derived from the miss taxonomy
+(carrying `"estimated": true`, printed by the scorer as `(ESTIMATED)`) — these hand-authored
+projections have since been removed; measurement must be real. To get **MEASURED** numbers:
 
 1. `./run-baseline.sh --serve` (leave running at `http://localhost:8099`).
 2. Set `.qa/config.json` `baseUrl` to `http://localhost:8099`, single-repo (no backend repo — the
    fixture is black-box; ownership/precision oracles are supplied in `seeds.json` so recompute stays
    `confidence: high`). Run the `qa-e2e-pilot` agent against it.
-3. Convert the run's `.qa/runs/<id>/bug-log.json` to a findings file:
-   ```json
-   { "source": "run <id>", "findings": [ { "axis": "functional", "verdict": "fail",
-     "text": "<title + suspected_layer + expected/actual from the bug-log entry>" } ] }
+3. Convert the run's `.qa/runs/<id>/bug-log.json` to a findings file with `scorer/convert-buglog.js`
+   (it reads the bug-log's real structured fields — title/expected/actual/suspected_layer — and
+   composes each into a finding's `text`, carrying `verdict`/`suspectedLayer` through unchanged; no
+   hand-typed keywords, and it sets `"estimated": false` so the scorer prints `(MEASURED)`):
+   ```bash
+   node scorer/convert-buglog.js <run>/bug-log.json > findings/measured-<run>.json
+   node scorer/score.js findings/measured-<run>.json --gate
    ```
-   (omit `"estimated": true` — the scorer will then print `(MEASURED)`).
-4. `node scorer/score.js findings/<your-run>.json --gate`.
 
-A finding matches a seed if `finding.seedId === seed.id` OR any of the seed's `match` keywords appears
-in `finding.text`. This lets an unlabelled real bug-log score without hand-tagging.
+The converted findings carry no `seedId` — scoring against `seeds.json` attributes them to fixture
+seeds via the judge seam (`scorer/attribute.js`): a seed's `match` keywords are only a HINT that gates
+a judge call, never a bare-keyword scorer credit (see `score.js` for the strict-attribution rule).
 
 ## What this harness proves
 
