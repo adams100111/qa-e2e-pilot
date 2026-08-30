@@ -25,9 +25,9 @@
  * counted in the verdict-recall gate or the `overall` denominator (ADR-0008: aesthetics are
  * advisory, never a verdict).
  *
- * MEASURED vs ESTIMATED: numbers are MEASURED when findings.json is a real qa-e2e-pilot run's
- * bug-log.json (converted via convert-buglog.js). The bundled findings/baseline.json and
- * findings/after-fixed.json are ESTIMATED projections (labeled as such) — see README.
+ * MEASURED vs ESTIMATED: numbers are MEASURED (estimated:false) when findings.json comes from a
+ * real qa-e2e-pilot run's bug-log.json (via convert-buglog.js) — e.g. findings/measured-baseline.json,
+ * findings/measured-gated*.json. Hand-authored ESTIMATED projections are not kept in this harness.
  */
 'use strict';
 const fs = require('fs');

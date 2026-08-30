@@ -1,5 +1,5 @@
 {
-  "_doc": "Ground-truth planted bugs in fixture/index.html. The scorer matches a findings file against these seeds and prints true bug-recall PER AXIS. axis roll-ups: 'functional' = functional + broken-journey (the '~40%' north-star); 'ux' = ux-objective + ux-subjective (the '~15%'). ux-subjective is ADVISORY only (ADR-0008) and is scored in a separate advisory stream, never in the verdict-recall gate. A finding matches a seed if finding.seedId == seed.id OR any seed.match keyword (case-insensitive) appears in finding.text/message.",
+  "_doc": "Ground-truth planted bugs in fixture/index.html. The scorer matches a findings file against these seeds and prints true bug-recall PER AXIS. axis roll-ups: 'functional' = functional + broken-journey (the '~40%' north-star); 'ux' = ux-objective + ux-subjective (the '~15%'). ux-subjective is ADVISORY only (ADR-0008) and is scored in a separate advisory stream, never in the verdict-recall gate. A finding is credited to a seed ONLY via finding.seedId or finding.judgedSeedId (set by attribute.js's judge). seed.match keywords are a HINT the judge uses to pick candidate seeds — they are NEVER credited by the scorer directly (no keyword-only matching).",
   "fixture": "captable-mini",
   "gate": {
     "functionalRecallMin": 0.70,
