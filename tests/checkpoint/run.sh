@@ -130,7 +130,35 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "py-fallback record-evidence: stdout is the evidence-relative path" \
     "$RE_PY_OUT" "evidence/C1/bake-read-back.json"
 
-  echo "note - record-evidence.sh jq-fallback sub-case: RAN (same restricted fakebin)"
+  RE_PY_RECOMPUTE_FILE="$RE_EVID_DIR/recompute.json"
+  RE_PY_COMPUTED_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 computed --oracle 33.33 --observed 33.4 --match false 2>&1)"
+  check "py-fallback record-evidence: computed file created" \
+    "$([[ -f "$RE_PY_RECOMPUTE_FILE" ]] && echo yes)" "yes"
+  check "py-fallback record-evidence: computed valid json" \
+    "$(python3 -c "import json; json.load(open('$RE_PY_RECOMPUTE_FILE')); print('ok')" 2>/dev/null)" "ok"
+  check "py-fallback record-evidence: computed oracle" \
+    "$(python3 -c "import json;d=json.load(open('$RE_PY_RECOMPUTE_FILE'));print(d['oracle'])" 2>/dev/null)" "33.33"
+  check "py-fallback record-evidence: computed observed" \
+    "$(python3 -c "import json;d=json.load(open('$RE_PY_RECOMPUTE_FILE'));print(d['observed'])" 2>/dev/null)" "33.4"
+  check "py-fallback record-evidence: computed match" \
+    "$(python3 -c "import json;d=json.load(open('$RE_PY_RECOMPUTE_FILE'));print(d['match'])" 2>/dev/null)" "False"
+  check "py-fallback record-evidence: computed stdout is the evidence-relative path" \
+    "$RE_PY_COMPUTED_OUT" "evidence/C1/recompute.json"
+
+  RE_PY_NETWORK_FILE="$RE_EVID_DIR/network-response.json"
+  RE_PY_PROBE_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' 2>&1)"
+  check "py-fallback record-evidence: probe file created" \
+    "$([[ -f "$RE_PY_NETWORK_FILE" ]] && echo yes)" "yes"
+  check "py-fallback record-evidence: probe valid json" \
+    "$(python3 -c "import json; json.load(open('$RE_PY_NETWORK_FILE')); print('ok')" 2>/dev/null)" "ok"
+  check "py-fallback record-evidence: probe status" \
+    "$(python3 -c "import json;d=json.load(open('$RE_PY_NETWORK_FILE'));print(d['status'])" 2>/dev/null)" "200"
+  check "py-fallback record-evidence: probe shape.ok" \
+    "$(python3 -c "import json;d=json.load(open('$RE_PY_NETWORK_FILE'));print(d['shape']['ok'])" 2>/dev/null)" "True"
+  check "py-fallback record-evidence: probe stdout is the evidence-relative path" \
+    "$RE_PY_PROBE_OUT" "evidence/C1/network-response.json"
+
+  echo "note - record-evidence.sh jq-fallback sub-case: RAN (same restricted fakebin, bake+computed+probe)"
 else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
