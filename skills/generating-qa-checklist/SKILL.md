@@ -76,7 +76,34 @@ Example multiplicity schedule for a cap-table governance feature: `2 share class
 
 ---
 
-### Step 3 — Attach the Oracle
+### Step 3 — Edge-Case Coverage Catalog (REQUIRED — emit or defer-with-reason)
+
+A re-measurement showed the plugin's recall is limited by **coverage**, not verification quality: bugs F3/J1/J3/J4/F4 were missed because no criterion tested them at all. This step closes that gap. It is **required output**, not optional prose — the generator MUST walk this catalog for every write-bearing surface.
+
+Note the distinction from Step 2: Step 2's empty/loading/error states test what a surface *renders* before any write happens. This catalog tests the *values submitted during a write* (and the aggregate state after a delete) — a different axis of coverage, and the one the re-measurement showed was missing.
+
+A surface is **write-bearing** if Step 1a listed at least one write-triggering element on it (create/update/delete/toggle/finalize).
+
+For every write-bearing surface, walk this table top to bottom and emit one criterion per row:
+
+| Edge type | What it tests | Seed it would catch | `Kind` to assign | `Tags` to set |
+|---|---|---|---|---|
+| empty / 0-value input | a 0/empty write that may falsely "succeed" without persisting | J4 | `business-rule` | `probe-needed` |
+| negative / out-of-range value | missing validation → invalid state (use the driving-browser-qa read-back rule for numeric entry — confirm the field actually holds the out-of-range value via `scripts/react-set-input.js` before trusting a "rejected" outcome) | F4 | `business-rule` | `probe-needed` |
+| every-Nth repetition (N≥3) | a silent drop on the Nth repeated write (bake count == N, not N-1) | J3 | `multiplicity-N` | (none required — sequential default) |
+| named / boundary / reserved-looking value | a specific input that silently isn't persisted despite a success indicator | J1 | `happy-path` | `probe-needed` |
+| delete-then-reconcile | aggregate re-reconciliation after a delete — totals/counts must re-sum, not go stale | F3 | `downstream-cascade` | (none required; add `probe-needed` if the total is rendered from a cached/optimistic value) |
+| cross-role / cross-tenant absence (when roles or tenants exist) | another role/tenant must NOT see the entity | authz | `cross-tenant` | `cross-tenant` |
+
+- [ ] Set `Kind`/`Tags` per the table above and let Step 7 **derive** `Kinds`/`probeNeeded` from them — do not hand-set `Kinds` here; this reuses the existing Phase-1 mapping instead of duplicating it.
+- [ ] **If a row doesn't apply to a surface** (e.g. the surface has no delete action, so delete-then-reconcile can't run; or the project is single-role/single-tenant, so the cross-role row has nothing to probe), still emit the criterion — set its verdict-to-be to `deferred` and state the reason in EXPECTED (e.g. "deferred — surface has no delete action"). Never drop the row silently; a reviewer must be able to see the gap was considered, not missed. `deferred` is one of the five existing verdicts — do not invent a sixth for this.
+- [ ] For **every-Nth**, use the concrete N already set in Step 2's multiplicity schedule (N≥3) — bake the count immediately after the Nth add specifically, not just after "N items."
+- [ ] For **named/boundary/reserved-looking value**, pick an input drawn from the domain: a value colliding with a UI label/placeholder, a reserved word, a boundary-length string, or a value equal to an adjacent field — anything that risks silent normalization or a swallowed write.
+- [ ] For **cross-role/cross-tenant absence**, this row is satisfied by Step 6's cross-tenant heuristic when only tenants exist; when the project has discovered roles (2B, `discovering-user-roles`), expand it per role. A single-user, single-tenant surface always defers this row with reason "single-role app — no second role/tenant to probe."
+
+---
+
+### Step 4 — Attach the Oracle
 
 Every criterion must state its expected value or rule before verification begins. A criterion with no oracle must be flagged `confidence-hint: low`.
 
@@ -101,7 +128,7 @@ Every criterion must state its expected value or rule before verification begins
 
 ---
 
-### Step 4 — Add Backend-Baking Assertions
+### Step 5 — Add Backend-Baking Assertions
 
 For every write criterion, extend it with an explicit baking section:
 
@@ -112,7 +139,7 @@ For every write criterion, extend it with an explicit baking section:
 
 ---
 
-### Step 5 — Add Cross-Cutting Heuristics
+### Step 6 — Add Cross-Cutting Heuristics
 
 These two categories are easy to omit and were missed in the real session until explicitly added as a generation heuristic. They are REQUIRED for every Run.
 
@@ -132,7 +159,7 @@ For every write criterion, add a sub-step: re-run the read-back authenticated as
 
 ---
 
-### Step 6 — Tag for Execution Order
+### Step 7 — Tag for Execution Order
 
 Apply these tags to every criterion in the checklist:
 
@@ -176,7 +203,7 @@ A criterion may match several rows — union the kinds (e.g. a computed write is
 
 ---
 
-### Step 7 — Emit and Stop
+### Step 8 — Emit and Stop
 
 1. Copy `templates/checklist.md` to `.qa/runs/<run-id>/checklist.md`.
 2. Fill every criterion block (header + per-criterion fields).
@@ -198,6 +225,12 @@ Do not proceed to driving-browser-qa until the checklist has been reviewed. The 
 | Business-rule gate / downstream cascade | Setup gate releases wrong state (bug #3); transaction doesn't update holdings |
 | Cross-tenant isolation | Draft visible to another tenant (bug #12) — missed if not explicitly generated |
 | Concurrency/race | Double-finalize, optimistic-lock missing |
+| Edge-case catalog: empty/0-value input | False "success" on a 0/empty write that never persists (J4) |
+| Edge-case catalog: negative/out-of-range value | Missing server-side validation on an invalid value (F4) |
+| Edge-case catalog: every-Nth repetition | Silent drop on the Nth repeated write (J3) |
+| Edge-case catalog: named/boundary value | "Ghost" write — success indicator fires, nothing persists (J1) |
+| Edge-case catalog: delete-then-reconcile | Stale aggregate/total after a delete (F3) |
+| Edge-case catalog: cross-role/tenant absence | Cross-role authz leak — deferred with reason when no second role exists |
 
 ---
 
@@ -222,3 +255,15 @@ With this skill: the cross-tenant heuristic generates a required sub-step — re
 Given: governance setup wizard completes finalize step.
 Without this skill: checklist asserts the wizard reaches the last step; stops there.
 With this skill: oracle states "finalize must release a populated project view with share classes, founders, and board members visible." After finalize the baking step navigates to the project overview; the overview renders an empty cap table (downstream cascade did not fire). Gate bug caught because the oracle was the downstream state, not the wizard completion.
+
+**Eval 5 — Edge-case coverage set on a founders surface (F3/F4/J3/J4/J1)**
+Given: the founders surface (write-bearing: create, edit, delete) has only a happy-path create criterion in the checklist.
+Without this skill: F3/F4/J3/J4/J1 have no criterion at all — the re-measurement showed these are pure coverage gaps, not verification failures. A "0-share" founder create, a negative-share create, the 3rd add in a row, a founder named to collide with UI copy, and a post-delete total are never exercised.
+With this skill: Step 3 walks the catalog for this surface and emits, alongside the happy path:
+- `C-FOUNDERS-EDGE-01` (0-share input) — create a founder with `shares = 0`. `Kind: business-rule`, `Tags: probe-needed` → `Kinds: bake,probe`. Oracle: a 0-share founder must be rejected or persist visibly at 0% — a "Success" toast with no row created is a `fail` (catches J4).
+- `C-FOUNDERS-EDGE-02` (negative-share input) — create a founder with `shares = -500`, entered via `scripts/react-set-input.js` per driving-browser-qa's numeric read-back rule so a swallowed keystroke can't masquerade as a rejection. `Kind: business-rule`, `Tags: probe-needed` → `Kinds: bake,probe`. Oracle: negative shares must be rejected server-side, not silently coerced into a valid 0-share row (catches F4).
+- `C-FOUNDERS-EDGE-03` (every-3rd add) — add founders 1, 2, 3 in sequence (N=3 from the Step 2 multiplicity schedule). `Kind: multiplicity-N` → `Kinds: bake`. Oracle: the read-back count after founder #3 is exactly 3, not 2 (catches J3).
+- `C-FOUNDERS-EDGE-04` (named/boundary value) — create a founder named literally "Founder" (collides with the form's own placeholder). `Kind: happy-path`, `Tags: probe-needed` → `Kinds: bake,probe`. Oracle: the founder is present in the read-back list, not just in the success toast (catches J1).
+- `C-FOUNDERS-EDGE-05` (delete-then-reconcile) — delete one of the 3 founders. `Kind: downstream-cascade` → `Kinds: bake`. Oracle: the founders count badge and ownership-percentage sum re-reconcile to 2 founders summing to 100%, not a stale total left over from 3 (catches F3).
+- `C-FOUNDERS-EDGE-06` (cross-role/tenant absence) — this fixture is single-role, single-tenant. Instead of a silent omission, emit `deferred`: reason "single-role app — no second role/tenant to probe."
+Each row's `Kind`/`Tags` came straight from the Step 3 table; `Kinds`/`probeNeeded` were derived by Step 7, not hand-set. None of these five bugs required a new verification technique — only a criterion that existed to point verification at them.
