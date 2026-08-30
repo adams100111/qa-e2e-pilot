@@ -22,7 +22,9 @@
 
 <!-- One block per criterion. Duplicate this block as needed.
      ID format: C-<surface-short>-<sequence>  e.g. C-FINALIZE-01
-     Tags: independent | read-only | race | cross-tenant -->
+     Tags: independent | read-only | race | cross-tenant | probe-needed
+     (probe-needed: set when the expected state can't be confirmed via the visible UI alone —
+      see generating-qa-checklist Step 6. probe-needed OR cross-tenant derives Kinds: probe.) -->
 
 ---
 
@@ -32,8 +34,8 @@
 |---|---|
 | Surface | <!-- route + sub-tab, e.g. /governance/setup → Finalize step --> |
 | Kind | <!-- happy-path / multiplicity-0 / multiplicity-1 / multiplicity-N / empty-state / loading-state / error-state / computed-logic / business-rule / downstream-cascade / cross-tenant / race --> |
-| Tags | <!-- independent / read-only / race / cross-tenant — or "sequential (default)" --> |
-| Kinds | <!-- derived: bake / computed / probe (csv), per the Kind+Tags mapping table in generating-qa-checklist Step 6; read-only/pure-display → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
+| Tags | <!-- independent / read-only / race / cross-tenant / probe-needed — or "sequential (default)" --> |
+| Kinds | <!-- derived: bake / computed / probe (csv), per the Kind+Tags mapping table in generating-qa-checklist Step 6 — `probe` comes ONLY from Tag: cross-tenant or Tag: probe-needed (never guessed); read-only/pure-display with neither tag → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
 | probeNeeded | <!-- true if Kinds includes probe (cross-tenant / backend-probe criteria) — else false --> |
 | Confidence hint | <!-- high — oracle from spec/domain rule; OR low — oracle derived from backend code only --> |
 | Source | <!-- generated / ingested / hand-authored --> |

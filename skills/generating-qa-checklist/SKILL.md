@@ -143,8 +143,18 @@ Apply these tags to every criterion in the checklist:
 | `read-only: true` | No write to backend | May fan out (rarely) |
 | `race: true` | Deliberate concurrency test | Fan out — two drivers, same backend entity |
 | `cross-tenant: true` | Reads back as a second tenant | Sequential; second auth session on same driver |
+| `probe-needed: true` | Expected state cannot be confirmed through the visible UI alone | Sequential; `probing-apis-through-browser` invoked, evidence required |
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
+
+**Setting `probe-needed` (generation-time rule, mechanical)**
+
+Set `probe-needed: true` when the criterion's expected state cannot be confirmed through the visible UI alone — i.e. either condition holds:
+
+- [ ] The oracle value lives only server-side (a computed/derived field, an internal ID, a timestamp, or a status the UI never displays).
+- [ ] The UI renders a value that could mask the real state (a generic "Success" toast, a rounded/truncated display value, or an error banner that could hide a 2xx-with-wrong-body response).
+
+If neither holds, leave `probe-needed` unset — the criterion is confirmable from the UI/bake read-back alone.
 
 **Derive `Kinds` — the evidence the gate will require**
 
@@ -153,13 +163,15 @@ Every criterion also carries a derived **`Kinds`** field: a CSV subset of `bake|
 | Criterion `Kind` / `Tag` | Required evidence kind(s) | Artifact |
 |---|---|---|
 | `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
-| `multiplicity-0/1/N`, `happy-path`, `downstream-cascade`, or any criterion that performs a WRITE | `bake` | `evidence/<crit>/bake-read-back.json` |
-| `Kind: cross-tenant` / `Tag: cross-tenant`, or a criterion that needs backend probing | `probe` | `evidence/<crit>/network-response.json` |
+| `multiplicity-0/1/N`, `happy-path`, `downstream-cascade`, or any criterion NOT tagged `read-only` | `bake` | `evidence/<crit>/bake-read-back.json` |
+| `Tag: cross-tenant` OR `Tag: probe-needed` | `probe` | `evidence/<crit>/network-response.json` |
 
-A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion matching none of these rows (read-only/pure-display, e.g. `empty-state`, `loading-state`) derives `Kinds: none` and is legitimately un-gated.
+A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion tagged `read-only` with no computed logic and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
+
+`Kinds` is always **derived from tags**, never the reverse: `probe-needed` (set at generation time, per the rule above) is the INPUT; `Kinds: probe` is the OUTPUT the table derives from it. The same direction applies to `cross-tenant`. Do not treat `Kinds` as something you inspect to decide whether probing was needed — decide `probe-needed` first, from the criterion itself, then let the table derive `Kinds`.
 
 - [ ] Set `Kinds` to the union of matched rows, as CSV, in the order `bake,computed,probe`.
-- [ ] Set `probeNeeded: true` whenever the `probe` kind was derived, so the verifier knows to invoke `probing-apis-through-browser` rather than relying on the UI alone.
+- [ ] Set `probeNeeded: true` whenever `Tag: probe-needed` or `Tag: cross-tenant` is set (i.e. whenever the `probe` kind was derived), so the verifier knows to invoke `probing-apis-through-browser` rather than relying on the UI alone.
 - [ ] Record both fields in the criterion's summary row — the verifier reads `Kinds` straight into `checkpoint.sh --kinds` at pass time; do not leave it to be inferred later.
 
 ---
