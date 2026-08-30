@@ -341,10 +341,71 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "py-fallback gate: stored kinds contains bake" \
     "$(python3 -c "import json;d=json.load(open('$PYGATE_CKPT_FILE'));print('bake' in d['criteria'][0]['kinds'])" 2>/dev/null)" "True"
 
+  # probe reject: no evidence
+  PYGATE_PROBE_RUN_ID="test-run-py-gate-probe"
+  PYGATE_PROBE_CKPT_FILE="$WORK/.qa/runs/${PYGATE_PROBE_RUN_ID}/checkpoint.json"
+  PYGATE_PROBE_REJ_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 pass --kinds probe 2>&1 >/dev/null)"
+  RC_PYGATE_PROBE_REJ=$?
+  check "py-fallback gate: probe no-evidence pass exits nonzero" "$([[ "$RC_PYGATE_PROBE_REJ" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback gate: probe no-evidence stderr names network-response.json" \
+    "$(echo "$PYGATE_PROBE_REJ_ERR" | grep -qF 'network-response.json' && echo yes)" "yes"
+  check "py-fallback gate: probe no-evidence record not written" \
+    "$([[ ! -f "$PYGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  # probe accept: write evidence via python3 fallback record-evidence.sh, then pass
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 probe --status 200 --shape '{"ok":true}' >/dev/null)
+  PYGATE_PROBE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 pass --kinds probe 2>&1)"
+  RC_PYGATE_PROBE_OK=$?
+  check "py-fallback gate: valid probe evidence accepted" "$RC_PYGATE_PROBE_OK" "0"
+  check "py-fallback gate: probe stored kinds is probe" \
+    "$(python3 -c "import json;d=json.load(open('$PYGATE_PROBE_CKPT_FILE'));print(d['criteria'][0]['kinds'])" 2>/dev/null)" "['probe']"
+
   echo "note - evidence-gate jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else
   echo "SKIP - evidence-gate jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
+
+# --- Case 22: evidence gate — pass --kinds probe with NO probe artifact -----
+GATE5_RUN_ID="test-run-gate-5"
+GATE5_CKPT_FILE="$WORK/.qa/runs/${GATE5_RUN_ID}/checkpoint.json"
+
+GATE5_NOEV_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE5_RUN_ID" G5 pass --kinds probe 2>&1 >/dev/null)"
+RC_GATE5_NOEV=$?
+check "gate: probe no-evidence pass exits nonzero" "$([[ "$RC_GATE5_NOEV" -ne 0 ]] && echo yes)" "yes"
+check "gate: probe no-evidence stderr names network-response.json" \
+  "$(echo "$GATE5_NOEV_ERR" | grep -qF 'network-response.json' && echo yes)" "yes"
+check "gate: probe no-evidence record not written" \
+  "$([[ ! -f "$GATE5_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 23: evidence gate — valid probe evidence -> pass ACCEPTED, stored
+# kinds is ["probe"], and this specifically confirms the gate accepts
+# `status` as a JSON NUMBER (200, not the string "200") -----------------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE5_RUN_ID" G5 probe --status 200 --shape '{"ok":true}' >/dev/null)
+
+GATE5_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE5_RUN_ID" G5 pass --kinds probe 2>&1)"
+RC_GATE5_OK=$?
+check "gate: valid probe evidence accepted (exit 0)" "$RC_GATE5_OK" "0"
+check "gate: valid probe evidence record written" \
+  "$([[ -f "$GATE5_CKPT_FILE" ]] && echo yes)" "yes"
+check "gate: valid probe evidence stored kinds is [\"probe\"]" \
+  "$(jq -c '.criteria[0].kinds' "$GATE5_CKPT_FILE" 2>/dev/null)" '["probe"]'
+check "gate: valid probe evidence status stored as JSON number (not string)" \
+  "$(python3 -c "import json;d=json.load(open('$WORK/.qa/runs/${GATE5_RUN_ID}/evidence/G5/network-response.json'));print(type(d['status']).__name__)" 2>/dev/null)" "int"
+
+# --- Case 24: evidence gate — pass --kinds bogus (unknown kind) exits
+# nonzero with a single correct message (Finding 1's fix) — no fabricated
+# "missing artifact ''" second message, and nothing is written -------------
+GATE6_RUN_ID="test-run-gate-6"
+GATE6_CKPT_FILE="$WORK/.qa/runs/${GATE6_RUN_ID}/checkpoint.json"
+GATE6_ERR="$(cd "$WORK" && bash "$SCRIPT" "$GATE6_RUN_ID" G6 pass --kinds bogus 2>&1 >/dev/null)"
+RC_GATE6=$?
+check "gate: invalid kind exits nonzero" "$([[ "$RC_GATE6" -ne 0 ]] && echo yes)" "yes"
+check "gate: invalid kind stderr says unknown kind" \
+  "$(echo "$GATE6_ERR" | grep -qF "unknown kind 'bogus'" && echo yes)" "yes"
+check "gate: invalid kind record not written" \
+  "$([[ ! -f "$GATE6_CKPT_FILE" ]] && echo yes)" "yes"
+check "gate: invalid kind emits exactly one gate/diagnostic line" \
+  "$(echo "$GATE6_ERR" | grep -cE 'EVIDENCE GATE|Invalid kind')" "1"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

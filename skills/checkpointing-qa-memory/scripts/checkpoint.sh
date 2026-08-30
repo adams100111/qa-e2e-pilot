@@ -318,6 +318,7 @@ kind_required_keys() {
     bake)     echo "readBack multiplicity" ;;
     computed) echo "oracle observed match" ;;
     probe)    echo "status shape" ;;
+    *)        return 1 ;;
   esac
 }
 
@@ -367,6 +368,22 @@ gate_pass() {
   for kind in "${kinds_arr[@]}"; do
     kind="$(trim "$kind")"
     [[ -z "$kind" ]] && continue
+
+    # Detect an unknown kind name explicitly, here, before calling
+    # kind_artifact(). kind_artifact's own `die` runs inside a command
+    # substitution (`artifact="$(kind_artifact "$kind")"`); since gate_pass is
+    # invoked as `gate_pass ... || exit 1`, errexit is suspended for its
+    # entire call tree, so that `die`'s `exit 1` would only end the
+    # subshell — the assignment would silently continue with an empty
+    # $artifact, producing a second, fabricated "missing" reject message.
+    # Fail fast here instead, with exactly one message.
+    case "$kind" in
+      bake|computed|probe) ;;
+      *)
+        echo "EVIDENCE GATE: unknown kind '${kind}' in --kinds (allowed: bake|computed|probe)." >&2
+        return 1
+        ;;
+    esac
 
     artifact="$(kind_artifact "$kind")"
     rel_path="evidence/${crit_id}/${artifact}"
