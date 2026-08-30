@@ -1,0 +1,56 @@
+[
+  {
+    "id": "captable-001",
+    "title": "Phantom 'Founder-B' row rendered in Founders table even though it is never persisted in localStorage",
+    "expected": "Every row shown in the Founders table corresponds to an entry actually persisted under captable:founders; ownership % across all displayed rows should reconcile to 100% of fully-diluted shares.",
+    "actual": "On a completely fresh load with localStorage empty (captable:founders absent), the Founders table still renders a 'Founder-B' row (250000 shares, 33.33% ownership) that does not exist in localStorage and has no edit/delete controls. The 'No founders yet.' empty-state paragraph is shown simultaneously with this phantom row (contradictory states). After adding real founders (Alice 301000, Bob 200000), the phantom row keeps rendering alongside them; the three displayed ownership percentages (60.08% + 39.92% + 33.33%) sum to over 133%, breaking ownership reconciliation. Verified via localStorage.getItem for every key on a fresh navigation (returned {} / no founders key) while the table still showed the Founder-B row.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "functional"
+  },
+  {
+    "id": "captable-002",
+    "title": "SAFE amount computation silently loses precision on an exact half-cent (1.005 -> 1.00 instead of 1.01)",
+    "actual": "Entering SAFE shares=3, price=$0.335 (3 x 0.335 = 1.005 exactly) and clicking Compute amount displays '$1.00' and persists captable:safeAmount = \"1\". Standard currency rounding of an exact half-cent rounds up (round-half-away-from-zero) to $1.01; the app truncates/rounds down, silently losing $0.005 (0.5% of the note amount) with no indication to the user.",
+    "expected": "amount = shares x price with no silent precision loss; a value that lands exactly on a half-cent (1.005) should round to $1.01 under standard currency rounding, and the persisted value must match the displayed value without unexplained loss.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "functional"
+  },
+  {
+    "id": "captable-003",
+    "title": "'Founder added' success toast shown even when the add is silently rejected and nothing is persisted",
+    "expected": "A success toast must correspond to actually-persisted state: if a founder is rejected (e.g. 0 shares), no success toast should appear and/or an error should be shown.",
+    "actual": "Submitting the Add-founder form with Name='ZeroCo', Shares=0 produced the toast 'Founder added', but the Founders table was unchanged and localStorage captable:founders was byte-for-byte identical before and after the click (no ZeroCo entry added, no console error, no visible error message). The UI reports success for a write that never happened.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "functional"
+  },
+  {
+    "id": "captable-004",
+    "title": "No validation on negative share counts; produces invalid negative and >100% ownership percentages",
+    "expected": "Share counts should be validated as non-negative; ownership % for every real holder should be within [0%, 100%] and must reconcile so that all holders' percentages sum to ~100%.",
+    "actual": "Adding a founder 'NegCo' with shares=-500 (with existing founder Alice at 301000 shares) is accepted and persisted to captable:founders (verified via localStorage read-back: [{...Alice,301000},{...NegCo,-500}]). The UI then displays Alice at 100.17% ownership and NegCo at -0.17% ownership -- a negative ownership percentage and another holder exceeding 100%, both impossible under the cap-table domain oracle.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "functional"
+  },
+  {
+    "id": "captable-005",
+    "title": "Finalize-round help ('?') button throws an uncaught ReferenceError and shows no help content",
+    "expected": "Clicking the '?' help control next to Finalize round should show help/explanatory content (or at minimum do nothing silently) without throwing a JS error.",
+    "actual": "Clicking the fin-help button ('?') throws an uncaught console error: 'ReferenceError: undefinedHelpHandler is not defined at HTMLButtonElement.<anonymous> (index.html:212:3)'. No help text or dialog appears; the control is completely non-functional.",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "broken-journey"
+  },
+  {
+    "id": "captable-006",
+    "title": "Finalize round reports success and flips status to COMPLETE but never persists any holdings",
+    "expected": "Per the app's own stated contract ('Creates holdings for every founder and flips status to COMPLETE'), a successful Finalize must persist a holding for every founder into the backend (e.g. a captable:holdings key/list) so the Holdings table and any downstream consumers reflect the finalized cap table.",
+    "actual": "With two real founders present (Alice 301000, Bob 200000), clicking Finalize round shows toast 'Round finalized' and status flips to and persists as \"COMPLETE\" (captable:roundStatus = \"COMPLETE\", verified via localStorage read-back). However a full enumeration of every localStorage key immediately after finalize, and again after a full page reload, shows no holdings-related key was ever created (only captable:roundStatus, captable:safeAmount, captable:founders exist) and the Holdings table still displays 'No holdings persisted.' The terminal action's own advertised side effect never happens while the UI reports success and the round is now stuck at COMPLETE with no way to retry (Finalize round button remains but re-clicking does not create holdings either, per re-check of localStorage after the click).",
+    "suspected_layer": "FE",
+    "verdict": "fail",
+    "axis": "broken-journey"
+  }
+]

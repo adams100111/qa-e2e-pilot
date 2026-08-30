@@ -71,6 +71,26 @@ These came out of the grilling passes and are the spec Phase 0+ implements:
 
 **Scope note:** the synthetic fixture measures functional/journey/UX + negative-controls *deterministically*. **Role/authz recall is NOT measured on the synthetic fixture** (it is single-user localStorage) — it is measured against the real multi-role project (`innovation`) in Phase 2. Keep that boundary explicit.
 
+## Phase 0 result (MEASURED 2026-08-30)
+
+The current (pre-fix) `qa-e2e-pilot` agent ran black-box against the served fixture; its bug-log was converted, judge-attributed to seeds, and scored:
+
+| Axis | Recall | Caught / Planted |
+|---|---|---|
+| functional (incl. broken-journey) | **33%** | F2, J2 / F1,F2,F3,J1,J2,J3 |
+| ux-objective | **25%** | U4 (console error) / U1,U2,U3,U4 |
+| overall | **30%** | 3 / 10 |
+| precision | **75%** | 3 TP, 1 FP |
+
+**GATE: FAIL** (targets 70/75/70/80) — expected: this is the baseline; the fixes are Phases 1–5. The MEASURED number reproduces the reported ~40% functional / ~15% UX false-greens.
+
+Live-run learnings (feed fixture hardening / new seeds):
+- **N1 is a broken negative control.** The agent correctly flagged Founder-B as a phantom rendered-but-unpersisted row (the FP above). Fix: make N1 a genuinely persisted, correctly-computed clean row so it can't be legitimately flagged.
+- **Two real UNSEEDED bugs found** (0-share false-success toast; negative-share ownership) — promote to seeds to widen coverage.
+- Missed: F1 (fully-diluted denominator), F3 (delete re-reconcile), J1/J3 (specific journey drops), U1–U3 (all visual/a11y — no detector yet). These are exactly what Phases 1 (gate/coverage), 3 (vision), 4 (axe) must close.
+
+Artifacts: `tools/accuracy-harness/findings/measured-baseline-run.json` (raw), `findings/measured-baseline.json` (attributed + scored).
+
 **File structure (Phase 0):**
 - `tools/accuracy-harness/scorer/score.js` — Modify: strict attribution + precision + negative controls + enum validation.
 - `tools/accuracy-harness/scorer/attribute.js` — Create: the judge-attribution seam (model call isolated + mockable).
