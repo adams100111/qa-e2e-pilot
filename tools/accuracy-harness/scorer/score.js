@@ -52,9 +52,14 @@ function score(findingsDoc, seedsDoc) {
     }
   }
 
-  const positive = seeds.filter(s => (s.polarity || 'positive') === 'positive' && s.stream !== 'advisory');
+  // ux-perceptual seeds (visual hierarchy/alignment) can only be caught by the vision reviewer,
+  // which does not exist yet — gate-exclude them from `positive` entirely (Task 0.3b). When the
+  // vision pass ships (later phase), ux-perceptual moves into the gated `positive` set.
+  const isPerceptual = s => s.axis === 'ux-perceptual';
+  const positive = seeds.filter(s => (s.polarity || 'positive') === 'positive' && s.stream !== 'advisory' && !isPerceptual(s));
   const negative = seeds.filter(s => s.polarity === 'negative');
   const advisorySeeds = seeds.filter(s => s.stream === 'advisory');
+  const perceptualSeeds = seeds.filter(isPerceptual);
 
   const recalled = seed => findings.some(f => creditsSeed(f, seed));
 
@@ -77,6 +82,7 @@ function score(findingsDoc, seedsDoc) {
   };
   const overall = scoreList(positive);
   const advisory = scoreList(advisorySeeds);
+  const perceptual = scoreList(perceptualSeeds);
 
   const g = seedsDoc.gate || {};
   const checks = [
@@ -87,7 +93,7 @@ function score(findingsDoc, seedsDoc) {
   ].filter(c => c[2] != null);
   const pass = checks.every(c => c[1] >= c[2] - 1e-9);
 
-  return { perAxis, rollups, overall, precision, advisory, gate: { pass, checks } };
+  return { perAxis, rollups, overall, precision, advisory, perceptual, gate: { pass, checks } };
 }
 
 module.exports = { score };
@@ -139,6 +145,9 @@ if (require.main === module) {
 
   // advisory stream (reported, never gated)
   console.log('\nAdvisory stream (aesthetics — reported, NOT a verdict): ' + result.advisory.hit + '/' + result.advisory.total + ' advised');
+
+  // ux-perceptual bucket (reported, never gated — no vision reviewer exists yet, see Task 0.3b)
+  console.log('perceptual (vision-only, not gated): ' + result.perceptual.hit + '/' + result.perceptual.total);
 
   // missed detail
   if (result.overall.missed.length) {
