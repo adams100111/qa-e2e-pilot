@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CapTable Mini — page 2 (nav-survival fixture)</title>
+<style>
+  body { font-family: system-ui, sans-serif; color:#1a1a1a; margin:0; padding:24px; max-width:860px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#555; font-size:13px; margin-bottom:20px; }
+  a.back { display:inline-block; margin-top:20px; }
+</style>
+</head>
+<body>
+  <!--
+    NAV-SURVIVAL FIXTURE PAGE — exists purely to exercise the observe.js self-heal + the
+    driving-browser-qa SKILL.md "after ANY navigation" discipline rule.
+
+    A full-page navigation to this document gives it a fresh `window` — any in-page observe.js
+    interceptors installed on index.html are gone here. This page deliberately fires BOTH a
+    console error and a network request during its own load (before any observe.js re-injection
+    could possibly happen), so a nav test case can assert that load-window evidence was captured
+    via the driver-backed browser_console_messages / browser_network_requests calls, not just the
+    in-page buffer.
+  -->
+  <h1>Page 2</h1>
+  <div class="sub" data-testid="page2-marker">Reached via the "Go to page 2" link. This page throws a console error and fires a network request on load, before any in-page observer can be re-installed.</div>
+  <a class="back" href="index.html" data-testid="back-to-index">Back to CapTable Mini</a>
+
+<script>
+  // Load-time network request (fires immediately on this document's load, ahead of any
+  // observe.js re-injection). Deliberately targets a route that 404s so a nav test can assert
+  // the 4xx surfaced via the driver-backed browser_network_requests call.
+  fetch('/api/page2-load-probe').catch(function () { /* fixture has no server; failure is fine, request still fires */ });
+
+  // Load-time console error (fires immediately on this document's load, ahead of any
+  // observe.js re-injection). A nav test asserts this was captured via
+  // browser_console_messages, since the in-page buffer cannot see it — it isn't installed yet.
+  pageTwoLoadHandler(); // ReferenceError: pageTwoLoadHandler is not defined
+</script>
+</body>
+</html>

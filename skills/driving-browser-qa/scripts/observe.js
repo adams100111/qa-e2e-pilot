@@ -11,8 +11,16 @@
  * everything that happened SINCE the previous round without extra MCP calls. It never issues a
  * request itself — it only observes.
  *
- * Install once per session (idempotent — the `window.__qaObserveInstalled` guard makes re-injecting
- * at the top of every criterion a safe no-op). Then call __qaObserve() once per round.
+ * SELF-HEALING ACROSS NAVIGATION: a full-page navigation/reload/redirect gives the document a
+ * fresh `window`, so the interceptors installed on the PREVIOUS document are gone —
+ * `window.__qaObserve` is undefined on the new document even though this same script was injected
+ * before. This file's entry point checks for that and re-runs the installer before calling
+ * __qaObserve, so a round on a freshly-navigated document re-installs instead of throwing. The
+ * installer itself stays idempotent (`window.__qaObserveInstalled` guard), so re-running it on a
+ * document where it already ran (e.g. re-injecting mid-session) is a safe no-op. This does NOT
+ * recover console/network activity that happened DURING the load itself, before any interceptor
+ * could attach — that load-window evidence must come from the driver-backed
+ * browser_console_messages / browser_network_requests calls (see SKILL.md's Observe-Round section).
  *
  * Returns JSON: { round, domDigest, console[], network[], ux[], axe }.
  *   - domDigest: compact live-region text + interactive-element inventory (the snapshot substitute
@@ -31,10 +39,19 @@
  *     dedicated evaluate call; that call is outside the observe-round's per-step budget.
  *   - axe:       axe-core violations summary IF window.axe is present (inject axe.min.js separately)
  *
- * Usage (pass to browser_evaluate as the function body):
- *   return __qaObserve({ digestSelector: 'body', runUx: true });
+ * Usage (pass this WHOLE file to browser_evaluate as the function body, every round — including
+ * the first observe after any navigation): the tail below installs-if-needed and then calls
+ * __qaObserve() itself, so a single evaluate call is both the self-heal check and the round read.
+ *   ... (this file's own source) ...
+ *   // returns { round, domDigest, console[], network[], ux[], axe }
+ *
+ * If you already know the current document has the interceptors installed (no navigation since
+ * the last round) a lighter, cheaper snippet also works: `return __qaObserve({ digestSelector:
+ * 'body', runUx: true });` — but after ANY full-page navigation/reload/redirect, re-inject this
+ * whole file (or use the self-healing tail below) instead, since that lighter snippet throws
+ * `__qaObserve is not defined` on a document it was never installed on.
  */
-(function installObserve() {
+function installObserve() {
   if (window.__qaObserveInstalled) return;
   window.__qaObserveInstalled = true;
   var buf = { console: [], network: [], round: 0 };
@@ -127,5 +144,16 @@
     };
     return payload;
   };
-})();
-return (typeof __qaObserve === 'function') ? 'observe-installed' : 'install-failed';
+}
+
+// --- self-healing round entry point ---
+// A full-page navigation/reload/redirect replaces `window`, so a previously-installed
+// __qaObserve is gone on the new document even though this exact script ran before. Re-install
+// (idempotent, cheap no-op if already present) BEFORE invoking, so a round called on a
+// freshly-navigated document self-heals instead of throwing "__qaObserve is not defined".
+if (typeof window.__qaObserve !== 'function') {
+  installObserve();
+}
+return (typeof window.__qaObserve === 'function')
+  ? window.__qaObserve({ digestSelector: 'body', runUx: true })
+  : 'install-failed';
