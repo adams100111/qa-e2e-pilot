@@ -7,7 +7,7 @@ description: Use when executing a QA criterion that requires driving the browser
 
 ## Overview
 
-Drive the browser as a controlled instrument: snapshot before every act, wait after every mutation, and treat console exceptions and unexpected HTTP errors as findings — not noise. The browser surface is evidence, not the oracle.
+Drive the browser as a controlled instrument: observe before every act, wait after every mutation, and treat console exceptions and unexpected HTTP errors — both surfaced automatically in the observe payload — as findings, not noise. The browser surface is evidence, not the oracle.
 
 ## When to Use
 
@@ -52,18 +52,38 @@ Reference browser tools by **capability** — the Playwright MCP tool name is in
 3. Persist the final `storageState` back to disk after the last criterion that modifies auth.
 4. Close the context (take snapshot, close tab — `browser_close`) after the criterion resolves.
 
-## The Per-Step Loop
+## The Observe-Round
 
-For **every** step inside a criterion, follow this exact sequence:
+Per ADR-0006, the old six-call-per-step sequence (`browser_snapshot` → act → `browser_wait_for` →
+`browser_console_messages` → `browser_network_requests` → `browser_snapshot`) is replaced by **one
+structured observe call per round**. Acts stay separate calls; waits stay separate calls. Target
+**~2 calls per step** (observe + act, plus a wait when the act mutates state) instead of ~6.
 
-1. **Snapshot first.** Take an accessibility snapshot (`browser_snapshot`) to get live element refs. Use refs for all interactions — refs survive React re-renders better than CSS selectors in a long flow. Fall back to screenshot (`browser_take_screenshot`) only for visual/layout/math checks where pixel evidence is needed.
-2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), select (`browser_select_option`), or inject a script (`browser_evaluate`) using the ref or selector from step 1.
-3. **Wait.** After every mutation, wait for the expected next state before asserting (`browser_wait_for`). Never assert immediately after an act — React renders are async.
-4. **Read diagnostics.** After the wait resolves:
-   - Read console messages (`browser_console_messages`). A JavaScript exception is a **finding** — record it immediately (catches bug class: page crash on load, e.g. `p.map` on a bad envelope).
-   - Read network requests (`browser_network_requests`). An unexpected 4xx or 5xx on any mutation request is a **finding** (catches bug class: endpoint 400/422/500 on wizard steps, wrong route names).
-5. **Assert.** Compare what you observe to the oracle (the checklist's expected value/rule), not to what the backend code says.
-6. **Snapshot again** to capture post-act DOM state as evidence.
+**Install once per session.** Right after loading `auth.storageState` and the first navigation,
+inject `scripts/observe.js` via `browser_evaluate`. It is idempotent (`window.__qaObserveInstalled`
+guard) — re-injecting it at the top of every criterion is a safe no-op. On install it patches
+`console.error`/`warn`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest` to
+buffer entries; it is read-only and never issues a request of its own.
+
+**Per round, for every step inside a criterion:**
+
+1. **Observe.** Call `browser_evaluate` with `return __qaObserve({ digestSelector: 'body', runUx: true })`. This ONE call returns:
+   ```
+   { round, domDigest: { liveText, interactive[] }, console[], network[], ux[], axe }
+   ```
+   - `domDigest.interactive` lists visible buttons/links/inputs with `data-testid`/label/href — this is the snapshot substitute for finding what to act on next. It does not carry a Playwright ref, so build a selector from it (prefer `[data-testid="…"]`) and pass that as the act call's `target` — `browser_click`/`browser_evaluate` accept a unique CSS selector, not only a snapshot ref. Fall back to `scripts/click-by-text.js` for RTL/label-only targeting, or a one-off `browser_snapshot` only when no stable selector exists.
+   - `console[]` and `network[]` are DRAINED since the previous round — every console error/warning, `window.onerror`, unhandled rejection, and fetch/XHR that happened between rounds is already in this payload.
+2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), select (`browser_select_option`), or inject a script (`browser_evaluate`, e.g. `react-set-input.js`) using the selector from step 1 — a SEPARATE call from the observe.
+3. **Wait.** After every mutation, wait for the expected next state before asserting (`browser_wait_for`) — still a separate call. Never assert immediately after an act — React renders are async.
+4. **Re-observe.** Call `__qaObserve` again. Its `console[]`/`network[]` now cover everything since step 1's round, so a JavaScript exception (catches bug class: page crash on load, e.g. `p.map` on a bad envelope) or an unexpected 4xx/5xx on a mutation request (catches bug class: endpoint 400/422/500 on wizard steps, wrong route names) surfaces here exactly as it did under the old separate calls — carried in one payload instead of two extra round-trips. Treat any such entry as a **finding**, not noise, regardless of whether the DOM digest looks clean.
+5. **Assert.** Compare the fresh `domDigest`/`console`/`network` to the oracle (the checklist's expected value/rule), not to what the backend code says.
+
+**Pixel fallback stays separate.** `browser_take_screenshot` remains the tool for visual/layout/math checks needing pixel evidence — `domDigest` is a text/structure digest, not a screenshot, and does not replace it. Screenshot calls are not counted against the ~2-calls-per-step budget.
+
+**No-evidence-regression guard (binding).** The observe-round is a CONSOLIDATION of calls, never a reduction of evidence:
+- Console and network status/method/URL are carried directly in every observe payload — read them every round, even when the DOM digest looks unchanged.
+- A deeper read the old loop could also reach — a network **response body**, a cross-origin request the in-page buffer can't see, or a backend read-back — is still made as a separate, targeted call: `browser_network_request` for a body, or hand off to `verifying-backend-persistence` / `probing-apis-through-browser`. The observe-round removes the *redundant* per-step console/network/snapshot calls the old loop paid for even when nothing changed; it does not remove a diagnostic a step genuinely needs.
+- If the configured driver's `evaluate` capability is absent (see `references/driver-capabilities.md`), the observe-round cannot run at all on that driver — record the affected step `blocked`, never silently fall back to a reduced-diagnostic loop.
 
 ## React Controlled Inputs
 
@@ -95,21 +115,23 @@ The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElemen
 
 ## Checking for Client-Side Exceptions
 
-After every act+wait cycle, call `browser_console_messages` and scan for entries with `type: "error"` or messages containing `Uncaught`, `TypeError`, `cannot read`, or `undefined is not`. Treat any such entry as a criterion **finding** with suspected layer `FE`, record the message verbatim, and include it in the bug log. Do not dismiss an exception because the UI "looks fine."
+The re-observe call after every act+wait cycle already drains buffered console errors/warnings into the payload's `console[]` array. Scan it for entries containing `Uncaught`, `TypeError`, `cannot read`, or `undefined is not`. Treat any such entry as a criterion **finding** with suspected layer `FE`, record the message verbatim, and include it in the bug log. Do not dismiss an exception because the UI "looks fine" — `console[]` is diagnostic evidence, not visual evidence, and reading it is not optional just because the round otherwise looked clean.
 
-On the visual-UX criterion specifically, inject `detecting-visual-ux/scripts/ux-detectors.js` via `browser_evaluate` and follow its click-probe step for icon-only controls before reading console — see detecting-visual-ux for the full objective-fail/subjective-advisory split.
+`browser_console_messages` remains available as a direct, separate read — use it if you need console history from before `observe.js` was installed, or on a driver that lacks `evaluate` (see `references/driver-capabilities.md`).
+
+On the visual-UX criterion specifically, inject `detecting-visual-ux/scripts/ux-detectors.js` via its own `browser_evaluate` call (outside the observe-round's per-step budget) and follow its click-probe step for icon-only controls, then re-observe for `console[]` to confirm whether the probe click threw — see detecting-visual-ux for the full objective-fail/subjective-advisory split.
 
 ## Checking Network Responses
 
-After every mutation (form submit, wizard step, save), call `browser_network_requests` and find the matching XHR/fetch request. Check:
+The same re-observe call after every mutation (form submit, wizard step, save) drains matching fetch/XHR entries into the payload's `network[]` array (`{method, url, status, ok}`). Check:
 
 - Status code: 4xx = likely a client/validation bug; 5xx = likely a server bug. Both are findings.
-- Response body: read it with `browser_network_request` if the status is unexpected. The body often names the exact field or constraint that failed.
+- Response body: if the status is unexpected, `network[]` does not carry the body — read it with the separate `browser_network_request` call. The body often names the exact field or constraint that failed. This targeted follow-up is the no-evidence-regression guard in practice: consolidation removes the redundant per-step call, not the diagnostic a failing status demands.
 - Route path: confirm the request went to the expected endpoint. A 404 or a request to the wrong path (e.g. `/init` vs `/initialize`) is itself the finding.
 
 ## Iteration Cap
 
-If a criterion does not resolve after **three UI iterations** (snapshot → act → wait cycle), stop. Record verdict `blocked` if the environment is preventing progress, or `error` if the tooling broke. Write what you observed (last snapshot ref, last console messages, last network status) as evidence. Do not loop forever — a stuck criterion costs more tokens than it saves.
+If a criterion does not resolve after **three UI iterations** (observe → act → wait cycle), stop. Record verdict `blocked` if the environment is preventing progress, or `error` if the tooling broke. Write what you observed (last `domDigest`, last `console[]`, last `network[]`) as evidence. Do not loop forever — a stuck criterion costs more tokens than it saves.
 
 ## Multiplicity Discipline
 
@@ -130,6 +152,7 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 
 | Script | Purpose |
 |---|---|
+| `scripts/observe.js` | Install-once observe-round: drains console + network since last round, returns compact `domDigest` (ADR-0006) |
 | `scripts/react-set-input.js` | Set value on React-controlled input; dispatches native events |
 | `scripts/click-by-text.js` | Find + click by visible text; LTR/RTL-safe; returns href for route verification |
 | `scripts/preflight.sh` | App liveness + driver ping + auth check + build-ID capture |
@@ -141,12 +164,12 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 ### Eval 1 — Page crash on list load (bug #1: `p.map` on bad envelope)
 
 **Situation:** The agent navigates to the templates list page and the page appears to load but the list is empty.  
-**The skill should:** After the navigation + wait, call `browser_console_messages` and find `TypeError: p.map is not a function` (or similar). Record it as a finding with suspected layer `FE`, verdict `fail`, and note that the envelope shape from the API did not match the component's expected array. Do not mark the criterion pass because the list is visually empty — that absence is not a confirmed 0-state until the console is clean.
+**The skill should:** After the navigation + wait, re-observe (`__qaObserve`) and find `TypeError: p.map is not a function` (or similar) in the payload's `console[]`. Record it as a finding with suspected layer `FE`, verdict `fail`, and note that the envelope shape from the API did not match the component's expected array. Do not mark the criterion pass because the list is visually empty — that absence is not a confirmed 0-state until `console[]` is clean.
 
 ### Eval 2 — Wrong route name causes 500 (bug #5: `/init` vs `/initialize`)
 
 **Situation:** The agent submits the wizard's first step and the UI shows a generic error or spinner that never resolves.  
-**The skill should:** Call `browser_network_requests` after the submit wait. Find the POST request. Read its status (500) and path (`/init`). Record a finding: suspected layer `route`, the request landed on a non-existent or wrong route. Include the path and status in the bug log. Do not retry the step — record `fail` and move on.
+**The skill should:** Re-observe after the submit wait. Find the matching entry in `network[]`. Read its status (500) and url (`/init`). Record a finding: suspected layer `route`, the request landed on a non-existent or wrong route. Include the path and status in the bug log. Do not retry the step — record `fail` and move on.
 
 ### Eval 3 — Legacy URL quick-action (bug #14: overview links to wrong page)
 
