@@ -135,7 +135,7 @@ The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElemen
 
 ## Finding Clickable Elements by Text (RTL/Arabic)
 
-`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. Inject via `browser_evaluate`.
+`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. It uses real geometry (`getBoundingClientRect` + computed style), so it also finds `position:fixed`/sticky controls. Inject via `browser_evaluate`. **When MULTIPLE visible elements share the text it returns `{ambiguous:true, count, candidates:[…]}` instead of acting** — do NOT act on a guess: disambiguate with a more specific `[data-testid]`/container selector (or the active/topmost candidate) and re-target before clicking.
 
 **Critical: verify where a click lands, not just that it succeeded.** The script returns `{ href, role, textContent, landed }` before and after the click. Check `href` against the expected URL path — a button that looks correct but links to a legacy route is a finding (bug class: quick-action links to `/cap-table` instead of `/governance`).
 
