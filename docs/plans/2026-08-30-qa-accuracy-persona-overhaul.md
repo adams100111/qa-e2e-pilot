@@ -1,6 +1,6 @@
 # QA Accuracy + Persona Overhaul — Master Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement each phase task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Only Phase 0 is granular-ready. Phases 1–5 are a roadmap and MUST be expanded into their own plans after Phase 0 produces the first MEASURED baseline — their thresholds depend on that number.**
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement each phase task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Phase 0 AND Phase 1 are built and merged (see their MEASURED result blocks below and in `docs/plans/2026-08-30-phase1-execution-gate.md`). Phase 2 has a granular expansion plan (`docs/plans/2026-08-31-phase2-coverage-roles.md`). Phases 3–6 remain roadmap and MUST be expanded into their own plans once the phase ahead of them produces its MEASURED result — their thresholds depend on that number.**
 
 **Goal:** Stop `qa-e2e-pilot` from reporting false-greens — lift *measured* true-bug-recall from ~40% functional / ~15% UX toward ≥65–80% per axis (biggest lift on UX) by QA-ing as each real project role/persona with a human eye, and prove every number against a trustworthy harness before touching a single skill.
 
@@ -51,7 +51,7 @@ These came out of the grilling passes and are the spec Phase 0+ implements:
 | **0** | **Trustworthy measurement** (this plan, granular below) | Rewritten scorer (strict attribution + precision + negative controls + enum validation), `convert-buglog.js`, widened synthetic fixture, purged fictions, **first MEASURED baseline** | revises 0006–0009; no new |
 | **1** | **Execution-enforcement gate** | `checkpoint.sh` evidence schema (`evidence_refs` content-validated + criterion `kinds`), pass-gate wired in, resume-view carries `kinds`; `generating-qa-checklist` tags `kinds`/`probeNeeded` | new: 0010 (evidence gate) |
 | **2** | **Role/persona discovery** | `discovering-user-roles` skill (two-plane static analysis → proposal), **HITL confirm as grilling-style rounds** (Decision 11: roles→credentials→scope frontier, numbered items + recommended defaults, facts auto-discovered), `.qa/config.json` persona+authz-matrix generation, seeded-credential login, `role-sensitive` criterion tag + cross-role negative tests | new: 0011 (roles/personas), 0012 (per-role scope) |
-| **3** | **Human-eye vision pass** | Vision review pass (screenshot → scored read-only punch list + rubric), objective→verdict / subjective→advisory, precision-gated, evidence-anchored; wired into `analyzing-feature-ui` + `writing-qa-reports` | revises 0007; new: 0013 (vision reviewer) |
+| **3** | **Human-eye vision pass** | Vision review pass (screenshot → scored read-only punch list + rubric), objective→verdict / subjective→advisory, precision-gated, evidence-anchored; wired into `analyzing-feature-ui` + `writing-qa-reports`; **re-enable `ux-perceptual` (P1/P2) in `score.js --gate` once the vision pass lands** (it is currently gate-excluded per Task 0.3b, `c707718`, pending exactly this phase) | revises 0007; new: 0013 (vision reviewer) |
 | **4** | **Observe-round + detection layer** | Consolidated `browser_evaluate` observe-round replacing the 6-call loop in `driving-browser-qa` + `walking-multistep-flows`; axe + WCAG heuristics injected; allowlist `+browser_resize` | revises 0006, 0009 |
 | **5** | **Viewport/persona wiring + cross-cutting** | `.qa/config.json.example` + `bootstrapping-qa-config` (viewport/persona/detection/passGate keys); **per-run role/persona/viewport subset = a grilling frontier question** (Decision 11; recommended default "run all discovered roles"), not a silent config read; `agents/qa-e2e-pilot.md` phase wiring; `memory-sync.sh` + `report-to-junit.sh`/CI for new artifact types | revises 0008 |
 | **6** | **Packaging, dependencies & install wiring** | `package.json` (axe-core pinned, auto-`npm install`), `.mcp.json` (Playwright MCP auto-present), `SessionStart` preflight hook (blocks on missing Node/jq/python3/Playwright), `skills.json` drift fix + all new skills, README attribution, version bump | new: 0014 (packaging & prereqs) |
@@ -63,6 +63,10 @@ These came out of the grilling passes and are the spec Phase 0+ implements:
 - `chrome-devtools-mcp` version in the plan/ADR-0009 is wrong (`~v0.25.0` → actual `1.8.0`); Playwright-MCP issues #1495/#1651 are **closed** — re-justify the `run_code_unsafe` exclusion on RCE-surface grounds, not "still-open hole". Fixed when Phase 4 revises ADR-0009.
 - `pass-gate.js` schema (`kinds`/`evidenceRefs` camelCase) doesn't map to real `checkpoint.sh` (`evidence_refs` snake_case, no `kinds`). Reconciled in Phase 1.
 - `scripts/skills.json` is drifted: it lists 11 skills but omits `detecting-stack-profile` and `bootstrapping-qa-config` (present on disk). The npx/marketplace install path misses them. Fixed in Phase 6 (Task 6.4) along with every new skill.
+
+**Shipped fixture/driver fixes (credit, not future work):** two fixes already landed as part of Phase 0's post-baseline hardening and are what let Phase 2 even attempt its recall lift — `3b77395` exposed an **observable ESOP pool** so F1 (issued-only-denominator bug) went from undetectable black-box to detectable; `4432279` made **negative-share entry** reliably testable (seed F4) by giving the fixture's add-founder form a real validation gap to catch, alongside making N1 an honest persisted negative control. Both are referenced from `docs/plans/2026-08-31-phase2-coverage-roles.md`'s Status note so that plan doesn't re-scope them.
+
+**Staged recall checkpoints (targets to falsify slippage against, NOT precise predicted numbers — do not treat these as promises):** functional/UX recall is measured fresh after every phase and tracked toward the master goal of **≥65–80% per axis**. Concretely: Phase 1 measured 38% functional / 25% UX (see the result block above) — precision-only, as designed. Phase 2's coverage catalog + role discovery is expected to move functional recall meaningfully (it directly targets F3/J1/J3/J4) while UX recall is expected to stay roughly flat until Phase 3/4 land, since no non-vision detector exists yet for U1–U3. Phase 3 (vision pass) is where UX recall should make its first real jump, and Phase 4 (axe + consolidated observe-round) should close most of the remainder. If a phase's MEASURED number comes back flat or regressed against this trajectory, that is a signal to stop and diagnose before the next phase, not to relabel the target.
 
 ---
 
@@ -585,6 +589,24 @@ Append a short `## Phase 0 result (MEASURED <date>)` block to this plan with the
 - The real `bug-log.json` field names (Task 0.5-Step-1) — write the converter against what's actually there.
 - The first MEASURED baseline number (Task 0.7) — unknown until the run; it replaces the deleted fictions.
 - Whether the synthetic fixture's Phase-0 scope (no role/authz seeds) is accepted — role/authz recall is deferred to Phase 2 against `innovation`. If you want a *measured* role dimension in Phase 0, that needs a multi-role fixture (bigger Phase 0).
+
+---
+
+## Phase 1 result (MEASURED 2026-08-31)
+
+Phase 1's execution-enforcement gate (`docs/plans/2026-08-30-phase1-execution-gate.md`) shipped and was re-measured against the fixture per its own exit criterion. Three runs, same fixture/seed set:
+
+| Run | Functional | UX | Overall | Precision |
+|---|---|---|---|---|
+| Baseline (ungated) | 33% | 25% | 30% | 75% |
+| **Gated A** (real `qa-e2e-pilot` agent, 18 seeds) | **38%** | 25% | 33% | **100%** |
+| Gated B (general-purpose agent, for comparison) | 25% | 25% | 25% | 100% |
+
+**Honest framing:** the gate lifted **precision** (75%→100% — zero false positives on the negative-control seeds; the one false-green the ungated baseline produced is gone) — it did **not**, on its own, lift **recall** materially (33%→38% functional, UX flat at 25%). That is expected and by design: the gate forces a `pass` to carry real evidence, but it cannot force the checklist to *contain* a criterion for a bug class nobody thought to test — that is a coverage problem, not an evidence problem. Recall is the explicit target of Phase 2 (the edge-case coverage catalog — see Status note in `docs/plans/2026-08-31-phase2-coverage-roles.md`, already an 8-row catalog including terminal-idempotency and input-boundary) and Phase 3/4 (the vision pass and axe detection close the UX-objective gap, which the gate alone cannot touch since U1–U3 are visual/a11y with no non-vision detector yet).
+
+**Gated B is a control, not a regression:** the drop to 25%/25% running the SAME gated checklist through a `general-purpose` agent (vs. the real `qa-e2e-pilot` agent) shows the gate's evidence discipline is necessary but not sufficient — an agent without this plugin's domain-specific verification skills (backend baking, independent recompute) still under-recalls even when forced to produce evidence for every pass. This is a data point for why the skill-specific pipeline exists, not a finding against the gate.
+
+**Exit criterion satisfied:** Phase 1's plan asked for a re-measurement after the gate landed; this is that number. Phase 2 planning starts from 38%/25%/33%/100%, not the 33%/25%/30%/75% baseline.
 
 ---
 

@@ -61,6 +61,7 @@
     </table>
     <p class="empty" id="f-empty">No founders yet.</p>
     <p class="sub" data-testid="option-pool">Option pool (ESOP): <span id="pool-shares">500,000</span> shares</p>
+    <p class="sub" data-testid="total-issued">Total issued shares (cached): <span id="total-issued-shares">0</span></p>
   </section>
 
   <!-- ================= SAFE note: amount = shares x price ================= -->
@@ -124,13 +125,25 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 const ESOP_POOL = 500000;
 if (DB.get('pool', null) === null) DB.set('pool', ESOP_POOL); // seed once, like the other DB keys
 
+// SEED F3 (functional/service, black-box-detectable): `captable:totalIssued` is a CACHED SUMMARY of
+// issued shares (rendered at data-testid="total-issued"). It is written/updated on every ADD (and on
+// EDIT) but is intentionally NOT re-derived on DELETE, so after a delete it goes stale — it still
+// reflects the pre-delete total instead of the fresh sum over the remaining persisted founders. The
+// per-founder ownership row (renderFounders below) still recomputes fresh from DB.get('founders') on
+// every render, so F1/F4/J1/J3/J4 are unaffected — only this cached aggregate is stale.
+if (DB.get('totalIssued', null) === null) DB.set('totalIssued', issuedTotal(DB.get('founders', [])));
+
 // ===== Founders =====
 function issuedTotal(fs){ return fs.reduce((a,f)=>a+Number(f.shares||0),0); }
+function renderTotalIssued(){
+  document.getElementById('total-issued-shares').textContent = Number(DB.get('totalIssued', 0)).toLocaleString();
+}
 function renderFounders(){
   const fs = DB.get('founders', []);
   const tb = document.querySelector('#f-table tbody');
   document.getElementById('f-empty').style.display = fs.length ? 'none':'block';
   document.getElementById('pool-shares').textContent = Number(DB.get('pool', ESOP_POOL)).toLocaleString();
+  renderTotalIssued();
   // BUG F1 (functional/service, black-box-detectable via the observable pool above): denominator is
   // issued-only; spec requires fully-diluted (issued + ESOP pool)
   const denom = issuedTotal(fs); // should be: issuedTotal(fs) + ESOP_POOL
@@ -162,6 +175,7 @@ document.getElementById('f-add').addEventListener('click', () => {
   if(!silentDrop && !ghost && !zeroShares){
     fs.push({ id: 'f'+Date.now(), name, shares });
     DB.set('founders', fs);
+    DB.set('totalIssued', issuedTotal(fs)); // cached summary updated on ADD (see SEED F3 above)
   }
   toast('Founder added'); // green toast fires regardless — "a green toast is not a pass"
   renderFounders();
@@ -176,12 +190,17 @@ document.querySelector('#f-table').addEventListener('click', (e)=>{
       f.shares = Number(f.shares) + 1000; // deterministic edit for the fixture
       // SEED N3: clean control, must NOT be flagged — this write DOES persist (no silent drop)
       DB.set('founders', fs);
+      DB.set('totalIssued', issuedTotal(fs)); // cached summary updated on EDIT too (not the bug axis)
       toast('Founder updated');
       renderFounders();
     }
     return;
   }
   const id = e.target.getAttribute('data-del'); if(!id) return;
+  // BUG F3 (functional/service, black-box-detectable): the founder IS removed from the persisted
+  // `captable:founders` array (per-row ownership re-renders fresh and correctly), but the cached
+  // summary `captable:totalIssued` is deliberately NOT re-derived here — it is left holding the
+  // pre-delete total, so it goes stale vs. a fresh recompute over the remaining founders.
   DB.set('founders', DB.get('founders',[]).filter(f=>f.id!==id)); renderFounders();
 });
 

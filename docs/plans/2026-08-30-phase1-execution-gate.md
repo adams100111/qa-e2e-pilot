@@ -130,3 +130,17 @@ A criterion may require several kinds (e.g. a computed write → `bake,computed`
 
 - The broadened-coverage half of the master plan's Phase 1 (required cross-tenant/race/resume emissions in `generating-qa-checklist`) is a SEPARATE follow-on — this plan does the evidence GATE. Sequence coverage after the gate holds.
 - **Re-measure:** after Task 1.5, a fresh MEASURED fixture run should show functional recall rising (the gate converts unevidenced passes into `blocked`, forcing the agent to actually bake/recompute) — capture it and compare to the 33% baseline. Confirm no recall regression on the fixture gate.
+
+---
+
+## Phase 1 result (MEASURED)
+
+The re-measurement this plan's own exit criterion asked for was run: baseline (ungated) vs. gated, on the same fixture/18-seed set.
+
+| Run | Functional | UX | Overall | Precision |
+|---|---|---|---|---|
+| Baseline (ungated) | 33% | 25% | 30% | 75% |
+| **Gated A** (real `qa-e2e-pilot` agent, 18 seeds) | **38%** | 25% | 33% | **100%** |
+| Gated B (general-purpose agent, comparison run) | 25% | 25% | 25% | 100% |
+
+**Recorded verdict:** the gate did what it was designed to do — **precision rose from 75% to 100%** (the ungated run's one false-green is gone; no negative-control seed was ever flagged across either gated run). **Recall did not rise materially** on its own (functional 33%→38%, UX flat at 25%) — expected, because the gate enforces that a `pass` carries real evidence, it does not add new criteria that test previously-untested bug classes. That is coverage work, explicitly deferred to Phase 2 (`docs/plans/2026-08-31-phase2-coverage-roles.md`) for functional/journey recall and to Phase 3/4 for UX-objective recall (no non-vision detector exists yet for U1–U3). This exit criterion is satisfied: the number is captured, compared to baseline, and confirmed non-regressed (100% ≥ 75% precision; 38% ≥ 33% functional recall — no regression on either axis carried forward from this gate).

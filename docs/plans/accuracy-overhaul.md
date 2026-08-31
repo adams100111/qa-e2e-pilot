@@ -1,5 +1,7 @@
 # Plan — Accuracy overhaul: raise true bug-recall to >=65–80%, then cut cost
 
+> **SUPERSEDED** by [docs/plans/2026-08-30-qa-accuracy-persona-overhaul.md](./2026-08-30-qa-accuracy-persona-overhaul.md). Kept for history. Its projected numbers were ESTIMATED and are discredited — see the master plan's Phase 0/1 MEASURED results.
+
 **Status**: proposed (2026-08-30). **North star**: true bug-recall (fewer false-greens). Cost/tooling
 are levers toward recall, never at its expense. **Scope this pass**: PLAN-ONLY for existing
 skills/agent/config; net-new files delivered are this plan, ADR-0006..0009, and

@@ -499,5 +499,160 @@ else
   echo "SKIP - kinds/evidence jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# --- Case 30: persona-keying — pass C1 --persona admin, then pass C1
+# --persona user -> TWO SEPARATE records (criteria length grows by 2, not
+# replace); each carries its own persona. This is Task 15's core fix: a
+# criterion recorded `pass` under one persona must never read as done for a
+# different persona on resume. ------------------------------------------
+PERSONA_RUN_ID="test-run-persona"
+PERSONA_CKPT_FILE="$WORK/.qa/runs/${PERSONA_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$SCRIPT" "$PERSONA_RUN_ID" C1 pass --persona admin >/dev/null)
+check "persona: criteria count 1 after first persona upsert" \
+  "$(get "$PERSONA_CKPT_FILE" '.criteria | length')" "1"
+check "persona: admin record persona field" \
+  "$(get "$PERSONA_CKPT_FILE" '.criteria[0].persona')" "admin"
+
+(cd "$WORK" && bash "$SCRIPT" "$PERSONA_RUN_ID" C1 pass --persona user >/dev/null)
+check "persona: criteria count grows to 2 (not replaced)" \
+  "$(get "$PERSONA_CKPT_FILE" '.criteria | length')" "2"
+check "persona: admin record still present after adding user" \
+  "$(jq -r '[.criteria[] | select(.criterion_id=="C1" and .persona=="admin")] | length' "$PERSONA_CKPT_FILE")" "1"
+check "persona: user record present" \
+  "$(jq -r '[.criteria[] | select(.criterion_id=="C1" and .persona=="user")] | length' "$PERSONA_CKPT_FILE")" "1"
+check "persona: both records have criterion_id C1" \
+  "$(jq -r '[.criteria[].criterion_id] | unique | join(",")' "$PERSONA_CKPT_FILE")" "C1"
+
+# --- Case 31: --resume/--list show both C1/admin and C1/user distinctly ----
+PERSONA_LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$PERSONA_RUN_ID")"
+check "persona list: C1@admin row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@admin"{print "yes"}')" "yes"
+check "persona list: C1@user row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@user"{print "yes"}')" "yes"
+check "persona list: header row unchanged (back-compat)" \
+  "$(echo "$PERSONA_LIST_OUT" | head -1)" \
+  "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
+
+PERSONA_RESUME_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$PERSONA_RUN_ID")"
+check "persona resume: last record shows criterion_id C1" \
+  "$(echo "$PERSONA_RESUME_OUT" | grep -qE 'criterion_id:[[:space:]]+C1' && echo yes)" "yes"
+check "persona resume: last record shows persona user" \
+  "$(echo "$PERSONA_RESUME_OUT" | grep -qE 'persona:[[:space:]]+user' && echo yes)" "yes"
+
+# --- Case 32: no-persona upsert of C1 still replaces the no-persona C1
+# (back-compat) and does NOT touch the persona-scoped records -------------
+(cd "$WORK" && bash "$SCRIPT" "$PERSONA_RUN_ID" C1 fail >/dev/null)
+check "persona: no-persona upsert grows count to 3 (new (none) record)" \
+  "$(get "$PERSONA_CKPT_FILE" '.criteria | length')" "3"
+check "persona: no-persona C1 record has persona empty" \
+  "$(jq -r '[.criteria[] | select(.criterion_id=="C1" and (.persona // "")=="")] | length' "$PERSONA_CKPT_FILE")" "1"
+
+(cd "$WORK" && bash "$SCRIPT" "$PERSONA_RUN_ID" C1 blocked >/dev/null)
+check "persona: second no-persona upsert REPLACES (count stays 3)" \
+  "$(get "$PERSONA_CKPT_FILE" '.criteria | length')" "3"
+check "persona: no-persona C1 record now blocked" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="C1" and (.persona // "")=="") | .verdict' "$PERSONA_CKPT_FILE")" "blocked"
+check "persona: admin record untouched by no-persona upserts" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="C1" and .persona=="admin") | .verdict' "$PERSONA_CKPT_FILE")" "pass"
+check "persona: user record untouched by no-persona upserts" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="C1" and .persona=="user") | .verdict' "$PERSONA_CKPT_FILE")" "pass"
+
+# --- Case 33: persona-scoped evidence gate -------------------------------
+# record-evidence.sh writes under evidence/<persona>/<crit>/ when --persona
+# is set; checkpoint.sh's gate, given --persona on a pass, must look there.
+PGATE_RUN_ID="test-run-persona-gate"
+PGATE_CKPT_FILE="$WORK/.qa/runs/${PGATE_RUN_ID}/checkpoint.json"
+PGATE_EVID_PATH="$WORK/.qa/runs/${PGATE_RUN_ID}/evidence/admin/PC1/bake-read-back.json"
+
+PGATE_EVID_OUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$PGATE_RUN_ID" PC1 bake --persona admin --read-back '{"x":1}' --multiplicity N)"
+check "persona evidence: written under evidence/admin/PC1/" \
+  "$([[ -f "$PGATE_EVID_PATH" ]] && echo yes)" "yes"
+check "persona evidence: stdout path is persona-scoped" \
+  "$PGATE_EVID_OUT" "evidence/admin/PC1/bake-read-back.json"
+check "persona evidence: NOT written under the non-persona path" \
+  "$([[ ! -f "$WORK/.qa/runs/${PGATE_RUN_ID}/evidence/PC1/bake-read-back.json" ]] && echo yes)" "yes"
+
+PGATE_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$PGATE_RUN_ID" PC1 pass --persona admin --kinds bake 2>&1)"
+RC_PGATE_OK=$?
+check "persona gate: pass with persona-scoped evidence ACCEPTED" "$RC_PGATE_OK" "0"
+check "persona gate: record written with persona admin" \
+  "$(get "$PGATE_CKPT_FILE" '.criteria[0].persona')" "admin"
+
+# same pass WITHOUT the persona-scoped evidence (a different persona, no
+# evidence written for it yet) is REJECTED
+PGATE_NOEV_ERR="$(cd "$WORK" && bash "$SCRIPT" "$PGATE_RUN_ID" PC1 pass --persona participant --kinds bake 2>&1 >/dev/null)"
+RC_PGATE_NOEV=$?
+check "persona gate: pass without persona-scoped evidence REJECTED" \
+  "$([[ "$RC_PGATE_NOEV" -ne 0 ]] && echo yes)" "yes"
+check "persona gate: rejection names the persona-scoped path" \
+  "$(echo "$PGATE_NOEV_ERR" | grep -qF 'evidence/participant/PC1/bake-read-back.json' && echo yes)" "yes"
+check "persona gate: rejected pass did not add a second record" \
+  "$(get "$PGATE_CKPT_FILE" '.criteria | length')" "1"
+
+# a plain (no --persona) pass for the same criterion also can't be satisfied
+# by the admin persona's evidence — it looks at the non-persona-scoped path,
+# which was never written, so it is also rejected.
+PGATE_PLAIN_ERR="$(cd "$WORK" && bash "$SCRIPT" "$PGATE_RUN_ID" PC1 pass --kinds bake 2>&1 >/dev/null)"
+RC_PGATE_PLAIN=$?
+check "persona gate: no-persona pass can't reuse admin's evidence, REJECTED" \
+  "$([[ "$RC_PGATE_PLAIN" -ne 0 ]] && echo yes)" "yes"
+check "persona gate: no-persona rejection names the non-scoped path" \
+  "$(echo "$PGATE_PLAIN_ERR" | grep -qF 'evidence/PC1/bake-read-back.json' && echo yes)" "yes"
+
+# --- Case 34: persona record identity + persona-scoped gate under the
+# jq-masked python3 fallback ----------------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYP_RUN_ID="test-run-py-persona"
+  PYP_CKPT_FILE="$WORK/.qa/runs/${PYP_RUN_ID}/checkpoint.json"
+
+  # two-persona record identity under the python3 fallback
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYP_RUN_ID" C1 pass --persona admin >/dev/null 2>&1)
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYP_RUN_ID" C1 pass --persona user >/dev/null 2>&1)
+  check "py-fallback persona: two records for C1 (admin, user)" \
+    "$(python3 -c "import json;d=json.load(open('$PYP_CKPT_FILE'));print(len(d['criteria']))" 2>/dev/null)" "2"
+  check "py-fallback persona: personas are admin and user" \
+    "$(python3 -c "import json;d=json.load(open('$PYP_CKPT_FILE'));print(sorted(c['persona'] for c in d['criteria']))" 2>/dev/null)" "['admin', 'user']"
+
+  # no-persona upsert of C1 still replaces only the no-persona C1
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYP_RUN_ID" C1 fail >/dev/null 2>&1)
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYP_RUN_ID" C1 blocked >/dev/null 2>&1)
+  check "py-fallback persona: no-persona replace keeps count at 3" \
+    "$(python3 -c "import json;d=json.load(open('$PYP_CKPT_FILE'));print(len(d['criteria']))" 2>/dev/null)" "3"
+  check "py-fallback persona: admin/user records untouched (still pass)" \
+    "$(python3 -c "import json;d=json.load(open('$PYP_CKPT_FILE'));print(sorted(c['verdict'] for c in d['criteria'] if c['persona']))" 2>/dev/null)" "['pass', 'pass']"
+
+  # persona-scoped evidence gate under the python3 fallback
+  PYPGATE_RUN_ID="test-run-py-persona-gate"
+  PYPGATE_CKPT_FILE="$WORK/.qa/runs/${PYPGATE_RUN_ID}/checkpoint.json"
+  PYPGATE_EVID_PATH="$WORK/.qa/runs/${PYPGATE_RUN_ID}/evidence/admin/PC1/bake-read-back.json"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYPGATE_RUN_ID" PC1 bake --persona admin --read-back '{"x":1}' --multiplicity N >/dev/null 2>&1)
+  check "py-fallback persona evidence: written under evidence/admin/PC1/" \
+    "$([[ -f "$PYPGATE_EVID_PATH" ]] && echo yes)" "yes"
+
+  PYPGATE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYPGATE_RUN_ID" PC1 pass --persona admin --kinds bake 2>&1)"
+  RC_PYPGATE_OK=$?
+  check "py-fallback persona gate: pass with persona-scoped evidence ACCEPTED" "$RC_PYPGATE_OK" "0"
+
+  PYPGATE_NOEV_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYPGATE_RUN_ID" PC1 pass --persona participant --kinds bake 2>&1 >/dev/null)"
+  RC_PYPGATE_NOEV=$?
+  check "py-fallback persona gate: pass without persona-scoped evidence REJECTED" \
+    "$([[ "$RC_PYPGATE_NOEV" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback persona gate: rejected pass did not add a second record" \
+    "$(python3 -c "import json;d=json.load(open('$PYPGATE_CKPT_FILE'));print(len(d['criteria']))" 2>/dev/null)" "1"
+
+  echo "note - persona-keying jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - persona-keying jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-30). Part of the accuracy overhaul ([docs/plans/accuracy-overhaul.md](../plans/accuracy-overhaul.md)).
+Proposed (2026-08-30). Part of the accuracy overhaul ([docs/plans/2026-08-30-qa-accuracy-persona-overhaul.md](../plans/2026-08-30-qa-accuracy-persona-overhaul.md)).
 
 ## Context
 

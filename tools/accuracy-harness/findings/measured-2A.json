@@ -1,0 +1,13 @@
+{
+  "source": "MEASURED Phase-2A run — real qa-e2e-pilot agent with the systematic edge-case coverage catalog + observable ESOP pool + negative-entry rule, gated, black-box, run-id remeasure-2A, 2026-08-31",
+  "estimated": false,
+  "_attribution": "Controller-as-judge. Raw: .qa/runs/remeasure-2A/bug-log.json (6 distinct bugs). The coverage catalog generated edge criteria that caught the previously-missed bugs: F1 (independent fully-diluted recompute vs observable pool → divergence), F4 (negative shares via the read-back rule), J3 (every-3rd drop), J4 (0-share false toast). Missed: F3 (delete-reconcile PASSED — the fixture re-renders fresh, so F3 may be a phantom seed with no real stale-aggregate bug — INVESTIGATE); J1 (named-'Ghost' not exercised this run — coverage variance); U4 (help-button console error not exercised — the interactive-element enumeration missed the ? button this run); U1-U3 (visual — need Phase 3/4). BUG-EDGE-06 also caught the terminal-lock/BUG-004 class (unseeded). Zero negative-control false positives → precision 100%.",
+  "findings": [
+    { "judgedSeedId": "F1", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-OWN-01: ownership% uses issued-only denominator, ignoring the observable 500k pool; Dave 251000 sole founder shows 100% vs correct fully-diluted 33.42%" },
+    { "judgedSeedId": "F2", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-SAFE-01: SAFE amount truncates instead of rounds (1234567x0.0037 -> 4567.89 vs 4567.90)" },
+    { "judgedSeedId": "J4", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-EDGE-01: 0-share add shows 'Founder added' toast but never persists" },
+    { "judgedSeedId": "F4", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-EDGE-02: negative shares persist unvalidated -> one founder %negative, another >100%" },
+    { "judgedSeedId": "J3", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-EDGE-03: every 3rd add-click silently drops the write with a success toast" },
+    { "judgedSeedId": "J2", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-EDGE-06: Finalize (and re-finalize while COMPLETE) shows success but captable:holdings stays permanently null; terminal-lock, no recovery" }
+  ]
+}

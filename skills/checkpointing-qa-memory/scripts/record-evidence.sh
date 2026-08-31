@@ -4,19 +4,27 @@
 # be CONTENT-aware (not filename-theater).
 #
 # USAGE:
-#   record-evidence.sh <run-id> <criterion-id> bake     --read-back <json-or-text> --multiplicity <0|1|N>
-#   record-evidence.sh <run-id> <criterion-id> computed --oracle <val> --observed <val> --match <true|false>
-#   record-evidence.sh <run-id> <criterion-id> probe    --status <code> --shape <json-or-text>
+#   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
+#   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
+#   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text>
 #
-# kind -> artifact (written under .qa/runs/<run-id>/evidence/<criterion-id>/):
+# kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
 #   probe    -> network-response.json { status, shape, ... }
 #
+# Written under .qa/runs/<run-id>/evidence/<criterion-id>/ by default. When
+# --persona <id> is given, written under
+# .qa/runs/<run-id>/evidence/<persona>/<criterion-id>/ instead, so two
+# personas' bakes for the same criterion never collide. Omitting --persona is
+# back-compat: the no-persona path is byte-identical to today's.
+#
 # On success, prints ONE line to stdout: the artifact path RELATIVE TO THE RUN
-# DIR (e.g. "evidence/C1/bake-read-back.json") — the exact shape checkpointing-
-# qa-memory's `evidence_refs` expects, so the caller can pipe it straight in:
-#   checkpoint.sh ... --evidence-refs "$(record-evidence.sh ... )"
+# DIR (e.g. "evidence/C1/bake-read-back.json", or with --persona admin:
+# "evidence/admin/C1/bake-read-back.json") — the exact shape checkpointing-
+# qa-memory's `evidence_refs` (and checkpoint.sh's `--persona`-aware gate)
+# expect, so the caller can pipe it straight in:
+#   checkpoint.sh ... --persona <id> --evidence-refs "$(record-evidence.sh ... --persona <id> ...)"
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir), and EITHER jq OR python3 for
 #               safe JSON writing (jq preferred; python3 used as fallback).
@@ -49,14 +57,33 @@ run_dir() {
   echo "${QA_BASE}/${run_id}"
 }
 
+# $3 (persona) is OPTIONAL. Empty/omitted -> today's path, byte-identical:
+#   evidence/<crit_id>
+# Non-empty -> persona-scoped path (mirrors checkpoint.sh's gate lookup):
+#   evidence/<persona>/<crit_id>
 evidence_dir() {
-  local run_id="$1" crit_id="$2"
-  echo "$(run_dir "$run_id")/evidence/${crit_id}"
+  local run_id="$1" crit_id="$2" persona="${3:-}"
+  if [[ -n "$persona" ]]; then
+    echo "$(run_dir "$run_id")/evidence/${persona}/${crit_id}"
+  else
+    echo "$(run_dir "$run_id")/evidence/${crit_id}"
+  fi
+}
+
+# relative-to-run-dir counterpart of evidence_dir(), used to build the
+# stdout path and mirrors checkpoint.sh gate_pass's rel_path construction.
+evidence_dir_rel() {
+  local crit_id="$1" persona="${2:-}"
+  if [[ -n "$persona" ]]; then
+    echo "evidence/${persona}/${crit_id}"
+  else
+    echo "evidence/${crit_id}"
+  fi
 }
 
 ensure_evidence_dir() {
-  local run_id="$1" crit_id="$2"
-  mkdir -p "$(evidence_dir "$run_id" "$crit_id")"
+  local run_id="$1" crit_id="$2" persona="${3:-}"
+  mkdir -p "$(evidence_dir "$run_id" "$crit_id" "$persona")"
 }
 
 # artifact filename for a given kind
@@ -195,8 +222,8 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 cmd_bake() {
-  local run_id="$1" crit_id="$2"
-  shift 2
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
   local read_back="" multiplicity="" have_read_back=0 have_multiplicity=0
 
   while [[ $# -gt 0 ]]; do
@@ -209,9 +236,9 @@ cmd_bake() {
   [[ "$have_read_back" -eq 1 ]]    || die "kind 'bake' requires --read-back <json-or-text>"
   [[ "$have_multiplicity" -eq 1 ]] || die "kind 'bake' requires --multiplicity <0|1|N>"
 
-  ensure_evidence_dir "$run_id" "$crit_id"
+  ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
-  file="$(evidence_dir "$run_id" "$crit_id")/bake-read-back.json"
+  file="$(evidence_dir "$run_id" "$crit_id" "$persona")/bake-read-back.json"
 
   if has_jq; then
     write_jq_bake "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity"
@@ -221,12 +248,12 @@ cmd_bake() {
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi
 
-  echo "evidence/${crit_id}/bake-read-back.json"
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/bake-read-back.json"
 }
 
 cmd_computed() {
-  local run_id="$1" crit_id="$2"
-  shift 2
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
   local oracle="" observed="" match=""
   local have_oracle=0 have_observed=0 have_match=0
 
@@ -242,9 +269,9 @@ cmd_computed() {
   [[ "$have_observed" -eq 1 ]] || die "kind 'computed' requires --observed <val>"
   [[ "$have_match" -eq 1 ]]    || die "kind 'computed' requires --match <true|false>"
 
-  ensure_evidence_dir "$run_id" "$crit_id"
+  ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
-  file="$(evidence_dir "$run_id" "$crit_id")/recompute.json"
+  file="$(evidence_dir "$run_id" "$crit_id" "$persona")/recompute.json"
 
   if has_jq; then
     write_jq "$file" "$run_id" "$crit_id" "computed" oracle "$oracle" observed "$observed" match "$match"
@@ -254,12 +281,12 @@ cmd_computed() {
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi
 
-  echo "evidence/${crit_id}/recompute.json"
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/recompute.json"
 }
 
 cmd_probe() {
-  local run_id="$1" crit_id="$2"
-  shift 2
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
   local status="" shape="" have_status=0 have_shape=0
 
   while [[ $# -gt 0 ]]; do
@@ -272,9 +299,9 @@ cmd_probe() {
   [[ "$have_status" -eq 1 ]] || die "kind 'probe' requires --status <code>"
   [[ "$have_shape" -eq 1 ]]  || die "kind 'probe' requires --shape <json-or-text>"
 
-  ensure_evidence_dir "$run_id" "$crit_id"
+  ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
-  file="$(evidence_dir "$run_id" "$crit_id")/network-response.json"
+  file="$(evidence_dir "$run_id" "$crit_id" "$persona")/network-response.json"
 
   if has_jq; then
     write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape"
@@ -284,7 +311,34 @@ cmd_probe() {
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi
 
-  echo "evidence/${crit_id}/network-response.json"
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/network-response.json"
+}
+
+# Scan the remaining args ($@, after run-id/criterion-id/kind) for an
+# optional `--persona <id>` pair anywhere in the list, removing it and
+# leaving the rest untouched (order-preserving) for the per-kind parsers.
+# Sets globals PERSONA and STRIPPED_ARGS (an array) — a plain "return via
+# echo" can't carry an array safely here, and this file has no other
+# argument-stripping precedent to match, so a pair of globals scoped to this
+# one call site is the simplest correct option.
+PERSONA=""
+STRIPPED_ARGS=()
+strip_persona() {
+  PERSONA=""
+  STRIPPED_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --persona)
+        [[ $# -ge 2 ]] || die "--persona requires <id>"
+        PERSONA="$2"
+        shift 2
+        ;;
+      *)
+        STRIPPED_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -292,7 +346,7 @@ cmd_probe() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--key val ...]\n       kind: bake | computed | probe"
+  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe"
 
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
@@ -300,10 +354,13 @@ main() {
   # Validate kind up front (also used to name the artifact for error text).
   artifact_for_kind "$kind" >/dev/null
 
+  strip_persona "$@"
+  set -- "${STRIPPED_ARGS[@]}"
+
   case "$kind" in
-    bake)     cmd_bake "$run_id" "$crit_id" "$@" ;;
-    computed) cmd_computed "$run_id" "$crit_id" "$@" ;;
-    probe)    cmd_probe "$run_id" "$crit_id" "$@" ;;
+    bake)     cmd_bake "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    computed) cmd_computed "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    probe)    cmd_probe "$run_id" "$crit_id" "$PERSONA" "$@" ;;
   esac
 }
 
