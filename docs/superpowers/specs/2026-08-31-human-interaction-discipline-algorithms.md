@@ -9,19 +9,21 @@ Precise decision procedures behind the design. Each algorithm is deterministic w
 **Guarantee:** the *action-under-test* was performed only through genuine human affordances. Enforced by **three independent checks, ANDed** (defense in depth — no single check can be fooled into a false green).
 
 ### Inputs
-`action-trace` = ordered `[{tool, target, phase, payload?}]` for the criterion (**agent-authored** — supplies phase tags), plus **state fingerprints** captured at each observation point, plus **`session.md`** = Playwright MCP's `--save-session` transcript (**server-authored, independent** — the ground truth of which tool calls actually ran; the agent cannot omit from it).
+`action-trace` = ordered `[{tool, target, phase, payload?}]` for the criterion (**agent-authored** — supplies phase tags and, for an evaluate step, the `payload` Check 2 lints), plus **state fingerprints** captured at each observation point, plus **`session.md`** = Playwright MCP's `--save-session` transcript (**server-authored, independent**). **Format reality (verified, `@playwright/mcp@0.0.79`):** `session.md` records the **generated Playwright CODE** for each executed step under `Ran Playwright code` ` ```js ` blocks (e.g. `await page.locator('#add').click()`, `await page.evaluate(...)`) — NOT MCP tool names, and with no phase tags. `parse-session-log.js` classifies each block by code pattern into `{class: human-path|evaluate|route|other, mutating}` using the SAME mutation lint as Check 2, so read-only observation evaluate is `mutating:false`.
 
 ### Check 0 — Independent session-log reconciliation (closes the self-report hole)
-Before the trace-based checks, reconcile the agent's `action-trace` against `session.md` for the criterion's act-window (bounded independently by the first-observation timestamp, so a mislabeled phase can't shrink the window):
+Reconcile the classified `session.md` calls against the agent's recorded steps. `session.md` is phase-less and timestamp-thin, so the window is the **whole criterion** (all recorded steps), not an act-sub-window:
 ```
-calls_gt   = tool calls in session.md within [act_window_start, act_window_end]
-calls_self = act-phase entries in action-trace
-for c in calls_gt:
-    if c is a mutating/workaround call (evaluate-set / run_code_unsafe / route / direct write)
-       and c not in calls_self:
-        → "concealed workaround" → violation   # took a shortcut, then didn't record it
+sess    = parse-session-log(session.md)                 # [{class, mutating, code}]
+concealable = [ c in sess : c.mutating and c.class != "human-path" ]   # evaluate/route writes
+              # a human-path mutation in session.md IS the sanctioned act — never concealed
+coverage = count of recorded steps that could perform a non-UI mutation
+           (an evaluate step whose payload mutates, run_code_unsafe, or route)
+for c in concealable:
+    if coverage > 0: coverage -= 1          # a recorded mutating step accounts for it
+    else: → "concealed workaround" → violation   # mutating shortcut in session.md, never recorded
 ```
-Check 0 makes Checks 1–3 tamper-evident: the agent can no longer pass by *omitting* the shortcut from its own trace, because `session.md` records it regardless. Checks 1–2 then classify the calls that ARE present; Check 3 catches mutations with no attributable call at all.
+Check 0 makes Checks 1–2 tamper-evident: the agent cannot pass by *omitting* a mutating shortcut from its own trace, because `session.md` records the code regardless. It deliberately ignores read-only evaluate (the sanctioned observe path — baking, detectors, observe-round all use it) so it does not false-reject every real criterion. What remains agentic is only **phase framing** (was a recorded mutation "act" or "arrange"?) — the acknowledged residual, spot-checked by a reviewer (§2B). Checks 1–2 then police the act-phase steps; Check 3 catches mutations with no attributable call at all.
 
 ### Check 1 — Tool-class gate (syntactic, cheap)
 Partition the tool set:

@@ -279,8 +279,8 @@ git commit -m "feat(roles): frontier.js round engine + tests (spec 2F) — topol
 - Consumes: run-dir layout `evidence/[<persona>/]<crit>/` (from checkpoint.sh's `gate_pass`); the human-path/workaround tool sets (Global Constraints).
 - Produces:
   - `record-evidence.sh <run> <crit> action-trace [--persona <id>] --steps <json> [--session-calls <json>] [--action <desc>]` → writes `action-trace.json`, prints its run-relative path (mirrors the other kinds).
-  - `action-trace.json` shape: `{ "actionUnderTest": string, "steps": [{ "tool": string, "target": string, "phase": "arrange"|"act"|"assert" }], "sessionCalls": [{ "tool": string, "target": string }] }` (`sessionCalls` = independent ground truth from `session.md`; omitted/`[]` only when `saveSession` is off).
-  - `parse-session-log.js <session.md>` → prints a JSON array `[{ "tool": string, "target": string }]` of the tool calls the server logged.
+  - `action-trace.json` shape: `{ "actionUnderTest": string, "steps": [{ "tool": string, "target": string, "phase": "arrange"|"act"|"assert", "payload"?: string }], "sessionCalls": [{ "class": "human-path"|"evaluate"|"route"|"other", "mutating": boolean, "code": string }] }`. **`payload`** is the evaluate/route code the agent ran (needed to classify an act-phase `browser_evaluate` read-vs-write — spec A1 Check 2). **`sessionCalls`** is the INDEPENDENT ground truth: the classified Playwright-code calls parsed from `session.md` (NOT tool names — the real `session.md` records generated Playwright JS, see `parse-session-log.js`). Omitted/`[]` only when `saveSession` is off.
+  - `parse-session-log.js <session.md>` → prints a JSON array `[{ class, mutating, code }]` classified from the real `session.md` `Ran Playwright code` ` ```js ` blocks (the pinned `@playwright/mcp@0.0.79` format — verified in `playwright-core/lib/coreBundle.js`: sections `Result` / `Ran Playwright code` / `Page` / `Snapshot`, code rendered as ` ```js `). `class` ∈ human-path (`.click()/.fill()/.type()/.selectOption()/.press()/.hover()/.setInputFiles()/.dragTo()`), `evaluate` (`.evaluate(`/`.$eval(`/`.evaluateHandle(`), `route` (`.route(`/`.routeFromHAR(`), else `other`; `mutating` = the code writes app state (`.setItem(`/`.removeItem(`/`.value =`/`.dispatchEvent(`/`.click(`/`.submit(`/`.setAttribute(`/assignment into `document`/`window`) — a read-only evaluate is `mutating:false` and is IGNORED by the gate.
   - `check-action-trace.js <action-trace.json> [--allow-nonui]` → exit 0 (valid) or exit 1 with a one-line reason on stderr. This is the `human-action` value-check.
   - `checkpoint.sh ... pass --kinds ...,human-action [--persona P]` gates the pass on `check-action-trace.js`.
 
@@ -300,54 +300,82 @@ PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-# --- parse-session-log.js: extract tool calls from a Playwright session.md ----
+# --- parse-session-log.js: classify calls from a REAL Playwright session.md ---
+# Real @playwright/mcp@0.0.79 format: sections titled "Ran Playwright code" with
+# a ```js block of generated Playwright code (NOT tool names).
 cat > "$WORK/session.md" <<'MD'
-### Tool call: browser_type
+### Ran Playwright code
 ```js
 await page.locator('#name').fill('Alice');
 ```
-### Tool call: browser_click
+### Ran Playwright code
 ```js
 await page.locator('#add').click();
 ```
-### Tool call: browser_evaluate
+### Ran Playwright code
+```js
+await page.evaluate(() => getComputedStyle(document.body).color);
+```
+### Ran Playwright code
 ```js
 await page.evaluate(() => localStorage.setItem('captable:founders','[]'));
 ```
 MD
 PARSED="$(node "$PARSE" "$WORK/session.md")"
-check "parse: found 3 calls" "$(echo "$PARSED" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).length)))')" "3"
+jlen() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s);process.stdout.write(String('"$1"'))})'; }
+check "parse: found 4 code calls"          "$(echo "$PARSED" | jlen 'a.length')" "4"
+check "parse: 2 human-path clicks/fills"   "$(echo "$PARSED" | jlen 'a.filter(c=>c.class==="human-path").length')" "2"
+check "parse: read-only evaluate mutating=false" "$(echo "$PARSED" | jlen 'a.filter(c=>c.class==="evaluate"&&!c.mutating).length')" "1"
+check "parse: setItem evaluate mutating=true"    "$(echo "$PARSED" | jlen 'a.filter(c=>c.class==="evaluate"&&c.mutating).length')" "1"
 
 # --- check-action-trace.js: clean UI-only act -> exit 0 -----------------------
 cat > "$WORK/clean.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_type","target":"#name","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"tool":"browser_type","target":"#name"},{"tool":"browser_click","target":"#add"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_type","target":"#name","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}]}
 J
 node "$CHECK" "$WORK/clean.json"; check "check: clean UI-only act passes" "$?" "0"
 
-# --- Check 1/2: an act-phase workaround tool -> exit 1 ------------------------
-cat > "$WORK/evalact.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"setItem","phase":"act"}],"sessionCalls":[{"tool":"browser_evaluate","target":"setItem"}]}
+# --- Q2 (fatal FP guard): a read-only observe evaluate in session.md is IGNORED
+cat > "$WORK/observe.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":false,"code":"getComputedStyle(document.body)"}]}
 J
-node "$CHECK" "$WORK/evalact.json" 2>/dev/null; check "check: evaluate-set on act rejected" "$?" "1"
+node "$CHECK" "$WORK/observe.json"; check "check: read-only observe evaluate NOT flagged (Q2)" "$?" "0"
 
-# --- Check 0: concealed workaround (in session.md, omitted from act steps) ----
-cat > "$WORK/concealed.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"tool":"browser_click","target":"#add"},{"tool":"browser_evaluate","target":"localStorage.setItem"}]}
+# --- Check 1/2: an act-phase MUTATING evaluate -> exit 1 (payload classifies) --
+cat > "$WORK/evalact.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"setItem","phase":"act","payload":"localStorage.setItem('captable:founders','[]')"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}]}
 J
-node "$CHECK" "$WORK/concealed.json" 2>/dev/null; check "check: concealed session-log workaround rejected" "$?" "1"
+node "$CHECK" "$WORK/evalact.json" 2>/dev/null; check "check: mutating evaluate on act rejected" "$?" "1"
+
+# --- a READ-ONLY evaluate ON the act path is allowed (payload doesn't mutate) --
+cat > "$WORK/readact.json" <<'J'
+{"actionUnderTest":"read total","steps":[{"tool":"browser_evaluate","target":"read","phase":"act","payload":"getComputedStyle(document.body).color"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"getComputedStyle"}]}
+J
+node "$CHECK" "$WORK/readact.json"; check "check: read-only evaluate on act allowed" "$?" "0"
+
+# --- a RECORDED mutating evaluate (e.g. arrange seed) covers its session twin --
+cat > "$WORK/recorded.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem('seed','1')"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('seed','1')"},{"class":"human-path","mutating":true,"code":"await page.locator('#add').click()"}]}
+J
+node "$CHECK" "$WORK/recorded.json"; check "check: recorded arrange-mutation covers its twin (not concealed)" "$?" "0"
+
+# --- Check 0: concealed MUTATING workaround (in session.md, no recorded step) --
+cat > "$WORK/concealed.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}]}
+J
+node "$CHECK" "$WORK/concealed.json" 2>/dev/null; check "check: concealed mutating workaround rejected (Check 0)" "$?" "1"
 
 # --- --allow-nonui lets a logged opt-out through (confidence low upstream) ----
 node "$CHECK" "$WORK/evalact.json" --allow-nonui; check "check: --allow-nonui permits workaround" "$?" "0"
 
 # --- record-evidence writes action-trace.json + checkpoint gates on it --------
 RID="ht-1"
-( cd "$WORK" && bash "$REC" "$RID" C1 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"tool":"browser_click","target":"#add"}]' --action "add founder" >/dev/null )
+( cd "$WORK" && bash "$REC" "$RID" C1 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --action "add founder" >/dev/null )
 check "record: action-trace.json written" "$([[ -f "$WORK/.qa/runs/$RID/evidence/C1/action-trace.json" ]] && echo yes)" "yes"
 ( cd "$WORK" && bash "$CKPT" "$RID" C1 pass --kinds human-action --evidence-refs evidence/C1/action-trace.json >/dev/null 2>&1 ); check "checkpoint: clean human-action pass accepted" "$?" "0"
 
 # concealed workaround at the gate -> pass REJECTED (nonzero)
 RID2="ht-2"
-( cd "$WORK" && bash "$REC" "$RID2" C2 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"tool":"browser_click","target":"#add"},{"tool":"browser_evaluate","target":"localStorage.setItem"}]' --action "add founder" >/dev/null )
+( cd "$WORK" && bash "$REC" "$RID2" C2 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"},{"class":"evaluate","mutating":true,"code":"localStorage.setItem(...)"}]' --action "add founder" >/dev/null )
 ( cd "$WORK" && bash "$CKPT" "$RID2" C2 pass --kinds human-action --evidence-refs evidence/C2/action-trace.json >/dev/null 2>&1 ); check "checkpoint: concealed workaround pass rejected" "$([[ $? -ne 0 ]] && echo yes)" "yes"
 
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
@@ -365,33 +393,73 @@ Expected: FAIL — `parse-session-log.js`/`check-action-trace.js` missing, `reco
 'use strict';
 /*
  * parse-session-log.js — read a Playwright MCP `--save-session` session.md and
- * emit the ordered tool calls as JSON `[{tool, target}]`. Dependency-free.
- * session.md marks each executed call with a "### Tool call: <name>" heading
- * followed by a fenced code block; `target` is a best-effort locator/arg pulled
- * from the first code line (informational — the gate matches on `tool`).
+ * emit the ordered calls as classified JSON `[{class, mutating, code}]`.
+ * Dependency-free. VERIFIED format (@playwright/mcp@0.0.79,
+ * playwright-core/lib/coreBundle.js): each executed step is a section titled
+ * "Ran Playwright code" followed by a ```js fenced block of GENERATED PLAYWRIGHT
+ * CODE (e.g. `await page.locator('#add').click();`) — NOT MCP tool names. So we
+ * classify by code pattern, and (crucially) flag `mutating` ONLY when the code
+ * writes app state, so read-only observation evaluate is never a workaround.
+ *
+ * The `classify(code)` here is the SINGLE source of truth also used by
+ * check-action-trace.js for act-phase evaluate payloads (Check 2) — keep them
+ * one function via the shared export.
  */
 const fs = require('fs');
+
+// Does this snippet WRITE app/DOM/storage state? (read-only reads are ignored.)
+const MUTATION_RE = /\.setItem\(|\.removeItem\(|localStorage\.clear\(|sessionStorage\.(set|remove|clear)|\.value\s*=|\.checked\s*=|\.innerHTML\s*=|\.textContent\s*=|\.setAttribute\(|\.dispatchEvent\(|\.click\(\)|\.submit\(\)|\.remove\(\)|document\.\w+\s*=|window\.\w+\s*=/;
+
+// True iff a raw JS snippet writes state. Used BOTH for full session.md code
+// AND for a bare action-trace evaluate `payload` (which has no `page.evaluate(`
+// wrapper) — so a payload is judged by what it does, not by its wrapper.
+function mutates(src) { return MUTATION_RE.test(String(src || '')); }
+
+// Classify one Playwright code snippet into a behavior class + mutating flag.
+function classify(code) {
+  const c = String(code || '');
+  const isEval  = /\.(evaluate|evaluateHandle|\$eval|\$\$eval)\s*\(/.test(c);
+  const isRoute = /\.route(FromHAR)?\s*\(/.test(c);
+  const isHuman = /\.(click|dblclick|fill|type|press|selectOption|hover|check|uncheck|setInputFiles|dragTo|tap)\s*\(/.test(c);
+  let cls = 'other';
+  if (isRoute) cls = 'route';
+  else if (isEval) cls = 'evaluate';
+  else if (isHuman) cls = 'human-path';
+  // human-path acts are inherently state-driving (that's the point) and are the
+  // SANCTIONED path — mutating:true but class human-path => never a workaround.
+  // evaluate/route are workarounds ONLY when they mutate; route is treated as
+  // mutating (backend interception manufactures state) unless it is a passive
+  // read. `other` (navigation, waits) is not mutating.
+  let mutating;
+  if (cls === 'human-path') mutating = true;
+  else if (cls === 'route') mutating = true;
+  else if (cls === 'evaluate') mutating = mutates(c);
+  else mutating = false;
+  return { class: cls, mutating: mutating, code: c.slice(0, 200) };
+}
+
 function parse(md) {
-  const lines = md.split(/\r?\n/);
+  const text = String(md || '');
   const calls = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^#+\s*Tool call:\s*([A-Za-z0-9_]+)/);
-    if (!m) continue;
-    let target = '';
-    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
-      const t = lines[j].trim();
-      if (t && !t.startsWith('```')) { target = t.slice(0, 120); break; }
-    }
-    calls.push({ tool: m[1], target: target });
+  // Match each "Ran Playwright code" section's fenced js code block. The fence
+  // marker is built from char codes so this SOURCE contains no literal triple
+  // backtick (keeps the code copy-pasteable inside a markdown code block).
+  const FENCE = String.fromCharCode(96, 96, 96); // three backticks
+  const re = new RegExp('Ran Playwright code[\\s\\S]*?' + FENCE + '(?:js|javascript)?\\s*([\\s\\S]*?)' + FENCE, 'g');
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const code = m[1].trim();
+    if (code) calls.push(classify(code));
   }
   return calls;
 }
+
 if (require.main === module) {
   const p = process.argv[2];
   if (!p) { process.stderr.write('usage: parse-session-log.js <session.md>\n'); process.exit(2); }
   process.stdout.write(JSON.stringify(parse(fs.readFileSync(p, 'utf8'))) + '\n');
 }
-module.exports = { parse: parse };
+module.exports = { parse: parse, classify: classify, mutates: mutates };
 ```
 
 - [ ] **Step 3b: Implement `check-action-trace.js` (Check 0∧1∧2)**
@@ -404,47 +472,82 @@ module.exports = { parse: parse };
  * exit 1 = REJECT with a one-line reason on stderr. `--allow-nonui` permits a
  * logged opt-out (checkpoint forces confidence low upstream).
  *
- * Check 1/2: no act-phase step uses a workaround tool (evaluate-set / clicks-in-
- *   evaluate / run_code_unsafe / route-backend / direct write).
- * Check 0:  no MUTATING call in the independent sessionCalls (from session.md)
- *   is ABSENT from the self-reported act steps (concealed workaround).
+ * Representations bridged here:
+ *   - steps[]        = agent self-report, MCP-tool-level {tool,target,phase,payload?}
+ *   - sessionCalls[] = INDEPENDENT ground truth, Playwright-code-level
+ *                      {class,mutating,code} parsed from session.md by
+ *                      parse-session-log.js (real @playwright/mcp format).
+ *
+ * Check 2 (act-phase payload lint): an act-phase browser_evaluate is a
+ *   workaround ONLY if its payload MUTATES (read-only observe evaluate is fine);
+ *   browser_run_code_unsafe / a backend browser_route on the act path are always
+ *   workarounds.
+ * Check 1 (act-phase tool class): an act step whose tool is not a human-path
+ *   tool and is not a read-only evaluate is a workaround.
+ * Check 0 (concealed-workaround reconciliation): a MUTATING evaluate/route call
+ *   in session.md that has NO corresponding recorded step (of ANY phase) is a
+ *   concealed workaround. session.md is phase-less and timestamp-thin, so we
+ *   reconcile the WHOLE criterion window against ALL recorded steps — this still
+ *   catches "took a mutating shortcut and didn't record it"; phase-mislabeling
+ *   is the acknowledged residual (reviewer spot-check), per spec §2B.
  */
 const fs = require('fs');
-const HUMAN_PATH = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload','browser_navigate']);
-const WORKAROUND = new Set(['browser_evaluate','browser_run_code_unsafe','browser_route']);
-function isWorkaroundTool(t) { return WORKAROUND.has(t); }
+const path = require('path');
+// Reuse the ONE classifier so act-payloads and session code are judged identically.
+const { mutates } = require(path.join(__dirname, '..', '..', 'driving-browser-qa', 'scripts', 'parse-session-log.js'));
+const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload','browser_navigate']);
 function die(msg) { process.stderr.write('HUMAN-ACTION GATE: ' + msg + '\n'); process.exit(1); }
 
+// Is this self-reported act step a workaround? human-path tools are fine; an
+// evaluate is a workaround only if its bare payload MUTATES (read-only observe
+// evaluate is allowed); anything else on the act path (run_code_unsafe / route /
+// unknown) is a workaround. `mutates()` is the same lint used on session.md.
+function actStepIsWorkaround(s) {
+  if (HUMAN_PATH_TOOLS.has(s.tool)) return false;
+  if (s.tool === 'browser_evaluate') return mutates(s.payload || '') === true;
+  return true; // browser_run_code_unsafe, browser_route, or any non-human-path tool
+}
+
 function main() {
-  const path = process.argv[2];
+  const p = process.argv[2];
   const allowNonUi = process.argv.indexOf('--allow-nonui') >= 0;
-  if (!path) { process.stderr.write('usage: check-action-trace.js <action-trace.json> [--allow-nonui]\n'); process.exit(2); }
+  if (!p) { process.stderr.write('usage: check-action-trace.js <action-trace.json> [--allow-nonui]\n'); process.exit(2); }
   let doc;
-  try { doc = JSON.parse(fs.readFileSync(path, 'utf8')); }
+  try { doc = JSON.parse(fs.readFileSync(p, 'utf8')); }
   catch (e) { die('action-trace.json is missing or not valid JSON'); }
   const steps = Array.isArray(doc.steps) ? doc.steps : null;
   if (!steps) die('action-trace.json has no steps[] array');
   const actSteps = steps.filter(function (s) { return s && s.phase === 'act'; });
   if (actSteps.length === 0) die('action-trace has no act-phase step — the action-under-test was never performed');
 
-  // Check 1/2 — act-phase tool-class + payload lint.
-  const badAct = actSteps.filter(function (s) { return isWorkaroundTool(s.tool) || !HUMAN_PATH.has(s.tool); });
-  if (badAct.length && !allowNonUi) {
-    die('act performed via workaround "' + badAct[0].tool + '" — perform through the UI or record the UI-impossibility as a fail (or log nonUiActionReason)');
+  if (allowNonUi) process.exit(0); // logged tool-limitation opt-out (confidence low upstream)
+
+  // Check 1/2 — act-phase steps must be human-path (or read-only evaluate).
+  const badAct = actSteps.filter(actStepIsWorkaround);
+  if (badAct.length) {
+    die('act performed via workaround "' + (badAct[0].tool) + '"' +
+        (badAct[0].payload ? ' (' + String(badAct[0].payload).slice(0, 60) + ')' : '') +
+        ' — perform through the UI, or record the UI-impossibility as a fail (or log nonUiActionReason)');
   }
 
-  // Check 0 — independent session-log reconciliation (concealed workaround).
+  // Check 0 — reconcile MUTATING session.md calls against ALL recorded steps.
+  // A recorded step "covers" a session call if it is a human-path act (covers a
+  // .click()/.fill() etc.) or an evaluate step whose payload also mutates
+  // (covers a recorded mutating evaluate opt-out). We count coverage capacity so
+  // N concealed mutating calls need N covering steps.
   const sessionCalls = Array.isArray(doc.sessionCalls) ? doc.sessionCalls : [];
-  const actToolCounts = {};
-  actSteps.forEach(function (s) { actToolCounts[s.tool] = (actToolCounts[s.tool] || 0) + 1; });
-  for (let i = 0; i < sessionCalls.length; i++) {
-    const c = sessionCalls[i];
-    if (!c || !isWorkaroundTool(c.tool)) continue;      // only mutating/workaround calls matter
-    if (allowNonUi) continue;                            // logged opt-out permits it
-    if (!(actToolCounts[c.tool] > 0)) {
-      die('session.md shows a "' + c.tool + '" call not present in the self-reported act steps — concealed workaround');
-    }
-    actToolCounts[c.tool] -= 1;                          // consume one, so N logged require N recorded
+  // Coverage = recorded NON-UI mutations only (a mutating evaluate / run_code_unsafe
+  // / route). A human-path step must NOT count — a click cannot account for a
+  // concealed setItem (this was a real bug the logic proof caught).
+  let coverage = steps.filter(function (s) {
+    return (s.tool === 'browser_evaluate' && mutates(s.payload || '')) || s.tool === 'browser_run_code_unsafe' || s.tool === 'browser_route';
+  }).length;
+  const mutatingSession = sessionCalls.filter(function (c) { return c && c.mutating && c.class !== 'human-path'; });
+  // human-path mutations in session.md are the sanctioned act itself — never concealed.
+  for (let i = 0; i < mutatingSession.length; i++) {
+    if (coverage > 0) { coverage -= 1; continue; }
+    die('session.md shows a mutating "' + mutatingSession[i].class + '" call not accounted for by any recorded step (' +
+        String(mutatingSession[i].code).slice(0, 60) + ') — concealed workaround');
   }
   process.exit(0);
 }
@@ -571,7 +674,7 @@ git commit -m "feat(checklist): derive human-action kind for state-mutating crit
 
 - [ ] **Step 1: Write `interaction-discipline.md`** — the act/observe split table (copy the design §1 table verbatim), the UI-impossible→`fail@FE` rule with the A2 decision procedure, the 2C reconciliations, and the §9 driver-optimization rules (locator order `data-testid → ARIA role → label/text → CSS`; `browser_route` backend-interception is a forbidden workaround; origin lists are not a write gate; web-first waiting). Keep < 500 lines, reference one level deep.
 
-- [ ] **Step 2: In `driving-browser-qa/SKILL.md`** add (a) a reference to `references/interaction-discipline.md`; (b) the driver launch rule: *"Launch the managed Playwright MCP driver with `--save-session`; after each `human-action` criterion's act phase, copy the server's `session.md` for that window and run `scripts/parse-session-log.js` to produce the `sessionCalls` passed to `record-evidence.sh action-trace`."*; (c) the act/observe tool rights in one paragraph.
+- [ ] **Step 2: In `driving-browser-qa/SKILL.md`** add (a) a reference to `references/interaction-discipline.md`; (b) the driver launch rule: *"Launch the managed Playwright MCP driver with `--save-session`. It writes generated Playwright code to `session.md` in the MCP output dir (default `./.playwright-mcp/session.md`). For each `human-action` criterion, run `scripts/parse-session-log.js <session.md>` to classify the calls into `sessionCalls` and pass them (plus the phase-tagged `steps`, including each evaluate step's `payload`) to `record-evidence.sh action-trace`; also copy `session.md` into the run dir for audit. NOTE: `session.md` records Playwright CODE, not MCP tool names — the classifier bridges the two representations."*; (c) the act/observe tool rights in one paragraph (read-only `browser_evaluate` is OBSERVE and always allowed; a mutating evaluate on the act path is a workaround).
 
 - [ ] **Step 3: Demote `react-set-input.js` to read-only** — change its exported behavior so it READS a field's current value/validity and returns it, and REMOVE any code path that sets `.value` or dispatches input/change events. Add a header comment: *"read-only (ADR-0015): value entry on the act path uses browser_type/browser_fill_form; this helper only reads a field back for assertion."* Verify with `node --check`.
 
