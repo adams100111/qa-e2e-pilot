@@ -88,6 +88,16 @@ validate_token() {
   case "$value" in
     *..*) die "${label} '${value}' contains '..' — must be a simple token." ;;
   esac
+  # Fix 2728: a bare '.' (or an all-dots value not already caught by the
+  # '..'-substring check above, e.g. a hypothetical future single-dot
+  # variant) normalizes away when interpolated into a path — 'evidence/./
+  # <crit>/...' collapses to 'evidence/<crit>/...' (the NO-persona path),
+  # and '.qa/runs/.' collapses to '.qa/runs/' — silently escaping the
+  # per-identity/per-run directory this token is supposed to scope. Reject
+  # it here, before any path is built from it.
+  if [[ "$value" =~ ^\.+$ ]]; then
+    die "${label} '${value}' is '.' or consists only of dots — must be a simple token."
+  fi
   case "$value" in
     -*) die "${label} '${value}' starts with '-' — must be a simple token." ;;
   esac
@@ -203,7 +213,16 @@ upsert_jq() {
     rm -f "$tmp"
     die "jq failed to build the updated checkpoint record (malformed --kinds/--evidence-refs JSON or a jq processing error) — nothing written."
   fi
-  mv "$tmp" "$file"
+
+  # Fix 2728 (temp-file leak, part 2): jq succeeding does not guarantee the
+  # subsequent mv succeeds (disk full, permission error, etc). Guard it the
+  # same way as the jq step above — suspend errexit via `if ! ...`, clean up
+  # the temp file ourselves, and die with a clear message — rather than let
+  # `set -e` abort out from under a bare `mv` with the tmp file left behind.
+  if ! mv "$tmp" "$file"; then
+    rm -f "$tmp"
+    die "Failed to move the updated checkpoint into place (mv \"${tmp}\" -> \"${file}\" failed — disk full or permission error?) — cleaned up the temp file, nothing changed."
+  fi
 }
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,16 @@ validate_token() {
   case "$value" in
     *..*) die "${label} '${value}' contains '..' — must be a simple token." ;;
   esac
+  # Fix 2728: a bare '.' (or an all-dots value not already caught by the
+  # '..'-substring check above, e.g. a hypothetical future single-dot
+  # variant) normalizes away when interpolated into a path — 'evidence/./
+  # <crit>/...' collapses to 'evidence/<crit>/...' (the NO-persona path),
+  # and '.qa/runs/.' collapses to '.qa/runs/' — silently escaping the
+  # per-identity/per-run directory this token is supposed to scope. Reject
+  # it here, before any path is built from it.
+  if [[ "$value" =~ ^\.+$ ]]; then
+    die "${label} '${value}' is '.' or consists only of dots — must be a simple token."
+  fi
   case "$value" in
     -*) die "${label} '${value}' starts with '-' — must be a simple token." ;;
   esac

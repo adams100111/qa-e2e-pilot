@@ -949,5 +949,84 @@ TRAV6_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" GATEBYPASS pass --perso
 RC_TRAV6=$?
 check "traversal: gate-bypass attempt via --persona '../outside-evil' rejected" "$([[ "$RC_TRAV6" -ne 0 ]] && echo yes)" "yes"
 
+# ===========================================================================
+# Fix 2728 — validate_token must reject a bare '.' and an all-dots value
+# (e.g. '...'), not just a '..' substring. A lone '.' or all-dots token
+# normalizes away when interpolated into a path (evidence/./<crit>/... ->
+# evidence/<crit>/..., .qa/runs/. -> .qa/runs/), silently colliding with the
+# NO-persona identity / escaping the per-run directory. This breaks the
+# exact isolation Fix 28 closed. Both checkpoint.sh and record-evidence.sh
+# must reject these BEFORE any write.
+# ===========================================================================
+
+# --- Case 51: record-evidence.sh --persona '.' is REJECTED; the bake
+# artifact for a DIFFERENT (no-persona) identity is never written/overwritten
+DOT_RUN_ID="test-run-dot"
+DOT_QA_ROOT="$WORK/.qa/runs/${DOT_RUN_ID}"
+DOT_NOPERSONA_BAKE="$DOT_QA_ROOT/evidence/DC1/bake-read-back.json"
+
+DOT_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" DC1 bake --persona '.' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_DOT=$?
+check "bare-dot: record-evidence --persona '.' rejected" "$([[ "$RC_DOT" -ne 0 ]] && echo yes)" "yes"
+check "bare-dot: no-persona bake artifact NOT written/overwritten" \
+  "$([[ ! -f "$DOT_NOPERSONA_BAKE" ]] && echo yes)" "yes"
+
+# --- Case 52: checkpoint.sh with run-id '.' is REJECTED; no checkpoint.json
+# written directly into .qa/runs/ (the '.' collapse target) -----------------
+DOT2_ERR="$(cd "$WORK" && bash "$SCRIPT" '.' C1 blocked 2>&1)"
+RC_DOT2=$?
+check "bare-dot: checkpoint.sh run-id '.' rejected" "$([[ "$RC_DOT2" -ne 0 ]] && echo yes)" "yes"
+check "bare-dot: no checkpoint.json written into .qa/runs/ directly" \
+  "$([[ ! -f "$WORK/.qa/runs/checkpoint.json" ]] && echo yes)" "yes"
+
+# --- Case 53: all-dots persona ('...') is REJECTED too, not just a lone '.' -
+DOT3_ERR="$(cd "$WORK" && bash "$SCRIPT" "$DOT_RUN_ID" C1 pass --persona '...' --kinds bake 2>&1 >/dev/null)"
+RC_DOT3=$?
+check "bare-dot: checkpoint.sh --persona '...' (all-dots) rejected" "$([[ "$RC_DOT3" -ne 0 ]] && echo yes)" "yes"
+
+DOT4_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" C1 bake --persona '...' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_DOT4=$?
+check "bare-dot: record-evidence --persona '...' (all-dots) rejected" "$([[ "$RC_DOT4" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 54: regression — a normal --persona admin still works ------------
+DOT5_OUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" C1 bake --persona admin --read-back '{"x":1}' --multiplicity N)"
+check "bare-dot regression: --persona admin still accepted" \
+  "$DOT5_OUT" "evidence/admin/C1/bake-read-back.json"
+DOT6_OUT="$(cd "$WORK" && bash "$SCRIPT" "$DOT_RUN_ID" C1 pass --persona admin --kinds bake 2>&1)"
+RC_DOT6=$?
+check "bare-dot regression: checkpoint.sh --persona admin still accepted" "$RC_DOT6" "0"
+
+# ===========================================================================
+# Fix 2728 — upsert_jq's mv "$tmp" "$file" must be guarded: if mv fails
+# (disk full/permission), the temp file must still be cleaned up, not leaked
+# under errexit. Simulated by making the destination directory read-only so
+# `mv` into it fails.
+# ===========================================================================
+
+# --- Case 55: mv failure during upsert_jq does not leak the .tmp.$$ file ---
+# A fake `mv` that always fails is placed first on PATH so jq succeeds
+# (writes $tmp) but the subsequent `mv "$tmp" "$file"` fails — exercising
+# the exact post-jq-success failure path Finding 2 targets, portably (no
+# root/chmod dependency).
+if command -v jq >/dev/null 2>&1; then
+  MVFAKEBIN="$WORK/mvfakebin"
+  mkdir -p "$MVFAKEBIN"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$MVFAKEBIN/mv"
+  chmod +x "$MVFAKEBIN/mv"
+
+  MVFAIL_RUN_ID="test-run-mvfail"
+  MVFAIL_DIR="$WORK/.qa/runs/${MVFAIL_RUN_ID}"
+  (cd "$WORK" && bash "$SCRIPT" "$MVFAIL_RUN_ID" M1 blocked >/dev/null 2>&1)
+  MVFAIL_ERR="$(cd "$WORK" && PATH="$MVFAKEBIN:$PATH" bash "$SCRIPT" "$MVFAIL_RUN_ID" M2 blocked 2>&1)"
+  RC_MVFAIL=$?
+  check "mv-guard: mv failure exits nonzero" "$([[ "$RC_MVFAIL" -ne 0 ]] && echo yes)" "yes"
+  check "mv-guard: no stray checkpoint.json.tmp.* remains after mv failure" \
+    "$(find "$MVFAIL_DIR" -maxdepth 1 -name 'checkpoint.json.tmp.*' | wc -l | tr -d '[:space:]')" "0"
+  check "mv-guard: original checkpoint.json unchanged (M2 not merged in)" \
+    "$(jq -r '.criteria | length' "$MVFAIL_DIR/checkpoint.json" 2>/dev/null)" "1"
+else
+  echo "SKIP - mv-guard sub-case: jq not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
