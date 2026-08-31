@@ -22,10 +22,18 @@
   .empty { color: var(--muted); font-style: italic; font-size: 13px; }
   /* U1 (seed): low-contrast helper text — #b9b9b9 on #fff ~ 1.9:1, fails WCAG AA 4.5 */
   .helper { color:#b9b9b9; font-size:12px; }
-  /* U2 (seed): fixed-width cell clips long computed amounts (overflow hidden, no ellipsis reflow) */
+  /* U2 (seed): fixed-width cell clips long computed amounts (overflow hidden, no ellipsis reflow).
+     The clip is REAL only under table-layout:fixed — under the default auto layout a td width is a
+     hint the column ignores (it just widens to fit), so scrollWidth==clientWidth and nothing clips.
+     Force fixed layout + a column genuinely too narrow for the computed "$4000.00" so the value is
+     truly cut off (scrollWidth > clientWidth) and the overflow detector can fire. */
+  #safe table { table-layout: fixed; width: 300px; }
+  /* Under table-layout:fixed the COLUMN width is taken from the first row's cell (the header th),
+     not the body td — so the amount column must be narrowed on the header cell to actually clip. */
+  #safe th:nth-child(3) { width: 44px; }
   /* SEED P2: clean-adjacent ux-perceptual defect — amount is right-aligned while the "Amount" header
      label stays left-aligned, so the row visually misreads as unrelated (vision-pass only, not axe) */
-  td.amount { max-width: 90px; overflow: hidden; white-space: nowrap; text-align: right; }
+  td.amount { width: 44px; max-width: 44px; overflow: hidden; white-space: nowrap; text-align: right; }
   /* U3 (seed): icon button below the 24x24 WCAG 2.2 minimum target size */
   button.tiny { width:16px; height:16px; padding:0; font-size:10px; line-height:16px; }
   /* SEED N2: clean control, must NOT be flagged — #1a1a1a on #ffffff (~17:1) passes WCAG AA */
