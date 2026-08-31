@@ -38,7 +38,7 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 .claude-plugin/   plugin.json + marketplace.json
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
 commands/         qa-run.md            — /qa-run <target> [checklist|spec]
-skills/           13 skills (see below)
+skills/           16 skills (see below)
 scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
 .qa/              config.json.example + per-run output
 docs/adr/         0001–0005 architecture decisions
@@ -193,6 +193,19 @@ This plugin **reimplements** (does not fork or vendor) the genuinely reusable pa
 ### Research basis
 
 Anthropic *Skill authoring best practices* (gerund names ≤64 chars, third-person `description` ≤1024 chars, bodies <500 lines, references one level deep, bundled scripts/templates, plan→validate→execute checklists, fully-qualified `Server:tool`); local Claude Code plugin conventions (`.claude-plugin/plugin.json` + `marketplace.json`, `skills/<name>/SKILL.md`, `agents/<name>.md`); the `npx skills` installer convention; 2026 Playwright-MCP guidance (accessibility refs over screenshots, session persistence, iteration caps, secrets out of the tool loop); and the prior art above.
+
+## Attribution
+
+Beyond `opslane/verify` (above), this plugin **reimplements** — as our own code, never forked or vendored, per [ADR-0001](./docs/adr/0001-reimplement-opslane-patterns-not-fork-or-vendor.md) — the genuinely reusable *patterns* pioneered by:
+
+- **`grilling`** — the frontier-rounds stress-testing loop, adapted for grilling a QA plan/checklist before it runs.
+- **`superpowers`** — the verification Iron Law ("a green toast is not a pass") and the systematic-debugging reproduce→minimize→hypothesize→instrument loop, adapted to backend-baking and computed-logic reconciliation.
+- **`hallmark`** — the `audit` posture for catching AI-slop UI, adapted for objective visual/UX detection.
+- **`ui-ux-pro-max`** — the accessibility/UX rubric shape, adapted as the oracle for visual-UX criteria.
+
+Credit and thanks to the authors of each. None of these are plugin-to-plugin dependencies — nothing here is fetched, forked, or vendored from them at install or run time.
+
+**Dependency-free by design:** `qa-e2e-pilot` ships with **no npm dependencies** — the visual-UX detection is implemented as dependency-free browser-context JavaScript (no axe-core, no vendored a11y engine). The only prerequisites are things already expected in a Claude Code environment: **Node**, **`jq` or `python3`**, **`bash`**, **`curl`**, and the **Playwright MCP server** (declared in [`.mcp.json`](./.mcp.json) so it's present on install). A [`SessionStart` preflight](./scripts/check-prereqs.sh) checks for these each session and blocks with a fix message if any are missing.
 
 ## License
 
