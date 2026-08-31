@@ -51,15 +51,38 @@
     const hi = Math.max(L1, L2), lo = Math.min(L1, L2);
     return (hi + 0.05) / (lo + 0.05);
   }
-  // Walk up for the first non-transparent background.
+  // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
+  function compositeOver(fg, bg) {
+    const a = fg.a;
+    return {
+      r: fg.r * a + bg.r * (1 - a),
+      g: fg.g * a + bg.g * (1 - a),
+      b: fg.b * a + bg.b * (1 - a),
+      a: 1
+    };
+  }
+  // Walk up accumulating backdrop via proper alpha compositing: every semi-transparent
+  // ancestor background is composited OVER what's already been accumulated, so a stack of
+  // translucent layers resolves to the real visual backdrop instead of stopping at the first
+  // non-fully-transparent color. Falls back to the <html> background (dark-theme pages often
+  // set the page bg there, not on <body>) before defaulting to white.
   function effectiveBg(el) {
     let node = el;
+    let acc = null; // accumulated backdrop so far, composited bottom-up
+    const chain = [];
     while (node && node !== document.documentElement) {
-      const c = parseRGB(getComputedStyle(node).backgroundColor);
-      if (c && c.a !== 0) return c;
+      chain.push(node);
       node = node.parentElement;
     }
-    return { r: 255, g: 255, b: 255, a: 1 };
+    chain.push(document.documentElement); // include <html> as the final ancestor
+    // Walk from the outermost (html) down to the element so compositing order is correct:
+    // each layer is painted OVER the accumulated result of everything behind it.
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const c = parseRGB(getComputedStyle(chain[i]).backgroundColor);
+      if (!c || c.a === 0) continue; // fully transparent: contributes nothing, keep going
+      acc = acc ? compositeOver(c, acc) : compositeOver(c, { r: 255, g: 255, b: 255, a: 1 });
+    }
+    return acc || { r: 255, g: 255, b: 255, a: 1 };
   }
   function cssPath(el) {
     if (el.getAttribute && el.getAttribute('data-testid')) return '[data-testid=' + el.getAttribute('data-testid') + ']';
@@ -113,20 +136,47 @@
     if (st.overflow === 'visible' && st.overflowX === 'visible' && st.overflowY === 'visible') return;
     const clipsX = el.scrollWidth - el.clientWidth > 1;
     const clipsY = el.scrollHeight - el.clientHeight > 1;
-    const scrollable = st.overflow === 'auto' || st.overflow === 'scroll' ||
-      st.overflowX === 'auto' || st.overflowX === 'scroll';
-    if ((clipsX || clipsY) && !scrollable) {
-      findings.push(finding('overflow', el,
-        'Content clipped: scroll ' + el.scrollWidth + 'x' + el.scrollHeight +
-        ' > client ' + el.clientWidth + 'x' + el.clientHeight + ' with overflow:' + st.overflow));
+    // Each axis is scrollable independently — consult overflowX for X-clip and overflowY for
+    // Y-clip. A vertically-scrollable pane (overflow-y:auto) must not be flagged just because
+    // its horizontal axis (or the shorthand) reads differently.
+    const scrollableX = st.overflowX === 'auto' || st.overflowX === 'scroll';
+    const scrollableY = st.overflowY === 'auto' || st.overflowY === 'scroll';
+    const clippedX = clipsX && !scrollableX;
+    const clippedY = clipsY && !scrollableY;
+    if (!clippedX && !clippedY) return;
+    // Intentional horizontal truncation: text-overflow:ellipsis on a nowrap line is a deliberate
+    // UX pattern, not a bug — downgrade to an advisory hint instead of a fail. A clip with NO
+    // ellipsis (or a Y-clip) stays a fail.
+    if (clippedX && !clippedY && st.textOverflow === 'ellipsis' && st.whiteSpace === 'nowrap') {
+      findings.push({
+        detector: 'overflow-ellipsis-hint', axis: 'ux-objective-hint',
+        selector: cssPath(el), text: visibleText(el),
+        message: 'Horizontal truncation with text-overflow:ellipsis — looks intentional, not flagged as a fail'
+      });
+      return;
     }
+    findings.push(finding('overflow', el,
+      'Content clipped: scroll ' + el.scrollWidth + 'x' + el.scrollHeight +
+      ' > client ' + el.clientWidth + 'x' + el.clientHeight + ' with overflow:' + st.overflow));
   });
 
   // ---- 3. Touch-target size (WCAG SC 2.5.8, 24x24 AA) -> U3-class ----
+  // A control the user cannot see or reach isn't a "too-small target" bug — skip it, same as the
+  // existing 0x0 (not rendered/detached) skip.
+  function isInvisible(el) {
+    let node = el;
+    while (node) {
+      const st = getComputedStyle(node);
+      if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
   Array.prototype.slice.call(document.querySelectorAll('button, a[href], [role=button], input[type=checkbox], input[type=radio]'))
     .forEach(function (el) {
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) return; // not rendered / detached — nothing to assert
+      if (isInvisible(el)) return; // hidden via visibility/opacity/display — not a real target
       if (r.width < 24 || r.height < 24) {
         findings.push(finding('target-size', el,
           'Target ' + Math.round(r.width) + 'x' + Math.round(r.height) +
@@ -135,11 +185,38 @@
     });
 
   // ---- 4. Missing accessible name -> U4-class (static half) ----
+  // Resolve an aria-labelledby reference to its referenced element(s)' text content.
+  function labelledByText(el) {
+    const ref = el.getAttribute('aria-labelledby');
+    if (!ref) return '';
+    return ref.split(/\s+/).map(function (id) {
+      const t = document.getElementById(id);
+      return t ? (t.textContent || '').trim() : '';
+    }).filter(Boolean).join(' ');
+  }
+  // A name can come from the element itself OR be supplied by a descendant — e.g.
+  // <button><svg><title>Close</title></svg></button>, <a><img alt="Home"></a>,
+  // <button><span aria-label="Menu"></span></button>. Only conclude "no name" when NEITHER
+  // self NOR any descendant resolves one.
+  function childSuppliedName(el) {
+    const img = el.querySelector('img[alt]');
+    if (img && img.getAttribute('alt').trim()) return img.getAttribute('alt').trim();
+    const svgTitle = el.querySelector('svg > title, svg title');
+    if (svgTitle && (svgTitle.textContent || '').trim()) return (svgTitle.textContent || '').trim();
+    const ariaLabelled = el.querySelector('[aria-label]');
+    if (ariaLabelled && ariaLabelled.getAttribute('aria-label').trim()) return ariaLabelled.getAttribute('aria-label').trim();
+    const labelledbyEl = el.querySelector('[aria-labelledby]');
+    if (labelledbyEl) {
+      const t = labelledByText(labelledbyEl);
+      if (t) return t;
+    }
+    return '';
+  }
   Array.prototype.slice.call(document.querySelectorAll('button, a[href], [role=button]'))
     .forEach(function (el) {
-      const name = (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') ||
+      const name = (el.getAttribute('aria-label') || labelledByText(el) ||
                     el.getAttribute('title') || el.getAttribute('alt') ||
-                    (el.textContent || '').trim());
+                    (el.textContent || '').trim() || childSuppliedName(el));
       if (!name || name.length === 0) {
         findings.push(finding('accessible-name', el,
           'Interactive element has no accessible name (WCAG SC 4.1.2 / axe button-name)'));
