@@ -489,7 +489,8 @@ kind_artifact() {
     bake)     echo "bake-read-back.json" ;;
     computed) echo "recompute.json" ;;
     probe)    echo "network-response.json" ;;
-    *) die "Invalid kind '$1' in --kinds. Must be a CSV subset of: bake | computed | probe" ;;
+    human-action) echo "action-trace.json" ;;
+    *) die "Invalid kind '$1' in --kinds. Must be a CSV subset of: bake | computed | probe | human-action" ;;
   esac
 }
 
@@ -502,6 +503,7 @@ kind_required_keys() {
     bake)     echo "readBack multiplicity" ;;
     computed) echo "oracle observed match" ;;
     probe)    echo "status shape ok" ;;
+    human-action) echo "steps" ;;
     *)        return 1 ;;
   esac
 }
@@ -591,11 +593,52 @@ sys.exit(0 if d.get('readBack') is not None else 1)" "$file" >/dev/null 2>&1
   fi
 }
 
+# true (exit 0) iff the checkpoint record for (crit_id[, persona]) under
+# run_id has a non-empty `nonUiActionReason` field persisted — a logged
+# tool-limitation opt-out. This field is not yet written by any upsert path
+# in this script (no --non-ui-reason CLI option exists yet), so a missing
+# file / missing field / empty string all default to FALSE (strict): only an
+# explicit, already-persisted opt-out can widen the human-action gate.
+criterion_has_nonui_reason() {
+  local run_id="$1" crit_id="$2" persona="${3:-}"
+  local file
+  file="$(checkpoint_file "$run_id")"
+  [[ -f "$file" ]] || return 1
+  if has_jq; then
+    local val
+    val="$(jq -r --arg cid "$crit_id" --arg persona "$persona" '
+      [.criteria[] | select(.criterion_id == $cid and ((.persona // "") == $persona))] |
+      last |
+      (.nonUiActionReason // "")
+    ' "$file" 2>/dev/null)"
+    [[ -n "$val" && "$val" != "null" ]]
+  else
+    python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+cid, persona = sys.argv[2], sys.argv[3]
+match = None
+for c in data.get('criteria', []):
+    if c.get('criterion_id') == cid and (c.get('persona') or '') == persona:
+        match = c
+reason = (match or {}).get('nonUiActionReason') or ''
+sys.exit(0 if reason else 1)
+" "$file" "$crit_id" "$persona"
+  fi
+}
+
 # Validate the evidence VALUE (not just key presence) for one kind. Returns 0
 # if consistent with a `pass`; returns 1 (having already printed a
-# gate_reject_value message) otherwise.
+# gate_reject_value message) otherwise. $5 (persona) is OPTIONAL and is only
+# consulted by the human-action branch (to look up a logged nonUiActionReason
+# opt-out); run_id is recovered from $4 (full_path), which is always built as
+# "$(run_dir "$run_id")/${rel_path}" by the caller.
 gate_value_check() {
-  local crit_id="$1" kind="$2" rel_path="$3" full_path="$4"
+  local crit_id="$1" kind="$2" rel_path="$3" full_path="$4" persona="${5:-}"
   case "$kind" in
     computed)
       if ! json_value_is_true "$full_path" "match"; then
@@ -613,6 +656,17 @@ gate_value_check() {
       if ! json_value_is_true "$full_path" "ok"; then
         gate_reject_value "$crit_id" "probe" "$rel_path" "shows ok:false or missing (the probe did not confirm its expectation)"
         return 1
+      fi
+      ;;
+    human-action)
+      # Delegate the act/observe + session.md reconciliation to the Node unit
+      # (Check 0∧1∧2). --allow-nonui when the criterion logged a tool-limit opt-out.
+      local run_id_for_reason="${full_path#"${QA_BASE}"/}"
+      run_id_for_reason="${run_id_for_reason%%/*}"
+      local allow=""
+      if criterion_has_nonui_reason "$run_id_for_reason" "$crit_id" "$persona"; then allow="--allow-nonui"; fi
+      if ! node "$(dirname "${BASH_SOURCE[0]}")/check-action-trace.js" "$full_path" $allow; then
+        return 1   # check-action-trace.js already printed the reason to stderr
       fi
       ;;
   esac
@@ -648,9 +702,9 @@ gate_pass() {
     # $artifact, producing a second, fabricated "missing" reject message.
     # Fail fast here instead, with exactly one message.
     case "$kind" in
-      bake|computed|probe) ;;
+      bake|computed|probe|human-action) ;;
       *)
-        echo "EVIDENCE GATE: unknown kind '${kind}' in --kinds (allowed: bake|computed|probe)." >&2
+        echo "EVIDENCE GATE: unknown kind '${kind}' in --kinds (allowed: bake|computed|probe|human-action)." >&2
         return 1
         ;;
     esac
@@ -687,7 +741,7 @@ gate_pass() {
     # value-aware check: reject a `pass` whose evidence VALUE contradicts it
     # (e.g. computed.match:false, probe.ok:false, bake.readBack:null with
     # non-zero multiplicity) — presence alone is not enough.
-    gate_value_check "$crit_id" "$kind" "$rel_path" "$full_path" || return 1
+    gate_value_check "$crit_id" "$kind" "$rel_path" "$full_path" "$persona" || return 1
   done
 
   return 0

@@ -7,11 +7,13 @@
 #   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
 #   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
+#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-calls <json-array>] [--action <desc>]
 #
 # kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
 #   probe    -> network-response.json { status, shape, ok, ... }
+#   action-trace -> action-trace.json { actionUnderTest, steps, sessionCalls }
 #
 # `--ok` on kind 'probe' is the agent's own judgment that the probe CONFIRMED
 # its expectation — it is NOT a raw status-code check. A cross-role ABSENCE
@@ -133,7 +135,8 @@ artifact_for_kind() {
     bake)     echo "bake-read-back.json" ;;
     computed) echo "recompute.json" ;;
     probe)    echo "network-response.json" ;;
-    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe" ;;
+    action-trace) echo "action-trace.json" ;;
+    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace" ;;
   esac
 }
 
@@ -259,6 +262,35 @@ with open(file_path, "w") as f:
 PYEOF
 }
 
+# action-trace stores steps/sessionCalls as parsed JSON arrays and
+# actionUnderTest as a plain string — mirrors write_py_bake/_computed/_probe's
+# smart() dance so the python3 fallback path produces JSON byte-identical (up
+# to key order, which json.dump preserves the same as the jq writer's field
+# order) to the jq path (Fix #27 parity discipline).
+write_py_action_trace() {
+  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6"
+  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" <<'PYEOF'
+import json, sys
+file_path, run_id, crit_id, action, steps, session_calls, now = sys.argv[1:8]
+def smart(v):
+    try:
+        return json.loads(v)
+    except (json.JSONDecodeError, ValueError):
+        return v
+data = {
+    "criterion_id": crit_id,
+    "run_id": run_id,
+    "kind": "action-trace",
+    "recorded_at": now,
+    "actionUnderTest": smart(action),
+    "steps": smart(steps),
+    "sessionCalls": smart(session_calls),
+}
+with open(file_path, "w") as f:
+    json.dump(data, f, indent=2)
+PYEOF
+}
+
 # ---------------------------------------------------------------------------
 # per-kind dispatch
 # ---------------------------------------------------------------------------
@@ -358,6 +390,36 @@ cmd_probe() {
   echo "$(evidence_dir_rel "$crit_id" "$persona")/network-response.json"
 }
 
+cmd_action_trace() {
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
+  local steps="" session_calls="[]" action="" have_steps=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --steps)         steps="$2";         have_steps=1; shift 2 ;;
+      --session-calls) session_calls="$2"; shift 2 ;;
+      --action)        action="$2";        shift 2 ;;
+      *) die "Unknown option for kind 'action-trace': $1" ;;
+    esac
+  done
+  [[ "$have_steps" -eq 1 ]] || die "kind 'action-trace' requires --steps <json-array>"
+
+  ensure_evidence_dir "$run_id" "$crit_id" "$persona"
+  local file
+  file="$(evidence_dir "$run_id" "$crit_id" "$persona")/action-trace.json"
+
+  if has_jq; then
+    write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls"
+  elif has_py; then
+    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls"
+  else
+    die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
+  fi
+
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/action-trace.json"
+}
+
 # Scan the remaining args ($@, after run-id/criterion-id/kind) for an
 # optional `--persona <id>` pair anywhere in the list, removing it and
 # leaving the rest untouched (order-preserving) for the per-kind parsers.
@@ -390,7 +452,7 @@ strip_persona() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe"
+  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace"
 
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
@@ -415,6 +477,7 @@ main() {
     bake)     cmd_bake "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     computed) cmd_computed "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     probe)    cmd_probe "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    action-trace) cmd_action_trace "$run_id" "$crit_id" "$PERSONA" "$@" ;;
   esac
 }
 
