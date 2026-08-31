@@ -59,14 +59,21 @@ if have jq; then
   jq -e 'type=="array" and length>0 and all(.[]; has("id") and has("role") and has("plane") and has("auth") and (.plane=="global" or .plane=="contextual"))' \
      "$PERSONAS_FILE" >/dev/null || { echo "write-persona-config: personas-file failed shape validation (need id/role/plane[global|contextual]/auth on every entry)" >&2; exit 4; }
 
+  # Persona ids must be UNIQUE: checkpoints are keyed by (criterion_id, persona_id)
+  # (ADR-0012); a duplicate id would let one persona's pass read back as covering
+  # another persona's untested run. Fail loud rather than silently collide.
+  jq -e '([.[].id] | length) == ([.[].id] | unique | length)' "$PERSONAS_FILE" >/dev/null \
+    || { echo "write-persona-config: personas-file has duplicate persona id(s) — each persona id must be unique (checkpoints are keyed by (criterion_id, persona_id); duplicates collide, ADR-0012)" >&2; exit 4; }
+
   persona_ids="$(jq -c '[.[].id]' "$PERSONAS_FILE")"
   jq -e --argjson ids "$persona_ids" '
     type=="array" and length>0 and
     all(.[]; has("entity") and has("owningChain") and has("roleScope")
         and (.owningChain|type=="array") and (.owningChain|length>0)
         and (.roleScope|type=="object")
-        and ((.roleScope|keys) - $ids | length == 0))
-  ' "$MATRIX_FILE" >/dev/null || { echo "write-persona-config: matrix-file failed shape/reference validation (every roleScope key must be a confirmed persona id; owningChain must be a non-empty array)" >&2; exit 4; }
+        and ((.roleScope|keys) - $ids | length == 0)
+        and ((.roleScope | [.[]]) - ["owns","read-scoped","none"] | length == 0))
+  ' "$MATRIX_FILE" >/dev/null || { echo "write-persona-config: matrix-file failed shape/reference validation (every roleScope key must be a confirmed persona id; every roleScope value must be one of owns|read-scoped|none — an invalid scope silently reads as non-isolating and disables the cross-role isolation probe; owningChain must be a non-empty array)" >&2; exit 4; }
 
   tmp_cfg="$(mktemp)"
   jq --slurpfile personas "$PERSONAS_FILE" '.personas = $personas[0]' "$CONFIG" > "$tmp_cfg"
@@ -90,7 +97,14 @@ if not isinstance(personas, list) or not personas:
 for p in personas:
     if not all(k in p for k in ("id", "role", "plane", "auth")) or p.get("plane") not in ("global", "contextual"):
         sys.exit("write-persona-config: personas-file failed shape validation (need id/role/plane[global|contextual]/auth on every entry)")
-persona_ids = {p["id"] for p in personas}
+# Persona ids must be UNIQUE (ADR-0012): checkpoints are keyed by
+# (criterion_id, persona_id); a duplicate id would let one persona's pass read
+# back as covering another persona's untested run. Fail loud rather than collide.
+ids_list = [p["id"] for p in personas]
+dup_ids = sorted({i for i in ids_list if ids_list.count(i) > 1})
+if dup_ids:
+    sys.exit(f"write-persona-config: personas-file has duplicate persona id(s): {dup_ids} — each persona id must be unique (checkpoints are keyed by (criterion_id, persona_id); duplicates collide, ADR-0012)")
+persona_ids = set(ids_list)
 
 with open(matrix_file) as f:
     matrix = json.load(f)
@@ -106,6 +120,13 @@ for row in matrix:
     unknown = sorted(set(row["roleScope"].keys()) - persona_ids)
     if unknown:
         sys.exit(f"write-persona-config: matrix-file references unconfirmed persona id(s): {unknown}")
+    # roleScope VALUES are a closed enum. generating-qa-checklist emits a
+    # cross-role isolation probe ONLY when a value is "none"/"read-scoped"; an
+    # invalid/typo'd value silently reads as non-isolating ("owns"), disabling
+    # the isolation probe → fail-open leak. Reject anything off-enum.
+    bad_scope = sorted(set(row["roleScope"].values()) - {"owns", "read-scoped", "none"})
+    if bad_scope:
+        sys.exit(f"write-persona-config: matrix-file row roleScope has invalid value(s) {bad_scope} for entity {row.get('entity')!r} — allowed: owns | read-scoped | none (an invalid scope silently reads as non-isolating and disables the cross-role isolation probe)")
 
 with open(config_file) as f:
     config = json.load(f)
