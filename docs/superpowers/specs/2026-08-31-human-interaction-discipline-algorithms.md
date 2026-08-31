@@ -16,9 +16,10 @@ Partition the tool set:
 ```
 ACT_UI      = {click, type, fill_form, press_key, select_option, hover, drag, file_upload}
 OBSERVE     = {snapshot, console_messages, network_request(s), take_screenshot, evaluate[read-only]}
-MUTATE_NONUI= {run_code_unsafe, direct-API/DB-write, evaluate[mutating]}
+MUTATE_NONUI= {run_code_unsafe, direct-API/DB-write, evaluate[mutating],
+               route[intercepting the backend-under-test]}   # stubbing the tested backend fakes a pass
 ```
-For every call with `phase == "act"`: if `class ∈ MUTATE_NONUI` → **violation** (unless the criterion carries `nonUiActionReason`).
+For every call with `phase == "act"`: if `class ∈ MUTATE_NONUI` → **violation** (unless the criterion carries `nonUiActionReason`). A `browser_route` that intercepts the **backend-under-test** is a violation (it manufactures the response the oracle should judge); a route that stubs only a **non-under-test** third-party/CDN dependency is allowed (and is additionally caught if misused by the bake read-back showing real state ≠ the faked UI — see A2/A6).
 
 ### Check 2 — Evaluate-payload static lint (classify dual-use `browser_evaluate`)
 `browser_evaluate` is read XOR mutate. Lint the injected source for **mutation signatures**; presence of any ⇒ MUTATE:
