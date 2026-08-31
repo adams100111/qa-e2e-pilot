@@ -81,6 +81,7 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
 | Baseline (ungated, old fixture) | 33% | 25% | 30% | 75% |
 | Gated run A (real `qa-e2e-pilot` agent, 18-seed set) | 38% | 25% | 33% | 100% |
 | Gated run B (general-purpose agent, gated flow) | 25% | 25% | 25% | 100% |
+| Post-fix full pipeline (coverage catalog + computed-logic + visual-UX detection, hardened fixture) | **88%** | **100%** | **92%** | **100%** |
 
 - **Baseline reproduces the false-greens**: functional 33%, ux-objective 25%, overall 30% (3/10) — the
   MEASURED number that reproduces the reported ~40% functional / ~15% UX false-greens, at only 75%
