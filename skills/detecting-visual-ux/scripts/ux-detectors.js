@@ -164,10 +164,16 @@
   // A control the user cannot see or reach isn't a "too-small target" bug — skip it, same as the
   // existing 0x0 (not rendered/detached) skip.
   function isInvisible(el) {
+    // visibility:hidden is reversible by a descendant's own visibility:visible (standard cascade
+    // behavior) — getComputedStyle(el).visibility already reflects that cascade for the ELEMENT
+    // ITSELF, so checking only el's own value (not ancestors) correctly un-skips a genuinely
+    // visible control nested under a visibility:hidden wrapper. display:none and opacity:0 do NOT
+    // have a reversing mechanism (they compound down the tree), so those stay ancestor-walked.
+    if (getComputedStyle(el).visibility === 'hidden') return true;
     let node = el;
     while (node) {
-      const st = getComputedStyle(node);
-      if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0) return true;
+      const st = node === el ? getComputedStyle(el) : getComputedStyle(node);
+      if (st.display === 'none' || parseFloat(st.opacity) === 0) return true;
       node = node.parentElement;
     }
     return false;
@@ -194,20 +200,45 @@
       return t ? (t.textContent || '').trim() : '';
     }).filter(Boolean).join(' ');
   }
+  // Per the ARIA accname algorithm, aria-hidden subtrees are EXCLUDED from name computation —
+  // a candidate that is itself aria-hidden="true", or sits under an ancestor (up to but excluding
+  // the control `boundary`) that is aria-hidden="true", must NOT supply a name.
+  function isAriaHiddenInScope(node, boundary) {
+    let n = node;
+    while (n && n !== boundary) {
+      if (n.getAttribute && n.getAttribute('aria-hidden') === 'true') return true;
+      n = n.parentElement;
+    }
+    return false;
+  }
   // A name can come from the element itself OR be supplied by a descendant — e.g.
   // <button><svg><title>Close</title></svg></button>, <a><img alt="Home"></a>,
   // <button><span aria-label="Menu"></span></button>. Only conclude "no name" when NEITHER
-  // self NOR any descendant resolves one.
+  // self NOR any non-aria-hidden descendant resolves one.
   function childSuppliedName(el) {
-    const img = el.querySelector('img[alt]');
-    if (img && img.getAttribute('alt').trim()) return img.getAttribute('alt').trim();
-    const svgTitle = el.querySelector('svg > title, svg title');
-    if (svgTitle && (svgTitle.textContent || '').trim()) return (svgTitle.textContent || '').trim();
-    const ariaLabelled = el.querySelector('[aria-label]');
-    if (ariaLabelled && ariaLabelled.getAttribute('aria-label').trim()) return ariaLabelled.getAttribute('aria-label').trim();
-    const labelledbyEl = el.querySelector('[aria-labelledby]');
-    if (labelledbyEl) {
-      const t = labelledByText(labelledbyEl);
+    // Scan every matching candidate (not just the first) so an aria-hidden decoy earlier in the
+    // subtree doesn't shadow a legitimately-named candidate elsewhere.
+    function firstVisibleName(selector, getText) {
+      const nodes = Array.prototype.slice.call(el.querySelectorAll(selector));
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        if (isAriaHiddenInScope(node, el)) continue;
+        const t = getText(node);
+        if (t) return t;
+      }
+      return '';
+    }
+    const imgAlt = firstVisibleName('img[alt]', function (n) { return (n.getAttribute('alt') || '').trim(); });
+    if (imgAlt) return imgAlt;
+    const svgTitleText = firstVisibleName('svg > title, svg title', function (n) { return (n.textContent || '').trim(); });
+    if (svgTitleText) return svgTitleText;
+    const ariaLabelText = firstVisibleName('[aria-label]', function (n) { return (n.getAttribute('aria-label') || '').trim(); });
+    if (ariaLabelText) return ariaLabelText;
+    const labelledbyNodes = Array.prototype.slice.call(el.querySelectorAll('[aria-labelledby]'));
+    for (let i = 0; i < labelledbyNodes.length; i++) {
+      const node = labelledbyNodes[i];
+      if (isAriaHiddenInScope(node, el)) continue;
+      const t = labelledByText(node);
       if (t) return t;
     }
     return '';
