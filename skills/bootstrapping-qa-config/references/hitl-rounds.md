@@ -1,5 +1,7 @@
 # HITL frontier-in-rounds — a reusable pattern for tree-shaped confirmation
 
+> **Now executable:** this round pattern is implemented and tested as `skills/confirming-discovered-roles/scripts/frontier.js` (`computeFrontier`/`applyAnswers`/`recommendedDefault`/`budgetExceeded`); `confirming-discovered-roles` drives the rounds around it. See `tests/frontier/run.sh`.
+
 ## What this is (and isn't)
 
 This is a **native, from-scratch reimplementation of a grilling-style
