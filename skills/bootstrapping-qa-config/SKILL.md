@@ -52,6 +52,58 @@ confirming/editing one decision changes the options for a later one), use
 [references/hitl-rounds.md](./references/hitl-rounds.md) instead of this flat
 form.
 
+### Step 2b — Know the viewport/persona/detection keys (defaults, not asked)
+
+`init-config.sh` doesn't write these — they ship with sensible defaults in
+`.qa/config.json.example` and a first-time bootstrap can leave them alone.
+Know them so you never overwrite or contradict them when hand-editing is
+requested:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `viewport` | `{"width":1440,"height":900}` | Desktop size Pre-flight applies via `browser_resize` (ADR-0008). |
+| `responsiveMatrix` | `[]` | Opt-in extra viewports (e.g. `[{"id":"mobile","width":390,"height":844}]`). Empty = off; only viewport-sensitive UX criteria re-run per listed viewport. |
+| `persona.lens` | `"skeptical-auditor"` | The review-lens axis of `persona = role x lens`. This is additive on top of the **role** axis (`personas[]`/`.qa/authz-matrix.json`) that `confirming-discovered-roles` writes — never regenerate roles from here. |
+| `detection.ux.objective` / `.advisoryAesthetics` | `true` / `true` | Which UX detector streams run: objective yields a real `fail@FE` verdict; advisoryAesthetics is reported only, never gated (ADR-0007). |
+| `passGate.enforce` | `true` | Whether `checkpoint.sh`'s evidence gate (ADR-0010) rejects an unevidenced `pass`. Leave on. |
+| `criteriaBudget` | `60` | Soft cap on criteria per pass — a cost lever, not a coverage cut. |
+
+These are **not** part of the Step 2 gap-filling batch — they don't need a
+human answer to get a safe default. Only surface them if the user explicitly
+asks to tune viewport/persona/detection behavior.
+
+### Step 2c — Per-run persona/lens/viewport subset (a grilling frontier question, not a silent read)
+
+Once `personas[]` exists (written by `confirming-discovered-roles`, which
+this skill does not duplicate or re-grill), **every run** — not just the
+first bootstrap — faces one further decision: *which of the confirmed
+personas, at which lens(es), at which viewport(s), does THIS run exercise?*
+Per [hitl-rounds.md](./references/hitl-rounds.md), this is a single-round
+grilling frontier question (`dependsOn: []` — it depends on `personas[]`
+already being settled, not on anything decided in this round), never a
+silent config read and never re-litigated as roles→credentials→scope:
+
+- **Facts** (plugin discovers, never asks): the confirmed `personas[]` list,
+  the configured `persona.lens` default, and `responsiveMatrix` (if set).
+- **Recommended default** (per the master plan, Decision 11): run **all
+  discovered personas**, at the **default viewport only** — the responsive
+  matrix stays opt-in per-run even when configured, because multiplying
+  every persona across every viewport is a cost decision, not a recall one.
+- **Round:** present the full persona list + the lens + the viewport
+  set as one numbered batch; the human confirms, drops a persona for this
+  run, edits the lens, or opts into the responsive matrix. One round — no
+  downstream decision depends on this answer, so there is nothing to
+  recompute afterward.
+- **Budget-exhausted fallback:** same as any frontier round — auto-accept
+  the recommended default and proceed, never block the run from starting.
+
+This question belongs at the **start of a run** (Verify, before the first
+persona-tagged criterion) — not inside this skill's Step 2, and not as a
+one-time answer baked into `.qa/config.json` at bootstrap time. Wiring the
+orchestrator to actually render this round each run is later-phase scope;
+until then, treat "config says `persona.lens: X`" as the recommended
+default for this round, never as a silent substitute for asking it.
+
 ### Step 3 — Write the config (deterministic)
 
 ```
