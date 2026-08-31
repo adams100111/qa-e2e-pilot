@@ -792,5 +792,162 @@ else
   echo "SKIP - value-aware gate jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# ===========================================================================
+# Fix 27 — proper JSON encoding for --kinds/--evidence-refs (no jq/python3
+# divergence on quote/metachar values). The old hand-rolled CSV->JSON
+# builders (csv_to_json_array's string concat, the awk --evidence-refs
+# builder) produced INVALID JSON for any value containing a `"`/`\`: jq's
+# --argjson then hard-failed (leaving a stray checkpoint.json.tmp.<pid>),
+# while the python3 fallback silently substituted `[]` and reported success
+# — a `pass` on a python3-only host silently lost its evidence trail. These
+# cases pin the fix: a proper encoder round-trips the value as DATA,
+# identically under jq and jq-masked-python3.
+# ===========================================================================
+
+# --- Case 41: --kinds with an embedded double-quote round-trips as DATA
+# (not corrupted, not silently dropped) under jq ----------------------------
+ENC_RUN_ID="test-run-encoding"
+ENC_CKPT_FILE="$WORK/.qa/runs/${ENC_RUN_ID}/checkpoint.json"
+KINDS_QUOTE_VAL='bake"evil'
+
+ENC_KINDS_OUT="$(cd "$WORK" && bash "$SCRIPT" "$ENC_RUN_ID" EK1 blocked --kinds "$KINDS_QUOTE_VAL" 2>&1)"
+RC_ENC_KINDS=$?
+check "encoding: --kinds with embedded quote exits zero (jq)" "$RC_ENC_KINDS" "0"
+check "encoding: --kinds with embedded quote round-trips as data (jq)" \
+  "$(jq -r '.criteria[0].kinds[0]' "$ENC_CKPT_FILE")" "$KINDS_QUOTE_VAL"
+
+# --- Case 42: --evidence-refs with an embedded quote round-trips as DATA,
+# and a comma-separated second item is preserved too (jq) -------------------
+EVREF_VAL='foo"bar,baz'
+ENC_EVREF_OUT="$(cd "$WORK" && bash "$SCRIPT" "$ENC_RUN_ID" EK2 blocked --evidence-refs "$EVREF_VAL" 2>&1)"
+RC_ENC_EVREF=$?
+check "encoding: --evidence-refs with embedded quote exits zero (jq)" "$RC_ENC_EVREF" "0"
+check "encoding: --evidence-refs item 1 round-trips as data (jq)" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="EK2") | .evidence_refs[0]' "$ENC_CKPT_FILE")" 'foo"bar'
+check "encoding: --evidence-refs item 2 round-trips as data (jq)" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="EK2") | .evidence_refs[1]' "$ENC_CKPT_FILE")" "baz"
+
+# --- Case 43: no stray checkpoint.json.tmp.* remains after a jq processing
+# failure (corrupt an existing checkpoint.json so jq's read/filter fails) --
+TMPLEAK_RUN_ID="test-run-tmp-leak"
+TMPLEAK_DIR="$WORK/.qa/runs/${TMPLEAK_RUN_ID}"
+(cd "$WORK" && bash "$SCRIPT" "$TMPLEAK_RUN_ID" TL1 blocked >/dev/null 2>&1)
+echo 'not valid json at all' > "$TMPLEAK_DIR/checkpoint.json"
+TMPLEAK_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TMPLEAK_RUN_ID" TL2 blocked 2>&1)"
+RC_TMPLEAK=$?
+check "tmp-leak: jq processing failure exits nonzero" "$([[ "$RC_TMPLEAK" -ne 0 ]] && echo yes)" "yes"
+check "tmp-leak: no stray checkpoint.json.tmp.* remains" \
+  "$(find "$TMPLEAK_DIR" -maxdepth 1 -name 'checkpoint.json.tmp.*' | wc -l | tr -d '[:space:]')" "0"
+
+# --- Case 44: a genuinely malformed raw-JSON-array --evidence-refs value
+# dies non-zero, with NOTHING written (no run dir even created) — under jq -
+BADJSON_RUN_ID="test-run-badjson"
+BADJSON_DIR="$WORK/.qa/runs/${BADJSON_RUN_ID}"
+BADJSON_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BADJSON_RUN_ID" BJ1 blocked --evidence-refs '[not valid json' 2>&1)"
+RC_BADJSON=$?
+check "malformed evidence-refs JSON: exits nonzero (jq)" "$([[ "$RC_BADJSON" -ne 0 ]] && echo yes)" "yes"
+check "malformed evidence-refs JSON: nothing written (jq)" \
+  "$([[ ! -d "$BADJSON_DIR" ]] && echo yes)" "yes"
+
+# --- Case 45: the SAME encoding cases (41, 42, 44) under the jq-masked
+# python3 fallback — outcome must be IDENTICAL (round-trip preserved, or the
+# SAME die-non-zero-nothing-written for malformed input), never "python3
+# silently substitutes []" while jq dies -------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYENC_RUN_ID="test-run-py-encoding"
+  PYENC_CKPT_FILE="$WORK/.qa/runs/${PYENC_RUN_ID}/checkpoint.json"
+
+  PYENC_KINDS_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYENC_RUN_ID" PEK1 blocked --kinds "$KINDS_QUOTE_VAL" 2>&1)"
+  RC_PYENC_KINDS=$?
+  check "py-fallback encoding: --kinds with embedded quote exits zero" "$RC_PYENC_KINDS" "0"
+  check "py-fallback encoding: --kinds with embedded quote round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print(d['criteria'][0]['kinds'][0])" 2>/dev/null)" "$KINDS_QUOTE_VAL"
+
+  PYENC_EVREF_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYENC_RUN_ID" PEK2 blocked --evidence-refs "$EVREF_VAL" 2>&1)"
+  RC_PYENC_EVREF=$?
+  check "py-fallback encoding: --evidence-refs with embedded quote exits zero" "$RC_PYENC_EVREF" "0"
+  check "py-fallback encoding: --evidence-refs item 1 round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print([c['evidence_refs'] for c in d['criteria'] if c['criterion_id']=='PEK2'][0][0])" 2>/dev/null)" 'foo"bar'
+  check "py-fallback encoding: --evidence-refs item 2 round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print([c['evidence_refs'] for c in d['criteria'] if c['criterion_id']=='PEK2'][0][1])" 2>/dev/null)" "baz"
+
+  # malformed raw-JSON --evidence-refs under python3-fallback: SAME failure
+  # as jq (Case 44) — non-zero, nothing written. This is the audit's key
+  # symptom: python3 must NOT succeed-with-[] while jq dies.
+  PYBADJSON_RUN_ID="test-run-py-badjson"
+  PYBADJSON_DIR="$WORK/.qa/runs/${PYBADJSON_RUN_ID}"
+  PYBADJSON_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYBADJSON_RUN_ID" PBJ1 blocked --evidence-refs '[not valid json' 2>&1)"
+  RC_PYBADJSON=$?
+  check "py-fallback malformed evidence-refs JSON: exits nonzero (SAME as jq)" "$([[ "$RC_PYBADJSON" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback malformed evidence-refs JSON: nothing written (SAME as jq)" \
+    "$([[ ! -d "$PYBADJSON_DIR" ]] && echo yes)" "yes"
+
+  echo "note - encoding jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - encoding jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Fix 28 — path-traversal rejection for --persona / criterion-id / run-id.
+# A value containing '/', '..', or a leading '-' must be rejected BEFORE it
+# is ever used to build a path — in BOTH checkpoint.sh and
+# record-evidence.sh. (Verified pre-fix: --persona '../../../evil' wrote to
+# .qa/evil/...; the gate could be pointed at an arbitrary pre-existing file
+# outside the run dir to satisfy it.)
+# ===========================================================================
+
+# --- Case 46: record-evidence.sh --persona '../../evil' is REJECTED; nothing
+# written anywhere under .qa/ (not even the run dir) -------------------------
+TRAV_RUN_ID="test-run-traversal"
+TRAV_QA_ROOT="$WORK/.qa"
+TRAV_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$TRAV_RUN_ID" C1 bake --persona '../../evil' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_TRAV=$?
+check "traversal: record-evidence --persona '../../evil' rejected" "$([[ "$RC_TRAV" -ne 0 ]] && echo yes)" "yes"
+check "traversal: nothing written under .qa/ (no 'evil' path anywhere)" \
+  "$(find "$TRAV_QA_ROOT" -iname '*evil*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
+check "traversal: the run dir itself was not created either" \
+  "$([[ ! -d "$WORK/.qa/runs/${TRAV_RUN_ID}" ]] && echo yes)" "yes"
+
+# --- Case 47: record-evidence.sh criterion-id containing '/' is REJECTED --
+TRAV2_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$TRAV_RUN_ID" 'a/b' bake --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_TRAV2=$?
+check "traversal: record-evidence criterion-id with '/' rejected" "$([[ "$RC_TRAV2" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 48: checkpoint.sh --persona '../x' is REJECTED; nothing written -
+TRAV3_CKPT_FILE="$WORK/.qa/runs/${TRAV_RUN_ID}/checkpoint.json"
+TRAV3_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" C1 pass --persona '../x' --kinds bake 2>&1)"
+RC_TRAV3=$?
+check "traversal: checkpoint.sh --persona '../x' rejected" "$([[ "$RC_TRAV3" -ne 0 ]] && echo yes)" "yes"
+check "traversal: checkpoint.sh --persona '../x' wrote no checkpoint file" \
+  "$([[ ! -f "$TRAV3_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 49: checkpoint.sh run-id with '/'+'..' and criterion-id with '..'
+# are both REJECTED -----------------------------------------------------------
+TRAV4_ERR="$(cd "$WORK" && bash "$SCRIPT" 'run/../evil' C1 pass --kinds bake 2>&1)"
+RC_TRAV4=$?
+check "traversal: checkpoint.sh run-id with '/' + '..' rejected" "$([[ "$RC_TRAV4" -ne 0 ]] && echo yes)" "yes"
+
+TRAV5_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" '../evil-crit' pass --kinds bake 2>&1)"
+RC_TRAV5=$?
+check "traversal: checkpoint.sh criterion-id with '..' rejected" "$([[ "$RC_TRAV5" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 50: the evidence gate can't be pointed at a pre-existing,
+# well-formed artifact OUTSIDE the run dir via a traversal persona — the
+# audit's exact "gate bypass" scenario. Rejected before gate_pass ever runs,
+# so no bypass is even attempted. --------------------------------------------
+mkdir -p "$WORK/.qa/outside-evil"
+echo '{"readBack":{"x":1},"multiplicity":"N"}' > "$WORK/.qa/outside-evil/bake-read-back.json"
+TRAV6_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" GATEBYPASS pass --persona '../outside-evil' --kinds bake 2>&1)"
+RC_TRAV6=$?
+check "traversal: gate-bypass attempt via --persona '../outside-evil' rejected" "$([[ "$RC_TRAV6" -ne 0 ]] && echo yes)" "yes"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

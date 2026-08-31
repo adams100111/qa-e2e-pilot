@@ -70,6 +70,30 @@ has_jq() { command -v jq >/dev/null 2>&1; }
 
 has_py() { command -v python3 >/dev/null 2>&1; }
 
+# ---------------------------------------------------------------------------
+# Fix 28 — reject any run-id / criterion-id / persona value that could
+# escape .qa/runs/<run-id>/ when interpolated into a path (e.g.
+# --persona '../../../evil'). A persona/criterion/run id must be a simple
+# token: no '/' or '\', no '..' anywhere in the value, and no leading '-'
+# (which could be misread as another flag). Dies with a clear message
+# BEFORE the value is ever used to build a path — this must run before
+# run_dir()/evidence_dir() see the value.
+# ---------------------------------------------------------------------------
+validate_token() {
+  local value="$1" label="$2"
+  [[ -z "$value" ]] && die "${label} must not be empty."
+  case "$value" in
+    */*|*\\*) die "${label} '${value}' contains a path separator ('/' or '\\') — must be a simple token." ;;
+  esac
+  case "$value" in
+    *..*) die "${label} '${value}' contains '..' — must be a simple token." ;;
+  esac
+  case "$value" in
+    -*) die "${label} '${value}' starts with '-' — must be a simple token." ;;
+  esac
+  return 0
+}
+
 run_dir() {
   local run_id="$1"
   echo "${QA_BASE}/${run_id}"
@@ -120,13 +144,21 @@ upsert_jq() {
   local tmp
   tmp="${file}.tmp.$$"
 
+  # Fix 27 (temp-file leak): a `trap ... RETURN` does NOT fire when `set -e`
+  # unwinds out of this function on jq's failure (verified — RETURN/EXIT
+  # traps set on a local scope do not survive an errexit-triggered abort out
+  # of that scope), so cleanup must be explicit: run jq inside `if ! ...`
+  # (which suspends errexit for the check) and rm the tmp file ourselves
+  # before dying, rather than let a bare `cmd1 && cmd2` fail out from under
+  # `set -e` with the tmp file left behind.
+  #
   # Identity for matching an existing record is the PAIR (criterion_id,
   # persona). persona defaults to "" (back-compat: identity is criterion_id
   # alone, exactly today's behavior) — compare via `(.persona // "")` so
   # records written before this field existed (none should exist within a
   # single run created by this script, but this keeps the filter total) are
   # treated as persona "".
-  jq --arg cid "$crit_id" \
+  if ! jq --arg cid "$crit_id" \
      --arg verdict "$verdict" \
      --arg confidence "$confidence" \
      --arg phase "$phase" \
@@ -167,7 +199,11 @@ upsert_jq() {
         "checkpointed_at": $now
       }]
     end
-  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    die "jq failed to build the updated checkpoint record (malformed --kinds/--evidence-refs JSON or a jq processing error) — nothing written."
+  fi
+  mv "$tmp" "$file"
 }
 
 # ---------------------------------------------------------------------------
@@ -184,16 +220,24 @@ upsert_py() {
   python3 - "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
             "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$persona" "$now" <<'PYEOF'
 import json, sys
+
+def parse_json_or_die(raw, label):
+    # Fix 27: the python3 fallback must NOT silently substitute [] on a
+    # JSON decode error — that is exactly the divergence the audit found
+    # (jq hard-fails via --argjson on malformed JSON; python3 must fail the
+    # same way, not succeed-with-[] and report a false pass).
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: {label} value is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
 (file_path, cid, verdict, confidence, phase,
  last_action, evidence_refs_json, bug_ref, kinds_json, persona, now) = sys.argv[1:12]
-try:
-    evidence_refs = json.loads(evidence_refs_json) if evidence_refs_json else []
-except json.JSONDecodeError:
-    evidence_refs = []
-try:
-    kinds = json.loads(kinds_json) if kinds_json else []
-except json.JSONDecodeError:
-    kinds = []
+evidence_refs = parse_json_or_die(evidence_refs_json, "evidence_refs")
+kinds = parse_json_or_die(kinds_json, "kinds")
 with open(file_path) as f:
     data = json.load(f)
 entry = {
@@ -230,6 +274,7 @@ PYEOF
 
 cmd_resume() {
   local run_id="$1"
+  validate_token "$run_id" "run-id"
   local file
   file="$(checkpoint_file "$run_id")"
   [[ -f "$file" ]] || { echo "No checkpoint file found for run: ${run_id}" >&2; exit 1; }
@@ -290,6 +335,7 @@ PYEOF
 
 cmd_list() {
   local run_id="$1"
+  validate_token "$run_id" "run-id"
   local file
   file="$(checkpoint_file "$run_id")"
   [[ -f "$file" ]] || { echo "No checkpoint file found for run: ${run_id}" >&2; exit 1; }
@@ -355,20 +401,67 @@ trim() {
 }
 
 # convert a CSV string ("a, b,c") into a JSON array string (["a","b","c"]),
-# using pure bash (no awk) so it works even when only coreutils are on PATH.
+# using a PROPER JSON encoder — not string concatenation (Fix 27). The old
+# implementation built `"\"${item}\""` by hand, which produced INVALID JSON
+# for any value containing a `"` or `\` (e.g. --kinds 'bake"evil'); jq's
+# --argjson then hard-failed while the python3 fallback silently swallowed
+# the parse error and substituted `[]`, so a `pass` recorded on a
+# python3-only host lost its evidence trail with no error at all. Here,
+# every item — including one with embedded quotes/backslashes/newlines —
+# round-trips as data, identically whichever engine builds it: jq via
+# `--args`/$ARGS.positional (jq does the escaping), python3 via
+# json.dumps() (same guarantee). Whichever engine is actually available is
+# also the engine that will process the array downstream (upsert_jq /
+# upsert_py), so this never introduces an encode/decode engine mismatch.
 csv_to_json_array() {
   local csv="$1"
-  local -a arr
+  local -a arr items=()
   IFS=',' read -ra arr <<< "$csv"
-  local out="[" first=1 item
+  local item trimmed
   for item in "${arr[@]}"; do
-    item="$(trim "$item")"
-    [[ -z "$item" ]] && continue
-    if [[ "$first" -eq 1 ]]; then first=0; else out+=","; fi
-    out+="\"${item}\""
+    trimmed="$(trim "$item")"
+    [[ -z "$trimmed" ]] && continue
+    items+=("$trimmed")
   done
-  out+="]"
-  echo "$out"
+
+  if [[ "${#items[@]}" -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  if has_jq; then
+    jq -cn --args '$ARGS.positional' -- "${items[@]}" \
+      || die "Failed to JSON-encode CSV value(s) via jq: ${csv}"
+  elif has_py; then
+    python3 -c '
+import json, sys
+print(json.dumps(sys.argv[1:]))
+' "${items[@]}" \
+      || die "Failed to JSON-encode CSV value(s) via python3: ${csv}"
+  else
+    die "csv_to_json_array needs either 'jq' or 'python3' to safely encode JSON."
+  fi
+}
+
+# validate that $1 is syntactically valid JSON (used for the raw-JSON-array
+# passthrough form of --evidence-refs, e.g. '["a","b"]') — dies with a clear
+# message naming $2 (the option name) BEFORE the value ever reaches
+# upsert_jq/upsert_py, so a malformed passthrough value fails the SAME way
+# (non-zero, nothing written) regardless of which JSON engine is on PATH —
+# closing the other half of Fix 27 (the jq/python3 divergence was not only
+# in the CSV builder, but in trusting an unvalidated raw value).
+validate_json_string() {
+  local json_str="$1" opt_name="$2"
+  if has_jq; then
+    jq -e . >/dev/null 2>&1 <<< "$json_str" \
+      || die "${opt_name} value is not valid JSON: ${json_str}"
+  elif has_py; then
+    python3 -c 'import json, sys
+json.loads(sys.argv[1])' "$json_str" >/dev/null 2>&1 \
+      || die "${opt_name} value is not valid JSON: ${json_str}"
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to validate JSON."
+  fi
 }
 
 # artifact filename for a given kind (mirrors record-evidence.sh's mapping)
@@ -589,6 +682,11 @@ cmd_upsert() {
   local run_id="$1" crit_id="$2" verdict="$3"
   shift 3
 
+  # Fix 28: reject a path-traversal run-id/criterion-id BEFORE it can reach
+  # run_dir()/gate_pass()'s path building.
+  validate_token "$run_id" "run-id"
+  validate_token "$crit_id" "criterion-id"
+
   local confidence="high"
   local phase="verify"
   local last_action=""
@@ -603,11 +701,15 @@ cmd_upsert() {
       --phase)        phase="$2";         shift 2 ;;
       --last-action)  last_action="$2";   shift 2 ;;
       --evidence-refs)
-        # Accept comma-separated paths or JSON array
+        # Accept comma-separated paths or a raw JSON array. Both paths now
+        # go through a PROPER encoder/validator (Fix 27) instead of the old
+        # hand-rolled awk string-concat, which produced invalid JSON (and a
+        # silent jq/python3 divergence) on any value containing a `"`/`\`.
         if [[ "$2" == \[* ]]; then
+          validate_json_string "$2" "--evidence-refs"
           evidence_refs="$2"
         else
-          evidence_refs="[$(echo "$2" | awk -F',' '{for(i=1;i<=NF;i++) printf "\"%s\"%s",$i,(i<NF?",":"")}')]"
+          evidence_refs="$(csv_to_json_array "$2")"
         fi
         shift 2 ;;
       --bug-ref)      bug_ref="$2";       shift 2 ;;
@@ -616,6 +718,11 @@ cmd_upsert() {
       *) die "Unknown option: $1" ;;
     esac
   done
+
+  # Fix 28: reject a path-traversal persona BEFORE it can reach gate_pass()'s
+  # persona-scoped path building. Empty persona ("" / omitted) is fine —
+  # that's the back-compat no-persona case.
+  [[ -n "$persona" ]] && validate_token "$persona" "--persona"
 
   # Validate verdict
   case "$verdict" in

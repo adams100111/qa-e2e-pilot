@@ -59,6 +59,30 @@ has_jq() { command -v jq >/dev/null 2>&1; }
 
 has_py() { command -v python3 >/dev/null 2>&1; }
 
+# ---------------------------------------------------------------------------
+# Fix 28 — reject any run-id / criterion-id / persona value that could
+# escape .qa/runs/<run-id>/evidence/... when interpolated into a path (e.g.
+# --persona '../../../evil'). Mirrors checkpoint.sh's validate_token exactly
+# — a persona/criterion/run id must be a simple token: no '/' or '\', no
+# '..' anywhere in the value, and no leading '-'. Dies with a clear message
+# BEFORE the value is ever used to build a path — this must run before
+# evidence_dir()/evidence_dir_rel() see the value.
+# ---------------------------------------------------------------------------
+validate_token() {
+  local value="$1" label="$2"
+  [[ -z "$value" ]] && die "${label} must not be empty."
+  case "$value" in
+    */*|*\\*) die "${label} '${value}' contains a path separator ('/' or '\\') — must be a simple token." ;;
+  esac
+  case "$value" in
+    *..*) die "${label} '${value}' contains '..' — must be a simple token." ;;
+  esac
+  case "$value" in
+    -*) die "${label} '${value}' starts with '-' — must be a simple token." ;;
+  esac
+  return 0
+}
+
 run_dir() {
   local run_id="$1"
   echo "${QA_BASE}/${run_id}"
@@ -361,11 +385,21 @@ main() {
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
 
+  # Fix 28: reject a path-traversal run-id/criterion-id BEFORE it can reach
+  # evidence_dir()'s path building.
+  validate_token "$run_id" "run-id"
+  validate_token "$crit_id" "criterion-id"
+
   # Validate kind up front (also used to name the artifact for error text).
   artifact_for_kind "$kind" >/dev/null
 
   strip_persona "$@"
   set -- "${STRIPPED_ARGS[@]}"
+
+  # Fix 28: reject a path-traversal persona BEFORE it can reach
+  # evidence_dir()'s persona-scoped path building. Empty persona
+  # ("" / omitted) is fine — that's the back-compat no-persona case.
+  [[ -n "$PERSONA" ]] && validate_token "$PERSONA" "--persona"
 
   case "$kind" in
     bake)     cmd_bake "$run_id" "$crit_id" "$PERSONA" "$@" ;;
