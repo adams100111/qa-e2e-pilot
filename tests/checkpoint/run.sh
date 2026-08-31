@@ -60,8 +60,12 @@ check "resume: missing run exits nonzero" "$([[ "$RC_RESUME_MISSING" -ne 0 ]] &&
 # NOTE: header intentionally updated for Task 1.4 (append-only: kinds + evidence
 # trailing columns added). This is a deliberate change to a prior assertion —
 # see task-1.4-report.md.
+# NOTE (Fix 30, @-collision): header updated AGAIN — `persona` is now its own
+# trailing column instead of being folded into the criterion_id cell as
+# "<criterion_id>@<persona>", which collided with a criterion_id containing a
+# literal '@'. Another deliberate change to this pinned assertion.
 LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$RUN_ID")"
-check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
+check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence\tpersona')"
 check "list: row count == 2" "$(echo "$LIST_OUT" | tail -n +2 | grep -c .)" "2"
 check "list: C1 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C1"{print $1","$2","$3}')" "C1,fail,high"
 check "list: C2 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C2"{print $1","$2","$3}')" "C2,blocked,low"
@@ -151,7 +155,10 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "$RE_PY_COMPUTED_OUT" "evidence/C1/recompute.json"
 
   RE_PY_NETWORK_FILE="$RE_EVID_DIR/network-response.json"
-  RE_PY_PROBE_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' 2>&1)"
+  # NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25: value-aware gate) —
+  # this is a deliberate update to a pre-existing call site, mirroring the
+  # header-row precedent above.
+  RE_PY_PROBE_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' --ok true 2>&1)"
   check "py-fallback record-evidence: probe file created" \
     "$([[ -f "$RE_PY_NETWORK_FILE" ]] && echo yes)" "yes"
   check "py-fallback record-evidence: probe valid json" \
@@ -193,12 +200,15 @@ check "record-evidence computed: match"         "$(get "$RECOMPUTE_FILE" '.match
 check "record-evidence computed: stdout is evidence-relative path" "$COMPUTED_STDOUT" "evidence/C1/recompute.json"
 
 # --- Case 10: record-evidence.sh probe -> network-response.json --------------
+# NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25: value-aware gate) —
+# deliberate update to a pre-existing call site.
 NETWORK_FILE="$RE_C1_DIR/network-response.json"
-PROBE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}')"
+PROBE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' --ok true)"
 check "record-evidence probe: file exists"      "$([[ -f "$NETWORK_FILE" ]] && echo yes)" "yes"
 check "record-evidence probe: valid json"       "$(jq -e . "$NETWORK_FILE" >/dev/null 2>&1 && echo ok)" "ok"
 check "record-evidence probe: status"           "$(get "$NETWORK_FILE" '.status')" "200"
 check "record-evidence probe: shape.ok"         "$(get "$NETWORK_FILE" '.shape.ok')" "true"
+check "record-evidence probe: ok field true"    "$(get "$NETWORK_FILE" '.ok')" "true"
 check "record-evidence probe: stdout is evidence-relative path" "$PROBE_STDOUT" "evidence/C1/network-response.json"
 
 # --- Case 11: unknown kind exits non-zero and writes nothing -----------------
@@ -358,7 +368,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "$([[ ! -f "$PYGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
 
   # probe accept: write evidence via python3 fallback record-evidence.sh, then pass
-  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 probe --status 200 --shape '{"ok":true}' >/dev/null)
+  # NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25) — deliberate update.
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
   PYGATE_PROBE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 pass --kinds probe 2>&1)"
   RC_PYGATE_PROBE_OK=$?
   check "py-fallback gate: valid probe evidence accepted" "$RC_PYGATE_PROBE_OK" "0"
@@ -385,7 +396,8 @@ check "gate: probe no-evidence record not written" \
 # --- Case 23: evidence gate — valid probe evidence -> pass ACCEPTED, stored
 # kinds is ["probe"], and this specifically confirms the gate accepts
 # `status` as a JSON NUMBER (200, not the string "200") -----------------------
-(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE5_RUN_ID" G5 probe --status 200 --shape '{"ok":true}' >/dev/null)
+# NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25) — deliberate update.
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE5_RUN_ID" G5 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
 
 GATE5_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE5_RUN_ID" G5 pass --kinds probe 2>&1)"
 RC_GATE5_OK=$?
@@ -524,14 +536,18 @@ check "persona: both records have criterion_id C1" \
   "$(jq -r '[.criteria[].criterion_id] | unique | join(",")' "$PERSONA_CKPT_FILE")" "C1"
 
 # --- Case 31: --resume/--list show both C1/admin and C1/user distinctly ----
+# NOTE: assertions updated for the persona-as-own-column fix (Fix 30) — the
+# criterion_id column ($1) is always the RAW criterion_id now (never
+# "<criterion_id>@<persona>"), so admin/user rows are distinguished by
+# filtering on the new trailing persona column ($7) instead.
 PERSONA_LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$PERSONA_RUN_ID")"
-check "persona list: C1@admin row present" \
-  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@admin"{print "yes"}')" "yes"
-check "persona list: C1@user row present" \
-  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@user"{print "yes"}')" "yes"
-check "persona list: header row unchanged (back-compat)" \
+check "persona list: C1/admin row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1" && $7=="admin"{print "yes"}')" "yes"
+check "persona list: C1/user row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1" && $7=="user"{print "yes"}')" "yes"
+check "persona list: header row has persona as trailing column (deliberate change)" \
   "$(echo "$PERSONA_LIST_OUT" | head -1)" \
-  "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
+  "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence\tpersona')"
 
 PERSONA_RESUME_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$PERSONA_RUN_ID")"
 check "persona resume: last record shows criterion_id C1" \
@@ -652,6 +668,372 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   echo "note - persona-keying jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else
   echo "SKIP - persona-keying jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Fix 25 — value-aware evidence gate: key PRESENCE alone let a `pass` be
+# backed by evidence that itself proves a FAIL (match:false, status:500,
+# readBack:null). These cases pin the VALUE checks added on top of the
+# existing presence/non-empty/valid-JSON checks (which remain, unchanged,
+# above).
+# ===========================================================================
+
+# --- Case 35: value-aware gate — computed match:false is REJECTED -----------
+VGATE_RUN_ID="test-run-value-gate"
+VGATE_CKPT_FILE="$WORK/.qa/runs/${VGATE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_RUN_ID" VC1 computed --oracle 100 --observed 50 --match false >/dev/null)
+VGATE_COMPUTED_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_RUN_ID" VC1 pass --kinds computed 2>&1 >/dev/null)"
+RC_VGATE_COMPUTED=$?
+check "value gate: computed match:false rejected" "$([[ "$RC_VGATE_COMPUTED" -ne 0 ]] && echo yes)" "yes"
+check "value gate: computed match:false stderr names match:false" \
+  "$(echo "$VGATE_COMPUTED_ERR" | grep -qF 'match:false' && echo yes)" "yes"
+check "value gate: computed match:false record not written" \
+  "$([[ ! -f "$VGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 36: value-aware gate — computed match:true is ACCEPTED ------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_RUN_ID" VC1 computed --oracle 100 --observed 100 --match true >/dev/null)
+VGATE_COMPUTED_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_RUN_ID" VC1 pass --kinds computed 2>&1)"
+RC_VGATE_COMPUTED_OK=$?
+check "value gate: computed match:true accepted" "$RC_VGATE_COMPUTED_OK" "0"
+check "value gate: computed match:true record written" \
+  "$([[ -f "$VGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 37: value-aware gate — bake readBack:null w/ multiplicity N is
+# REJECTED; a non-null readBack is ACCEPTED; readBack:null w/ multiplicity 0
+# (legitimate empty state) is ACCEPTED --------------------------------------
+VGATE_BAKE_RUN_ID="test-run-value-gate-bake"
+VGATE_BAKE_CKPT_FILE="$WORK/.qa/runs/${VGATE_BAKE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 bake --read-back null --multiplicity N >/dev/null)
+VGATE_BAKE_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 pass --kinds bake 2>&1 >/dev/null)"
+RC_VGATE_BAKE=$?
+check "value gate: bake readBack:null multiplicity N rejected" "$([[ "$RC_VGATE_BAKE" -ne 0 ]] && echo yes)" "yes"
+check "value gate: bake readBack:null record not written" \
+  "$([[ ! -f "$VGATE_BAKE_CKPT_FILE" ]] && echo yes)" "yes"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+VGATE_BAKE_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 pass --kinds bake 2>&1)"
+RC_VGATE_BAKE_OK=$?
+check "value gate: bake readBack non-null multiplicity N accepted" "$RC_VGATE_BAKE_OK" "0"
+
+VGATE_BAKE0_RUN_ID="test-run-value-gate-bake0"
+VGATE_BAKE0_CKPT_FILE="$WORK/.qa/runs/${VGATE_BAKE0_RUN_ID}/checkpoint.json"
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE0_RUN_ID" VB2 bake --read-back null --multiplicity 0 >/dev/null)
+VGATE_BAKE0_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE0_RUN_ID" VB2 pass --kinds bake 2>&1)"
+RC_VGATE_BAKE0_OK=$?
+check "value gate: bake readBack:null multiplicity 0 accepted (empty state)" "$RC_VGATE_BAKE0_OK" "0"
+
+# --- Case 38: value-aware gate — probe ok:false is REJECTED; the gate NEVER
+# inspects the raw status code/range itself — an absence probe legitimately
+# expecting 403/404 with ok:true is ACCEPTED --------------------------------
+VGATE_PROBE_RUN_ID="test-run-value-gate-probe"
+VGATE_PROBE_CKPT_FILE="$WORK/.qa/runs/${VGATE_PROBE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 probe --status 500 --shape '{}' --ok false >/dev/null)
+VGATE_PROBE_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 pass --kinds probe 2>&1 >/dev/null)"
+RC_VGATE_PROBE=$?
+check "value gate: probe ok:false rejected" "$([[ "$RC_VGATE_PROBE" -ne 0 ]] && echo yes)" "yes"
+check "value gate: probe ok:false record not written" \
+  "$([[ ! -f "$VGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 probe --status 403 --shape '{}' --ok true >/dev/null)
+VGATE_PROBE_ABSENCE_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 pass --kinds probe 2>&1)"
+RC_VGATE_PROBE_ABSENCE=$?
+check "value gate: probe status 403 with ok:true accepted (absence probe, no status-range trap)" "$RC_VGATE_PROBE_ABSENCE" "0"
+
+VGATE_PROBE2_RUN_ID="test-run-value-gate-probe2"
+VGATE_PROBE2_CKPT_FILE="$WORK/.qa/runs/${VGATE_PROBE2_RUN_ID}/checkpoint.json"
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE2_RUN_ID" VP2 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
+VGATE_PROBE2_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE2_RUN_ID" VP2 pass --kinds probe 2>&1)"
+RC_VGATE_PROBE2_OK=$?
+check "value gate: probe status 200 ok:true accepted" "$RC_VGATE_PROBE2_OK" "0"
+
+# --- Case 39: record-evidence.sh probe now REQUIRES --ok --------------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE2_RUN_ID" VP3 probe --status 200 --shape '{}' >/dev/null 2>&1)
+RC_PROBE_MISSING_OK=$?
+check "record-evidence probe missing --ok exits nonzero" "$([[ "$RC_PROBE_MISSING_OK" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 40: value-aware gate exercised under the jq-masked python3
+# fallback (computed + probe; both jq and python3 paths must implement the
+# value checks identically) --------------------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYVGATE_RUN_ID="test-run-py-value-gate"
+  PYVGATE_CKPT_FILE="$WORK/.qa/runs/${PYVGATE_RUN_ID}/checkpoint.json"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_RUN_ID" PVC1 computed --oracle 100 --observed 50 --match false >/dev/null 2>&1)
+  PYVGATE_COMPUTED_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_RUN_ID" PVC1 pass --kinds computed 2>&1 >/dev/null)"
+  RC_PYVGATE_COMPUTED=$?
+  check "py-fallback value gate: computed match:false rejected" "$([[ "$RC_PYVGATE_COMPUTED" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback value gate: computed match:false record not written" \
+    "$([[ ! -f "$PYVGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_RUN_ID" PVC1 computed --oracle 100 --observed 100 --match true >/dev/null 2>&1)
+  PYVGATE_COMPUTED_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_RUN_ID" PVC1 pass --kinds computed 2>&1)"
+  RC_PYVGATE_COMPUTED_OK=$?
+  check "py-fallback value gate: computed match:true accepted" "$RC_PYVGATE_COMPUTED_OK" "0"
+
+  PYVGATE_PROBE_RUN_ID="test-run-py-value-gate-probe"
+  PYVGATE_PROBE_CKPT_FILE="$WORK/.qa/runs/${PYVGATE_PROBE_RUN_ID}/checkpoint.json"
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 probe --status 500 --shape '{}' --ok false >/dev/null 2>&1)
+  PYVGATE_PROBE_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 pass --kinds probe 2>&1 >/dev/null)"
+  RC_PYVGATE_PROBE=$?
+  check "py-fallback value gate: probe ok:false rejected" "$([[ "$RC_PYVGATE_PROBE" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback value gate: probe ok:false record not written" \
+    "$([[ ! -f "$PYVGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 probe --status 403 --shape '{}' --ok true >/dev/null 2>&1)
+  PYVGATE_PROBE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 pass --kinds probe 2>&1)"
+  RC_PYVGATE_PROBE_OK=$?
+  check "py-fallback value gate: probe status 403 ok:true accepted (absence probe)" "$RC_PYVGATE_PROBE_OK" "0"
+
+  echo "note - value-aware gate jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - value-aware gate jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Fix 27 — proper JSON encoding for --kinds/--evidence-refs (no jq/python3
+# divergence on quote/metachar values). The old hand-rolled CSV->JSON
+# builders (csv_to_json_array's string concat, the awk --evidence-refs
+# builder) produced INVALID JSON for any value containing a `"`/`\`: jq's
+# --argjson then hard-failed (leaving a stray checkpoint.json.tmp.<pid>),
+# while the python3 fallback silently substituted `[]` and reported success
+# — a `pass` on a python3-only host silently lost its evidence trail. These
+# cases pin the fix: a proper encoder round-trips the value as DATA,
+# identically under jq and jq-masked-python3.
+# ===========================================================================
+
+# --- Case 41: --kinds with an embedded double-quote round-trips as DATA
+# (not corrupted, not silently dropped) under jq ----------------------------
+ENC_RUN_ID="test-run-encoding"
+ENC_CKPT_FILE="$WORK/.qa/runs/${ENC_RUN_ID}/checkpoint.json"
+KINDS_QUOTE_VAL='bake"evil'
+
+ENC_KINDS_OUT="$(cd "$WORK" && bash "$SCRIPT" "$ENC_RUN_ID" EK1 blocked --kinds "$KINDS_QUOTE_VAL" 2>&1)"
+RC_ENC_KINDS=$?
+check "encoding: --kinds with embedded quote exits zero (jq)" "$RC_ENC_KINDS" "0"
+check "encoding: --kinds with embedded quote round-trips as data (jq)" \
+  "$(jq -r '.criteria[0].kinds[0]' "$ENC_CKPT_FILE")" "$KINDS_QUOTE_VAL"
+
+# --- Case 42: --evidence-refs with an embedded quote round-trips as DATA,
+# and a comma-separated second item is preserved too (jq) -------------------
+EVREF_VAL='foo"bar,baz'
+ENC_EVREF_OUT="$(cd "$WORK" && bash "$SCRIPT" "$ENC_RUN_ID" EK2 blocked --evidence-refs "$EVREF_VAL" 2>&1)"
+RC_ENC_EVREF=$?
+check "encoding: --evidence-refs with embedded quote exits zero (jq)" "$RC_ENC_EVREF" "0"
+check "encoding: --evidence-refs item 1 round-trips as data (jq)" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="EK2") | .evidence_refs[0]' "$ENC_CKPT_FILE")" 'foo"bar'
+check "encoding: --evidence-refs item 2 round-trips as data (jq)" \
+  "$(jq -r '.criteria[] | select(.criterion_id=="EK2") | .evidence_refs[1]' "$ENC_CKPT_FILE")" "baz"
+
+# --- Case 43: no stray checkpoint.json.tmp.* remains after a jq processing
+# failure (corrupt an existing checkpoint.json so jq's read/filter fails) --
+TMPLEAK_RUN_ID="test-run-tmp-leak"
+TMPLEAK_DIR="$WORK/.qa/runs/${TMPLEAK_RUN_ID}"
+(cd "$WORK" && bash "$SCRIPT" "$TMPLEAK_RUN_ID" TL1 blocked >/dev/null 2>&1)
+echo 'not valid json at all' > "$TMPLEAK_DIR/checkpoint.json"
+TMPLEAK_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TMPLEAK_RUN_ID" TL2 blocked 2>&1)"
+RC_TMPLEAK=$?
+check "tmp-leak: jq processing failure exits nonzero" "$([[ "$RC_TMPLEAK" -ne 0 ]] && echo yes)" "yes"
+check "tmp-leak: no stray checkpoint.json.tmp.* remains" \
+  "$(find "$TMPLEAK_DIR" -maxdepth 1 -name 'checkpoint.json.tmp.*' | wc -l | tr -d '[:space:]')" "0"
+
+# --- Case 44: a genuinely malformed raw-JSON-array --evidence-refs value
+# dies non-zero, with NOTHING written (no run dir even created) — under jq -
+BADJSON_RUN_ID="test-run-badjson"
+BADJSON_DIR="$WORK/.qa/runs/${BADJSON_RUN_ID}"
+BADJSON_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BADJSON_RUN_ID" BJ1 blocked --evidence-refs '[not valid json' 2>&1)"
+RC_BADJSON=$?
+check "malformed evidence-refs JSON: exits nonzero (jq)" "$([[ "$RC_BADJSON" -ne 0 ]] && echo yes)" "yes"
+check "malformed evidence-refs JSON: nothing written (jq)" \
+  "$([[ ! -d "$BADJSON_DIR" ]] && echo yes)" "yes"
+
+# --- Case 45: the SAME encoding cases (41, 42, 44) under the jq-masked
+# python3 fallback — outcome must be IDENTICAL (round-trip preserved, or the
+# SAME die-non-zero-nothing-written for malformed input), never "python3
+# silently substitutes []" while jq dies -------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYENC_RUN_ID="test-run-py-encoding"
+  PYENC_CKPT_FILE="$WORK/.qa/runs/${PYENC_RUN_ID}/checkpoint.json"
+
+  PYENC_KINDS_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYENC_RUN_ID" PEK1 blocked --kinds "$KINDS_QUOTE_VAL" 2>&1)"
+  RC_PYENC_KINDS=$?
+  check "py-fallback encoding: --kinds with embedded quote exits zero" "$RC_PYENC_KINDS" "0"
+  check "py-fallback encoding: --kinds with embedded quote round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print(d['criteria'][0]['kinds'][0])" 2>/dev/null)" "$KINDS_QUOTE_VAL"
+
+  PYENC_EVREF_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYENC_RUN_ID" PEK2 blocked --evidence-refs "$EVREF_VAL" 2>&1)"
+  RC_PYENC_EVREF=$?
+  check "py-fallback encoding: --evidence-refs with embedded quote exits zero" "$RC_PYENC_EVREF" "0"
+  check "py-fallback encoding: --evidence-refs item 1 round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print([c['evidence_refs'] for c in d['criteria'] if c['criterion_id']=='PEK2'][0][0])" 2>/dev/null)" 'foo"bar'
+  check "py-fallback encoding: --evidence-refs item 2 round-trips as data" \
+    "$(python3 -c "import json;d=json.load(open('$PYENC_CKPT_FILE'));print([c['evidence_refs'] for c in d['criteria'] if c['criterion_id']=='PEK2'][0][1])" 2>/dev/null)" "baz"
+
+  # malformed raw-JSON --evidence-refs under python3-fallback: SAME failure
+  # as jq (Case 44) — non-zero, nothing written. This is the audit's key
+  # symptom: python3 must NOT succeed-with-[] while jq dies.
+  PYBADJSON_RUN_ID="test-run-py-badjson"
+  PYBADJSON_DIR="$WORK/.qa/runs/${PYBADJSON_RUN_ID}"
+  PYBADJSON_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYBADJSON_RUN_ID" PBJ1 blocked --evidence-refs '[not valid json' 2>&1)"
+  RC_PYBADJSON=$?
+  check "py-fallback malformed evidence-refs JSON: exits nonzero (SAME as jq)" "$([[ "$RC_PYBADJSON" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback malformed evidence-refs JSON: nothing written (SAME as jq)" \
+    "$([[ ! -d "$PYBADJSON_DIR" ]] && echo yes)" "yes"
+
+  echo "note - encoding jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - encoding jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Fix 28 — path-traversal rejection for --persona / criterion-id / run-id.
+# A value containing '/', '..', or a leading '-' must be rejected BEFORE it
+# is ever used to build a path — in BOTH checkpoint.sh and
+# record-evidence.sh. (Verified pre-fix: --persona '../../../evil' wrote to
+# .qa/evil/...; the gate could be pointed at an arbitrary pre-existing file
+# outside the run dir to satisfy it.)
+# ===========================================================================
+
+# --- Case 46: record-evidence.sh --persona '../../evil' is REJECTED; nothing
+# written anywhere under .qa/ (not even the run dir) -------------------------
+TRAV_RUN_ID="test-run-traversal"
+TRAV_QA_ROOT="$WORK/.qa"
+TRAV_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$TRAV_RUN_ID" C1 bake --persona '../../evil' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_TRAV=$?
+check "traversal: record-evidence --persona '../../evil' rejected" "$([[ "$RC_TRAV" -ne 0 ]] && echo yes)" "yes"
+check "traversal: nothing written under .qa/ (no 'evil' path anywhere)" \
+  "$(find "$TRAV_QA_ROOT" -iname '*evil*' 2>/dev/null | wc -l | tr -d '[:space:]')" "0"
+check "traversal: the run dir itself was not created either" \
+  "$([[ ! -d "$WORK/.qa/runs/${TRAV_RUN_ID}" ]] && echo yes)" "yes"
+
+# --- Case 47: record-evidence.sh criterion-id containing '/' is REJECTED --
+TRAV2_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$TRAV_RUN_ID" 'a/b' bake --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_TRAV2=$?
+check "traversal: record-evidence criterion-id with '/' rejected" "$([[ "$RC_TRAV2" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 48: checkpoint.sh --persona '../x' is REJECTED; nothing written -
+TRAV3_CKPT_FILE="$WORK/.qa/runs/${TRAV_RUN_ID}/checkpoint.json"
+TRAV3_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" C1 pass --persona '../x' --kinds bake 2>&1)"
+RC_TRAV3=$?
+check "traversal: checkpoint.sh --persona '../x' rejected" "$([[ "$RC_TRAV3" -ne 0 ]] && echo yes)" "yes"
+check "traversal: checkpoint.sh --persona '../x' wrote no checkpoint file" \
+  "$([[ ! -f "$TRAV3_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 49: checkpoint.sh run-id with '/'+'..' and criterion-id with '..'
+# are both REJECTED -----------------------------------------------------------
+TRAV4_ERR="$(cd "$WORK" && bash "$SCRIPT" 'run/../evil' C1 pass --kinds bake 2>&1)"
+RC_TRAV4=$?
+check "traversal: checkpoint.sh run-id with '/' + '..' rejected" "$([[ "$RC_TRAV4" -ne 0 ]] && echo yes)" "yes"
+
+TRAV5_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" '../evil-crit' pass --kinds bake 2>&1)"
+RC_TRAV5=$?
+check "traversal: checkpoint.sh criterion-id with '..' rejected" "$([[ "$RC_TRAV5" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 50: the evidence gate can't be pointed at a pre-existing,
+# well-formed artifact OUTSIDE the run dir via a traversal persona — the
+# audit's exact "gate bypass" scenario. Rejected before gate_pass ever runs,
+# so no bypass is even attempted. --------------------------------------------
+mkdir -p "$WORK/.qa/outside-evil"
+echo '{"readBack":{"x":1},"multiplicity":"N"}' > "$WORK/.qa/outside-evil/bake-read-back.json"
+TRAV6_ERR="$(cd "$WORK" && bash "$SCRIPT" "$TRAV_RUN_ID" GATEBYPASS pass --persona '../outside-evil' --kinds bake 2>&1)"
+RC_TRAV6=$?
+check "traversal: gate-bypass attempt via --persona '../outside-evil' rejected" "$([[ "$RC_TRAV6" -ne 0 ]] && echo yes)" "yes"
+
+# ===========================================================================
+# Fix 2728 — validate_token must reject a bare '.' and an all-dots value
+# (e.g. '...'), not just a '..' substring. A lone '.' or all-dots token
+# normalizes away when interpolated into a path (evidence/./<crit>/... ->
+# evidence/<crit>/..., .qa/runs/. -> .qa/runs/), silently colliding with the
+# NO-persona identity / escaping the per-run directory. This breaks the
+# exact isolation Fix 28 closed. Both checkpoint.sh and record-evidence.sh
+# must reject these BEFORE any write.
+# ===========================================================================
+
+# --- Case 51: record-evidence.sh --persona '.' is REJECTED; the bake
+# artifact for a DIFFERENT (no-persona) identity is never written/overwritten
+DOT_RUN_ID="test-run-dot"
+DOT_QA_ROOT="$WORK/.qa/runs/${DOT_RUN_ID}"
+DOT_NOPERSONA_BAKE="$DOT_QA_ROOT/evidence/DC1/bake-read-back.json"
+
+DOT_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" DC1 bake --persona '.' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_DOT=$?
+check "bare-dot: record-evidence --persona '.' rejected" "$([[ "$RC_DOT" -ne 0 ]] && echo yes)" "yes"
+check "bare-dot: no-persona bake artifact NOT written/overwritten" \
+  "$([[ ! -f "$DOT_NOPERSONA_BAKE" ]] && echo yes)" "yes"
+
+# --- Case 52: checkpoint.sh with run-id '.' is REJECTED; no checkpoint.json
+# written directly into .qa/runs/ (the '.' collapse target) -----------------
+DOT2_ERR="$(cd "$WORK" && bash "$SCRIPT" '.' C1 blocked 2>&1)"
+RC_DOT2=$?
+check "bare-dot: checkpoint.sh run-id '.' rejected" "$([[ "$RC_DOT2" -ne 0 ]] && echo yes)" "yes"
+check "bare-dot: no checkpoint.json written into .qa/runs/ directly" \
+  "$([[ ! -f "$WORK/.qa/runs/checkpoint.json" ]] && echo yes)" "yes"
+
+# --- Case 53: all-dots persona ('...') is REJECTED too, not just a lone '.' -
+DOT3_ERR="$(cd "$WORK" && bash "$SCRIPT" "$DOT_RUN_ID" C1 pass --persona '...' --kinds bake 2>&1 >/dev/null)"
+RC_DOT3=$?
+check "bare-dot: checkpoint.sh --persona '...' (all-dots) rejected" "$([[ "$RC_DOT3" -ne 0 ]] && echo yes)" "yes"
+
+DOT4_ERR="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" C1 bake --persona '...' --read-back '{"x":1}' --multiplicity N 2>&1)"
+RC_DOT4=$?
+check "bare-dot: record-evidence --persona '...' (all-dots) rejected" "$([[ "$RC_DOT4" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 54: regression — a normal --persona admin still works ------------
+DOT5_OUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$DOT_RUN_ID" C1 bake --persona admin --read-back '{"x":1}' --multiplicity N)"
+check "bare-dot regression: --persona admin still accepted" \
+  "$DOT5_OUT" "evidence/admin/C1/bake-read-back.json"
+DOT6_OUT="$(cd "$WORK" && bash "$SCRIPT" "$DOT_RUN_ID" C1 pass --persona admin --kinds bake 2>&1)"
+RC_DOT6=$?
+check "bare-dot regression: checkpoint.sh --persona admin still accepted" "$RC_DOT6" "0"
+
+# ===========================================================================
+# Fix 2728 — upsert_jq's mv "$tmp" "$file" must be guarded: if mv fails
+# (disk full/permission), the temp file must still be cleaned up, not leaked
+# under errexit. Simulated by making the destination directory read-only so
+# `mv` into it fails.
+# ===========================================================================
+
+# --- Case 55: mv failure during upsert_jq does not leak the .tmp.$$ file ---
+# A fake `mv` that always fails is placed first on PATH so jq succeeds
+# (writes $tmp) but the subsequent `mv "$tmp" "$file"` fails — exercising
+# the exact post-jq-success failure path Finding 2 targets, portably (no
+# root/chmod dependency).
+if command -v jq >/dev/null 2>&1; then
+  MVFAKEBIN="$WORK/mvfakebin"
+  mkdir -p "$MVFAKEBIN"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$MVFAKEBIN/mv"
+  chmod +x "$MVFAKEBIN/mv"
+
+  MVFAIL_RUN_ID="test-run-mvfail"
+  MVFAIL_DIR="$WORK/.qa/runs/${MVFAIL_RUN_ID}"
+  (cd "$WORK" && bash "$SCRIPT" "$MVFAIL_RUN_ID" M1 blocked >/dev/null 2>&1)
+  MVFAIL_ERR="$(cd "$WORK" && PATH="$MVFAKEBIN:$PATH" bash "$SCRIPT" "$MVFAIL_RUN_ID" M2 blocked 2>&1)"
+  RC_MVFAIL=$?
+  check "mv-guard: mv failure exits nonzero" "$([[ "$RC_MVFAIL" -ne 0 ]] && echo yes)" "yes"
+  check "mv-guard: no stray checkpoint.json.tmp.* remains after mv failure" \
+    "$(find "$MVFAIL_DIR" -maxdepth 1 -name 'checkpoint.json.tmp.*' | wc -l | tr -d '[:space:]')" "0"
+  check "mv-guard: original checkpoint.json unchanged (M2 not merged in)" \
+    "$(jq -r '.criteria | length' "$MVFAIL_DIR/checkpoint.json" 2>/dev/null)" "1"
+else
+  echo "SKIP - mv-guard sub-case: jq not present on this host"
 fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"

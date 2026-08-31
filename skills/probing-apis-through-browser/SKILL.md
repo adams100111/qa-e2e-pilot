@@ -147,6 +147,18 @@ After probing:
 
 ---
 
+### Step 6 — Record evidence for the gate
+
+If this criterion's `Kinds` includes `probe` (checkpointing-qa-memory's evidence gate), write the probe evidence artifact before checkpointing a `pass`:
+
+```
+record-evidence.sh <run-id> <criterion-id> probe [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
+```
+
+`--ok` is **your judgment that the probe CONFIRMED the criterion's expectation** — it is NOT the raw HTTP status code. A "must-see" probe that returns the expected resource is `--ok true`; a cross-role/cross-tenant **absence** probe that correctly gets 403/404/empty is *also* `--ok true` (the absence is what was expected). `--ok false` means the probe refuted the expectation (e.g. the absence probe leaked the other tenant's data, or the must-see resource came back missing/wrong). The gate rejects a checkpointed `pass` unless the recorded `probe.ok == true` — get this judgment right, don't default to the raw status range.
+
+---
+
 ## Verdict Mapping
 
 | Observed outcome | Verdict |

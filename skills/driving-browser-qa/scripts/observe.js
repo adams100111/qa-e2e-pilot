@@ -11,8 +11,16 @@
  * everything that happened SINCE the previous round without extra MCP calls. It never issues a
  * request itself — it only observes.
  *
- * Install once per session (idempotent — the `window.__qaObserveInstalled` guard makes re-injecting
- * at the top of every criterion a safe no-op). Then call __qaObserve() once per round.
+ * SELF-HEALING ACROSS NAVIGATION: a full-page navigation/reload/redirect gives the document a
+ * fresh `window`, so the interceptors installed on the PREVIOUS document are gone —
+ * `window.__qaObserve` is undefined on the new document even though this same script was injected
+ * before. This file's entry point checks for that and re-runs the installer before calling
+ * __qaObserve, so a round on a freshly-navigated document re-installs instead of throwing. The
+ * installer itself stays idempotent (`window.__qaObserveInstalled` guard), so re-running it on a
+ * document where it already ran (e.g. re-injecting mid-session) is a safe no-op. This does NOT
+ * recover console/network activity that happened DURING the load itself, before any interceptor
+ * could attach — that load-window evidence must come from the driver-backed
+ * browser_console_messages / browser_network_requests calls (see SKILL.md's Observe-Round section).
  *
  * Returns JSON: { round, domDigest, console[], network[], ux[], axe }.
  *   - domDigest: compact live-region text + interactive-element inventory (the snapshot substitute
@@ -31,10 +39,19 @@
  *     dedicated evaluate call; that call is outside the observe-round's per-step budget.
  *   - axe:       axe-core violations summary IF window.axe is present (inject axe.min.js separately)
  *
- * Usage (pass to browser_evaluate as the function body):
- *   return __qaObserve({ digestSelector: 'body', runUx: true });
+ * Usage (pass this WHOLE file to browser_evaluate as the function body, every round — including
+ * the first observe after any navigation): the tail below installs-if-needed and then calls
+ * __qaObserve() itself, so a single evaluate call is both the self-heal check and the round read.
+ *   ... (this file's own source) ...
+ *   // returns { round, domDigest, console[], network[], ux[], axe }
+ *
+ * If you already know the current document has the interceptors installed (no navigation since
+ * the last round) a lighter, cheaper snippet also works: `return __qaObserve({ digestSelector:
+ * 'body', runUx: true });` — but after ANY full-page navigation/reload/redirect, re-inject this
+ * whole file (or use the self-healing tail below) instead, since that lighter snippet throws
+ * `__qaObserve is not defined` on a document it was never installed on.
  */
-(function installObserve() {
+function installObserve() {
   if (window.__qaObserveInstalled) return;
   window.__qaObserveInstalled = true;
   var buf = { console: [], network: [], round: 0 };
@@ -57,14 +74,37 @@
     buf.console.push({ level: 'error', text: 'unhandledrejection: ' + String(e.reason).slice(0, 300) });
   });
 
+  // --- ok flag, unified: 2xx ONLY (200-299), identically for fetch and XHR.
+  // Previously fetch used res.ok (2xx) while XHR used status<400 (2xx-3xx) --
+  // the same 3xx response was "ok" via XHR but not via fetch. A single
+  // formula here is now the source of truth for both interceptors below.
+  function isOkStatus(status) {
+    return status >= 200 && status < 300;
+  }
+
   // --- fetch ---
   if (window.fetch) {
     var of = window.fetch;
     window.fetch = function (input, init) {
-      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      // input may be a string, a URL object (no .url property — only
+      // .href/.toString()), or a Request object (has .url). Only Request
+      // exposes `.url` as a string; a URL instance previously fell through
+      // to the `|| ''` default and silently dropped the address. String()
+      // correctly stringifies a URL (via its toString/href) and passes a
+      // plain string through unchanged, so cover both with one branch.
+      var url;
+      if (typeof input === 'string') {
+        url = input;
+      } else if (input && typeof input.url === 'string') {
+        url = input.url;
+      } else if (input) {
+        url = String(input);
+      } else {
+        url = '';
+      }
       var method = (init && init.method) || (input && input.method) || 'GET';
       return of.apply(this, arguments).then(function (res) {
-        buf.network.push({ method: method, url: String(url).slice(0, 300), status: res.status, ok: res.ok });
+        buf.network.push({ method: method, url: String(url).slice(0, 300), status: res.status, ok: isOkStatus(res.status) });
         return res;
       }, function (err) {
         buf.network.push({ method: method, url: String(url).slice(0, 300), status: 0, ok: false, error: String(err).slice(0, 200) });
@@ -81,7 +121,7 @@
     OX.prototype.send = function () {
       var self = this;
       this.addEventListener('loadend', function () {
-        if (self.__qa) buf.network.push({ method: self.__qa.method, url: self.__qa.url, status: self.status, ok: self.status >= 200 && self.status < 400 });
+        if (self.__qa) buf.network.push({ method: self.__qa.method, url: self.__qa.url, status: self.status, ok: isOkStatus(self.status) });
       });
       return os.apply(this, arguments);
     };
@@ -127,5 +167,16 @@
     };
     return payload;
   };
-})();
-return (typeof __qaObserve === 'function') ? 'observe-installed' : 'install-failed';
+}
+
+// --- self-healing round entry point ---
+// A full-page navigation/reload/redirect replaces `window`, so a previously-installed
+// __qaObserve is gone on the new document even though this exact script ran before. Re-install
+// (idempotent, cheap no-op if already present) BEFORE invoking, so a round called on a
+// freshly-navigated document self-heals instead of throwing "__qaObserve is not defined".
+if (typeof window.__qaObserve !== 'function') {
+  installObserve();
+}
+return (typeof window.__qaObserve === 'function')
+  ? window.__qaObserve({ digestSelector: 'body', runUx: true })
+  : 'install-failed';

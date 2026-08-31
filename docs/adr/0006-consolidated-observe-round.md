@@ -24,9 +24,11 @@ JSON payload: `{ round, domDigest, console[], network[], ux[], axe }`. Acts (`cl
 (`browser_evaluate`) and, on first injection, installs read-only buffering interceptors on
 `console.error`/`warn`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest`, so
 each later round drains everything that happened **since the previous round** without extra MCP
-calls. Implementation: `skills/driving-browser-qa/scripts/observe.js` (adapted from
-`tools/accuracy-harness/detectors/observe.js`, the accuracy-harness's copy for offline scoring — the
-skill owns the canonical in-run copy the agent actually injects).
+calls. Implementation: `skills/driving-browser-qa/scripts/observe.js` — the sole canonical copy the
+agent actually injects. (A duplicated `tools/accuracy-harness/detectors/observe.js` fork existed for
+offline scoring but had diverged from this canonical copy and was deleted; the accuracy harness now
+references `skills/driving-browser-qa/scripts/observe.js` directly instead of maintaining a second
+copy.)
 
 This takes a step from **~6 calls to ~2** per step (observe + act, plus a wait when the act mutates
 state). Both `driving-browser-qa` (the per-step loop) and `walking-multistep-flows` (the per-wizard-

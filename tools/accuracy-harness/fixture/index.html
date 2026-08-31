@@ -30,6 +30,15 @@
   button.tiny { width:16px; height:16px; padding:0; font-size:10px; line-height:16px; }
   /* SEED N2: clean control, must NOT be flagged — #1a1a1a on #ffffff (~17:1) passes WCAG AA */
   #f-add.btn-primary-clean { background:#ffffff; color:#1a1a1a; border:1px solid #1a1a1a; }
+  /* SEED N4: clean control, must NOT be flagged — vertically-scrollable pane (overflow-y:auto)
+     with tall content; the Y-axis is intentionally scrollable, not clipped */
+  #n4-scroll { height: 80px; overflow-y: auto; border: 1px solid var(--line); padding: 6px 8px; font-size: 13px; }
+  /* SEED N5: clean control, must NOT be flagged — text-overflow:ellipsis is an intentional
+     horizontal truncation pattern, not a clipping bug */
+  #n5-ellipsis { max-width: 140px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* SEED N7: clean control, must NOT be flagged — dark-theme section: #e0e0e0 text on #1a1a1a
+     background (~12.6:1), well above WCAG AA 4.5:1 */
+  #n7-dark { background: #1a1a1a; color: #e0e0e0; padding: 12px; border-radius: 6px; }
   /* S1 (seed, subjective/advisory): inconsistent, garish accent + erratic spacing on this panel only */
   section#finalize { background: #fdf0ff; }
   section#finalize h2 { color: #e11d9b; letter-spacing: 3px; }
@@ -42,6 +51,7 @@
 <body>
   <h1>CapTable Mini</h1>
   <div class="sub">Seeded-bug QA fixture. "Backend" = localStorage (namespace <code>captable</code>). Baking = read localStorage back after a write.</div>
+  <div class="sub"><a href="page2.html" data-testid="go-to-page2">Go to page 2 (nav-survival fixture)</a></div>
 
   <!-- ================= Founders: create + multiplicity ================= -->
   <section id="founders">
@@ -79,6 +89,34 @@
         <td class="amount" id="s-out-amount" data-testid="safe-amount">—</td>
       </tr></tbody>
     </table>
+  </section>
+
+  <!-- ================= Negative controls: must NOT be flagged by the detectors ================= -->
+  <section id="negative-controls">
+    <h2>Negative controls</h2>
+    <!-- SEED N4: vertically-scrollable pane — overflow-y:auto with tall content; must NOT be
+         flagged as clipped (the Y-axis is intentionally scrollable) -->
+    <label for="n4-scroll">Scrollable pane (N4)</label>
+    <div id="n4-scroll" data-testid="n4-scroll">
+      <p>Line one of a tall panel.</p>
+      <p>Line two of a tall panel.</p>
+      <p>Line three of a tall panel.</p>
+      <p>Line four of a tall panel.</p>
+      <p>Line five of a tall panel.</p>
+      <p>Line six of a tall panel.</p>
+      <p>Line seven of a tall panel.</p>
+    </div>
+    <!-- SEED N5: text-overflow:ellipsis truncation — must NOT be flagged (intentional) -->
+    <label for="n5-ellipsis">Truncated cell (N5)</label>
+    <div id="n5-ellipsis" data-testid="n5-ellipsis">A very long value that intentionally truncates with an ellipsis instead of wrapping</div>
+    <!-- SEED N6: icon-only control labeled by a CHILD img[alt] (the alt is an ATTRIBUTE on a void
+         element, not a text node, so plain textContent is empty) — must NOT be flagged missing-name -->
+    <a href="#" data-testid="n6-icon-link" style="display:inline-block;padding:6px"><img alt="Home" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="></a>
+    <!-- SEED N7: dark-theme section, AA-passing contrast (#e0e0e0 on #1a1a1a, ~12.6:1) — must NOT
+         be flagged low-contrast (contrast detector must composite/read the real dark backdrop) -->
+    <div id="n7-dark" data-testid="n7-dark">
+      <p>Dark-theme body copy that passes WCAG AA against its own backdrop.</p>
+    </div>
   </section>
 
   <!-- SEED P1: ux-perceptual defect (advisory-eligible, vision-pass only) — spacer pushes the
