@@ -50,6 +50,7 @@ Orchestrator pre-run invokes the round engine (§2F): pick which discovered **pe
 
 ### 2E. Opt-out + config
 - Per-criterion `nonUiActionReason: "<why the human-path is a tool limit, not an app bug>"` → gate permits the workaround for that criterion, forces confidence `low`, prints the reason. Absent → workarounds gate-rejected.
+- **Opt-out-abuse guard:** the opt-out is per-criterion and cost-carrying (every use forces `confidence: low`), so blanket opt-out visibly tanks the run's confidence. Additionally, the report flags a run whose `nonUiActionReason` rate exceeds a threshold (default **>20%** of `human-action` criteria) as *"discipline largely bypassed — review the opt-out reasons"*, so mass opt-out can't quietly defeat the gate. Not a hard block (a genuinely tool-limited surface may legitimately exceed it), a loud signal.
 - `.qa/config.json` `"humanInteraction": {"enforce": true, "saveSession": true}` (both default true; `saveSession` launches the Playwright MCP driver with `--save-session` so the gate has an independent `session.md` to reconcile against — §2B. `enforce` is an audit-only fallback for migration, never silently off. If `saveSession` is false the gate degrades to trace-only with a printed warning that the self-report hole is open — never the silent default).
 
 ### 2F. Hardened round-engine (C — turns the grilling pattern from prose into a proven unit)
