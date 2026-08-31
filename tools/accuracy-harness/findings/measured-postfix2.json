@@ -1,0 +1,96 @@
+{
+  "source": "MEASURED post-fix re-measurement \u2014 real qa-e2e-pilot agent, full gated pipeline, run-id remeasure-postfix2, 2026-09-01. Controller-as-judge attribution (keyword never credits).",
+  "estimated": false,
+  "_attribution": "11 of 13 bugs map to positive seeds (F1-F4,J2-J4,U1-U4). BUG-012=U2 (the now-fixed overflow clip, previously a phantom) is CAUGHT; N4/N5 negative controls correctly passed. Missed J1 (Ghost-named silent non-persist \u2014 coverage variance, the agent did not exercise that exact name this run). BUG-008 (re-finalize terminal-lock) and BUG-013 (page2 load ReferenceError+404) are real UNSEEDED defects (no planted seed), not precision hits.",
+  "findings": [
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-001: Ownership % computed issued-only instead of fully-diluted (ignores the 500,000-share ESOP pool)",
+      "judgedSeedId": "F1",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-002: Add-founder can silently drop a write while still showing a success toast (intermittent)",
+      "judgedSeedId": "J3",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-003: captable:totalIssued is not recomputed after deleting a founder (stale cache)",
+      "judgedSeedId": "F3",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-004: Rejected add-founder submission (shares=0) still shows a false 'Founder added' success toast",
+      "judgedSeedId": "J4",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-005: Rejected add-founder submission (shares=-500) still shows a false 'Founder added' success toast",
+      "judgedSeedId": "F4",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-006: SAFE amount truncates the sub-cent remainder instead of rounding half-up",
+      "judgedSeedId": "F2",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "DB",
+      "text": "BUG-007: Finalize round never writes captable:holdings or captable:status despite a success toast and a UI status flip to COMPLETE",
+      "judgedSeedId": "J2",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "DB",
+      "text": "BUG-008: Re-finalize on an (apparently) terminal COMPLETE state reports success again while holdings remain empty",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-009: Four text elements on index.html render below WCAG AA contrast",
+      "judgedSeedId": "U1",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-010: Three interactive targets are below the WCAG AA 24x24px minimum",
+      "judgedSeedId": "U3",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-011: Clicking the finalize-section '?' help button throws an uncaught ReferenceError",
+      "judgedSeedId": "U4",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-012: The SAFE amount cell clips its content instead of wrapping/scrolling/eliding",
+      "judgedSeedId": "U2",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-013: Navigating to page2.html throws a ReferenceError and fires a failing network request on every load",
+      "axis": "broken-journey"
+    }
+  ]
+}
