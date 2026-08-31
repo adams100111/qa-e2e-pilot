@@ -35,17 +35,19 @@ This map is the oracle for the rest of the walk. Write it down; do not keep it i
 
 ### Step 2 — Fill required-only, then advance; watch gates, toasts, and diagnostics after every step
 
+Use the **observe-round** from driving-browser-qa (ADR-0006) for each step — one structured observe call per round, not six. `scripts/observe.js` (driving-browser-qa) is installed once per session; do not re-derive a separate loop per wizard step.
+
 For each step in order:
 
-1. Take a snapshot (`browser_snapshot`) to identify current step and element refs.
-2. Fill **required fields only** using React-safe input mechanics (see driving-browser-qa). Verify the returned value matches what you passed before proceeding.
-3. Click the gate control (Next / Continue / Save). After clicking, call `browser_wait_for` for the expected next state.
-4. Immediately after the wait:
-   - Read console messages (`browser_console_messages`). A JS error is a finding even if the UI looks fine.
-   - Read network requests (`browser_network_requests`). Find the save/advance mutation. Check:
+1. Observe (`browser_evaluate` → `__qaObserve(...)`) to identify the current step from `domDigest` and get selectors (`data-testid`/label) for the fields and gate control.
+2. Fill **required fields only** using React-safe input mechanics (see driving-browser-qa) — a separate act call per field. Verify the returned value matches what you passed before proceeding.
+3. Click the gate control (Next / Continue / Save) — a separate act call. After clicking, call `browser_wait_for` for the expected next state — still a separate call.
+4. Re-observe (`__qaObserve`) immediately after the wait. The returned payload already carries everything since step 1's round:
+   - `console[]`: a JS error is a finding even if the UI looks fine.
+   - `network[]`: find the save/advance mutation. Check:
      - **Status code.** 4xx = client/validation bug; 5xx = server bug. Both are findings. Record the path and status verbatim.
      - **Route path.** Confirm the request landed on the expected endpoint (e.g. `/initialize` not `/init`). A mismatch is itself the finding.
-     - **Response body.** If the status is unexpected, read the body (`browser_network_request`). It often names the exact failing field or constraint.
+     - **Response body.** `network[]` carries method/url/status/ok only — if the status is unexpected, read the body with the separate, targeted `browser_network_request` call. It often names the exact failing field or constraint. This targeted read is not optional just because the round is consolidated — see driving-browser-qa's no-evidence-regression guard.
 5. If the step returned a non-2xx, record a finding (bug, suspected layer), mark the step failed, and stop here — do not advance. The criterion verdict is `fail`; name the step.
 6. If 2xx, proceed to Step 3 before marking the step done or advancing to the next step.
 
@@ -71,7 +73,7 @@ The finalize/submit action is the riskiest step: the UI almost always advances f
    - [ ] The **backend state flag** flipped to the terminal value (e.g. `status: "COMPLETE"`, `is_setup: true`). Bake it via **verifying-backend-persistence**.
    - [ ] Any **gate** that the terminal state should open or close now reflects the new state (e.g. the setup gate no longer traps the user; the governance module is unlocked).
    - [ ] The **redirect** actually happened — the URL or route changed to the expected destination.
-   - [ ] The **destination view** is populated from backend data (take a snapshot; confirm key fields are not empty, default, or stale from the previous run). A blank or error state on the destination is a finding.
+   - [ ] The **destination view** is populated from backend data (re-observe; confirm `domDigest` key fields are not empty, default, or stale from the previous run). A blank or error state on the destination is a finding.
    - [ ] Dependent entities that the terminal action should have created are present (e.g. holdings, share positions). A NOT-NULL violation or missing dependent record means the finalize did not fully persist — even though the state flag flipped.
 4. If all four sub-checks pass, record the criterion verdict `pass`.
 5. If any sub-check fails, verdict is `fail`; name the step (`terminal action — holdings not persisted`).
@@ -107,7 +109,7 @@ The entire wizard is **one criterion**; all steps roll into one verdict.
 | Our tooling broke (MCP timeout, snapshot failed, script error) | `error` |
 | Path deliberately not walked this run | `deferred` (state the reason) |
 
-**Stalled wizard:** If the wizard is stuck on a step with no error shown (spinner, no transition, no console error, no network request), treat it as `blocked` if the environment is the likely cause, or `fail` if a prior baking check showed the step ID/state never advanced. Record the last snapshot refs, last console output, and last network status as evidence. Do not loop more than three times without a new observable state change (see driving-browser-qa iteration cap).
+**Stalled wizard:** If the wizard is stuck on a step with no error shown (spinner, no transition, no console error, no network request), treat it as `blocked` if the environment is the likely cause, or `fail` if a prior baking check showed the step ID/state never advanced. Record the last `domDigest`, last `console[]`, and last `network[]` from the observe-round as evidence. Do not loop more than three times without a new observable state change (see driving-browser-qa iteration cap).
 
 On `fail`, always name the suspected step and the suspected layer — one of the canonical set `FE | route | service | migration | DB` (see CONTEXT.md).
 
@@ -148,13 +150,13 @@ On `fail`, always name the suspected step and the suspected layer — one of the
 
 **Given:** The agent fills a business-area field in the wizard via a standard type call, the UI shows the value, and clicking Next triggers a POST that returns 422 (field required).
 
-**Catch it:** On the failing step, use `browser_evaluate` to inject `react-set-input.js` (see driving-browser-qa). Verify the script's returned `.value` matches the intended input. If the returned value was empty, the React-controlled input discarded the native keystroke — the 422 was caused by an empty field reaching the backend despite the visible text. Re-fill using the script, confirm the returned value, then re-submit. If 422 persists after confirmed value, read the response body from `browser_network_requests` and record the exact failing field.
+**Catch it:** On the failing step, use `browser_evaluate` to inject `react-set-input.js` (see driving-browser-qa). Verify the script's returned `.value` matches the intended input. If the returned value was empty, the React-controlled input discarded the native keystroke — the 422 was caused by an empty field reaching the backend despite the visible text. Re-fill using the script, confirm the returned value, then re-submit. If 422 persists after confirmed value, re-observe and find the entry in `network[]`; read the response body via the separate `browser_network_request` call and record the exact failing field.
 
 ### Eval 4 — Wrong route causes 500 on wizard init (bugs #5 and #10: `/init` vs `/initialize`)
 
 **Given:** The wizard's first save (or a business-area bind call) shows a spinner that never resolves and no explicit error toast.
 
-**Catch it:** Call `browser_network_requests` immediately after the wait timeout. Find the POST. If the path is `/init` instead of `/initialize`, or any variant that returns 404/500, record finding: route mismatch; verdict `fail`, suspected layer `route`. Do not retry; record the exact path and status code in the bug log and stop the criterion.
+**Catch it:** Re-observe (`__qaObserve`) immediately after the wait timeout. Find the POST entry in `network[]`. If the url is `/init` instead of `/initialize`, or any variant that returns 404/500, record finding: route mismatch; verdict `fail`, suspected layer `route`. Do not retry; record the exact path and status code in the bug log and stop the criterion.
 
 ### Eval 5 — Re-submitting a completed step creates a duplicate share class (idempotency)
 

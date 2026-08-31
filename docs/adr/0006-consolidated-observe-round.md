@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-30). Part of the accuracy overhaul ([docs/plans/2026-08-30-qa-accuracy-persona-overhaul.md](../plans/2026-08-30-qa-accuracy-persona-overhaul.md)).
+Accepted (2026-08-31), now implemented. Part of the accuracy overhaul ([docs/plans/2026-08-30-qa-accuracy-persona-overhaul.md](../plans/2026-08-30-qa-accuracy-persona-overhaul.md)).
 
 ## Context
 
@@ -19,19 +19,33 @@ the execution-discipline false-greens the overhaul targets. The reads are cheap 
 
 Introduce **one structured observe call per round** — the *observe-round* — that returns a single
 JSON payload: `{ round, domDigest, console[], network[], ux[], axe }`. Acts (`click`/`type`/
-`fill_form`/`select`) stay separate calls; **waits** stay separate. The observe call is injected via
-the **`evaluate` capability** (`browser_evaluate`) and, on first injection, installs read-only
-buffering interceptors on `console.error/warn`, `window.onerror`, `fetch`, and `XMLHttpRequest`, so
+`fill_form`/`select`/an `evaluate`-injected script like `react-set-input.js`) stay separate calls;
+**waits** stay separate. The observe call is injected via the **`evaluate` capability**
+(`browser_evaluate`) and, on first injection, installs read-only buffering interceptors on
+`console.error`/`warn`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest`, so
 each later round drains everything that happened **since the previous round** without extra MCP
-calls. Reference implementation: `tools/accuracy-harness/detectors/observe.js`.
+calls. Implementation: `skills/driving-browser-qa/scripts/observe.js` (adapted from
+`tools/accuracy-harness/detectors/observe.js`, the accuracy-harness's copy for offline scoring — the
+skill owns the canonical in-run copy the agent actually injects).
 
-This takes a step from **~6 calls to ~2** (observe + act, plus a wait when needed). The diagnostic
-tier (console + network) is no longer optional or skippable — it is *in the same payload* the agent
-must read to see the DOM, so "green toast, moved on" stops being cheaper than doing it right.
+This takes a step from **~6 calls to ~2** per step (observe + act, plus a wait when the act mutates
+state). Both `driving-browser-qa` (the per-step loop) and `walking-multistep-flows` (the per-wizard-
+step loop) were rewritten to the observe-round — the wizard loop was the second, nested instance of
+the old six-call sequence and is now the same one-observe-per-round pattern, not a separate loop. The
+diagnostic tier (console + network) is no longer optional or skippable — it is *in the same payload*
+the agent must read to see the DOM, so "green toast, moved on" stops being cheaper than doing it
+right.
 
 `console_messages` / `network_requests` / `network_request` (response-body reads for probing) remain
 available as capabilities for the cases the in-page buffer cannot cover (opaque cross-origin bodies,
-pre-injection traffic); the observe-round is the default per-round observation, not the only one.
+pre-injection traffic, a response **body** — `network[]` only carries method/url/status/ok); the
+observe-round is the default per-round observation, not the only one. Both rewritten skills state this
+explicitly as a binding **no-evidence-regression guard**: the observe-round consolidates the
+*redundant* per-step console/network/snapshot calls the old loop always paid for, it does not drop a
+diagnostic (bake read-back, response body, cross-origin read) a step genuinely needs — that is still a
+separate, targeted call or a hand-off to `verifying-backend-persistence`/`probing-apis-through-browser`.
+A driver without the `evaluate` capability cannot run the observe-round at all; the affected step is
+recorded `blocked`, never silently downgraded to fewer diagnostics.
 
 ## Consequences
 
