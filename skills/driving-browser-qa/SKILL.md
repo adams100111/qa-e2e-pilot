@@ -97,6 +97,8 @@ The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElemen
 
 After every act+wait cycle, call `browser_console_messages` and scan for entries with `type: "error"` or messages containing `Uncaught`, `TypeError`, `cannot read`, or `undefined is not`. Treat any such entry as a criterion **finding** with suspected layer `FE`, record the message verbatim, and include it in the bug log. Do not dismiss an exception because the UI "looks fine."
 
+On the visual-UX criterion specifically, inject `detecting-visual-ux/scripts/ux-detectors.js` via `browser_evaluate` and follow its click-probe step for icon-only controls before reading console — see detecting-visual-ux for the full objective-fail/subjective-advisory split.
+
 ## Checking Network Responses
 
 After every mutation (form submit, wizard step, save), call `browser_network_requests` and find the matching XHR/fetch request. Check:

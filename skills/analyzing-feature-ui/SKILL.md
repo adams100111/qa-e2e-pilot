@@ -162,6 +162,8 @@ Fields:
 - `elements[].backend` — null for chrome or purely navigational elements.
 - `legacyRoutes[]` — routes found in static index that are not in the active nav; record disposition.
 
+Each non-chrome surface should also carry a visual-UX criterion (contrast/overflow/target-size/accessible-name, objective; aesthetics, advisory) — see detecting-visual-ux for how driving-browser-qa executes it.
+
 Save the file and confirm the path in your response. Pass the path to generating-qa-checklist.
 
 ## Checklist Summary
