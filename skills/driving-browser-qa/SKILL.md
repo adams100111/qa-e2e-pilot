@@ -65,6 +65,32 @@ guard) — re-injecting it at the top of every criterion is a safe no-op. On ins
 `console.error`/`warn`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest` to
 buffer entries; it is read-only and never issues a request of its own.
 
+**REQUIRED — after ANY navigation, re-inject before re-observing (binding).** The interceptors
+`observe.js` installs live on the current document's `window`. A full-page `browser_navigate`, a
+click that triggers a full page load (not a same-document SPA `pushState`), a reload, or a
+server-side redirect all give the new document a **fresh `window`** — the previous interceptors,
+`window.__qaObserveInstalled`, and `window.__qaObserve` are gone. A round called against the new
+document without re-injecting throws `__qaObserve is not defined`, and — worse — every console
+error and every network request that fired **during the load itself** (before any interceptor
+could re-attach) is captured by nothing: a 4xx/5xx on the navigating request or a load-time crash
+is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load) does not reset
+`window` and is unaffected. After any qualifying navigation, in this order:
+1. **Re-inject `scripts/observe.js` as the FIRST action on the new document**, before any other
+   observe/act. It is self-healing — the tail of the script checks
+   `typeof window.__qaObserve !== 'function'` and re-runs the (idempotent) installer before
+   invoking the round, so this call both re-installs and returns the first post-nav round payload
+   in one `browser_evaluate` call. It never throws on a document it has never run on.
+2. **Immediately also call the driver-backed `browser_console_messages` and
+   `browser_network_requests` MCP tools** — these are backed by the Playwright driver itself, not
+   in-page JS, so they **survive navigation** and are the **source of truth for the load window**:
+   every console error and every request (including the navigating document request and anything
+   fired by inline `<script>`/early page code) that happened before step 1's interceptor could
+   possibly attach. The in-page `observe.js` buffer is per-document and can only ever see what
+   happened *after* it (re-)installs; it is not a substitute for these two calls immediately after
+   a navigation. Treat findings from either source identically (finding, suspected layer, etc.) —
+   do not discount a 4xx/5xx or console error just because it came from the driver-backed call
+   instead of `console[]`/`network[]`.
+
 **Per round, for every step inside a criterion:**
 
 1. **Observe.** Call `browser_evaluate` with `return __qaObserve({ digestSelector: 'body', runUx: true })`. This ONE call returns:
@@ -109,7 +135,7 @@ The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElemen
 
 ## Finding Clickable Elements by Text (RTL/Arabic)
 
-`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. Inject via `browser_evaluate`.
+`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. It uses real geometry (`getBoundingClientRect` + computed style), so it also finds `position:fixed`/sticky controls. Inject via `browser_evaluate`. **When MULTIPLE visible elements share the text it returns `{ambiguous:true, count, candidates:[…]}` instead of acting** — do NOT act on a guess: disambiguate with a more specific `[data-testid]`/container selector (or the active/topmost candidate) and re-target before clicking.
 
 **Critical: verify where a click lands, not just that it succeeded.** The script returns `{ href, role, textContent, landed }` before and after the click. Check `href` against the expected URL path — a button that looks correct but links to a legacy route is a finding (bug class: quick-action links to `/cap-table` instead of `/governance`).
 

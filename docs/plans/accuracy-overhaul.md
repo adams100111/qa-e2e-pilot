@@ -72,8 +72,12 @@ Delivered under `tools/accuracy-harness/` (self-contained, no build; runs on `py
   below threshold. Subjective seeds are scored in a **separate advisory stream**, never in the gate.
 - **`scorer/pass-gate.js`** — reference impl of the R1 execution-enforcement seam: rejects a `pass`
   lacking the evidence its `kinds` require (write->bake, computed->recompute, probe->network body).
-- **`detectors/ux-detectors.js`** — the objective UX detectors (fix for M5).
-- **`detectors/observe.js`** — the consolidated observe-round payload (efficiency lever).
+- **`skills/detecting-visual-ux/scripts/ux-detectors.js`** — the objective UX detectors (fix for M5);
+  the sole canonical copy (a diverged `tools/accuracy-harness/detectors/ux-detectors.js` fork was
+  deleted).
+- **`skills/driving-browser-qa/scripts/observe.js`** — the consolidated observe-round payload
+  (efficiency lever); the sole canonical copy (a diverged `tools/accuracy-harness/detectors/observe.js`
+  fork was deleted).
 - **`findings/baseline.json`**, **`findings/after-fixed.json`** — ESTIMATED projections.
 
 **Baseline measurement (this pass): ESTIMATED.** A live agent run needs Playwright MCP + a
@@ -101,7 +105,7 @@ what the fixes below are designed to achieve, and it **clears the gate**.
 |-----|--------|---------------------------------------------|----------------|
 | **F-A: execution-enforcement gate** ("green toast != pass" as a GATE) | M1, M2, M3 | Extend `checkpoint.sh`: a `pass` is **invalid** unless `evidence_refs` contains the classes the criterion's kind requires — write->`bake-read-back.json`, computed->`recompute.md`, probe-needed->`network-response.json`. Missing => refuse the pass; agent must supply evidence or record `blocked`. `generating-qa-checklist` tags each criterion's `kinds`/`probeNeeded`. | `scorer/pass-gate.js` (works: rejects toast-only pass, exit 1) |
 | **F-B: broaden generation** | M4, M7, M8 | `generating-qa-checklist`: make cross-tenant, race, resume-from-draft, and **cascade re-reconciliation** REQUIRED emissions (not optional prose); when black-box/`signal: weak`, emit an explicit `deferred` per skipped surface instead of a silent gap. `analyzing-feature-ui`: enumerate a **UX surface pass** per surface. | fixture seeds F3 (cascade), plus real-run cross-tenant |
-| **F-C: wider detection — objective UX** | M5 | New generator heuristic emits per-surface objective-UX criteria; verifier injects `ux-detectors.js` + **axe-core** (via observe-round). A confirmed defect => `fail`, **suspected layer `FE`**, **confidence `low`** (ADR-0007). Viewport-aware (ADR-0008). | `detectors/ux-detectors.js`; seeds U1–U4 caught |
+| **F-C: wider detection — objective UX** | M5 | New generator heuristic emits per-surface objective-UX criteria; verifier injects `ux-detectors.js` + **axe-core** (via observe-round). A confirmed defect => `fail`, **suspected layer `FE`**, **confidence `low`** (ADR-0007). Viewport-aware (ADR-0008). | `skills/detecting-visual-ux/scripts/ux-detectors.js`; seeds U1–U4 caught |
 | **F-D: wider detection — subjective UX** | M6 | Aesthetic observations go to a **separate advisory stream** in the report — never a verdict, never a layer, never gated (ADR-0007). | scorer advisory stream; seed S1 |
 
 **Acceptance gate (the target, stated as a gate on the fixture)**: `functional >= 0.70`,
@@ -131,8 +135,8 @@ Injected via `browser_evaluate` (never `browser_run_code_unsafe` — ADR-0009). 
 ```
 
 `console`/`network` are captured by read-only interceptors installed on first injection and **drained
-per round** — no separate MCP calls. Reference impl: `detectors/observe.js` (installs, returns
-`observe-installed`).
+per round** — no separate MCP calls. Reference impl: `skills/driving-browser-qa/scripts/observe.js`
+(installs, returns `observe-installed`).
 
 **Cost, per step:**
 

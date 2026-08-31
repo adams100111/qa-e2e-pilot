@@ -11,8 +11,6 @@ seeds.json                ground-truth planted bugs + match rules + the acceptan
 scorer/score.js           matches a findings file to seeds -> recall per axis + gate check
 scorer/convert-buglog.js  converts a real run's bug-log.json -> a MEASURED findings file
 scorer/pass-gate.js       reference impl of the execution-enforcement seam ("green toast != pass")
-detectors/ux-detectors.js dependency-free in-page OBJECTIVE UX detectors (contrast/overflow/target/name)
-detectors/observe.js      the consolidated observe-round payload (ADR-0006): 1 evaluate call per round
 findings/                 empty until you convert a real run (see "MEASURED vs ESTIMATED" below);
                           the hand-authored baseline.json/after-fixed.json ESTIMATED projections were
                           removed — measurement must be real, not a hand-typed projection

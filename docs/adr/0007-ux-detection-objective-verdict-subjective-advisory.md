@@ -23,7 +23,9 @@ migration|DB`. Adding a `warn`/`aesthetic` verdict is forbidden.
 ## Decision
 
 - **Objective UX defects are first-class verdicts.** They are detected by dependency-free in-page
-  detectors (`tools/accuracy-harness/detectors/ux-detectors.js`) plus **axe-core** (injected as
+  detectors (`skills/detecting-visual-ux/scripts/ux-detectors.js`, the sole canonical copy — the
+  formerly-duplicated `tools/accuracy-harness/detectors/ux-detectors.js` was deleted as a stale fork)
+  plus **axe-core** (injected as
   `axe.min.js`, run via `window.axe.run()`), carried in the observe-round payload (ADR-0006). A
   confirmed objective defect yields `verdict: fail`, **suspected layer `FE`**, **confidence `low`**
   (low because there is no spec/domain *numeric* oracle — the threshold is a standard, and the run
