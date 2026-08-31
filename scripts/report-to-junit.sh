@@ -13,10 +13,13 @@
 # Each <testcase> ADDITIONALLY carries (attributes only — no reordering of the
 # existing elements, so older consumers that just read name/classname/verdict
 # child keep working unchanged):
-#   persona="<id>"   only when the criterion was checkpointed with --persona (ADR-0012);
-#                     the testcase name is also decorated "<criterion_id>@<persona>",
-#                     mirroring checkpoint.sh --list, so two personas of the same
-#                     criterion never collide in a CI dashboard.
+#   persona="<id>"   only when the criterion was checkpointed with --persona (ADR-0012).
+#                     The testcase `name` is ALWAYS the raw criterion_id (never decorated
+#                     with "@<persona>") — a criterion_id containing a literal '@' would
+#                     otherwise collide with that display encoding and conflate two
+#                     distinct rows. persona lives ONLY in this separate attribute, mirroring
+#                     checkpoint.sh --list's own persona column, so two personas of the same
+#                     criterion are still distinguishable without any name-string encoding.
 #   kinds="a,b"      only when non-empty — the evidence kinds (bake/computed/probe)
 #                     this pass's gate required (ADR-0010).
 #   evidence="..."   complete | ungated | n/a — same computation checkpoint.sh's
@@ -119,9 +122,11 @@ for c in criteria:
     else:
         evidence_status = "n/a"
 
+    # name is ALWAYS the raw criterion_id — never decorated with "@persona".
+    # persona is carried solely by the `persona` attribute below, so a
+    # criterion_id containing a literal '@' can't collide with a display
+    # encoding and conflate two distinct rows.
     name = cid
-    if persona:
-        name = f"{name}@{persona}"
     if confidence == "low":
         name = f"{name} (confidence: low)"
 

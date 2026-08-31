@@ -60,8 +60,12 @@ check "resume: missing run exits nonzero" "$([[ "$RC_RESUME_MISSING" -ne 0 ]] &&
 # NOTE: header intentionally updated for Task 1.4 (append-only: kinds + evidence
 # trailing columns added). This is a deliberate change to a prior assertion —
 # see task-1.4-report.md.
+# NOTE (Fix 30, @-collision): header updated AGAIN — `persona` is now its own
+# trailing column instead of being folded into the criterion_id cell as
+# "<criterion_id>@<persona>", which collided with a criterion_id containing a
+# literal '@'. Another deliberate change to this pinned assertion.
 LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$RUN_ID")"
-check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
+check "list: header row" "$(echo "$LIST_OUT" | head -1)" "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence\tpersona')"
 check "list: row count == 2" "$(echo "$LIST_OUT" | tail -n +2 | grep -c .)" "2"
 check "list: C1 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C1"{print $1","$2","$3}')" "C1,fail,high"
 check "list: C2 row fields" "$(echo "$LIST_OUT" | awk -F'\t' '$1=="C2"{print $1","$2","$3}')" "C2,blocked,low"
@@ -532,14 +536,18 @@ check "persona: both records have criterion_id C1" \
   "$(jq -r '[.criteria[].criterion_id] | unique | join(",")' "$PERSONA_CKPT_FILE")" "C1"
 
 # --- Case 31: --resume/--list show both C1/admin and C1/user distinctly ----
+# NOTE: assertions updated for the persona-as-own-column fix (Fix 30) — the
+# criterion_id column ($1) is always the RAW criterion_id now (never
+# "<criterion_id>@<persona>"), so admin/user rows are distinguished by
+# filtering on the new trailing persona column ($7) instead.
 PERSONA_LIST_OUT="$(cd "$WORK" && bash "$SCRIPT" --list "$PERSONA_RUN_ID")"
-check "persona list: C1@admin row present" \
-  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@admin"{print "yes"}')" "yes"
-check "persona list: C1@user row present" \
-  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1@user"{print "yes"}')" "yes"
-check "persona list: header row unchanged (back-compat)" \
+check "persona list: C1/admin row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1" && $7=="admin"{print "yes"}')" "yes"
+check "persona list: C1/user row present" \
+  "$(echo "$PERSONA_LIST_OUT" | awk -F'\t' '$1=="C1" && $7=="user"{print "yes"}')" "yes"
+check "persona list: header row has persona as trailing column (deliberate change)" \
   "$(echo "$PERSONA_LIST_OUT" | head -1)" \
-  "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence')"
+  "$(printf 'criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence\tpersona')"
 
 PERSONA_RESUME_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$PERSONA_RUN_ID")"
 check "persona resume: last record shows criterion_id C1" \

@@ -74,14 +74,37 @@ function installObserve() {
     buf.console.push({ level: 'error', text: 'unhandledrejection: ' + String(e.reason).slice(0, 300) });
   });
 
+  // --- ok flag, unified: 2xx ONLY (200-299), identically for fetch and XHR.
+  // Previously fetch used res.ok (2xx) while XHR used status<400 (2xx-3xx) --
+  // the same 3xx response was "ok" via XHR but not via fetch. A single
+  // formula here is now the source of truth for both interceptors below.
+  function isOkStatus(status) {
+    return status >= 200 && status < 300;
+  }
+
   // --- fetch ---
   if (window.fetch) {
     var of = window.fetch;
     window.fetch = function (input, init) {
-      var url = (typeof input === 'string') ? input : (input && input.url) || '';
+      // input may be a string, a URL object (no .url property — only
+      // .href/.toString()), or a Request object (has .url). Only Request
+      // exposes `.url` as a string; a URL instance previously fell through
+      // to the `|| ''` default and silently dropped the address. String()
+      // correctly stringifies a URL (via its toString/href) and passes a
+      // plain string through unchanged, so cover both with one branch.
+      var url;
+      if (typeof input === 'string') {
+        url = input;
+      } else if (input && typeof input.url === 'string') {
+        url = input.url;
+      } else if (input) {
+        url = String(input);
+      } else {
+        url = '';
+      }
       var method = (init && init.method) || (input && input.method) || 'GET';
       return of.apply(this, arguments).then(function (res) {
-        buf.network.push({ method: method, url: String(url).slice(0, 300), status: res.status, ok: res.ok });
+        buf.network.push({ method: method, url: String(url).slice(0, 300), status: res.status, ok: isOkStatus(res.status) });
         return res;
       }, function (err) {
         buf.network.push({ method: method, url: String(url).slice(0, 300), status: 0, ok: false, error: String(err).slice(0, 200) });
@@ -98,7 +121,7 @@ function installObserve() {
     OX.prototype.send = function () {
       var self = this;
       this.addEventListener('loadend', function () {
-        if (self.__qa) buf.network.push({ method: self.__qa.method, url: self.__qa.url, status: self.status, ok: self.status >= 200 && self.status < 400 });
+        if (self.__qa) buf.network.push({ method: self.__qa.method, url: self.__qa.url, status: self.status, ok: isOkStatus(self.status) });
       });
       return os.apply(this, arguments);
     };

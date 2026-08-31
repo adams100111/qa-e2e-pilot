@@ -359,15 +359,17 @@ cmd_list() {
   file="$(checkpoint_file "$run_id")"
   [[ -f "$file" ]] || { echo "No checkpoint file found for run: ${run_id}" >&2; exit 1; }
 
-  # NOTE on `persona`: the TSV header/column-count is byte-identical to
-  # today's (back-compat pins this — see tests/checkpoint/run.sh "list:
-  # header row"). Persona is surfaced by decorating the criterion_id CELL as
-  # "<criterion_id>@<persona>" when persona is non-empty, so two personas of
-  # the same criterion appear as distinct rows/keys without adding a column.
-  # persona == "" (back-compat / no --persona) renders the cell exactly as
-  # today: the bare criterion_id.
+  # NOTE on `persona`: persona is its OWN trailing TSV column, appended after
+  # `evidence` — the existing 6 columns keep their positions unchanged, so
+  # any consumer reading columns 1-6 positionally is unaffected. Previously
+  # persona was folded into the criterion_id CELL as "<criterion_id>@<persona>",
+  # which meant a criterion_id containing a literal '@' would collide with
+  # that display encoding and conflate two distinct rows/identities. The
+  # criterion_id column is now ALWAYS the raw criterion_id, never decorated.
+  # persona == "" (back-compat / no --persona) renders the trailing column
+  # as an empty string.
   if has_jq; then
-    echo "criterion_id	verdict	confidence	checkpointed_at	kinds	evidence"
+    echo "criterion_id	verdict	confidence	checkpointed_at	kinds	evidence	persona"
     jq -r '
       .criteria[] |
       . as $c |
@@ -375,15 +377,14 @@ cmd_list() {
       (if ($kinds | length) > 0 then ($kinds | join(",")) else "-" end) as $kinds_str |
       (if $c.verdict == "pass" then (if ($kinds | length) > 0 then "complete" else "ungated" end) else "n/a" end) as $evidence |
       (($c.persona // "")) as $persona |
-      (if $persona == "" then $c.criterion_id else ($c.criterion_id + "@" + $persona) end) as $cid_disp |
-      [$cid_disp, $c.verdict, $c.confidence, $c.checkpointed_at, $kinds_str, $evidence] | @tsv
+      [$c.criterion_id, $c.verdict, $c.confidence, $c.checkpointed_at, $kinds_str, $evidence, $persona] | @tsv
     ' "$file"
   elif has_py; then
     python3 - "$file" <<'PYEOF'
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
-print("criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence")
+print("criterion_id\tverdict\tconfidence\tcheckpointed_at\tkinds\tevidence\tpersona")
 for c in data.get("criteria", []):
     kinds = c.get("kinds") or []
     kinds_str = ",".join(kinds) if kinds else "-"
@@ -393,9 +394,8 @@ for c in data.get("criteria", []):
         evidence = "n/a"
     persona = c.get("persona") or ""
     cid = c.get("criterion_id", "")
-    cid_disp = cid if persona == "" else f"{cid}@{persona}"
-    row = [cid_disp] + [str(c.get(k, "")) for k in ("verdict", "confidence", "checkpointed_at")]
-    row += [kinds_str, evidence]
+    row = [cid] + [str(c.get(k, "")) for k in ("verdict", "confidence", "checkpointed_at")]
+    row += [kinds_str, evidence, persona]
     print("\t".join(row))
 PYEOF
   else
