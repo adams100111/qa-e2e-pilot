@@ -73,7 +73,7 @@
     },
     {
       "id": "U2", "axis": "ux-objective", "kind": "overflow",
-      "title": "SAFE amount cell (max-width:90px, overflow:hidden) clips the computed value",
+      "title": "SAFE amount cell (table-layout:fixed, 44px column, overflow:hidden, no ellipsis) clips the computed value",
       "suspectedLayer": "FE", "closes": "detection",
       "match": ["overflow", "clip", "clipped", "truncated display", "scrollwidth", "cut off"]
     },
