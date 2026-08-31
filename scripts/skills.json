@@ -1,7 +1,7 @@
 {
   "name": "qa-e2e-pilot",
   "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "agents": [
     { "name": "qa-e2e-pilot", "path": "agents/qa-e2e-pilot.md" }
   ],
@@ -9,6 +9,8 @@
     { "name": "qa-run", "path": "commands/qa-run.md" }
   ],
   "skills": [
+    { "name": "bootstrapping-qa-config", "path": "skills/bootstrapping-qa-config/SKILL.md", "category": "plan" },
+    { "name": "detecting-stack-profile", "path": "skills/detecting-stack-profile/SKILL.md", "category": "plan" },
     { "name": "analyzing-feature-ui", "path": "skills/analyzing-feature-ui/SKILL.md", "category": "plan" },
     { "name": "discovering-user-roles", "path": "skills/discovering-user-roles/SKILL.md", "category": "plan" },
     { "name": "confirming-discovered-roles", "path": "skills/confirming-discovered-roles/SKILL.md", "category": "plan" },
