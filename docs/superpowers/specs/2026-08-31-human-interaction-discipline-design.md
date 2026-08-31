@@ -37,7 +37,8 @@ The act/observe split, the tool matrix (above), the UI-impossible→fail rule, a
 - New evidence **kind `human-action`**, derived by `generating-qa-checklist` for any criterion whose action mutates state or drives a control.
 - New evidence artifact **`action-trace.json`** (per `[<persona>/]<crit>/`): the ordered tool calls that performed the action-under-test, each `{tool, target, phase: "arrange"|"act"|"assert"}`. The observe-round tags each act call's phase, so producing the trace costs nothing extra.
 - Gate rule: a `pass` on a `human-action` criterion is **REJECTED** if any **act-phase** step used a workaround tool (evaluate-set / `.click()` / `run_code_unsafe` / direct write), unless the criterion carries a `nonUiActionReason` (§2E). Message: *"act performed via workaround `<tool>`; perform through the UI or record the UI-impossibility as a fail."*
-- **Honest trust model (stated, not hidden):** the gate validates the agent's *recorded* trace; the **agentic rules** (skill prose) make the agent record honestly; an optional reviewer/adversarial pass spot-checks. Belt-and-suspenders, not a cryptographic guarantee.
+- **Independent action log closes the self-report hole (machine gate, not trust).** Launch Playwright MCP with **`--save-session`**, which writes an independent server-side **`session.md`** transcript of *every* tool call the server actually executed — the agent does not author it and cannot selectively omit from it. At checkpoint time the gate **reconciles the agent's `action-trace.json` against `session.md`** for the criterion's act-window: (a) every mutating tool call present in `session.md` but **absent** from the self-reported act-trace is a **concealed workaround → REJECT** (the agent cannot pass by simply not recording the shortcut it took); (b) any `browser_evaluate`/`browser_run_code_unsafe` call in the act-window whose payload matches the workaround lint (A1 check 2) → REJECT regardless of what the trace claims. The self-reported trace still supplies **phase** tags (arrange/act/assert) that `session.md` lacks; `session.md` supplies the **ground truth of which calls happened**. Neither alone is sufficient — the gate needs both.
+- **Residual trust (stated, not hidden):** phase attribution still comes from the agent (an act step mislabeled "arrange" evades the act-window filter) — so the act-window is bounded independently by the first-observation timestamp (A1), and an optional reviewer/adversarial pass spot-checks phase honesty. The workaround *occurrence* is now machine-verified via `session.md`; only its *phase framing* remains agentic. Belt-and-suspenders where it must be, machine-checked where it can be.
 
 ### 2C. Reconciliations of shipped workarounds
 - `react-set-input.js` → **demoted to read-only** (reads a field's value back; never sets the value the action depends on). Act-path value entry uses `browser_type`/`browser_fill_form`.
@@ -49,7 +50,7 @@ Orchestrator pre-run invokes the round engine (§2F): pick which discovered **pe
 
 ### 2E. Opt-out + config
 - Per-criterion `nonUiActionReason: "<why the human-path is a tool limit, not an app bug>"` → gate permits the workaround for that criterion, forces confidence `low`, prints the reason. Absent → workarounds gate-rejected.
-- `.qa/config.json` `"humanInteraction": {"enforce": true}` (default true; audit-only fallback for migration, never silently off).
+- `.qa/config.json` `"humanInteraction": {"enforce": true, "saveSession": true}` (both default true; `saveSession` launches the Playwright MCP driver with `--save-session` so the gate has an independent `session.md` to reconcile against — §2B. `enforce` is an audit-only fallback for migration, never silently off. If `saveSession` is false the gate degrades to trace-only with a printed warning that the self-report hole is open — never the silent default).
 
 ### 2F. Hardened round-engine (C — turns the grilling pattern from prose into a proven unit)
 Today `references/hitl-rounds.md` describes the pattern; nothing verifies it. Make it a small **testable frontier-state unit**:
@@ -59,12 +60,14 @@ Today `references/hitl-rounds.md` describes the pattern; nothing verifies it. Ma
 - **Independent review** of `hitl-rounds.md` + `confirming-discovered-roles` as part of this work (they shipped review-free in the loop).
 
 ### 2G. ADR-0015
-Records: act-through-UI-only + UI-impossible=fail; the No-Workaround Gate (`human-action` kind + action-trace + trust model); the react-set-input/click-by-text/F4 reconciliations; the logged opt-out; the hardened round-engine; and the per-run role-selection wiring.
+Records: act-through-UI-only + UI-impossible=fail; the No-Workaround Gate (`human-action` kind + action-trace **reconciled against the independent `--save-session` `session.md` log** + the residual-trust model); the react-set-input/click-by-text/F4 reconciliations; the logged opt-out; the hardened round-engine; and the per-run role-selection wiring.
 
 ---
 
 ## 3. Data flow
-`criterion → arrange(setup) → act(UI-only; each step appended to action-trace with phase) → assert(observe/bake/recompute/detect) → record-evidence(bake|computed|probe + action-trace) → checkpoint … pass --kinds …,human-action [--persona P]` → **gate: every act-phase step ∈ human-path tools OR nonUiActionReason present, else reject.**
+`criterion → arrange(setup) → act(UI-only; each step appended to action-trace with phase) → assert(observe/bake/recompute/detect) → record-evidence(bake|computed|probe + action-trace) → checkpoint … pass --kinds …,human-action [--persona P]` → **gate: reconcile action-trace against the independent `session.md` (`--save-session`) for the act-window, then require every act-window tool call ∈ human-path tools OR nonUiActionReason present, else reject.**
+
+Session setup: the driver launches Playwright MCP with `--save-session` (see §2E config); its `session.md` is copied/referenced into the run dir so the gate and any reviewer can read the ground-truth call log alongside the run's evidence.
 
 ## 4. Error handling
 - Missing/disabled/broken affordance for a spec'd action → `fail@FE` + evidence (screenshot + enumerated affordances from `domDigest.interactive` + any console error).
@@ -94,7 +97,7 @@ Records: act-through-UI-only + UI-impossible=fail; the No-Workaround Gate (`huma
 - Persona-keyed checkpoint (Phase 2) and viewport config (Phase 5) are reused, not rebuilt.
 
 ## 8. Decomposition for the plan (so it's one coherent build)
-Suggested task order for writing-plans: (1) ADR-0015; (2) `frontier` module + tests (2F); (3) action-trace + `human-action` gate in `checkpoint.sh` + tests; (4) `generating-qa-checklist` derives `human-action`; (5) `interaction-discipline.md` + `driving-browser-qa` rules + reconciliations (2C) + the driver-optimization rules (§9); (6) opt-out + config (2E) + the isolation/origin config (§9); (7) orchestrator per-run selection wiring (2D) consuming the frontier module; (8) fixture cases + re-measure (§5); (9) review pass over the round-engine + confirming-discovered-roles.
+Suggested task order for writing-plans: (1) ADR-0015; (2) `frontier` module + tests (2F); (3) action-trace + `session.md` reconciliation (Check 0) + `human-action` gate in `checkpoint.sh` + tests (incl. a concealed-workaround fixture: session.md shows an evaluate-set the trace omits → REJECT); (4) `generating-qa-checklist` derives `human-action`; (5) `interaction-discipline.md` + `driving-browser-qa` rules (launch with `--save-session`, copy `session.md` into the run dir) + reconciliations (2C) + the driver-optimization rules (§9); (6) opt-out + config (2E) + the isolation/origin config (§9); (7) orchestrator per-run selection wiring (2D) consuming the frontier module; (8) fixture cases + re-measure (§5); (9) review pass over the round-engine + confirming-discovered-roles.
 
 ---
 

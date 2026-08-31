@@ -9,7 +9,19 @@ Precise decision procedures behind the design. Each algorithm is deterministic w
 **Guarantee:** the *action-under-test* was performed only through genuine human affordances. Enforced by **three independent checks, ANDed** (defense in depth — no single check can be fooled into a false green).
 
 ### Inputs
-`action-trace` = ordered `[{tool, target, phase, payload?}]` for the criterion, plus **state fingerprints** captured at each observation point.
+`action-trace` = ordered `[{tool, target, phase, payload?}]` for the criterion (**agent-authored** — supplies phase tags), plus **state fingerprints** captured at each observation point, plus **`session.md`** = Playwright MCP's `--save-session` transcript (**server-authored, independent** — the ground truth of which tool calls actually ran; the agent cannot omit from it).
+
+### Check 0 — Independent session-log reconciliation (closes the self-report hole)
+Before the trace-based checks, reconcile the agent's `action-trace` against `session.md` for the criterion's act-window (bounded independently by the first-observation timestamp, so a mislabeled phase can't shrink the window):
+```
+calls_gt   = tool calls in session.md within [act_window_start, act_window_end]
+calls_self = act-phase entries in action-trace
+for c in calls_gt:
+    if c is a mutating/workaround call (evaluate-set / run_code_unsafe / route / direct write)
+       and c not in calls_self:
+        → "concealed workaround" → violation   # took a shortcut, then didn't record it
+```
+Check 0 makes Checks 1–3 tamper-evident: the agent can no longer pass by *omitting* the shortcut from its own trace, because `session.md` records it regardless. Checks 1–2 then classify the calls that ARE present; Check 3 catches mutations with no attributable call at all.
 
 ### Check 1 — Tool-class gate (syntactic, cheap)
 Partition the tool set:
@@ -44,7 +56,7 @@ for each interval [obs_i → obs_{i+1}]:
 State changed without a human action ⇒ it came from a non-UI path ⇒ workaround, regardless of how the trace was labeled.
 
 ### Verdict
-`pass` on a `human-action` criterion is valid **iff `Check1 ∧ Check2 ∧ Check3`** (or a logged `nonUiActionReason`, which flips confidence→low and records the reason). Checks 1–2 are static lints; Check 3 is the semantic net. This trio is *the algorithm that keeps the agent in role.*
+`pass` on a `human-action` criterion is valid **iff `Check0 ∧ Check1 ∧ Check2 ∧ Check3`** (or a logged `nonUiActionReason`, which flips confidence→low and records the reason). Check 0 reconciles against the independent `session.md` (ground truth of what ran); Checks 1–2 are static lints over the calls; Check 3 is the semantic net for unattributed mutations. Check 0 is what makes the rest tamper-evident — without it the agent grades its own homework. This quartet is *the algorithm that keeps the agent in role.*
 
 ---
 
@@ -138,6 +150,6 @@ act():   perform action via ACT_UI only    # A1 records the trace
 observe(): bake + recompute + A3 detectors + A4 audit    # read-only
 verdict = A2 decision procedure            # UI-impossible? correct-rejection? downstream?
 record-evidence(bake|computed|probe|action-trace)
-checkpoint … pass --kinds …,human-action   # gate runs A1's Check1∧2∧3 → reject if workaround
+checkpoint … pass --kinds …,human-action   # gate runs A1's Check0∧1∧2∧3 (Check0 = session.md reconciliation) → reject if workaround
 ```
 The invariant "act like a human, observe like a machine" is not a slogan — it is A1 (enforcement) + A2 (verdict) + A3/A4 (human eye) + A5 (how roles/scenarios are chosen), each with an explicit precision guard, all provable on the fixture.
