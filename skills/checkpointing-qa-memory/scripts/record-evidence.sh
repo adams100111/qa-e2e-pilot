@@ -6,12 +6,19 @@
 # USAGE:
 #   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
-#   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text>
+#   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
 #
 # kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
-#   probe    -> network-response.json { status, shape, ... }
+#   probe    -> network-response.json { status, shape, ok, ... }
+#
+# `--ok` on kind 'probe' is the agent's own judgment that the probe CONFIRMED
+# its expectation — it is NOT a raw status-code check. A cross-role ABSENCE
+# probe that correctly gets 403/404 sets --ok true; checkpoint.sh's evidence
+# gate requires `.ok == true` on a `pass`, deliberately never inspecting the
+# raw status/range itself (that would reject legitimate 403/404 absence
+# probes).
 #
 # Written under .qa/runs/<run-id>/evidence/<criterion-id>/ by default. When
 # --persona <id> is given, written under
@@ -195,10 +202,10 @@ PYEOF
 }
 
 write_py_probe() {
-  local file="$1" run_id="$2" crit_id="$3" status="$4" shape="$5"
-  python3 - "$file" "$run_id" "$crit_id" "$status" "$shape" "$(ts)" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" status="$4" shape="$5" ok="$6"
+  python3 - "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok" "$(ts)" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, status, shape, now = sys.argv[1:7]
+file_path, run_id, crit_id, status, shape, ok, now = sys.argv[1:8]
 def smart(v):
     try:
         return json.loads(v)
@@ -211,6 +218,7 @@ data = {
     "recorded_at": now,
     "status": smart(status),
     "shape": smart(shape),
+    "ok": smart(ok),
 }
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
@@ -287,26 +295,28 @@ cmd_computed() {
 cmd_probe() {
   local run_id="$1" crit_id="$2" persona="$3"
   shift 3
-  local status="" shape="" have_status=0 have_shape=0
+  local status="" shape="" ok="" have_status=0 have_shape=0 have_ok=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --status) status="$2"; have_status=1; shift 2 ;;
       --shape)  shape="$2";  have_shape=1;  shift 2 ;;
+      --ok)     ok="$2";     have_ok=1;     shift 2 ;;
       *) die "Unknown option for kind 'probe': $1" ;;
     esac
   done
   [[ "$have_status" -eq 1 ]] || die "kind 'probe' requires --status <code>"
   [[ "$have_shape" -eq 1 ]]  || die "kind 'probe' requires --shape <json-or-text>"
+  [[ "$have_ok" -eq 1 ]]     || die "kind 'probe' requires --ok <true|false> — your judgment that the probe CONFIRMED its expectation (e.g. an absence probe expecting 403/404 passes --ok true when it gets 403/404; do not infer this from the raw status code alone)"
 
   ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
   file="$(evidence_dir "$run_id" "$crit_id" "$persona")/network-response.json"
 
   if has_jq; then
-    write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape"
+    write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape" ok "$ok"
   elif has_py; then
-    write_py_probe "$file" "$run_id" "$crit_id" "$status" "$shape"
+    write_py_probe "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi

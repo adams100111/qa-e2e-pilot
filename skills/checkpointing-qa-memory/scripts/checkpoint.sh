@@ -382,13 +382,14 @@ kind_artifact() {
 }
 
 # space-separated required keys for a given kind (key PRESENCE only — no
-# value/type comparisons, since record-evidence.sh writes e.g. `status` as a
+# value/type comparisons here; VALUE is checked separately by
+# gate_value_check below, since record-evidence.sh writes e.g. `status` as a
 # JSON number and `multiplicity` as a string like "N").
 kind_required_keys() {
   case "$1" in
     bake)     echo "readBack multiplicity" ;;
     computed) echo "oracle observed match" ;;
-    probe)    echo "status shape" ;;
+    probe)    echo "status shape ok" ;;
     *)        return 1 ;;
   esac
 }
@@ -423,6 +424,87 @@ except Exception:
 gate_reject() {
   local crit_id="$1" kind="$2" rel_path="$3" reason="$4"
   echo "EVIDENCE GATE: pass rejected for criterion '${crit_id}' — kind '${kind}' artifact '${rel_path}' is ${reason}. Supply the evidence (record-evidence.sh) or record \`blocked\`." >&2
+}
+
+# ---------------------------------------------------------------------------
+# value-aware gate — beyond key PRESENCE (above), this rejects a `pass` whose
+# evidence VALUE itself proves a fail: computed.match:false (recompute
+# diverged), probe.ok:false-or-missing (the probe did NOT confirm its
+# expectation — note this deliberately never inspects the raw HTTP status
+# code/range, since a cross-role ABSENCE probe legitimately expects
+# 403/404), or bake.readBack:null while multiplicity != "0" (nothing
+# persisted, except a legitimate empty 0-multiplicity state). This is the
+# fix for the exact false-green the presence-only gate let through.
+# ---------------------------------------------------------------------------
+
+# print the value-contradiction reject message for one kind/artifact/reason.
+gate_reject_value() {
+  local crit_id="$1" kind="$2" rel_path="$3" reason="$4"
+  echo "EVIDENCE GATE: pass rejected for ${crit_id} — ${kind} evidence ${reason}; record 'fail' or supply corrected evidence." >&2
+}
+
+# true (exit 0) iff the JSON value at key $2 in file $1 is the JSON boolean
+# `true` (not the string "true", not merely truthy).
+json_value_is_true() {
+  local file="$1" key="$2"
+  if has_jq; then
+    jq -e --arg k "$key" '(.[$k] // false) == true' "$file" >/dev/null 2>&1
+  else
+    python3 -c "import json,sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d.get(sys.argv[2]) is True else 1)" "$file" "$key" >/dev/null 2>&1
+  fi
+}
+
+# true (exit 0) iff bake evidence is internally consistent: readBack must be
+# non-null whenever multiplicity != "0" (a legitimate empty-state
+# 0-multiplicity criterion may have null/empty readBack).
+json_bake_value_ok() {
+  local file="$1"
+  local mult
+  if has_jq; then
+    mult="$(jq -r '.multiplicity // ""' "$file" 2>/dev/null)"
+  else
+    mult="$(python3 -c "import json,sys
+d = json.load(open(sys.argv[1]))
+print(d.get('multiplicity', ''))" "$file" 2>/dev/null)"
+  fi
+  [[ "$mult" == "0" ]] && return 0
+  if has_jq; then
+    jq -e '.readBack != null' "$file" >/dev/null 2>&1
+  else
+    python3 -c "import json,sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d.get('readBack') is not None else 1)" "$file" >/dev/null 2>&1
+  fi
+}
+
+# Validate the evidence VALUE (not just key presence) for one kind. Returns 0
+# if consistent with a `pass`; returns 1 (having already printed a
+# gate_reject_value message) otherwise.
+gate_value_check() {
+  local crit_id="$1" kind="$2" rel_path="$3" full_path="$4"
+  case "$kind" in
+    computed)
+      if ! json_value_is_true "$full_path" "match"; then
+        gate_reject_value "$crit_id" "computed" "$rel_path" "shows match:false (recompute diverged)"
+        return 1
+      fi
+      ;;
+    bake)
+      if ! json_bake_value_ok "$full_path"; then
+        gate_reject_value "$crit_id" "bake" "$rel_path" "shows readBack:null with non-zero multiplicity (nothing persisted)"
+        return 1
+      fi
+      ;;
+    probe)
+      if ! json_value_is_true "$full_path" "ok"; then
+        gate_reject_value "$crit_id" "probe" "$rel_path" "shows ok:false or missing (the probe did not confirm its expectation)"
+        return 1
+      fi
+      ;;
+  esac
+  return 0
 }
 
 # Validate every kind in the CSV `$3` for criterion `$2` under run `$1`.
@@ -489,6 +571,11 @@ gate_pass() {
         return 1
       fi
     done
+
+    # value-aware check: reject a `pass` whose evidence VALUE contradicts it
+    # (e.g. computed.match:false, probe.ok:false, bake.readBack:null with
+    # non-zero multiplicity) — presence alone is not enough.
+    gate_value_check "$crit_id" "$kind" "$rel_path" "$full_path" || return 1
   done
 
   return 0

@@ -151,7 +151,10 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "$RE_PY_COMPUTED_OUT" "evidence/C1/recompute.json"
 
   RE_PY_NETWORK_FILE="$RE_EVID_DIR/network-response.json"
-  RE_PY_PROBE_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' 2>&1)"
+  # NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25: value-aware gate) —
+  # this is a deliberate update to a pre-existing call site, mirroring the
+  # header-row precedent above.
+  RE_PY_PROBE_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' --ok true 2>&1)"
   check "py-fallback record-evidence: probe file created" \
     "$([[ -f "$RE_PY_NETWORK_FILE" ]] && echo yes)" "yes"
   check "py-fallback record-evidence: probe valid json" \
@@ -193,12 +196,15 @@ check "record-evidence computed: match"         "$(get "$RECOMPUTE_FILE" '.match
 check "record-evidence computed: stdout is evidence-relative path" "$COMPUTED_STDOUT" "evidence/C1/recompute.json"
 
 # --- Case 10: record-evidence.sh probe -> network-response.json --------------
+# NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25: value-aware gate) —
+# deliberate update to a pre-existing call site.
 NETWORK_FILE="$RE_C1_DIR/network-response.json"
-PROBE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}')"
+PROBE_STDOUT="$(cd "$WORK" && bash "$RECORD_SCRIPT" "$RE_RUN_ID" C1 probe --status 200 --shape '{"ok":true}' --ok true)"
 check "record-evidence probe: file exists"      "$([[ -f "$NETWORK_FILE" ]] && echo yes)" "yes"
 check "record-evidence probe: valid json"       "$(jq -e . "$NETWORK_FILE" >/dev/null 2>&1 && echo ok)" "ok"
 check "record-evidence probe: status"           "$(get "$NETWORK_FILE" '.status')" "200"
 check "record-evidence probe: shape.ok"         "$(get "$NETWORK_FILE" '.shape.ok')" "true"
+check "record-evidence probe: ok field true"    "$(get "$NETWORK_FILE" '.ok')" "true"
 check "record-evidence probe: stdout is evidence-relative path" "$PROBE_STDOUT" "evidence/C1/network-response.json"
 
 # --- Case 11: unknown kind exits non-zero and writes nothing -----------------
@@ -358,7 +364,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "$([[ ! -f "$PYGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
 
   # probe accept: write evidence via python3 fallback record-evidence.sh, then pass
-  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 probe --status 200 --shape '{"ok":true}' >/dev/null)
+  # NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25) — deliberate update.
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
   PYGATE_PROBE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYGATE_PROBE_RUN_ID" PG2 pass --kinds probe 2>&1)"
   RC_PYGATE_PROBE_OK=$?
   check "py-fallback gate: valid probe evidence accepted" "$RC_PYGATE_PROBE_OK" "0"
@@ -385,7 +392,8 @@ check "gate: probe no-evidence record not written" \
 # --- Case 23: evidence gate — valid probe evidence -> pass ACCEPTED, stored
 # kinds is ["probe"], and this specifically confirms the gate accepts
 # `status` as a JSON NUMBER (200, not the string "200") -----------------------
-(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE5_RUN_ID" G5 probe --status 200 --shape '{"ok":true}' >/dev/null)
+# NOTE: --ok is now REQUIRED for kind 'probe' (Fix 25) — deliberate update.
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$GATE5_RUN_ID" G5 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
 
 GATE5_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$GATE5_RUN_ID" G5 pass --kinds probe 2>&1)"
 RC_GATE5_OK=$?
@@ -652,6 +660,136 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   echo "note - persona-keying jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else
   echo "SKIP - persona-keying jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Fix 25 — value-aware evidence gate: key PRESENCE alone let a `pass` be
+# backed by evidence that itself proves a FAIL (match:false, status:500,
+# readBack:null). These cases pin the VALUE checks added on top of the
+# existing presence/non-empty/valid-JSON checks (which remain, unchanged,
+# above).
+# ===========================================================================
+
+# --- Case 35: value-aware gate — computed match:false is REJECTED -----------
+VGATE_RUN_ID="test-run-value-gate"
+VGATE_CKPT_FILE="$WORK/.qa/runs/${VGATE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_RUN_ID" VC1 computed --oracle 100 --observed 50 --match false >/dev/null)
+VGATE_COMPUTED_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_RUN_ID" VC1 pass --kinds computed 2>&1 >/dev/null)"
+RC_VGATE_COMPUTED=$?
+check "value gate: computed match:false rejected" "$([[ "$RC_VGATE_COMPUTED" -ne 0 ]] && echo yes)" "yes"
+check "value gate: computed match:false stderr names match:false" \
+  "$(echo "$VGATE_COMPUTED_ERR" | grep -qF 'match:false' && echo yes)" "yes"
+check "value gate: computed match:false record not written" \
+  "$([[ ! -f "$VGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 36: value-aware gate — computed match:true is ACCEPTED ------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_RUN_ID" VC1 computed --oracle 100 --observed 100 --match true >/dev/null)
+VGATE_COMPUTED_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_RUN_ID" VC1 pass --kinds computed 2>&1)"
+RC_VGATE_COMPUTED_OK=$?
+check "value gate: computed match:true accepted" "$RC_VGATE_COMPUTED_OK" "0"
+check "value gate: computed match:true record written" \
+  "$([[ -f "$VGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+# --- Case 37: value-aware gate — bake readBack:null w/ multiplicity N is
+# REJECTED; a non-null readBack is ACCEPTED; readBack:null w/ multiplicity 0
+# (legitimate empty state) is ACCEPTED --------------------------------------
+VGATE_BAKE_RUN_ID="test-run-value-gate-bake"
+VGATE_BAKE_CKPT_FILE="$WORK/.qa/runs/${VGATE_BAKE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 bake --read-back null --multiplicity N >/dev/null)
+VGATE_BAKE_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 pass --kinds bake 2>&1 >/dev/null)"
+RC_VGATE_BAKE=$?
+check "value gate: bake readBack:null multiplicity N rejected" "$([[ "$RC_VGATE_BAKE" -ne 0 ]] && echo yes)" "yes"
+check "value gate: bake readBack:null record not written" \
+  "$([[ ! -f "$VGATE_BAKE_CKPT_FILE" ]] && echo yes)" "yes"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+VGATE_BAKE_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE_RUN_ID" VB1 pass --kinds bake 2>&1)"
+RC_VGATE_BAKE_OK=$?
+check "value gate: bake readBack non-null multiplicity N accepted" "$RC_VGATE_BAKE_OK" "0"
+
+VGATE_BAKE0_RUN_ID="test-run-value-gate-bake0"
+VGATE_BAKE0_CKPT_FILE="$WORK/.qa/runs/${VGATE_BAKE0_RUN_ID}/checkpoint.json"
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_BAKE0_RUN_ID" VB2 bake --read-back null --multiplicity 0 >/dev/null)
+VGATE_BAKE0_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_BAKE0_RUN_ID" VB2 pass --kinds bake 2>&1)"
+RC_VGATE_BAKE0_OK=$?
+check "value gate: bake readBack:null multiplicity 0 accepted (empty state)" "$RC_VGATE_BAKE0_OK" "0"
+
+# --- Case 38: value-aware gate — probe ok:false is REJECTED; the gate NEVER
+# inspects the raw status code/range itself — an absence probe legitimately
+# expecting 403/404 with ok:true is ACCEPTED --------------------------------
+VGATE_PROBE_RUN_ID="test-run-value-gate-probe"
+VGATE_PROBE_CKPT_FILE="$WORK/.qa/runs/${VGATE_PROBE_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 probe --status 500 --shape '{}' --ok false >/dev/null)
+VGATE_PROBE_ERR="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 pass --kinds probe 2>&1 >/dev/null)"
+RC_VGATE_PROBE=$?
+check "value gate: probe ok:false rejected" "$([[ "$RC_VGATE_PROBE" -ne 0 ]] && echo yes)" "yes"
+check "value gate: probe ok:false record not written" \
+  "$([[ ! -f "$VGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 probe --status 403 --shape '{}' --ok true >/dev/null)
+VGATE_PROBE_ABSENCE_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE_RUN_ID" VP1 pass --kinds probe 2>&1)"
+RC_VGATE_PROBE_ABSENCE=$?
+check "value gate: probe status 403 with ok:true accepted (absence probe, no status-range trap)" "$RC_VGATE_PROBE_ABSENCE" "0"
+
+VGATE_PROBE2_RUN_ID="test-run-value-gate-probe2"
+VGATE_PROBE2_CKPT_FILE="$WORK/.qa/runs/${VGATE_PROBE2_RUN_ID}/checkpoint.json"
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE2_RUN_ID" VP2 probe --status 200 --shape '{"ok":true}' --ok true >/dev/null)
+VGATE_PROBE2_OK_OUT="$(cd "$WORK" && bash "$SCRIPT" "$VGATE_PROBE2_RUN_ID" VP2 pass --kinds probe 2>&1)"
+RC_VGATE_PROBE2_OK=$?
+check "value gate: probe status 200 ok:true accepted" "$RC_VGATE_PROBE2_OK" "0"
+
+# --- Case 39: record-evidence.sh probe now REQUIRES --ok --------------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$VGATE_PROBE2_RUN_ID" VP3 probe --status 200 --shape '{}' >/dev/null 2>&1)
+RC_PROBE_MISSING_OK=$?
+check "record-evidence probe missing --ok exits nonzero" "$([[ "$RC_PROBE_MISSING_OK" -ne 0 ]] && echo yes)" "yes"
+
+# --- Case 40: value-aware gate exercised under the jq-masked python3
+# fallback (computed + probe; both jq and python3 paths must implement the
+# value checks identically) --------------------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYVGATE_RUN_ID="test-run-py-value-gate"
+  PYVGATE_CKPT_FILE="$WORK/.qa/runs/${PYVGATE_RUN_ID}/checkpoint.json"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_RUN_ID" PVC1 computed --oracle 100 --observed 50 --match false >/dev/null 2>&1)
+  PYVGATE_COMPUTED_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_RUN_ID" PVC1 pass --kinds computed 2>&1 >/dev/null)"
+  RC_PYVGATE_COMPUTED=$?
+  check "py-fallback value gate: computed match:false rejected" "$([[ "$RC_PYVGATE_COMPUTED" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback value gate: computed match:false record not written" \
+    "$([[ ! -f "$PYVGATE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_RUN_ID" PVC1 computed --oracle 100 --observed 100 --match true >/dev/null 2>&1)
+  PYVGATE_COMPUTED_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_RUN_ID" PVC1 pass --kinds computed 2>&1)"
+  RC_PYVGATE_COMPUTED_OK=$?
+  check "py-fallback value gate: computed match:true accepted" "$RC_PYVGATE_COMPUTED_OK" "0"
+
+  PYVGATE_PROBE_RUN_ID="test-run-py-value-gate-probe"
+  PYVGATE_PROBE_CKPT_FILE="$WORK/.qa/runs/${PYVGATE_PROBE_RUN_ID}/checkpoint.json"
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 probe --status 500 --shape '{}' --ok false >/dev/null 2>&1)
+  PYVGATE_PROBE_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 pass --kinds probe 2>&1 >/dev/null)"
+  RC_PYVGATE_PROBE=$?
+  check "py-fallback value gate: probe ok:false rejected" "$([[ "$RC_PYVGATE_PROBE" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback value gate: probe ok:false record not written" \
+    "$([[ ! -f "$PYVGATE_PROBE_CKPT_FILE" ]] && echo yes)" "yes"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 probe --status 403 --shape '{}' --ok true >/dev/null 2>&1)
+  PYVGATE_PROBE_OK_OUT="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYVGATE_PROBE_RUN_ID" PVP1 pass --kinds probe 2>&1)"
+  RC_PYVGATE_PROBE_OK=$?
+  check "py-fallback value gate: probe status 403 ok:true accepted (absence probe)" "$RC_PYVGATE_PROBE_OK" "0"
+
+  echo "note - value-aware gate jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - value-aware gate jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
