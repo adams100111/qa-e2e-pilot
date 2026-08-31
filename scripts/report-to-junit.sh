@@ -10,6 +10,27 @@
 #   deferred  -> <skipped> (we chose not to verify — reason carried)
 # confidence: low is noted in the message but does not change pass/fail.
 #
+# Each <testcase> ADDITIONALLY carries (attributes only — no reordering of the
+# existing elements, so older consumers that just read name/classname/verdict
+# child keep working unchanged):
+#   persona="<id>"   only when the criterion was checkpointed with --persona (ADR-0012);
+#                     the testcase name is also decorated "<criterion_id>@<persona>",
+#                     mirroring checkpoint.sh --list, so two personas of the same
+#                     criterion never collide in a CI dashboard.
+#   kinds="a,b"      only when non-empty — the evidence kinds (bake/computed/probe)
+#                     this pass's gate required (ADR-0010).
+#   evidence="..."   complete | ungated | n/a — same computation checkpoint.sh's
+#                     --resume/--list already do (pass+kinds=complete, pass+no
+#                     kinds=ungated un-gated back-compat pass, non-pass=n/a).
+#
+# Advisory-stream items (ADR-0007 subjective aesthetics — never a verdict, never
+# gated) are read from an OPTIONAL sibling `advisory.json` next to the checkpoint,
+# if present, and each rendered as its own <testcase classname="<run_id>.advisory">
+# with a <skipped> child (never <failure>/<error>) and the message in
+# <system-out>. No producer writes this file yet in this repo; the shape is
+# `{"items":[{"criterion_id"|"surface":str, "message":str, "selector":str?}]}`
+# or a bare list of such items. Absence is a normal no-op — this is additive.
+#
 # USAGE:
 #   report-to-junit.sh <run-id> [output.xml]      # reads .qa/runs/<run-id>/checkpoint.json
 #   report-to-junit.sh --file <checkpoint.json> [output.xml]
@@ -37,7 +58,7 @@ fi
 [[ -f "$CHECKPOINT" ]] || { echo "checkpoint not found: $CHECKPOINT" >&2; exit 2; }
 
 python3 - "$CHECKPOINT" "$OUT" <<'PYEOF'
-import json, sys
+import json, os, sys
 from xml.sax.saxutils import escape, quoteattr
 
 checkpoint_path, out_path = sys.argv[1], sys.argv[2]
@@ -52,10 +73,27 @@ for c in criteria:
     v = c.get("verdict", "error")
     counts[v] = counts.get(v, 0) + 1
 
-tests = len(criteria)
+# --- optional advisory stream (ADR-0007) -----------------------------------
+# Sibling file next to the checkpoint; no producer writes it yet in this repo
+# — reading it is purely additive and a no-op when absent.
+def load_advisory_items(checkpoint_file):
+    adv_path = os.path.join(os.path.dirname(checkpoint_file) or ".", "advisory.json")
+    if not os.path.isfile(adv_path):
+        return []
+    try:
+        with open(adv_path) as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = raw.get("items", []) if isinstance(raw, dict) else raw
+    return [i for i in items if isinstance(i, dict)]
+
+advisory_items = load_advisory_items(checkpoint_path)
+
+tests = len(criteria) + len(advisory_items)
 failures = counts["fail"]
 errors = counts["error"]
-skipped = counts["blocked"] + counts["deferred"]
+skipped = counts["blocked"] + counts["deferred"] + len(advisory_items)
 
 lines = []
 lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -73,15 +111,34 @@ for c in criteria:
     confidence = c.get("confidence", "high")
     last_action = c.get("last_action", "") or ""
     bug_ref = c.get("bug_ref") or ""
+    persona = c.get("persona") or ""
+    kinds = c.get("kinds") or []
+    kinds_str = ",".join(kinds)
+    if verdict == "pass":
+        evidence_status = "complete" if kinds else "ungated"
+    else:
+        evidence_status = "n/a"
+
     name = cid
+    if persona:
+        name = f"{name}@{persona}"
     if confidence == "low":
-        name = f"{cid} (confidence: low)"
+        name = f"{name} (confidence: low)"
+
     detail = last_action
     if bug_ref:
         detail = (detail + f" [bug: {bug_ref}]").strip()
-    tc = f'    <testcase name={quoteattr(name)} classname={quoteattr(run_id)}>'
+
+    attrs = f'name={quoteattr(name)} classname={quoteattr(run_id)}'
+    if persona:
+        attrs += f' persona={quoteattr(persona)}'
+    if kinds_str:
+        attrs += f' kinds={quoteattr(kinds_str)}'
+    attrs += f' evidence={quoteattr(evidence_status)}'
+
+    tc = f'    <testcase {attrs}>'
     if verdict == "pass":
-        lines.append(f'    <testcase name={quoteattr(name)} classname={quoteattr(run_id)}/>')
+        lines.append(f'    <testcase {attrs}/>')
     elif verdict == "fail":
         lines.append(tc)
         lines.append(f'      <failure message={quoteattr("fail: " + detail)}>{escape(detail)}</failure>')
@@ -95,6 +152,20 @@ for c in criteria:
         lines.append(f'      <skipped message={quoteattr(verdict + ": " + detail)}/>')
         lines.append('    </testcase>')
 
+# Advisory items: always <skipped> + <system-out>, NEVER <failure>/<error> —
+# these are subjective aesthetic observations (ADR-0007), not verdicts.
+for i, item in enumerate(advisory_items):
+    ref = item.get("criterion_id") or item.get("surface") or f"advisory-{i+1}"
+    message = str(item.get("message", "")).strip()
+    selector = item.get("selector") or ""
+    name = f"advisory: {ref}"
+    classname = f"{run_id}.advisory"
+    lines.append(f'    <testcase name={quoteattr(name)} classname={quoteattr(classname)}>')
+    lines.append(f'      <skipped message={quoteattr("advisory (aesthetics) — not gated, not a verdict")}/>')
+    out_text = message + (f" (selector: {selector})" if selector else "")
+    lines.append(f'      <system-out>{escape(out_text)}</system-out>')
+    lines.append('    </testcase>')
+
 lines.append('  </testsuite>')
 lines.append('</testsuites>')
 xml = "\n".join(lines) + "\n"
@@ -102,10 +173,14 @@ xml = "\n".join(lines) + "\n"
 if out_path:
     with open(out_path, "w") as f:
         f.write(xml)
-    sys.stderr.write(f"wrote {out_path}: {tests} tests, {failures} failures, {errors} errors, {skipped} skipped\n")
+    sys.stderr.write(
+        f"wrote {out_path}: {tests} tests, {failures} failures, {errors} errors, "
+        f"{skipped} skipped ({len(advisory_items)} advisory)\n"
+    )
 else:
     sys.stdout.write(xml)
 
 # Non-zero exit if the suite has real failures/errors so CI fails the build.
+# Advisory items never affect this — they carry no verdict.
 sys.exit(1 if (failures or errors) else 0)
 PYEOF
