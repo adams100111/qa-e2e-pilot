@@ -1,0 +1,19 @@
+{
+  "source": "MEASURED FINAL — real qa-e2e-pilot agent, full pipeline (coverage catalog + computed-logic + visual-UX detection), gated, black-box, run-id remeasure-final, 2026-08-31",
+  "estimated": false,
+  "_attribution": "Controller-as-judge. Raw: .qa/runs/remeasure-final/bug-log.json (11 findings). Caught 11 of 12 gated positive seeds. BUG-F-011 detected BOTH U3 (16x16 target-size) and U4 (missing accessible-name + console ReferenceError) so it is split into two seed attributions. BUG-F-009 (re-finalize dishonest toast) = terminal-lock/BUG-004 class, unseeded. Missed only U2 (overflow detector did not fire on the SAFE cell this run). Negative controls (Add-founder button, SAFE surface) correctly zero findings -> precision 100%. Aesthetic gap + garish Finalize palette -> advisory (not verdicts).",
+  "findings": [
+    { "judgedSeedId": "F1", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-006: ownership% ignores the pool; Alice 300000/671000 oracle 44.71% vs displayed 175.44% (issued-only)" },
+    { "judgedSeedId": "F2", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-007: SAFE precision loss; 7x0.001 oracle 0.007 persisted '0'; 1234567x0.0037 oracle 4567.90 vs 4567.89" },
+    { "judgedSeedId": "F3", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-005: cached totalIssued never re-reconciles after delete (edit updates it; delete leaves it stale)" },
+    { "judgedSeedId": "F4", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-002: negative shares accepted, no validation, distorts all ownership %s" },
+    { "judgedSeedId": "J1", "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-004: founder named 'Ghost' silently dropped (isolated via a 'Casper' control with identical shares)" },
+    { "judgedSeedId": "J2", "verdict": "fail", "suspectedLayer": "DB", "text": "BUG-F-008: finalize flips COMPLETE without writing holdings (reproduced fresh from 0-state)" },
+    { "judgedSeedId": "J3", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-F-003: every-3rd add-click drops the write behind a fake success toast" },
+    { "judgedSeedId": "J4", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-F-001: 0-share add is a silent no-op (nothing persisted)" },
+    { "judgedSeedId": "U1", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-F-010: Founders helper text contrast 1.96:1 (< WCAG AA 4.5:1)" },
+    { "judgedSeedId": "U3", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-F-011a: Finalize '?' button 16x16 below WCAG 2.2 target-size 24x24" },
+    { "judgedSeedId": "U4", "verdict": "fail", "suspectedLayer": "FE", "text": "BUG-F-011b: Finalize '?' icon-only button missing accessible name AND throws ReferenceError undefinedHelpHandler on click" },
+    { "verdict": "fail", "suspectedLayer": "service", "text": "BUG-F-009: re-finalize on COMPLETE shows dishonest 'Round finalized' toast while holdings stay null (terminal-lock, unseeded)" }
+  ]
+}
