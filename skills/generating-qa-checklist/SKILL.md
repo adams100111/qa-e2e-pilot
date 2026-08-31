@@ -236,6 +236,8 @@ Every criterion also carries a derived **`Kinds`** field: a CSV subset of `bake|
 
 A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion tagged `read-only` with no computed logic and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
 
+Probe evidence carries an `--ok <true|false>` judgment (the verifier's confirm-vs-refute call against the criterion's expectation, not a raw status code — an absence probe correctly getting 403/404 is `--ok true`), recorded by `record-evidence.sh ... probe --ok <true|false>`; the gate consumes `probe.ok` and rejects a checkpointed `pass` when it is `false` or missing.
+
 `Kinds` is always **derived from tags**, never the reverse: `probe-needed` (set at generation time, per the rule above) is the INPUT; `Kinds: probe` is the OUTPUT the table derives from it. The same direction applies to `cross-tenant`/`cross-role-fk-chain`. Do not treat `Kinds` as something you inspect to decide whether probing was needed — decide `probe-needed` first, from the criterion itself, then let the table derive `Kinds`.
 
 - [ ] Set `Kinds` to the union of matched rows, as CSV, in the order `bake,computed,probe`.

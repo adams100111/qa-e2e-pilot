@@ -58,6 +58,21 @@ Four settled decisions, together:
    Omitting `--kinds` on a `pass` is back-compat for untagged/legacy criteria: it is allowed, but
    `checkpoint.sh` prints an un-gated note to stderr so the gap is visible rather than silent.
 
+## Addendum (2026-08-31 audit fix)
+
+Point 3 above ("key presence only, no value/type comparison") is now **stale**: a follow-up audit fix
+made the gate **value-aware**, not merely presence-aware. `checkpoint.sh` additionally inspects the
+evidence *value* and rejects a `pass` whose content contradicts it: `computed.match == true` is
+required (a recorded `match:false` rejects), `bake.readBack` must be non-null whenever `multiplicity
+!= "0"` (a legitimate empty 0-multiplicity state is exempt), and `probe.ok == true` is required (the
+agent's confirm-vs-refute judgment recorded via `record-evidence.sh ... probe --ok <true|false>` —
+not the raw HTTP status range, since a correct absence probe expects a non-2xx and is still `--ok
+true`). This closes the gap where a `pass` could be checkpointed with evidence artifacts present but
+self-contradicting (e.g. `bake-read-back.json` with `readBack:null`, `recompute.json` with
+`match:false`, or `network-response.json` with a missing/`false` `ok`). `record-evidence.sh` and
+the agent-facing skills (`probing-apis-through-browser`, `agents/qa-e2e-pilot.md`,
+`generating-qa-checklist`) were updated to require and document `--ok` accordingly.
+
 ## Consequences
 
 - **Closes the R1 execution-discipline miss-class**: a `pass` can no longer be recorded on UI
