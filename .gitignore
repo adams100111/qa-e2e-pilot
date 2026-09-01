@@ -12,3 +12,6 @@ node_modules/
 
 # Playwright MCP session scratch
 .playwright-mcp/
+
+# Multi-harness adapter build output (scripts/build-adapter.sh) — regenerated, never committed
+dist/

@@ -1,0 +1,55 @@
+{
+  "capabilities": [
+    "browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_click",
+    "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option",
+    "browser_hover", "browser_evaluate", "browser_file_upload", "browser_handle_dialog",
+    "browser_wait_for", "browser_console_messages", "browser_network_requests", "browser_network_request",
+    "browser_resize", "browser_take_screenshot", "browser_tabs", "browser_close"
+  ],
+  "harnesses": {
+    "claude": {
+      "toolPrefix": "mcp__plugin_playwright_playwright__",
+      "serverKey": "playwright",
+      "grantStyle": "list",
+      "modelField": "sonnet",
+      "tierDefault": "Sonnet",
+      "tierHeavy": "Opus",
+      "dispatch": "via the Agent/Task tool, `subagent_type: qa-e2e-pilot`",
+      "globalRolesDir": "~/.claude/qa-e2e-pilot/roles",
+      "agentCmd": "claude -p \"/qa-run \\\"$QA_TARGET\\\" $QA_CHECKLIST\""
+    },
+    "codex": {
+      "toolPrefix": "playwright-qa__",
+      "serverKey": "playwright-qa",
+      "grantStyle": "scope",
+      "modelField": "",
+      "tierDefault": "the default",
+      "tierHeavy": "the most-capable",
+      "dispatch": "with `$qa-run` (skill) or the `/qa-run` prompt",
+      "globalRolesDir": "~/.codex/qa-e2e-pilot/roles",
+      "agentCmd": "codex exec \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+    },
+    "pi": {
+      "toolPrefix": "mcp:playwright-qa/",
+      "serverKey": "playwright-qa",
+      "grantStyle": "proxy",
+      "modelField": "",
+      "tierDefault": "the default",
+      "tierHeavy": "the most-capable",
+      "dispatch": "with the `/qa-run` prompt-template",
+      "globalRolesDir": "~/.pi/qa-e2e-pilot/roles",
+      "agentCmd": "pi -p \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+    },
+    "opencode": {
+      "toolPrefix": "playwright-qa_",
+      "serverKey": "playwright-qa",
+      "grantStyle": "glob",
+      "modelField": "",
+      "tierDefault": "the default",
+      "tierHeavy": "the most-capable",
+      "dispatch": "via the `/qa-run` command (`agent: qa-e2e-pilot`)",
+      "globalRolesDir": "~/.config/opencode/qa-e2e-pilot/roles",
+      "agentCmd": "opencode run \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+    }
+  }
+}

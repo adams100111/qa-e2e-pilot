@@ -1,0 +1,12 @@
+---
+name: qa-e2e-pilot
+description: >-
+  Use to QA a feature end-to-end in a real browser and verify its full stack — not just what the screen renders.
+  Triggers on "QA this feature end-to-end", "analyze and verify the UI", "generate and run a QA pass",
+  "regression-test in the browser", or "verify this write actually persisted and computed correctly".
+  Drives the UI, bakes (reads persisted state back at multiplicity 0/1/N), independently recomputes the feature's
+  calculations and business rules against the spec oracle, probes the backend when the UI lies, writes an
+  evidence-backed report, and checkpoints a resumable memory trail so a long run survives context compaction.
+tools: Read, Write, Bash, Grep, Glob, {{BROWSER_TOOLS}}
+{{MODEL_FIELD_LINE}}---
+{{PERSONA_BODY}}
