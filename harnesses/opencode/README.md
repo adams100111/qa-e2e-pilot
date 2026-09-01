@@ -26,6 +26,10 @@ bash harnesses/opencode/install-opencode.sh <path-to-your-project>
 This builds `dist/opencode/` (via `scripts/build-adapter.sh opencode`) and copies:
 
 - skills → `<project>/.opencode/skills/`
+- the plugin's grounding files, `CONTEXT.md` and `docs/adr/`, → `<project>/.opencode/` (alongside
+  the skills, not the QA'd project's own root, to avoid colliding with that project's own
+  `CONTEXT.md`/`docs` — the persona instructs the agent to read these, but the reference is
+  unanchored, so see "Manual accuracy run" in `docs/harness-adapters.md`)
 - the agent manifest → `<project>/.opencode/agent/qa-e2e-pilot.md`
 - the `/qa-run` and `/qa-roles` commands → `<project>/.opencode/command/`
 
@@ -59,3 +63,13 @@ mechanism. Do not rely on a skill's `allowed-tools` line to constrain behavior u
 See `docs/harness-adapters.md` for the full cross-harness comparison and the manual accuracy-run
 procedure (serve `tools/accuracy-harness/fixture/`, point `.qa/config.json` at it, run the agent
 end-to-end, convert + score the bug-log against the 85%/100% gate).
+
+## Grounding files are unanchored — confirm resolution during the manual accuracy run
+
+The installer places `CONTEXT.md` and `docs/adr/` alongside the installed skills (see "Install"
+above) because the persona instructs the agent to read them — but that reference is unanchored,
+so whether opencode's runtime actually resolves those paths from its cwd/plugin-root depends on
+the opencode build and how `opencode-skills` exposes the plugin's material. This is **not
+validated by `validate-adapters.sh`**; confirming the agent can actually read
+`CONTEXT.md`/`docs/adr/` is part of the manual accuracy-acceptance run above, not a claim made in
+advance.

@@ -23,6 +23,9 @@ bash harnesses/pi/install-pi.sh <path-to-your-project>
 This builds `dist/pi/` (via `scripts/build-adapter.sh pi`) and copies:
 
 - skills → `<project>/.pi/agents/skills/`
+- the plugin's grounding files, `CONTEXT.md` and `docs/adr/`, → `<project>/.pi/agents/`
+  (alongside the skills, not the project's own root — the persona instructs the agent to read
+  these, but the reference is unanchored, so see "Manual accuracy run" below)
 - the agent manifest → `<project>/.pi/agents/qa-e2e-pilot.md`
 - the `/qa-run` and `/qa-roles` prompts → `<project>/.pi/prompts/`
 - the `mcpServers` fragment (from `harnesses/pi/mcp.snippet`) → `<project>/.pi/mcp.json`
@@ -68,3 +71,11 @@ Before trusting this adapter on your project, run it once against the bundled fi
 it — see `docs/harness-adapters.md` for the full procedure (serve
 `tools/accuracy-harness/fixture/`, point `.qa/config.json` at it, run the agent end-to-end,
 convert + score the bug-log against the 85%/100% gate).
+
+The installer places `CONTEXT.md` and `docs/adr/` alongside the installed skills (see "Install"
+above) because the persona instructs the agent to read them — but that reference is unanchored,
+so whether Pi's runtime (and the `pi-mcp-adapter` proxy layer) actually resolves those paths from
+its cwd/plugin-root depends on the Pi build, similar to the `--save-session` caveat above. This
+is **not validated by `validate-adapters.sh`**; confirming the agent can actually read
+`CONTEXT.md`/`docs/adr/` is part of this manual accuracy-acceptance run, not a claim made in
+advance.

@@ -27,12 +27,21 @@ HARNESS="${QA_HARNESS:-claude}"
 default_agent_cmd() {
   python3 -c "import json;print(json.load(open('$REPO_ROOT/harness-profiles.json'))['harnesses']['$HARNESS']['agentCmd'])"
 }
-AGENT_CMD="${QA_AGENT_CMD:-$(default_agent_cmd)}"
-if [ "${QA_PRINT_AGENT_CMD:-}" = 1 ]; then echo "$AGENT_CMD"; exit 0; fi
+
+# QA_PRINT_AGENT_CMD short-circuits before the TARGET usage check below (it needs no target) —
+# but still resolve/print the same way a real run would, then exit.
+if [ "${QA_PRINT_AGENT_CMD:-}" = 1 ]; then
+  AGENT_CMD="${QA_AGENT_CMD:-$(default_agent_cmd)}"
+  echo "$AGENT_CMD"; exit 0
+fi
 
 TARGET="${1:-}"
 CHECKLIST="${2:-}"
 [[ -n "$TARGET" ]] || { echo "Usage: qa-ci.sh <target> [checklist-path]" >&2; exit 2; }
+
+# Resolved after the usage check so a bare/no-arg invocation fails fast on clean usage text
+# instead of shelling out to python3 (default_agent_cmd) first.
+AGENT_CMD="${QA_AGENT_CMD:-$(default_agent_cmd)}"
 
 JUNIT_OUT="${QA_JUNIT_OUT:-qa-results.xml}"
 PREFLIGHT_CMD="${QA_PREFLIGHT_CMD:-bash "$REPO_ROOT/skills/driving-browser-qa/scripts/preflight.sh"}"

@@ -192,3 +192,12 @@ result:
 
 Repeat this once per harness before treating that harness's adapter as accuracy-validated. Pi should be
 the first one run through this procedure.
+
+**Also confirm grounding-file resolution as part of this run.** Each non-Claude installer places the
+plugin's grounding files — `CONTEXT.md` and `docs/adr/` — alongside the installed skills (Codex:
+`<project>/.agents/`; Pi: `<project>/.pi/agents/`; opencode: `<project>/.opencode/`), because the
+shared persona (`core/persona-body.md`) instructs the agent to read them. That reference is
+*unanchored* — whether the agent's cwd/plugin-root at runtime actually resolves those relative paths
+is harness- and build-specific and is **not** checked by `validate-adapters.sh`. Confirming the agent
+can actually open `CONTEXT.md`/`docs/adr/` from within a real run is part of this manual
+accuracy-acceptance step, not something to assume works from the install step alone.

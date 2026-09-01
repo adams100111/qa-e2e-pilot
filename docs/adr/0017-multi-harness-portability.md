@@ -81,6 +81,11 @@ per-harness differences isolated to naming/format, not prose.
   harness. Each harness must separately clear the accuracy-harness's 85%/100% (recall/precision) gate
   by actually running its agent against the bundled fixture — see `docs/harness-adapters.md`. Pi is
   validated first because it was already provisioned; Codex and opencode follow the same procedure.
+  This same manual step is also where **grounding-file resolution** is checked: each non-Claude
+  installer ships `CONTEXT.md`/`docs/adr/` alongside the installed skills because the persona
+  instructs the agent to read them, but that reference is unanchored, so whether a given harness's
+  runtime actually resolves those paths from its cwd/plugin-root is a per-harness acceptance check,
+  not something `validate-adapters.sh` verifies.
 - **Pi's `--save-session`-under-a-proxy behavior is the one runtime unknown this decision leaves
   open.** Pi drives the Playwright MCP through the `pi-mcp-adapter` proxy tool rather than granting
   per-capability tools directly; whether that proxy layer faithfully surfaces the underlying

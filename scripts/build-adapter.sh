@@ -56,6 +56,10 @@ export BROWSER_TOOLS MODEL_FIELD_LINE TIER_DEFAULT TIER_HEAVY DISPATCH ROLES_DIR
 
 # --- persona body: detokenize tiers first, into a temp file the manifest render inlines ---
 PERSONA_BODY_FILE="$(mktemp)"; export PERSONA_BODY_FILE
+# both mktemp temp files (RENDER_PY above, PERSONA_BODY_FILE here) now exist — trap their
+# cleanup on every exit path (success, or an `exit 1` from the codex ''' guard or the
+# residual-token check below), not just the happy-path tail.
+trap 'rm -f "$PERSONA_BODY_FILE" "$RENDER_PY" 2>/dev/null || true' EXIT
 TIER_DEFAULT="$TIER_DEFAULT" TIER_HEAVY="$TIER_HEAVY" \
   render < "$ROOT/core/persona-body.md" > "$PERSONA_BODY_FILE"
 
@@ -64,6 +68,10 @@ rm -rf "$OUT"; mkdir -p "$OUT/agent" "$OUT/commands"
 # core copied verbatim
 cp -R "$ROOT/skills" "$ROOT/scripts" "$ROOT/docs" "$ROOT/CONTEXT.md" "$OUT/" 2>/dev/null || true
 cp -R "$ROOT/tools" "$OUT/" 2>/dev/null || true
+# internal planning docs (docs/plans, docs/specs) are authoring scratch for this repo's own
+# development, not grounding material the shipped agent needs — never bundle them into an
+# adapter's dist/<h>/docs/.
+rm -rf "$OUT/docs/plans" "$OUT/docs/specs"
 # agent manifest (extension per harness)
 case "$H" in claude|pi|opencode) EXT=md ;; codex) EXT=toml ;; esac
 # codex embeds the body in a TOML literal '''...''' string — assert the body has no literal '''
@@ -82,5 +90,4 @@ render < "$ROOT/core/commands/qa-roles.md" > "$OUT/commands/qa-roles.md"
 # copied verbatim and may legitimately contain unrelated {{...}} — e.g. writing-qa-reports'
 # runtime report templates, filled by the agent at run time, not by this build step)
 if grep -rn '{{' "$OUT/agent" "$OUT/commands" ; then echo "ERROR: unrendered token in dist/$H" >&2; exit 1; fi
-rm -f "$PERSONA_BODY_FILE" "$RENDER_PY"
 echo "built dist/$H"
