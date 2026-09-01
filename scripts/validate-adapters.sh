@@ -50,8 +50,8 @@ PY
 # 5) static checks on every core script + json (skills/, scripts/, harnesses/ — the
 # directories this multi-harness effort actually authored/modified; dist/ is build
 # scratch and excluded from every sweep below).
-find skills scripts harnesses -name '*.sh' -print0 | xargs -0 -I{} bash -n {} || fail "bash -n"
-find skills scripts harnesses -name '*.js' -print0 | xargs -0 -I{} node --check {} || fail "node --check"
+find skills scripts harnesses tools tests -name '*.sh' -not -path '*/node_modules/*' -print0 | xargs -0 -I{} bash -n {} || fail "bash -n"
+find skills scripts harnesses tools tests -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -I{} node --check {} || fail "node --check"
 find . -name '*.json' -not -path './.git/*' -not -path './dist/*' -not -path './node_modules/*' -print0 \
   | xargs -0 -I{} python3 -c "import json,sys;json.load(open('{}'))" || fail "json"
 

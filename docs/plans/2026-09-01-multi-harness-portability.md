@@ -876,18 +876,24 @@ git commit -m "feat(portability): qa-ci.sh default agent-cmd from harness-profil
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$root"
 bash scripts/validate-adapters.sh            # clean tree -> exit 0
-# Negative control: a deliberate residual token must make it fail.
-# Save/restore via cp (never git checkout — respects the no-destructive-git rule).
-cp core/persona-body.md "$TMPDIR/persona-body.bak"
+# Save/restore via cp (never git checkout); an EXIT trap guarantees restore even on mid-run death.
+cp core/persona-body.md   "$TMPDIR/persona-body.bak"
+cp agents/qa-e2e-pilot.md "$TMPDIR/agent.bak"
+restore() { cp "$TMPDIR/persona-body.bak" core/persona-body.md 2>/dev/null || true
+            cp "$TMPDIR/agent.bak" agents/qa-e2e-pilot.md 2>/dev/null || true; }
+trap restore EXIT
+# Negative control 1: a deliberate residual token must fail the gate.
 printf '\n{{OOPS}}\n' >> core/persona-body.md
-if bash scripts/validate-adapters.sh >/dev/null 2>&1; then
-  cp "$TMPDIR/persona-body.bak" core/persona-body.md; echo "validate did NOT catch residual token"; exit 1
-fi
+if bash scripts/validate-adapters.sh >/dev/null 2>&1; then echo "validate did NOT catch residual token"; exit 1; fi
 cp "$TMPDIR/persona-body.bak" core/persona-body.md
+# Negative control 2: a dirtied repo-root Claude file must fail the byte-oracle.
+printf '\n<!-- drift -->\n' >> agents/qa-e2e-pilot.md
+if bash scripts/validate-adapters.sh >/dev/null 2>&1; then echo "validate did NOT catch byte-oracle drift"; exit 1; fi
+cp "$TMPDIR/agent.bak" agents/qa-e2e-pilot.md
 echo "OK"
 ```
 
-> NOTE: the save/restore uses `cp` (not `git checkout`) so the test only ever rewrites its own scratch edit and never invokes a destructive VCS command. `TMPDIR` defaults to `/tmp` if unset.
+> NOTE: save/restore uses `cp` (not `git checkout`) so the test only rewrites its own scratch edits and never invokes a destructive VCS command; the `trap restore EXIT` closes the kill-mid-mutation window. `TMPDIR` defaults to `/tmp` if unset.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -925,9 +931,9 @@ assert not missing, f"claude agent missing tools: {missing}"
 print("caps OK")
 PY
 
-# 4) static checks on every core script + json
-find skills scripts -name '*.sh' -print0 | xargs -0 -I{} bash -n {} || fail "bash -n"
-find skills scripts -name '*.js' -print0 | xargs -0 -I{} node --check {} || fail "node --check"
+# 4) static checks on every core script + json (all effort dirs, not just skills/scripts)
+find skills scripts harnesses tools tests -name '*.sh' -not -path '*/node_modules/*' -print0 | xargs -0 -I{} bash -n {} || fail "bash -n"
+find skills scripts harnesses tools tests -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -I{} node --check {} || fail "node --check"
 find . -name '*.json' -not -path './.git/*' -not -path './dist/*' -print0 \
   | xargs -0 -I{} python3 -c "import json,sys;json.load(open('{}'))" || fail "json"
 echo "validate-adapters: OK"
