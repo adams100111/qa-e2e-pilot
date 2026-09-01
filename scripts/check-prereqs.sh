@@ -2,8 +2,9 @@
 # check-prereqs.sh — SessionStart preflight for qa-e2e-pilot.
 #
 # Checks the environment prerequisites this plugin needs (Node, a JSON tool,
-# bash, curl). The Playwright MCP server itself is declared in .mcp.json and
-# is wired/managed by the plugin system, not checked here. The plugin's
+# bash, curl). The Playwright MCP server is provided by the official `playwright`
+# Claude Code plugin (or a user-configured playwright server), not bundled here,
+# and is wired/managed by the plugin system, so it is not checked here. The plugin's
 # visual-UX detection is dependency-free (no axe-core / no npm deps), so
 # there is nothing to `npm install` and nothing to check for that.
 #

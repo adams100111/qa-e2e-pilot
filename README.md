@@ -207,7 +207,11 @@ Beyond `opslane/verify` (above), this plugin **reimplements** — as our own cod
 
 Credit and thanks to the authors of each. None of these are plugin-to-plugin dependencies — nothing here is fetched, forked, or vendored from them at install or run time.
 
-**Dependency-free by design:** `qa-e2e-pilot` ships with **no npm dependencies** — the visual-UX detection is implemented as dependency-free browser-context JavaScript (no axe-core, no vendored a11y engine). The only prerequisites are things already expected in a Claude Code environment: **Node**, **`jq` or `python3`**, **`bash`**, **`curl`**, and the **Playwright MCP server** (declared in [`.mcp.json`](./.mcp.json) so it's present on install). A [`SessionStart` preflight](./scripts/check-prereqs.sh) checks for these each session and blocks with a fix message if any are missing.
+**Dependency-free by design:** `qa-e2e-pilot` ships with **no npm dependencies** — the visual-UX detection is implemented as dependency-free browser-context JavaScript (no axe-core, no vendored a11y engine). The prerequisites are things already expected in a Claude Code environment: **Node**, **`jq` or `python3`**, **`bash`**, **`curl`**, and a **Playwright MCP server**.
+
+**Playwright MCP (required, provided separately).** The agent drives the browser through the official **`playwright`** Claude Code plugin's MCP server (tool prefix `mcp__plugin_playwright_playwright__*`) — install that plugin alongside `qa-e2e-pilot`, or point Claude Code at any `playwright` MCP server. This plugin does **not** bundle its own Playwright server (a plugin-bundled MCP server's tools don't resolve for a bundled agent — a Claude Code limitation; see ADR-0015). **For the strongest human-interaction guarantee (Check 0, the independent-log reconciliation), run that Playwright MCP with `--save-session`** and set `humanInteraction.saveSession: true`; without it the gate runs the act-lint + state-fingerprint checks and flags that independent verification was unavailable.
+
+A [`SessionStart` preflight](./scripts/check-prereqs.sh) checks Node / `jq`-or-`python3` / `bash` / `curl` each session and blocks with a fix message if any are missing.
 
 ## License
 
