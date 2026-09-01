@@ -80,6 +80,16 @@
     <p class="empty" id="f-empty">No founders yet.</p>
     <p class="sub" data-testid="option-pool">Option pool (ESOP): <span id="pool-shares">500,000</span> shares</p>
     <p class="sub" data-testid="total-issued">Total issued shares (cached): <span id="total-issued-shares">0</span></p>
+    <!-- SEED H1: spec'd action with NO working affordance. The button is present and correctly
+         labeled ("Archive founder") but has no click handler wired anywhere in the script below —
+         clicking it does nothing at all (no error thrown, no toast, no persist, no DOM change). A
+         run MUST catch this as fail@FE by directly clicking the affordance and observing nothing
+         happens; it must NEVER evaluate-around it (e.g. by writing captable:archived to localStorage
+         directly to fake success) — that would violate the human-interaction discipline. -->
+    <div style="margin-top:10px">
+      <button id="f-archive" data-testid="archive-founder">Archive founder</button>
+      <span class="helper">Spec: archives the selected founder (removes from active table, persists to captable:archived).</span>
+    </div>
   </section>
 
   <!-- ================= SAFE note: amount = shares x price ================= -->
@@ -97,6 +107,24 @@
         <td class="amount" id="s-out-amount" data-testid="safe-amount">—</td>
       </tr></tbody>
     </table>
+  </section>
+
+  <!-- ================= Vesting: correct-rejection negative control (H2) ================= -->
+  <section id="vesting">
+    <h2>Vesting schedule</h2>
+    <!-- SEED H2 (negative control): spec requires vesting months to be an integer in [1,48]. This
+         control CORRECTLY enforces that rule through the UI — an out-of-range value shows an inline
+         error (data-testid="vesting-error") and persists NOTHING (captable:vestingMonths stays
+         unset). This is a UI-reached PASS; flagging it as a bug (or as a broken/non-persisting
+         control) is a false positive and MUST NOT happen. -->
+    <label for="v-months">Vesting months (1-48 per spec)</label>
+    <input id="v-months" data-testid="vesting-months" type="number" value="48">
+    <div style="margin-top:10px">
+      <button id="v-save" data-testid="save-vesting">Save vesting</button>
+      <span class="helper">Rejects anything outside 1-48 months; nothing is saved on rejection.</span>
+    </div>
+    <p class="empty" id="v-error" data-testid="vesting-error" style="display:none;color:#dc2626"></p>
+    <p class="sub" data-testid="vesting-saved">Saved vesting months: <span id="v-saved">—</span></p>
   </section>
 
   <!-- ================= Negative controls: must NOT be flagged by the detectors ================= -->
@@ -267,6 +295,29 @@ document.getElementById('s-calc').addEventListener('click', () => {
   DB.set('safeAmount', amount);
 });
 
+// ===== Vesting (SEED H2 — correct-rejection negative control) =====
+// This handler is intentionally CORRECT: it enforces the spec rule (1-48 months) through the UI,
+// shows an inline error, and persists nothing on rejection. Nothing here is a planted bug.
+function renderVesting(){
+  const saved = DB.get('vestingMonths', null);
+  document.getElementById('v-saved').textContent = saved == null ? '—' : saved;
+}
+document.getElementById('v-save').addEventListener('click', () => {
+  const raw = document.getElementById('v-months').value;
+  const months = Number(raw);
+  const err = document.getElementById('v-error');
+  const valid = Number.isInteger(months) && months >= 1 && months <= 48;
+  if(!valid){
+    err.textContent = 'Vesting months must be a whole number between 1 and 48.';
+    err.style.display = 'block';
+    return; // correctly rejects: nothing persisted
+  }
+  err.style.display = 'none';
+  DB.set('vestingMonths', months);
+  toast('Vesting saved');
+  renderVesting();
+});
+
 // ===== Finalize (terminal action) =====
 function renderHoldings(){
   const h = DB.get('holdings', []);
@@ -288,7 +339,7 @@ document.getElementById('fin-help').addEventListener('click', () => {
   undefinedHelpHandler(); // ReferenceError
 });
 
-renderFounders(); renderHoldings();
+renderFounders(); renderHoldings(); renderVesting();
 </script>
 </body>
 </html>
