@@ -48,7 +48,17 @@ affordance). The agent must behave like a human tester and never work around the
 
 ## Gate strength & residual-trust boundary (honest)
 
-The `pass` predicate for a `human-action` criterion is `Check0 ∧ Check1 ∧ Check2 ∧ Check3`:
+**Deployment reality — Check 0 is OPT-IN.** Check 0 needs Playwright MCP's `--save-session`
+`session.md`. We could not ship that as a plugin-bundled MCP server: a plugin-bundled
+`@playwright/mcp` server connects but its tools do not resolve for the bundled agent
+(a Claude Code plugin-MCP limitation with a hyphenated plugin name / duplicate-package
+dedup — verified empirically: the agent received zero browser tools). So the agent uses
+the standard `playwright` MCP (the official plugin), and `--save-session` is an **opt-in**
+the operator enables on that server. When a fresh `session.md` is present the gate runs the
+full quartet below; when it is not (the default), the gate runs **Check 1∧2∧3** and the
+report flags that independent-log verification (Check 0) was unavailable.
+
+The `pass` predicate for a `human-action` criterion (Check 0 present) is `Check0 ∧ Check1 ∧ Check2 ∧ Check3`:
 - **Check 1/2** — no act-phase step is a workaround tool; a `browser_evaluate` on the
   act path is judged by whether its payload mutates (a payload lint covering DOM /
   storage / **network** (fetch/XHR/beacon with a write method) / **framework**
