@@ -315,16 +315,18 @@ tools: Read, Write, Bash, Grep, Glob, {{BROWSER_TOOLS}}
 
 > NOTE for the implementer: the `description:` block above MUST be copied verbatim from the current `agents/qa-e2e-pilot.md` frontmatter (lines 3-9). If the byte-oracle diff in Step 1 is non-empty, the mismatch is here — align this template to the committed file, do not adjust the oracle.
 
-`harnesses/codex/manifest.tmpl` (Codex agent TOML; server-scoped, no per-tool list; no model pin → omitted):
+`harnesses/codex/manifest.tmpl` (Codex agent TOML; server-scoped, no per-tool list; no model pin → omitted). **Uses TOML *literal* multiline strings (`'''`), NOT basic (`"""`)** — the persona body is full of backticks, quotes, and backslashes (paths, `\b`/`\n` in prose); basic strings process escapes and a stray `\x` is invalid TOML. Literal strings pass everything through raw:
 
 ```
 name = "qa-e2e-pilot"
 description = "Full-stack browser QA: drive the UI, bake persisted state, recompute logic, probe the backend, evidence-backed report."
 mcp_servers = ["{{SERVER_KEY}}"]
-developer_instructions = """
+developer_instructions = '''
 {{PERSONA_BODY}}
-"""
+'''
 ```
+
+> Residual risk: literal strings only break if the body contains a literal `'''` (markdown almost never does). The generator (Step 4) asserts `grep -q "'''" core/persona-body.md` finds nothing before building codex, failing loudly if a future edit introduces one.
 
 `harnesses/pi/manifest.tmpl` (Pi agent markdown; proxy tool grant):
 
@@ -420,17 +422,16 @@ cp -R "$ROOT/skills" "$ROOT/scripts" "$ROOT/docs" "$ROOT/CONTEXT.md" "$OUT/" 2>/
 cp -R "$ROOT/tools" "$OUT/" 2>/dev/null || true
 # agent manifest (extension per harness)
 case "$H" in claude|pi|opencode) EXT=md ;; codex) EXT=toml ;; esac
+# codex embeds the body in a TOML literal '''...''' string — assert the body has no literal '''
+if [ "$H" = codex ] && grep -q "'''" "$ROOT/core/persona-body.md"; then
+  echo "ERROR: persona body contains ''' which breaks the codex TOML literal string" >&2; exit 1
+fi
 render < "$ROOT/harnesses/$H/manifest.tmpl" > "$OUT/agent/qa-e2e-pilot.$EXT"
 # commands
 render < "$ROOT/core/commands/qa-run.md"   > "$OUT/commands/qa-run.md"
 render < "$ROOT/core/commands/qa-roles.md" > "$OUT/commands/qa-roles.md"
 # mcp snippet (created in Tasks 4-6; claude has none — uses the official plugin)
 [ -f "$ROOT/harnesses/$H/mcp.snippet" ] && cp "$ROOT/harnesses/$H/mcp.snippet" "$OUT/mcp.snippet"
-
-# --- claude: also emit at the exact repo-root filenames for the byte-oracle ---
-if [ "$H" = claude ]; then
-  cp "$OUT/agent/qa-e2e-pilot.md" "$OUT/agent/qa-e2e-pilot.md"  # already .md
-fi
 
 # --- fail if any token survived ---
 if grep -rn '{{' "$OUT" ; then echo "ERROR: unrendered token in dist/$H" >&2; exit 1; fi
@@ -606,7 +607,7 @@ echo "Installed qa-e2e-pilot Pi adapter ($V) into $PROJ (.pi/ project-local)."
 echo "Browser via pi-mcp-adapter proxy tool 'mcp'; server key playwright-qa."
 ```
 
-`harnesses/pi/README.md`: prerequisites (`pi-mcp-adapter` installed; `@playwright/mcp` reachable via `npx`; `python3`/`node`), the **proxy-by-default** note + direct-mode opt-in, the **R1 caveat** — validate `--save-session` writes `.playwright-mcp/session-*/session.md` under the proxy; if not, the gate degrades to Check 1∧2∧3 (set `humanInteraction.sessionLogDir` / expect the "independent verification unavailable" flag) — and a pointer to `docs/harness-adapters.md`.
+`harnesses/pi/README.md`: prerequisites (`pi-mcp-adapter` installed; `@playwright/mcp` reachable via `npx`; `python3`/`node`), the **proxy-by-default** note + direct-mode opt-in, the **version-pin note** — the adapter's `playwright-qa` server is pinned to `@playwright/mcp@0.0.79` (the format `parse-session-log.js` parses); a coexisting user `playwright` server on `@latest` is fine for *driving* but its logs are **not** the Check-0 source — the gate reads only the pinned `playwright-qa` server's session log — and the **R1 caveat**: validate `--save-session` writes `.playwright-mcp/session-*/session.md` under the proxy; if not, the gate degrades to Check 1∧2∧3 (the "independent verification unavailable" flag). Plus a pointer to `docs/harness-adapters.md`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -709,21 +710,22 @@ git commit -m "feat(portability): opencode adapter glue (glob tool grant, unifor
 
 ---
 
-## Task 7: `sessionLogDir` as a runtime config value
+## Task 7: `sessionLogDir` config field + `QA_DRIVER_SERVER` server key
 
-Makes the ADR-0015 Check-0 session-log path a config value so a harness that writes elsewhere (Pi proxy) sets it without editing skill bodies. Additive; default preserves current behavior.
+**Scope note (why this is small):** the session-log path is **always** passed to `checkpoint.sh`/`record-evidence.sh` as an explicit `--session-log` arg chosen by the caller — the scripts never default to or hard-code `.playwright-mcp`. So a `resolve_session_log_dir()` helper inside those scripts would be **dead code**, and the operative Pi-proxy fallback is already the existing behavior: if the log isn't found, `checkpoint.sh` gets no `session.md` and degrades to Check 1∧2∧3. Therefore v1 adds `sessionLogDir` only as a **documented, forward-looking config field** (honoring spec Q8) plus the load-bearing **`QA_DRIVER_SERVER`** key override — NO script plumbing. Fully wiring the agent's discovery prose to read the config is a later step, needed only if a harness ever writes the log somewhere other than the default.
 
 **Files:**
-- Modify: `.qa/config.json.example`
-- Modify: `skills/bootstrapping-qa-config/scripts/init-config.sh`
-- Modify: `skills/checkpointing-qa-memory/scripts/checkpoint.sh`, `skills/checkpointing-qa-memory/scripts/record-evidence.sh`
-- Modify: `skills/driving-browser-qa/SKILL.md`
+- Modify: `.qa/config.json.example` (add `humanInteraction.sessionLogDir`)
+- Modify: `skills/bootstrapping-qa-config/scripts/init-config.sh` (emit a `humanInteraction` block incl. `sessionLogDir`; `QA_DRIVER_SERVER` server key)
+- Modify: `skills/driving-browser-qa/SKILL.md` (one clarifying note)
 - Test: `scripts/tests/test-sessionlogdir.sh`
 
 **Interfaces:**
-- Produces: config key `humanInteraction.sessionLogDir` (default `.playwright-mcp`); a shell helper `resolve_session_log_dir()` in `checkpoint.sh` returning the config value or `.playwright-mcp`. `init-config.sh` writes `sessionLogDir` and uses `${QA_DRIVER_SERVER:-playwright}` as the driver server key.
+- Produces: config key `humanInteraction.sessionLogDir` (default `.playwright-mcp`); `init-config.sh` now emits a full `humanInteraction` block and reads the driver server key from `env.QA_DRIVER_SERVER // "playwright"` inside its `jq -n` program. No changes to `checkpoint.sh`/`record-evidence.sh`.
 
 - [ ] **Step 1: Write the failing test**
+
+`init-config.sh` writes only when `--suggest` is ABSENT and `--base-url` is given (verified: there is no `--write` flag; it is non-interactive; it emits via a `jq -n` program that currently has NO `humanInteraction` block and a hard-coded `server: "playwright"`).
 
 ```bash
 # scripts/tests/test-sessionlogdir.sh
@@ -731,16 +733,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$root"
 python3 -c "import json;d=json.load(open('.qa/config.json.example'));\
 assert d['humanInteraction']['sessionLogDir']=='.playwright-mcp',d['humanInteraction']"
-tmp="$(mktemp -d)"
-# default server key stays 'playwright'
-( cd "$tmp" && bash "$root/skills/bootstrapping-qa-config/scripts/init-config.sh" --suggest --write >/dev/null 2>&1 || true )
+IC="$root/skills/bootstrapping-qa-config/scripts/init-config.sh"
+# Write mode = NO --suggest, WITH --base-url. Default server key stays 'playwright'.
+tmp="$(mktemp -d)"; ( cd "$tmp" && bash "$IC" --base-url http://localhost:8099 )
 python3 -c "import json;d=json.load(open('$tmp/.qa/config.json'));\
-assert d['humanInteraction']['sessionLogDir']=='.playwright-mcp';\
-assert d['drivers'][0]['server']=='playwright'"
-# QA_DRIVER_SERVER overrides to playwright-qa
-tmp2="$(mktemp -d)"
-( cd "$tmp2" && QA_DRIVER_SERVER=playwright-qa bash "$root/skills/bootstrapping-qa-config/scripts/init-config.sh" --suggest --write >/dev/null 2>&1 || true )
-python3 -c "import json;d=json.load(open('$tmp2/.qa/config.json'));assert d['drivers'][0]['server']=='playwright-qa'"
+assert d['humanInteraction']['sessionLogDir']=='.playwright-mcp', d.get('humanInteraction');\
+assert d['drivers'][0]['server']=='playwright', d['drivers']"
+# QA_DRIVER_SERVER overrides the driver server key to playwright-qa.
+tmp2="$(mktemp -d)"; ( cd "$tmp2" && QA_DRIVER_SERVER=playwright-qa bash "$IC" --base-url http://localhost:8099 )
+python3 -c "import json;d=json.load(open('$tmp2/.qa/config.json'));assert d['drivers'][0]['server']=='playwright-qa', d['drivers']"
 grep -q 'sessionLogDir' skills/driving-browser-qa/SKILL.md
 echo "OK"
 ```
@@ -748,32 +749,28 @@ echo "OK"
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/tests/test-sessionlogdir.sh`
-Expected: FAIL — `.qa/config.json.example` has no `humanInteraction.sessionLogDir`.
+Expected: FAIL — `.qa/config.json.example` has no `humanInteraction.sessionLogDir`, and init-config emits no `humanInteraction` block.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `.qa/config.json.example`, add to the existing `humanInteraction` object:
+In `.qa/config.json.example`, add `"sessionLogDir": ".playwright-mcp"` to the existing `humanInteraction` object.
 
-```json
-    "sessionLogDir": ".playwright-mcp"
+In `init-config.sh`, edit the `jq -n` program (lines ~81-102) two ways. First, change the driver server literal so it reads the env (jq sees process env via `env`):
+
+```
+# was:  drivers: [ { id: "managed", server: "playwright", preset: "managed" } ]
+drivers: [ { id: "managed", server: (env.QA_DRIVER_SERVER // "playwright"), preset: "managed" } ]
 ```
 
-In `init-config.sh`: where `humanInteraction` is written, add `"sessionLogDir": ".playwright-mcp"`; change the driver server literal `"playwright"` (line ~90) to read the env: use shell `SERVER="${QA_DRIVER_SERVER:-playwright}"` and emit `"server": "$SERVER"`.
+Second, add a `humanInteraction` block to the same emitted object, matching the example's shape:
 
-In `checkpoint.sh`, add near the top (after arg parsing helpers):
-
-```bash
-resolve_session_log_dir() {   # $1 = project root (dir containing .qa)
-  local cfg="$1/.qa/config.json"
-  if [ -f "$cfg" ]; then
-    python3 -c "import json;print(json.load(open('$cfg')).get('humanInteraction',{}).get('sessionLogDir','.playwright-mcp'))" 2>/dev/null || echo ".playwright-mcp"
-  else echo ".playwright-mcp"; fi
-}
+```
+humanInteraction: { enforce: true, saveSession: false, maxOptOutRate: 0.2, sessionLogDir: ".playwright-mcp" }
 ```
 
-In `record-evidence.sh`, where `--session-log` / the session dir is derived and no explicit path was passed, default it to `resolve_session_log_dir "$PWD"` (source or re-declare the same helper). Keep the existing explicit-path behavior unchanged when a path IS passed.
+(This also closes a real pre-existing gap: init-config previously omitted the `humanInteraction` block that `.qa/config.json.example` advertises.)
 
-In `skills/driving-browser-qa/SKILL.md`, at the first mention of `.playwright-mcp/session-*/session.md`, append one clause: *"(the directory is `humanInteraction.sessionLogDir` in `.qa/config.json`, default `.playwright-mcp`)."*
+In `skills/driving-browser-qa/SKILL.md`, at the first mention of `.playwright-mcp/session-*/session.md`, append one clause: *"(the directory is `humanInteraction.sessionLogDir` in `.qa/config.json`, default `.playwright-mcp`; forward-looking — v1 discovery uses the default)."*
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -784,10 +781,8 @@ Expected: `OK`
 
 ```bash
 git add .qa/config.json.example skills/bootstrapping-qa-config/scripts/init-config.sh \
-        skills/checkpointing-qa-memory/scripts/checkpoint.sh \
-        skills/checkpointing-qa-memory/scripts/record-evidence.sh \
         skills/driving-browser-qa/SKILL.md scripts/tests/test-sessionlogdir.sh
-git commit -m "feat(portability): sessionLogDir config value + QA_DRIVER_SERVER key override"
+git commit -m "feat(portability): humanInteraction.sessionLogDir field + QA_DRIVER_SERVER key override"
 ```
 
 ---
@@ -823,18 +818,16 @@ Expected: FAIL — `qa-ci.sh` has no `QA_HARNESS`/profile lookup; prints the har
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `scripts/qa-ci.sh`, replace the hard-coded `AGENT_CMD="claude -p …"` default (line ~51) with a profile lookup, and add an early print-and-exit hook for the test:
+In `scripts/qa-ci.sh`, replace the hard-coded `AGENT_CMD="claude -p …"` default (line ~51) with a profile lookup, and add an early print-and-exit hook for the test. Use the **existing `REPO_ROOT`** (already defined at line 21 — do NOT introduce a new `ROOT`). Invocation stays the existing `eval "$AGENT_CMD"` (line 53), which correctly expands the profile string's literal `$QA_TARGET`/`$QA_CHECKLIST` at eval time:
 
 ```bash
 HARNESS="${QA_HARNESS:-claude}"
 default_agent_cmd() {
-  python3 -c "import json;print(json.load(open('$ROOT/harness-profiles.json'))['harnesses']['$HARNESS']['agentCmd'])"
+  python3 -c "import json;print(json.load(open('$REPO_ROOT/harness-profiles.json'))['harnesses']['$HARNESS']['agentCmd'])"
 }
 AGENT_CMD="${QA_AGENT_CMD:-$(default_agent_cmd)}"
 if [ "${QA_PRINT_AGENT_CMD:-}" = 1 ]; then echo "$AGENT_CMD"; exit 0; fi
 ```
-
-(Ensure `ROOT` is defined near the top: `ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"`.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -938,6 +931,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }   # guarantees stdlib tomllib (3.11+) for the TOML checks
       - run: bash scripts/validate-adapters.sh
 ```
 
@@ -992,7 +987,7 @@ Expected: FAIL — ADR missing.
 
 `docs/adr/0017-multi-harness-portability.md` — follow the repo's ADR format (Context / Decision / Consequences). Decision: shared core at repo root + `harness-profiles.json` + naming/token generator + thin `harnesses/<h>/` glue; adapters generated into git-ignored `dist/`; Claude root files are generated-and-committed with a byte-oracle; **v1 sequential-only (fan-out deferred)**; unique `playwright-qa` project-local server key; `sessionLogDir` config; uniform post-hoc `checkpoint.sh` gate. Consequences: one source of truth, drift caught in CI; per-harness manual accuracy acceptance; Pi `--save-session`-under-proxy is the one runtime unknown (degrades to Check 1∧2∧3).
 
-`docs/harness-adapters.md` — for each harness: prerequisites, the `install-<h>.sh` command, project-local config to add, and the **manual accuracy procedure**: serve `tools/accuracy-harness/fixture/`, point `.qa/config.json` `baseUrl` at it, run the adapter's agent end-to-end, convert the bug-log with `tools/accuracy-harness/scorer/convert-buglog.js`, score with `scorer/score.js --gate`, and record the result at/above the 85%/100% gate or document the gap. State **Pi is validated first** (already provisioned).
+`docs/harness-adapters.md` — for each harness: prerequisites, the `install-<h>.sh` command, project-local config to add (unique **`playwright-qa`** server key, never mutating global; pinned `@playwright/mcp@0.0.79` — the gate's Check-0 reads only this pinned server's session log, a coexisting `@latest` server is fine for driving only), and the **manual accuracy procedure**: serve `tools/accuracy-harness/fixture/`, point `.qa/config.json` `baseUrl` at it, run the adapter's agent end-to-end, convert the bug-log with `tools/accuracy-harness/scorer/convert-buglog.js`, score with `scorer/score.js --gate`, and record the result at/above the 85%/100% gate or document the gap. State **Pi is validated first** (already provisioned).
 
 Update `README.md` (add a "Running on other harnesses" section pointing at `harness-profiles.json` + `harnesses/` + `docs/harness-adapters.md`) and `CLAUDE.md` Layout section (add `harness-profiles.json`, `core/`, `harnesses/<h>/`, `scripts/build-adapter.sh`, `scripts/validate-adapters.sh`, and the note that repo-root Claude files are generated-and-committed).
 
@@ -1019,4 +1014,6 @@ git commit -m "docs(portability): ADR-0017 + harness-adapters guide + README/CLA
 
 **2. Placeholder scan:** No "TBD/TODO"; model ids for non-Claude are deliberately empty (inherit) with tier labels, a decided design, not a placeholder. Every code step has runnable content.
 
-**3. Type consistency:** Profile field names (`toolPrefix, serverKey, grantStyle, modelField, tierDefault, tierHeavy, dispatch, globalRolesDir, agentCmd`) are identical across Tasks 1, 3, 8. Token names (`{{PERSONA_BODY}}, {{BROWSER_TOOLS}}, {{MODEL_FIELD_LINE}}, {{TIER_DEFAULT}}, {{TIER_HEAVY}}, {{DISPATCH}}, {{GLOBAL_ROLES_DIR}}, {{SERVER_KEY}}`) are consistent between Task 2 (sources), Task 3 (templates + render map). `grantStyle` values `{list,scope,proxy,glob}` match between Task 1 data and Task 3 `render_browser_tools` cases. `resolve_session_log_dir` (Task 7) referenced consistently.
+**3. Type consistency:** Profile field names (`toolPrefix, serverKey, grantStyle, modelField, tierDefault, tierHeavy, dispatch, globalRolesDir, agentCmd`) are identical across Tasks 1, 3, 8. Token names (`{{PERSONA_BODY}}, {{BROWSER_TOOLS}}, {{MODEL_FIELD_LINE}}, {{TIER_DEFAULT}}, {{TIER_HEAVY}}, {{DISPATCH}}, {{GLOBAL_ROLES_DIR}}, {{SERVER_KEY}}`) are consistent between Task 2 (sources), Task 3 (templates + render map). `grantStyle` values `{list,scope,proxy,glob}` match between Task 1 data and Task 3 `render_browser_tools` cases. Task 8 uses the existing `REPO_ROOT` (not a new `ROOT`) and the existing `eval "$AGENT_CMD"` path. Task 7 adds no script helper (the `resolve_session_log_dir` plumbing was removed as dead code — the scripts receive `--session-log` explicitly); it touches only `.qa/config.json.example`, `init-config.sh`'s `jq -n` program, and one SKILL.md note.
+
+**4. Grilling-review corrections applied (Q1–Q5):** Q1 — Codex uses TOML literal `'''` + a no-`'''` build assert. Q2 — Task 7 reduced to config-field + `QA_DRIVER_SERVER` only; dead script plumbing dropped. Q3 — `@playwright/mcp@0.0.79` pin + "gate reads only `playwright-qa`'s log" note in Pi README + harness-adapters doc. Q4 — Task 7 test/edit rewritten to init-config's real interface (write = no `--suggest` + `--base-url`; add a `humanInteraction` block to the `jq -n` program; server key via `env.QA_DRIVER_SERVER // "playwright"`). Q5 — Task 8 uses existing `REPO_ROOT` + `eval`; CI workflow adds `setup-python@v5` for stdlib `tomllib`.
