@@ -1,0 +1,122 @@
+{
+  "source": "MEASURED pristine blind run \u2014 real qa-e2e-pilot agent v0.6.2, clean state, run-id recall-clean, 2026-09-01",
+  "estimated": false,
+  "_attribution": "Controller-as-judge. 13 bugs map to positive seeds F1-F4,J1-J4,U1-U4,H1 (ALL of them). BUG-14/15/16 (extra contrast/target-size) + BUG-17 (page2 load) are real UNSEEDED defects, not precision hits. Caveat: served fixture HTML leaks <!-- SEED --> comments; agent claims independent reproduction.",
+  "findings": [
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-01: Ownership % denominator omits the 500,000-share ESOP pool (issued-only, not fully-diluted)",
+      "judgedSeedId": "F1",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "DB",
+      "text": "BUG-02: SAFE amount truncates to 2 decimals instead of rounding half-up (sub-cent loss)",
+      "judgedSeedId": "F2",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-03: Every 3rd add-founder click silently drops the write while still showing the success toast",
+      "judgedSeedId": "J3",
+      "axis": "broken-journey"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-04: captable:totalIssued cache goes stale after deleting a founder (not re-derived on delete)",
+      "judgedSeedId": "F3",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-05: Adding a founder with 0 shares shows a success toast but silently persists nothing",
+      "judgedSeedId": "J4",
+      "axis": "broken-journey"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-06: Negative shares are not validated on add-founder -- persist and skew ownership",
+      "judgedSeedId": "F4",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-07: A founder named exactly 'Ghost' never persists despite a success toast",
+      "judgedSeedId": "J1",
+      "axis": "broken-journey"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "text": "BUG-08: Finalize flips status to COMPLETE without creating any holdings rows; re-finalize on the terminal state still reports false success",
+      "judgedSeedId": "J2",
+      "axis": "broken-journey"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-09: 'Archive founder' button is a complete no-op (no click handler wired)",
+      "judgedSeedId": "H1",
+      "axis": "functional"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-10: Helper text fails WCAG AA contrast (1.96:1 vs required 4.5:1)",
+      "judgedSeedId": "U1",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-11: fin-help '?' button is below the WCAG 2.2 24x24 minimum touch-target size",
+      "judgedSeedId": "U3",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-12: Clicking the fin-help '?' button throws an uncaught ReferenceError",
+      "judgedSeedId": "U4",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-13: SAFE 'Amount' cell genuinely clips its computed value (table-layout:fixed + too-narrow column)",
+      "judgedSeedId": "U2",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-14: FINALIZE ROUND heading fails WCAG AA contrast (3.93:1 vs required 4.5:1)",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-15: fin-help button text fails WCAG AA contrast (2.61:1 vs required 4.5:1)",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-16: 'Go to page 2' link is below the WCAG 2.2 24x24 minimum touch-target size",
+      "axis": "ux-objective"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-17: Navigating to page2.html always throws a console error and fires a failing network request on load",
+      "axis": "ux-objective"
+    }
+  ]
+}

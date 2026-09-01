@@ -81,7 +81,10 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
 | Baseline (ungated, old fixture) | 33% | 25% | 30% | 75% |
 | Gated run A (real `qa-e2e-pilot` agent, 18-seed set) | 38% | 25% | 33% | 100% |
 | Gated run B (general-purpose agent, gated flow) | 25% | 25% | 25% | 100% |
-| Post-fix full pipeline (coverage catalog + computed-logic + visual-UX detection, hardened fixture) | **88%** | **100%** | **92%** | **100%** |
+| Post-fix full pipeline (fixture-ASSISTED — see caveat) | 88% | 100% | 92% | 100% |
+| **Truly-blind** (browser-only, no source read, seed-comments stripped) | **56%** | **75%** | **62%** | **100%** |
+
+> **⚠️ The rows above the blind one are fixture-ASSISTED, not blind.** The served fixture used to leak its own seeds — HTML/CSS/JS comments described each planted bug, the `<title>` said "planted bugs", a "Negative controls" heading + `(N4)` labels named the controls. Any agent that `curl`-ed the page saw those hints, inflating recall to 88–100%. After stripping the tells AND requiring the agent to interact **browser-only (no source read)**, the honest recall is **56% functional / 62% overall (gate FAIL)** at 100% precision. Caught blind: ownership/precision/stale-total (F1/F2/F3), finalize (J2), UI-impossible archive (H1), contrast/target-size/clip (U1/U2/U3). Missed blind: the `Ghost` magic-name drop (J1 — nearly unfindable black-box, a contrived seed), the intermittent every-3rd drop (J3), the 0-share/negative-share **toast-vs-persistence** discrepancy (J4/F4 — a real coverage gap: the checklist checked "was it rejected" but not "did a false success toast fire"), and the `?` icon-button's click-time console error + missing name (U4 — caught its contrast/size but never clicked it). This is the trustworthy number; the coverage gaps (toast-vs-persistence on invalid input, icon-button click-probes) are the improvement target.
 
 - **Baseline reproduces the false-greens**: functional 33%, ux-objective 25%, overall 30% (3/10) — the
   MEASURED number that reproduces the reported ~40% functional / ~15% UX false-greens, at only 75%

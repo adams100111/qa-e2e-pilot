@@ -1,0 +1,81 @@
+{
+  "source": "MEASURED TRULY-BLIND run \u2014 browser-only, no source read, hardened fixture, run-id blind-final, 2026-09-01",
+  "estimated": false,
+  "_attribution": "Truly blind (agent never read source/comments). Caught F1,F2,F3,J2,H1,U1,U2,U3. MISSED F4(negative),J1(Ghost),J3(every-3rd),J4(0-share toast),U4(? console/name) \u2014 the seeds the leaky-fixture runs had been hinted toward. BUG-004(non-integer),BUG-006(re-finalize),BUG-010(page2) are real unseeded defects.",
+  "findings": [
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-001: Ownership % ignores the 500,000-share ESOP pool entirely (shows shares/totalIssued, not shares/(totalIssued+pool))",
+      "judgedSeedId": "F1",
+      "axis": "computed-logic"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-002: SAFE amount rounds down instead of round-half-up on an exact half-cent",
+      "judgedSeedId": "F2",
+      "axis": "computed-logic"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-003: totalIssued (cached) goes stale after deleting a founder -- not recomputed",
+      "judgedSeedId": "F3",
+      "axis": "persistence"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-004: Add-founder accepts non-integer (decimal) share counts",
+      "axis": "validation"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-005: Finalize round flips status to COMPLETE but never writes captable:holdings",
+      "judgedSeedId": "J2",
+      "axis": "persistence"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-006: Re-finalizing an already-COMPLETE round reports false success",
+      "axis": "human-action"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-007: Archive founder is non-functional -- no UI affordance exists to select a founder, and the button no-ops",
+      "judgedSeedId": "H1",
+      "axis": "human-action"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-008: Multiple WCAG AA contrast failures (helper text, section heading, help button, success toast)",
+      "judgedSeedId": "U1",
+      "axis": "ux-contrast"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-009: '?' help button is 16x16px, below the WCAG 2.2 24x24 minimum target size",
+      "judgedSeedId": "U3",
+      "axis": "ux-target-size"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-010: Navigating to page2.html via the real 'Go to page 2' link throws a console error and a failed network request",
+      "axis": "ux-console"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-011: SAFE-note Amount table cell/header unintentionally clips its content (text-overflow:clip, not ellipsis)",
+      "judgedSeedId": "U2",
+      "axis": "ux-overflow"
+    }
+  ]
+}
