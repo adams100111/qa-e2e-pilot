@@ -57,6 +57,73 @@ because nothing survives except what this run's rounds confirmed.
   deserves a numbered confirm/drop decision, not a silent skip. Only skip
   entirely when both arrays are empty (nothing to confirm).
 
+## Engine (`frontier.js`)
+
+Every round below is this skill driving
+[`frontier.js`](scripts/frontier.js) — the dependency-free, pure, tested
+topological round engine (`tests/frontier/run.sh`, `PASS=6`). frontier.js
+does no I/O, no prompting, and no fact discovery; this skill supplies the
+tree, the facts, and the human interaction, and calls exactly its four
+exports:
+
+- **Tree shape:** `{ nodes: [{ id, prereqs, default }] }` — one node per
+  decision. `prereqs` is hitl-rounds.md's `dependsOn` under its concrete
+  name; `default` is what `recommendedDefault()` reads (hitl-rounds.md's
+  `recommendedDefault` key). frontier.js is agnostic to node granularity —
+  this skill instantiates one node **per `{role}` / `{role,cred}` /
+  `{role,entity}` decision** (`role:admin`, `cred:admin`, `scope:admin`,
+  ...), not one aggregate node per round.
+- **`computeFrontier(tree, settled)` → `{ frontier, deferred, settledIds }`.**
+  `frontier` = every unsettled node whose `prereqs` are all keys of
+  `settled`; everything else unsettled is `deferred`. Call this once per
+  round to know what to render next.
+- **`recommendedDefault(tree, id)`** is a static read of that node's
+  `default` field — frontier.js never computes a recommendation itself.
+  Where a step below says a downstream recommendation is "re-derived using
+  the new account's actual data," that derivation is THIS skill re-running
+  its own discovery/citation logic and overwriting the node's `default` in
+  place before the next `recommendedDefault()` call — the engine only
+  echoes back whatever `default` currently holds.
+- **`applyAnswers(tree, settled, answers)` → next `settled`.** Confirms and
+  first-time answers just add `answers` into `settled`. **Unsettle-on-edit:**
+  if an `id` was ALREADY in `settled` and the new answer differs from the
+  old one, every transitive dependent of `id` (found by walking `prereqs`
+  chains) is deleted from `settled`, so it falls out of `settledIds` and
+  re-enters the frontier on the next `computeFrontier` call. In this
+  skill's strict forward Round 1 → 2 → 3 flow that branch rarely fires — a
+  downstream node usually isn't settled yet when its upstream is first
+  answered, so there is nothing to unsettle. It exists for the REVISION
+  case: a human reopening an already-answered round after a later round has
+  already settled (e.g. "actually, drop evaluator" after Round 3 already
+  ran) — reapplying that answer through `applyAnswers` automatically clears
+  every settled downstream id for a clean re-render, with no separate
+  revision code path needed.
+- **Dropping has no dedicated status in frontier.js — model it by
+  omission.** A dropped id is simply never added to `settled`; its
+  dependents' `prereqs` are then never fully satisfied, so they sit in
+  `deferred` forever and are never rendered — this is how "removed from the
+  tree entirely" (below) cashes out against the real engine, without
+  actually deleting anything from `tree.nodes`. **Caveat:** the dropped
+  node's own `id` still has no unmet `prereqs`, so it would reappear in
+  `frontier` on every later `computeFrontier` call unless this skill tracks
+  it. Maintain a session-local `decided` set (every id the human has
+  confirmed, edited, OR dropped) alongside `settled`, and always render
+  `computeFrontier(tree, settled).frontier` **minus** `decided` — never the
+  raw `frontier` array.
+- **`budgetExceeded(roundsCompleted, 3)`** — call after any round the host
+  can't complete interactively (Step 4's "Never block"). Once it returns
+  true, auto-accept `recommendedDefault` for every remaining frontier id
+  across the current and any later round in one pass, tag each
+  `"assumption": true`, and proceed straight to Step 5.
+- **Downstream consumer:**
+  [`write-persona-config.sh`](scripts/write-persona-config.sh) is what
+  actually enforces two of these rounds' invariants — unique persona `id`s
+  and `roleScope` values restricted to `owns|read-scoped|none` — by
+  rejecting the write outright if Round 1 or Round 3 ever produced a
+  duplicate id or an out-of-enum scope. Rounds 1 and 3 below must stay
+  honest about those constraints; the script is the enforcement backstop,
+  not this skill's own bookkeeping.
+
 ## The Process
 
 ### Step 1 — Load the proposal and build the decision tree
@@ -72,6 +139,13 @@ because nothing survives except what this run's rounds confirmed.
       already sitting in `discovered-roles.json` plus a fresh grep for
       fixture/seed data backing each role's `auth` field — never ask the
       human "what roles does your app have."
+- [ ] Build this as `frontier.js`'s literal tree: one object
+      `{ nodes: [...] }`, each node `{ id: "role:<name>", prereqs: [],
+      default: "keep — include, test as this role" }`, `{ id: "cred:<name>",
+      prereqs: ["role:<name>"], default: <Round 2 recommendation> }`, `{ id:
+      "scope:<name>", prereqs: ["cred:<name>"], default: <Round 3
+      recommendation> }` — see [Engine](#engine-frontierjs) above for the
+      field-name mapping to hitl-rounds.md's `dependsOn`/`recommendedDefault`.
 
 ### Step 2 — Round 1: Roles
 
@@ -86,10 +160,15 @@ because nothing survives except what this run's rounds confirmed.
 - [ ] Ask the human, in one prompt (`AskUserQuestion` in Claude Code, plain
       numbered text elsewhere): confirm the full set, edit any item's
       inclusion, or drop any item. Wait for the complete answer batch.
-- [ ] **Recompute per hitl-rounds.md Step 5–6:** any `cred:<name>`/
-      `scope:<name>` node whose role was dropped is removed from the tree
-      entirely — never rendered, never orphaned in the written artifacts.
-      Round 2's frontier = one `cred:<name>` node per surviving role.
+- [ ] **Recompute:** call `applyAnswers(tree, settled, answers)` with only
+      the CONFIRMED/edited items — a dropped role is never added to
+      `answers`/`settled` (see Engine above). Add every id from this round,
+      confirmed or dropped, into the `decided` set. Then
+      `computeFrontier(tree, settled)`: any `cred:<name>`/`scope:<name>`
+      node whose role was dropped has an unsatisfiable `prereqs` entry and
+      stays in `deferred` forever, so it is never rendered or written to
+      the artifacts. Round 2's frontier (minus `decided`) = one
+      `cred:<name>` node per surviving role.
 
 ### Step 3 — Round 2: Credentials (unblocked once roles settle)
 
@@ -115,11 +194,16 @@ because nothing survives except what this run's rounds confirmed.
       for the same role (e.g. swapping an empty fixture for one that
       actually owns data) or to switch methods entirely (seeded → captured
       storageState). Wait for the full batch.
-- [ ] **Recompute:** an edited credential invalidates only the ONE Round-3
-      `scope:<name>` node that depends on it (its `recommendedDefault` is
-      re-derived using the new account's actual data) — sibling roles'
-      Round-3 nodes are untouched. A dropped Round-1 role has no Round-2
-      entry to begin with (Step 2 already removed it).
+- [ ] **Recompute:** apply Round 2's answers with `applyAnswers`, and add
+      every Round 2 id to `decided`. For the edited item, this skill (not
+      frontier.js) re-derives the not-yet-rendered `scope:<name>` node's
+      `default` from the new account's actual data and overwrites it on the
+      tree before Round 3 renders — sibling roles' `scope:<name>` nodes are
+      untouched. (`applyAnswers`'s unsettle-on-edit branch only matters if a
+      credential is edited AFTER its scope node already settled — a
+      revision, not this forward pass; see Engine above.) A dropped Round-1
+      role has no Round-2 entry to begin with — its `cred:<name>` node's
+      `prereqs` were never satisfied (Step 2).
 
 ### Step 4 — Round 3: Scope
 
@@ -143,11 +227,13 @@ because nothing survives except what this run's rounds confirmed.
 - [ ] **Never block.** Per hitl-rounds.md's round-budget rule (3–5 rounds;
       this flow IS 3 rounds, so the budget is exactly used up by design): if
       a host environment can't complete all 3 rounds interactively (e.g. a
-      `/loop`-driven autonomous run), auto-accept every remaining
-      recommended default, tag each accepted item `"assumption": true` with
-      reason `"round budget exhausted"` in the artifacts below, and proceed
-      — never leave `personas[]`/the authz matrix unwritten because a human
-      didn't respond.
+      `/loop`-driven autonomous run), call `budgetExceeded(roundsCompleted,
+      3)`; once it returns true, auto-accept `recommendedDefault` for every
+      remaining frontier id (this round and any later one) in a single
+      pass, tag each accepted item `"assumption": true` with reason `"round
+      budget exhausted"` in the artifacts below, and proceed — never leave
+      `personas[]`/the authz matrix unwritten because a host didn't
+      respond.
 
 ### Step 5 — Generate the artifacts (deterministic, scripted)
 
