@@ -147,7 +147,7 @@ EOF
 upsert_jq() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
   local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
-  local persona="${10}"
+  local persona="${10}" nonui_reason="${11}"
   local now
   now="$(ts)"
 
@@ -177,6 +177,7 @@ upsert_jq() {
      --arg bug_ref "$bug_ref" \
      --argjson kinds "$kinds_json" \
      --arg persona "$persona" \
+     --arg nonui_reason "$nonui_reason" \
      --arg now "$now" \
   '
     .updated_at = $now |
@@ -192,6 +193,7 @@ upsert_jq() {
           .bug_ref        = (if $bug_ref == "" then null else $bug_ref end) |
           .kinds          = $kinds          |
           .persona        = $persona        |
+          .nonUiActionReason = (if $nonui_reason == "" then null else $nonui_reason end) |
           .checkpointed_at = $now
         else . end
       ]
@@ -206,6 +208,7 @@ upsert_jq() {
         "bug_ref":        (if $bug_ref == "" then null else $bug_ref end),
         "kinds":          $kinds,
         "persona":        $persona,
+        "nonUiActionReason": (if $nonui_reason == "" then null else $nonui_reason end),
         "checkpointed_at": $now
       }]
     end
@@ -232,12 +235,12 @@ upsert_jq() {
 upsert_py() {
   local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
   local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
-  local persona="${10}"
+  local persona="${10}" nonui_reason="${11}"
   local now
   now="$(ts)"
 
   python3 - "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$persona" "$now" <<'PYEOF'
+            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason" "$now" <<'PYEOF'
 import json, sys
 
 def parse_json_or_die(raw, label):
@@ -254,7 +257,7 @@ def parse_json_or_die(raw, label):
         sys.exit(1)
 
 (file_path, cid, verdict, confidence, phase,
- last_action, evidence_refs_json, bug_ref, kinds_json, persona, now) = sys.argv[1:12]
+ last_action, evidence_refs_json, bug_ref, kinds_json, persona, nonui_reason, now) = sys.argv[1:13]
 evidence_refs = parse_json_or_die(evidence_refs_json, "evidence_refs")
 kinds = parse_json_or_die(kinds_json, "kinds")
 with open(file_path) as f:
@@ -269,6 +272,7 @@ entry = {
     "bug_ref":         bug_ref or None,
     "kinds":           kinds,
     "persona":         persona,
+    "nonUiActionReason": nonui_reason or None,
     "checkpointed_at": now,
 }
 data["updated_at"] = now
@@ -489,7 +493,8 @@ kind_artifact() {
     bake)     echo "bake-read-back.json" ;;
     computed) echo "recompute.json" ;;
     probe)    echo "network-response.json" ;;
-    *) die "Invalid kind '$1' in --kinds. Must be a CSV subset of: bake | computed | probe" ;;
+    human-action) echo "action-trace.json" ;;
+    *) die "Invalid kind '$1' in --kinds. Must be a CSV subset of: bake | computed | probe | human-action" ;;
   esac
 }
 
@@ -502,6 +507,7 @@ kind_required_keys() {
     bake)     echo "readBack multiplicity" ;;
     computed) echo "oracle observed match" ;;
     probe)    echo "status shape ok" ;;
+    human-action) echo "steps" ;;
     *)        return 1 ;;
   esac
 }
@@ -591,11 +597,19 @@ sys.exit(0 if d.get('readBack') is not None else 1)" "$file" >/dev/null 2>&1
   fi
 }
 
+# NOTE: the human-action opt-out (--nonui-reason) is read directly from the
+# CURRENT cmd_upsert invocation and threaded through gate_pass → gate_value_check
+# (the gate runs BEFORE the record is written, so a persisted-record lookup would
+# always be empty). There is deliberately no record-lookup helper here.
+
 # Validate the evidence VALUE (not just key presence) for one kind. Returns 0
 # if consistent with a `pass`; returns 1 (having already printed a
-# gate_reject_value message) otherwise.
+# gate_reject_value message) otherwise. $5 (persona) is OPTIONAL and is only
+# consulted by the human-action branch (to look up a logged nonUiActionReason
+# opt-out); run_id is recovered from $4 (full_path), which is always built as
+# "$(run_dir "$run_id")/${rel_path}" by the caller.
 gate_value_check() {
-  local crit_id="$1" kind="$2" rel_path="$3" full_path="$4"
+  local crit_id="$1" kind="$2" rel_path="$3" full_path="$4" persona="${5:-}" nonui_reason="${6:-}"
   case "$kind" in
     computed)
       if ! json_value_is_true "$full_path" "match"; then
@@ -615,6 +629,18 @@ gate_value_check() {
         return 1
       fi
       ;;
+    human-action)
+      # Delegate the act/observe + session.md reconciliation to the Node unit
+      # (Check 0∧1∧2). --allow-nonui when THIS invocation carries a tool-limit
+      # opt-out (--nonui-reason). The reason must come from the current CLI flag,
+      # NOT a persisted-record lookup: the gate runs BEFORE the record is written,
+      # so a record lookup would always be empty (the opt-out would be dead).
+      local allow=""
+      if [[ -n "$nonui_reason" ]]; then allow="--allow-nonui"; fi
+      if ! node "$(dirname "${BASH_SOURCE[0]}")/check-action-trace.js" "$full_path" $allow; then
+        return 1   # check-action-trace.js already printed the reason to stderr
+      fi
+      ;;
   esac
   return 0
 }
@@ -629,7 +655,7 @@ gate_value_check() {
 # gate_reject message) on the FIRST failure — called before any record is
 # written, so a rejected pass mutates nothing.
 gate_pass() {
-  local run_id="$1" crit_id="$2" kinds_csv="$3" persona="${4:-}"
+  local run_id="$1" crit_id="$2" kinds_csv="$3" persona="${4:-}" nonui_reason="${5:-}"
   local kind artifact rel_path full_path required_keys key
 
   local -a kinds_arr
@@ -648,9 +674,9 @@ gate_pass() {
     # $artifact, producing a second, fabricated "missing" reject message.
     # Fail fast here instead, with exactly one message.
     case "$kind" in
-      bake|computed|probe) ;;
+      bake|computed|probe|human-action) ;;
       *)
-        echo "EVIDENCE GATE: unknown kind '${kind}' in --kinds (allowed: bake|computed|probe)." >&2
+        echo "EVIDENCE GATE: unknown kind '${kind}' in --kinds (allowed: bake|computed|probe|human-action)." >&2
         return 1
         ;;
     esac
@@ -687,7 +713,7 @@ gate_pass() {
     # value-aware check: reject a `pass` whose evidence VALUE contradicts it
     # (e.g. computed.match:false, probe.ok:false, bake.readBack:null with
     # non-zero multiplicity) — presence alone is not enough.
-    gate_value_check "$crit_id" "$kind" "$rel_path" "$full_path" || return 1
+    gate_value_check "$crit_id" "$kind" "$rel_path" "$full_path" "$persona" "$nonui_reason" || return 1
   done
 
   return 0
@@ -713,12 +739,14 @@ cmd_upsert() {
   local bug_ref=""
   local kinds_csv=""
   local persona=""
+  local nonui_reason=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --confidence)   confidence="$2";    shift 2 ;;
       --phase)        phase="$2";         shift 2 ;;
       --last-action)  last_action="$2";   shift 2 ;;
+      --nonui-reason) nonui_reason="$2";  shift 2 ;;
       --evidence-refs)
         # Accept comma-separated paths or a raw JSON array. Both paths now
         # go through a PROPER encoder/validator (Fix 27) instead of the old
@@ -742,6 +770,13 @@ cmd_upsert() {
   # persona-scoped path building. Empty persona ("" / omitted) is fine —
   # that's the back-compat no-persona case.
   [[ -n "$persona" ]] && validate_token "$persona" "--persona"
+
+  # A logged --nonui-reason is a tool-limitation opt-out (F4/§2E): the
+  # UI-impossibility is disclosed, not proven equivalent, so confidence is
+  # FORCED low regardless of any --confidence the caller passed — this is
+  # what makes criterion_has_nonui_reason's downstream --allow-nonui widening
+  # of the human-action gate safe to grant.
+  [[ -n "$nonui_reason" ]] && confidence="low"
 
   # Validate verdict
   case "$verdict" in
@@ -767,7 +802,7 @@ cmd_upsert() {
     if [[ -z "$kinds_csv" ]]; then
       echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
     else
-      gate_pass "$run_id" "$crit_id" "$kinds_csv" "$persona" || exit 1
+      gate_pass "$run_id" "$crit_id" "$kinds_csv" "$persona" "$nonui_reason" || exit 1
     fi
   fi
 
@@ -779,10 +814,10 @@ cmd_upsert() {
 
   if has_jq; then
     upsert_jq "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason"
   elif has_py; then
     upsert_py "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona"
+              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason"
   else
     die "checkpoint.sh needs either 'jq' or 'python3' to update JSON safely; neither was found on PATH."
   fi

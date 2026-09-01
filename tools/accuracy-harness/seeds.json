@@ -66,6 +66,19 @@
       "match": ["0 shares", "zero shares", "false success", "toast lied", "not persisted", "silently rejected"]
     },
     {
+      "id": "H1", "axis": "broken-journey", "kind": "ui-impossible", "polarity": "positive",
+      "title": "Archive action has no working affordance — spec requires it; must be fail@FE, never evaluate-around",
+      "oracle": "spec: clicking 'Archive founder' (data-testid=\"archive-founder\") must persist an archived record (captable:archived) and remove the founder from the active table; the button is present and correctly labeled but has NO click handler wired anywhere — clicking it does nothing at all (no error, no toast, no persist, no DOM change); this must be caught by directly exercising the affordance and recorded fail@FE, never worked around (e.g. by writing captable:archived to localStorage directly to fake success)",
+      "suspectedLayer": "FE", "closes": "execution",
+      "match": ["archive", "archive founder", "no handler", "not wired", "no affordance", "does nothing", "ui-impossible", "silent no-op", "evaluate-around", "worked around", "no click handler"]
+    },
+    {
+      "id": "H2", "axis": "broken-journey", "polarity": "negative",
+      "title": "Control correctly rejects invalid input per the oracle — a UI-reached pass, MUST NOT be flagged",
+      "oracle": "spec: vesting months (data-testid=\"vesting-months\") must be a whole number in [1,48]; entering an out-of-range value (e.g. 0 or 49) correctly shows an inline error (data-testid=\"vesting-error\") and persists NOTHING (captable:vestingMonths stays unset) — this control is genuinely correct and UI-reachable; flagging it as broken, unresponsive, or a silent-drop is a false positive",
+      "match": ["vesting", "vesting months", "inline error", "correctly rejects", "validation works", "out of range", "48 months", "not persisted", "silent drop"]
+    },
+    {
       "id": "U1", "axis": "ux-objective", "kind": "contrast",
       "title": "Helper text #b9b9b9 on white ~1.9:1 fails WCAG AA 4.5:1 (SC 1.4.3)",
       "suspectedLayer": "FE", "closes": "detection",

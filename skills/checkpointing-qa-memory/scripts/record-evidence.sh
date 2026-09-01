@@ -7,11 +7,16 @@
 #   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
 #   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
+#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>]
+#     --session-log + --session-from  DERIVE sessionCalls from the REAL session.md
+#       (independent ground truth) by running parse-session-log.js and slicing from
+#       N. This OVERRIDES --session-calls and is the tamper-evident path; prefer it.
 #
 # kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
 #   probe    -> network-response.json { status, shape, ok, ... }
+#   action-trace -> action-trace.json { actionUnderTest, steps, sessionCalls }
 #
 # `--ok` on kind 'probe' is the agent's own judgment that the probe CONFIRMED
 # its expectation — it is NOT a raw status-code check. A cross-role ABSENCE
@@ -133,7 +138,8 @@ artifact_for_kind() {
     bake)     echo "bake-read-back.json" ;;
     computed) echo "recompute.json" ;;
     probe)    echo "network-response.json" ;;
-    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe" ;;
+    action-trace) echo "action-trace.json" ;;
+    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace" ;;
   esac
 }
 
@@ -259,6 +265,37 @@ with open(file_path, "w") as f:
 PYEOF
 }
 
+# action-trace stores steps/sessionCalls as parsed JSON arrays and
+# actionUnderTest as a plain string — mirrors write_py_bake/_computed/_probe's
+# smart() dance so the python3 fallback path produces JSON byte-identical (up
+# to key order, which json.dump preserves the same as the jq writer's field
+# order) to the jq path (Fix #27 parity discipline).
+write_py_action_trace() {
+  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" <<'PYEOF'
+import json, sys
+file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints = sys.argv[1:9]
+def smart(v):
+    try:
+        return json.loads(v)
+    except (json.JSONDecodeError, ValueError):
+        return v
+data = {
+    "criterion_id": crit_id,
+    "run_id": run_id,
+    "kind": "action-trace",
+    "recorded_at": now,
+    "actionUnderTest": smart(action),
+    "steps": smart(steps),
+    "sessionCalls": smart(session_calls),
+}
+if fingerprints:
+    data["fingerprints"] = smart(fingerprints)
+with open(file_path, "w") as f:
+    json.dump(data, f, indent=2)
+PYEOF
+}
+
 # ---------------------------------------------------------------------------
 # per-kind dispatch
 # ---------------------------------------------------------------------------
@@ -358,6 +395,90 @@ cmd_probe() {
   echo "$(evidence_dir_rel "$crit_id" "$persona")/network-response.json"
 }
 
+cmd_action_trace() {
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
+  local steps="" session_calls="[]" action="" have_steps=0
+  local session_log="" session_from="0"
+  local fp_before="" fp_after="" have_fp=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --steps)              steps="$2";         have_steps=1; shift 2 ;;
+      --session-calls)      session_calls="$2"; shift 2 ;;
+      --session-log)        session_log="$2";   shift 2 ;;
+      --session-from)       session_from="$2";  shift 2 ;;
+      --fingerprint-before) fp_before="$2";     have_fp=1; shift 2 ;;
+      --fingerprint-after)  fp_after="$2";      have_fp=1; shift 2 ;;
+      --action)             action="$2";        shift 2 ;;
+      *) die "Unknown option for kind 'action-trace': $1" ;;
+    esac
+  done
+  [[ "$have_steps" -eq 1 ]] || die "kind 'action-trace' requires --steps <json-array>"
+
+  # Optional before/after persisted-state fingerprints for Check 3 (the
+  # tool-agnostic net that catches arbitrary non-UI mutators). Built into a
+  # {before, after} object stored as `fingerprints`. Values are stored as parsed
+  # JSON when they look like JSON, else as raw strings (same idiom as the rest).
+  local fingerprints=""
+  if [[ "$have_fp" -eq 1 ]]; then
+    if has_jq; then
+      fingerprints="$(jq -cn --arg b "$fp_before" --arg a "$fp_after" \
+        '{before: ($b | try fromjson catch $b), after: ($a | try fromjson catch $a)}')"
+    else
+      fingerprints="$(FP_B="$fp_before" FP_A="$fp_after" python3 -c "import json,os
+def smart(v):
+    try: return json.loads(v)
+    except Exception: return v
+print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ['FP_A'])}))")"
+    fi
+  fi
+
+  # TAMPER-EVIDENCE: when --session-log is given, DERIVE sessionCalls by running
+  # parse-session-log.js on the REAL server-written session.md and slicing from
+  # --session-from N (the per-criterion delta boundary the driver recorded). This
+  # is the independent ground truth — it overrides any agent-supplied
+  # --session-calls, so an agent cannot pass by simply omitting a mutating call
+  # from a hand-written JSON array (final-review finding #2).
+  if [[ -n "$session_log" ]]; then
+    [[ -f "$session_log" ]] || die "--session-log file not found: $session_log"
+    [[ "$session_from" =~ ^[0-9]+$ ]] || die "--session-from must be a non-negative integer"
+    local parse_js all
+    parse_js="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../driving-browser-qa/scripts" && pwd)/parse-session-log.js"
+    [[ -f "$parse_js" ]] || die "parse-session-log.js not found at $parse_js"
+    all="$(node "$parse_js" "$session_log")" || die "parse-session-log.js failed on $session_log"
+    # N1: bound --session-from against the ACTUAL parsed length. An agent-supplied
+    # N past the end would silently yield an empty slice, neutralizing the whole
+    # tamper-evidence (a concealed call would never be derived). Refuse it.
+    local total
+    if has_jq; then total="$(printf '%s' "$all" | jq 'length')"; else total="$(printf '%s' "$all" | python3 -c "import json,sys;print(len(json.load(sys.stdin)))")"; fi
+    [[ "$session_from" -le "$total" ]] || die "--session-from ($session_from) exceeds the session.md call count ($total) — refusing to derive an empty (tamper-hiding) slice"
+    if has_jq; then
+      session_calls="$(printf '%s' "$all" | jq -c ".[${session_from}:]")" || die "failed to slice session calls from $session_from"
+    else
+      session_calls="$(printf '%s' "$all" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)[${session_from}:]))")" || die "failed to slice session calls from $session_from"
+    fi
+  fi
+
+  ensure_evidence_dir "$run_id" "$crit_id" "$persona"
+  local file
+  file="$(evidence_dir "$run_id" "$crit_id" "$persona")/action-trace.json"
+
+  if has_jq; then
+    if [[ -n "$fingerprints" ]]; then
+      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" fingerprints "$fingerprints"
+    else
+      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls"
+    fi
+  elif has_py; then
+    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints"
+  else
+    die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
+  fi
+
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/action-trace.json"
+}
+
 # Scan the remaining args ($@, after run-id/criterion-id/kind) for an
 # optional `--persona <id>` pair anywhere in the list, removing it and
 # leaving the rest untouched (order-preserving) for the per-kind parsers.
@@ -390,7 +511,7 @@ strip_persona() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe"
+  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace"
 
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
@@ -415,6 +536,7 @@ main() {
     bake)     cmd_bake "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     computed) cmd_computed "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     probe)    cmd_probe "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    action-trace) cmd_action_trace "$run_id" "$crit_id" "$PERSONA" "$@" ;;
   esac
 }
 

@@ -1,5 +1,7 @@
 # HITL frontier-in-rounds — a reusable pattern for tree-shaped confirmation
 
+> **Now executable:** this round pattern is implemented and tested as `skills/confirming-discovered-roles/scripts/frontier.js` (`computeFrontier`/`applyAnswers`/`recommendedDefault`/`budgetExceeded`); `confirming-discovered-roles` drives the rounds around it. See `tests/frontier/run.sh`.
+
 ## What this is (and isn't)
 
 This is a **native, from-scratch reimplementation of a grilling-style
@@ -66,6 +68,17 @@ reach for rounds when one flat batch of questions already covers the case.
 - `onDrop(item)` → `status: "dropped"` (only meaningful for items that may be
   removed entirely, e.g. a proposed role the human doesn't want tested).
 
+**Concrete-engine mapping.** `frontier.js`'s tree node is
+`{ id, prereqs, default }` — `prereqs` is this schema's `dependsOn`,
+`default` is this schema's `recommendedDefault`. frontier.js has no
+`sourceCitation` or `status` field at all; those are consuming-skill
+bookkeeping layered on top for rendering, not part of what gets passed to
+`computeFrontier`. `status: "dropped"` in particular has no counterpart in
+the engine — see `confirming-discovered-roles`' own "Engine (frontier.js)"
+section for how a drop is modeled (the id is simply never added to
+`settled`, and the consuming skill tracks a `decided` set so a dropped id
+is not re-rendered by a later `computeFrontier` call).
+
 ## The algorithm
 
 1. **Build the tree.** Before rendering anything, static-analysis/subagent
@@ -83,6 +96,9 @@ reach for rounds when one flat batch of questions already covers the case.
 5. **Recompute.**
    - Any node whose `dependsOn` includes a `dropped` id is itself dropped —
      removed from the tree entirely, never rendered, never orphaned.
+     (Against the concrete engine this means the id is simply never added
+     to `settled`, not a literal deletion from `tree.nodes` — see the
+     concrete-engine mapping above.)
    - Any node whose `dependsOn` includes an `edited` id has its
      `recommendedDefault` regenerated (re-run the discovery/recommendation
      logic using the edited value as input) before it is ever shown. A node
