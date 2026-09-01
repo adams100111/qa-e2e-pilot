@@ -63,9 +63,11 @@ the observe-round, and the UX detectors all depend on it and are never flagged.
 
 ### Driver launch + per-criterion delta-slice
 
-The managed Playwright MCP driver is launched with **`--save-session`** (in the plugin's
-`.mcp.json`). It writes a SINGLE per-run `session.md` into a per-session subdir of the MCP
-output dir — the newest **`.playwright-mcp/session-*/session.md`** (find it with
+**Opt-in — only when the Playwright MCP is run with `--save-session`.** The default managed
+instance does NOT set it; if the driver's Playwright MCP is configured with `--save-session`
+(add it to that server's args), Check 0 becomes available. When active, it writes a SINGLE
+per-run `session.md` into a per-session subdir of the MCP output dir — the newest
+**`.playwright-mcp/session-*/session.md`** (find it with
 `ls -dt .playwright-mcp/session-*/ | head -1`); every criterion's calls append to that one file.
 The saved format is **`### Tool call: <name>` sections, each carrying the executed Playwright
 code in its `- Result` JSON `code` field** (e.g. `{"code":"await page.locator('#add').click();"}`) —
