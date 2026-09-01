@@ -16,6 +16,7 @@ This repo is a **Claude Code plugin**, not an app. It ships an agent, a command,
 - **Verification is sequential by default** (ADR-0003). Parallel fan-out is opt-in, only for tagged independent/read-only criteria + deliberate race tests, capped at `maxParallel`.
 - **Probing is read-only** unless `allowApiWrites` *and* the disposable-env marker are set. **Secrets never printed.**
 - **Browser tools are called by capability**, naming the Playwright MCP tool in parens (e.g. `browser_snapshot`). New drivers drop in via config, not code.
+- **The action-under-test is performed through real UI affordances only** (ADR-0015). `human-action` is an evidence **kind**, never a verdict. The act phase uses human-path tools (click/type/…); a mutating `browser_evaluate`/`route`/direct write on the act path is a workaround the gate rejects. A UI-impossible action is `fail@FE` (confidence high); a genuine tool limitation is a logged `--nonui-reason` opt-out (confidence low). Never weaken the gate to force a `pass` through.
 
 ## Layout
 
@@ -36,7 +37,9 @@ scripts/{install.sh,skills.json}                 manual + npx install paths
 - Bundle **scripts** (executed) and **templates** (copied) — don't inline large artifacts into the body.
 - Include **≥3 mini-evals** drawn from the 14 real session bugs (see the plan / the existing skills for the bug list).
 
-There are **11 skills** (9 core + v1.1 `fanning-out-criteria` and spec-kit `ingesting-spec-kit`). Top-level `scripts/` (not skills): `report-to-junit.sh` (CI export), `qa-ci.sh` (turnkey CI: preflight→agent→junit, pluggable via `QA_AGENT_CMD`/`QA_PREFLIGHT_CMD`), `memory-sync.sh` (gated Mem0/vector write-through of durable artifacts only). Drivers map to tools via `skills/driving-browser-qa/references/driver-capabilities.md`. Docs `running-in-ci.md` and `extending-drivers.md` cover later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
+There are **16 skills**: the 9 core verification skills + `fanning-out-criteria` + spec-kit `ingesting-spec-kit` + role discovery (`discovering-user-roles`, `confirming-discovered-roles`) + `detecting-stack-profile` + `detecting-visual-ux` + `bootstrapping-qa-config`. Top-level `scripts/` (not skills): `report-to-junit.sh` (CI export), `qa-ci.sh` (turnkey CI: preflight→agent→junit, pluggable via `QA_AGENT_CMD`/`QA_PREFLIGHT_CMD`), `memory-sync.sh` (gated Mem0/vector write-through of durable artifacts only). Drivers map to tools via `skills/driving-browser-qa/references/driver-capabilities.md`. Docs `running-in-ci.md` and `extending-drivers.md` cover later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
+
+**Human-interaction discipline (ADR-0015).** State-mutating criteria are tagged `human-action`; their `pass` is gated by `checkpoint.sh` reconciling the recorded act-trace against Playwright MCP's independent `--save-session` log (`parse-session-log.js` / `check-action-trace.js`) + mandatory before/after state fingerprints. The act phase is UI-only; a UI-impossible action is `fail@FE` (confidence high), not a workaround; a genuine tool limitation is a logged low-confidence `--nonui-reason` opt-out. See `skills/driving-browser-qa/references/interaction-discipline.md`.
 
 ## Bundled scripts depend on jq OR python3
 

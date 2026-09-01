@@ -41,8 +41,8 @@ commands/         qa-run.md            — /qa-run <target> [checklist|spec]
 skills/           16 skills (see below)
 scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
 .qa/              config.json.example + per-run output
-docs/adr/         0001–0005 architecture decisions
-docs/             running-in-ci.md · extending-drivers.md
+docs/adr/         0001–0015 architecture decisions
+docs/             running-in-ci.md · extending-drivers.md · superpowers/{specs,plans}/
 CONTEXT.md        the ubiquitous language (read this first)
 ```
 
@@ -50,14 +50,16 @@ CONTEXT.md        the ubiquitous language (read this first)
 
 | Phase | Skill | Does |
 |---|---|---|
-| 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one (infer + ask only the gaps + write it)** |
+| 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config`, `discovering-user-roles`, `confirming-discovered-roles` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one.** Discover the project's roles and confirm each persona + its authz scope (3-round HITL → `personas[]` + `authz-matrix.json`); each run selects which personas/scenarios run |
 | 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep) |
-| 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle |
-| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `fanning-out-criteria` | drive → bake → recompute/reconcile → probe → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
+| 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle; state-mutating criteria are tagged `human-action` |
+| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
 | 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
-| 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/` |
+| 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/`; the evidence gate rejects an unevidenced/contradicted `pass` |
 
-Every skill carries ≥3 mini-evals drawn from the 14 real bugs.
+Every skill carries ≥3 mini-evals drawn from the real session bugs.
+
+**Human-interaction discipline (ADR-0015).** The agent QAs like a human tester: it performs each action-under-test **only through genuine UI affordances** (click/type/…), never via `browser_evaluate`-set / API / terminal / direct state. If a spec'd action can't be done through the real UI, that **is a bug** (`fail@FE`, confidence high) — not something to force. This is machine-enforced: a `human-action` criterion's `pass` is gated (`checkpoint.sh`) by reconciling the recorded act against Playwright MCP's **independent `--save-session` log** and a state-fingerprint check, so a concealed non-UI workaround (DOM/storage/network/framework/opaque mutator) is rejected. A genuine tool limitation is a logged, low-confidence opt-out. See `docs/adr/0015-human-interaction-discipline.md` for the checks and the honest residual-trust boundary.
 
 ---
 
