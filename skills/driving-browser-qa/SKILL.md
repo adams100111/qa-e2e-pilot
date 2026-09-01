@@ -63,13 +63,15 @@ the observe-round, and the UX detectors all depend on it and are never flagged.
 
 ### Driver launch + per-criterion delta-slice
 
-Launch the managed Playwright MCP driver with **`--save-session`**. It writes generated
-Playwright code to a SINGLE per-run `session.md` in the MCP output dir (default
-`./.playwright-mcp/session.md`) — every criterion's calls are appended to the same file.
-**`session.md` records Playwright CODE, not MCP tool names** (e.g.
-`await page.locator('#add').click();`), so `scripts/parse-session-log.js` classifies each
-block by code pattern into `{class, mutating, code}` — the classifier that bridges the two
-representations (agent-reported tool calls vs. the independent code log).
+The managed Playwright MCP driver is launched with **`--save-session`** (in the plugin's
+`.mcp.json`). It writes a SINGLE per-run `session.md` into a per-session subdir of the MCP
+output dir — the newest **`.playwright-mcp/session-*/session.md`** (find it with
+`ls -dt .playwright-mcp/session-*/ | head -1`); every criterion's calls append to that one file.
+The saved format is **`### Tool call: <name>` sections, each carrying the executed Playwright
+code in its `- Result` JSON `code` field** (e.g. `{"code":"await page.locator('#add').click();"}`) —
+NOT the interactive `Ran Playwright code` ```js shape. `scripts/parse-session-log.js` extracts each
+Result's `code` and classifies it into `{class, mutating, code}` — the classifier that bridges the
+two representations (agent-reported tool calls vs. the independent code log).
 
 Because the file is per-run, not per-criterion, each criterion must be **sliced out of it** — and the slice must be derived from the REAL file by the evidence writer, not hand-transcribed (tamper-evidence, ADR-0015 / final-review #2):
 

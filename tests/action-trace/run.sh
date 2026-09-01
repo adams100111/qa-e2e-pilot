@@ -16,21 +16,25 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 # Real @playwright/mcp@0.0.79 format: sections titled "Ran Playwright code" with
 # a ```js block of generated Playwright code (NOT tool names).
 cat > "$WORK/session.md" <<'MD'
-### Ran Playwright code
-```js
-await page.locator('#name').fill('Alice');
+### Tool call: call
+- Result
+```json
+{"code": "await page.locator('#name').fill('Alice');"}
 ```
-### Ran Playwright code
-```js
-await page.locator('#add').click();
+### Tool call: call
+- Result
+```json
+{"code": "await page.locator('#add').click();"}
 ```
-### Ran Playwright code
-```js
-await page.evaluate(() => getComputedStyle(document.body).color);
+### Tool call: call
+- Result
+```json
+{"code": "await page.evaluate(() => getComputedStyle(document.body).color);"}
 ```
-### Ran Playwright code
-```js
-await page.evaluate(() => localStorage.setItem('captable:founders','[]'));
+### Tool call: call
+- Result
+```json
+{"code": "await page.evaluate(() => localStorage.setItem('captable:founders','[]'));"}
 ```
 MD
 PARSED="$(node "$PARSE" "$WORK/session.md")"
@@ -141,13 +145,15 @@ check "checkpoint: opt-out persisted nonUiActionReason" "$(cd "$WORK" && get ".q
 #     --session-log overrides an agent's hidden --session-calls '[]' ---
 RID4="ht-4"
 cat > "$WORK/session4.md" <<'MD'
-### Ran Playwright code
-```js
-await page.locator('#add').click();
+### Tool call: call
+- Result
+```json
+{"code": "await page.locator('#add').click();"}
 ```
-### Ran Playwright code
-```js
-await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}));
+### Tool call: call
+- Result
+```json
+{"code": "await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}));"}
 ```
 MD
 ( cd "$WORK" && bash "$REC" "$RID4" C5 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[]' --session-log "$WORK/session4.md" --session-from 0 --action "add" >/dev/null )
@@ -166,13 +172,15 @@ RID5="ht-5"
 # --- capstone re-review regressions (N1/N2/R1) ---
 # N1: --session-from past the log length must be REFUSED (not a silent empty slice)
 cat > "$WORK/session6.md" <<'MD'
-### Ran Playwright code
-```js
-await page.locator('#add').click();
+### Tool call: call
+- Result
+```json
+{"code": "await page.locator('#add').click();"}
 ```
-### Ran Playwright code
-```js
-await page.evaluate(() => fetch('/api/items',{method:'POST'}));
+### Tool call: call
+- Result
+```json
+{"code": "await page.evaluate(() => fetch('/api/items',{method:'POST'}));"}
 ```
 MD
 ( cd "$WORK" && bash "$REC" "$RID5" C8 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-log "$WORK/session6.md" --session-from 999 --fingerprint-before 0 --fingerprint-after 0 >/dev/null 2>&1 ); check "record: --session-from past end is refused (N1)" "$([[ $? -ne 0 ]] && echo yes)" "yes"

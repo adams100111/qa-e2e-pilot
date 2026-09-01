@@ -2,12 +2,14 @@
 /*
  * parse-session-log.js — read a Playwright MCP `--save-session` session.md and
  * emit the ordered calls as classified JSON `[{class, mutating, code}]`.
- * Dependency-free. VERIFIED format (@playwright/mcp@0.0.79,
- * playwright-core/lib/coreBundle.js): each executed step is a section titled
- * "Ran Playwright code" followed by a ```js fenced block of GENERATED PLAYWRIGHT
- * CODE (e.g. `await page.locator('#add').click();`) — NOT MCP tool names. So we
- * classify by code pattern, and (crucially) flag `mutating` ONLY when the code
- * writes app state, so read-only observation evaluate is never a workaround.
+ * Dependency-free. VERIFIED against the REAL saved file (@playwright/mcp@0.0.79):
+ * each executed step is a section "### Tool call: <name>" whose "- Result"
+ * fenced-json block carries the generated Playwright code in a `code` field
+ * (e.g. {"code":"await page.locator('#add').click();", ...}) — NOT MCP tool
+ * names, and NOT the "Ran Playwright code" ```js shape (that is the INTERACTIVE
+ * response, not the saved file). We extract each Result's `code`, classify by
+ * code pattern, and flag `mutating` ONLY when the code writes app state, so
+ * read-only observation evaluate is never a workaround.
  *
  * The `classify(code)` here is the SINGLE source of truth also used by
  * check-action-trace.js for act-phase evaluate payloads (Check 2) — keep them
@@ -49,19 +51,26 @@ function classify(code) {
 function parse(md) {
   const text = String(md || '');
   const calls = [];
-  // Match each "Ran Playwright code" section's fenced js code block. The fence
-  // marker is built from char codes so this SOURCE contains no literal triple
-  // backtick (keeps the code copy-pasteable inside a markdown code block).
-  const FENCE = String.fromCharCode(96, 96, 96); // three backticks
-  const re = new RegExp('Ran Playwright code[\\s\\S]*?' + FENCE + '(?:js|javascript)?\\s*([\\s\\S]*?)' + FENCE, 'g');
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const code = m[1].trim();
-    if (code) calls.push(classify(code));
+  const FENCE = String.fromCharCode(96,96,96); // three backticks (kept out of source literally)
+  // REAL @playwright/mcp --save-session format: one "### Tool call: <name>"
+  // section per call; the executed Playwright code is the `code` field inside
+  // that call's "- Result" fenced-json block (NOT a "Ran Playwright code" js
+  // block — that is the interactive response format, not the saved file).
+  const sections = text.split(/^###\s+Tool call:/m).slice(1);
+  const reJson = new RegExp(FENCE + 'json\\s*([\\s\\S]*?)' + FENCE);
+  for (let k = 0; k < sections.length; k++) {
+    const sec = sections[k];
+    const rIdx = sec.indexOf('- Result');
+    if (rIdx < 0) continue;
+    const m = sec.slice(rIdx).match(reJson);
+    if (!m) continue;
+    let code = '';
+    try { const obj = JSON.parse(m[1]); code = typeof obj.code === 'string' ? obj.code : ''; }
+    catch (e) { continue; }
+    if (code.trim()) calls.push(classify(code));
   }
   return calls;
 }
-
 if (require.main === module) {
   const p = process.argv[2];
   if (!p) { process.stderr.write('usage: parse-session-log.js <session.md>\n'); process.exit(2); }
