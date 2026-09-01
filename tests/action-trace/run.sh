@@ -64,6 +64,23 @@ cat > "$WORK/readact.json" <<'J'
 J
 node "$CHECK" "$WORK/readact.json"; check "check: read-only evaluate on act allowed" "$?" "0"
 
+# --- CRITICAL regression: a concealed NON-DOM write on the act path (backend
+#     fetch POST / XHR / framework dispatch) must be caught by the mutation lint,
+#     not just DOM/storage writes (final-review Critical) ---
+cat > "$WORK/fetchact.json" <<'J'
+{"actionUnderTest":"create item","steps":[{"tool":"browser_evaluate","target":"post","phase":"act","payload":"fetch('/api/items',{method:'POST',body:'{}'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}))"}]}
+J
+node "$CHECK" "$WORK/fetchact.json" 2>/dev/null; check "check: backend fetch POST on act rejected (network-write lint)" "$?" "1"
+cat > "$WORK/dispatchact.json" <<'J'
+{"actionUnderTest":"add via store","steps":[{"tool":"browser_evaluate","target":"dispatch","phase":"act","payload":"store.dispatch({type:'ADD_ITEM'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => store.dispatch({type:'ADD_ITEM'}))"}]}
+J
+node "$CHECK" "$WORK/dispatchact.json" 2>/dev/null; check "check: framework store.dispatch on act rejected" "$?" "1"
+# a read-only GET fetch on the act path stays allowed (must NOT false-reject)
+cat > "$WORK/getfetch.json" <<'J'
+{"actionUnderTest":"read list","steps":[{"tool":"browser_evaluate","target":"get","phase":"act","payload":"fetch('/api/items').then(r=>r.json())"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"await page.evaluate(() => fetch('/api/items'))"}]}
+J
+node "$CHECK" "$WORK/getfetch.json"; check "check: read-only GET fetch on act allowed (no false-reject)" "$?" "0"
+
 # --- a RECORDED mutating evaluate (e.g. arrange seed) covers its session twin --
 cat > "$WORK/recorded.json" <<'J'
 {"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem('seed','1')"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('seed','1')"},{"class":"human-path","mutating":true,"code":"await page.locator('#add').click()"}]}
