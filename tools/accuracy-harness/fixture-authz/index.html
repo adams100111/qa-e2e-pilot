@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grants Portal</title>
+<style>
+  body { font-family: system-ui, sans-serif; color:#1a1a1a; margin:0; padding:24px; max-width:820px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#555; font-size:13px; margin-bottom:16px; }
+  section { border:1px solid #e2e2e2; border-radius:8px; padding:16px; margin-bottom:18px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  button { background:#2563eb; color:#fff; border:0; border-radius:6px; padding:7px 12px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#eee; color:#222; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:13px; }
+  th,td { border-bottom:1px solid #e2e2e2; text-align:left; padding:6px 8px; }
+  .who { font-weight:600; }
+  .empty { color:#777; font-style:italic; font-size:13px; }
+</style>
+</head>
+<body>
+  <h1>Grants Portal</h1>
+  <div class="sub">Backend = localStorage. Log in as a user; each user belongs to a team. You should only see YOUR team's grant submissions.</div>
+
+  <section id="login">
+    <h2>Session</h2>
+    <div>Signed in as: <span class="who" id="who" data-testid="current-user">(not signed in)</span></div>
+    <div style="margin-top:8px">
+      <button id="login-alice" data-testid="login-alice">Log in as Alice (Team Alpha)</button>
+      <button id="login-bob"   data-testid="login-bob" class="secondary">Log in as Bob (Team Beta)</button>
+      <button id="logout"      data-testid="logout" class="secondary">Log out</button>
+    </div>
+  </section>
+
+  <section id="submissions">
+    <h2>Grant submissions (your team only)</h2>
+    <table id="sub-table" data-testid="submissions-table">
+      <thead><tr><th>ID</th><th>Title</th><th>Owning team</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="sub-empty" data-testid="submissions-empty">Sign in to view submissions.</p>
+  </section>
+
+  <section id="announcements">
+    <h2>Public announcements (shared by design)</h2>
+    <table id="ann-table" data-testid="announcements-table">
+      <thead><tr><th>ID</th><th>Message</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+<script>
+  // ---- seed data (once) ----
+  const DB = {
+    get(k){ try { return JSON.parse(localStorage.getItem('authz:'+k)); } catch(e){ return null; } },
+    set(k,v){ localStorage.setItem('authz:'+k, JSON.stringify(v)); }
+  };
+  if (!DB.get('seeded')) {
+    DB.set('users', { alice:{ name:'Alice', team:'team-alpha' }, bob:{ name:'Bob', team:'team-beta' } });
+    DB.set('submissions', [
+      { id:'S1', title:'Alpha Series A grant', team:'team-alpha' },
+      { id:'S2', title:'Beta seed grant',      team:'team-beta'  },
+      { id:'S3', title:'Alpha bridge grant',   team:'team-alpha' }
+    ]);
+    DB.set('announcements', [ { id:'A1', msg:'Portal maintenance Sunday' }, { id:'A2', msg:'New grant cycle open' } ]);
+    DB.set('seeded', true);
+  }
+
+  function currentUser(){ return DB.get('session'); }
+
+  function render(){
+    const u = currentUser();
+    const users = DB.get('users') || {};
+    document.getElementById('who').textContent = u ? (users[u].name + ' — ' + users[u].team) : '(not signed in)';
+
+    const subs = DB.get('submissions') || [];
+    const tb = document.querySelector('#sub-table tbody');
+    const empty = document.getElementById('sub-empty');
+    tb.innerHTML = '';
+    if (!u) { empty.style.display=''; empty.textContent='Sign in to view submissions.'; }
+    else {
+      const myTeam = users[u].team;
+      // AUTHZ LEAK (seed): Bob (team-beta) is NOT filtered — he sees ALL teams' submissions,
+      // including team-alpha's S1/S3. Alice IS correctly filtered to her own team.
+      const visible = (u === 'bob') ? subs : subs.filter(s => s.team === myTeam);
+      empty.style.display = visible.length ? 'none' : '';
+      if (!visible.length) empty.textContent = 'No submissions for your team.';
+      for (const s of visible) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>'+s.id+'</td><td>'+s.title+'</td><td>'+s.team+'</td>';
+        tr.setAttribute('data-testid','sub-row-'+s.id);
+        tb.appendChild(tr);
+      }
+    }
+
+    const anns = DB.get('announcements') || [];
+    const atb = document.querySelector('#ann-table tbody');
+    atb.innerHTML = '';
+    for (const a of anns) { const tr=document.createElement('tr'); tr.innerHTML='<td>'+a.id+'</td><td>'+a.msg+'</td>'; atb.appendChild(tr); }
+  }
+
+  document.getElementById('login-alice').onclick = () => { DB.set('session','alice'); render(); };
+  document.getElementById('login-bob').onclick   = () => { DB.set('session','bob');   render(); };
+  document.getElementById('logout').onclick      = () => { localStorage.removeItem('authz:session'); render(); };
+  render();
+</script>
+</body>
+</html>

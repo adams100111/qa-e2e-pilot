@@ -1,0 +1,14 @@
+{
+  "source": "MEASURED multi-role authz run \u2014 grants-portal fixture, run-id authz-run",
+  "estimated": false,
+  "_attribution": "Cross-role leak AZ1 CAUGHT (Bob saw team-alpha S1/S3). AZN1 (Alice isolation) + AZN2 (shared announcements) correctly NOT flagged. Login via UI (discipline held). Persona-keyed evidence (ADR-0012).",
+  "findings": [
+    {
+      "verdict": "fail",
+      "suspectedLayer": "service",
+      "axis": "authz",
+      "text": "BUG-01 C2-bob-cross-team-leak: Cross-tenant isolation leak: submissions list is not scoped to the acting user's team \u2014 Bob (team-beta) is shown team-alpha submissions S1 and S3",
+      "judgedSeedId": "AZ1"
+    }
+  ]
+}
