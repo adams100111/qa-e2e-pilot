@@ -45,6 +45,48 @@ Read `drivers` from `.qa/config.json`. Default driver is the **managed Playwrigh
 
 Reference browser tools by **capability** — the Playwright MCP tool name is in parentheses so a new driver drops in by changing only the config. For the exact capability→tool mapping per driver (Playwright/CDP, Stagehand, browser-use) and which drivers lack the **diagnostic tier** (`evaluate`, console, network response body) the differentiators need, see [`references/driver-capabilities.md`](./references/driver-capabilities.md). Put any criterion whose verdict depends on baking / API reconciliation / probing on a driver with the diagnostic tier (Playwright/CDP); if a configured driver lacks a needed capability, record that step `blocked` — never a faked pass.
 
+## Interaction Discipline (ADR-0015)
+
+The agent acts as a human tester and never works around the UI to pass a criterion — see
+[`references/interaction-discipline.md`](./references/interaction-discipline.md) for the
+full Arrange/Act/Assert tool matrix, the UI-impossible→`fail@FE` decision procedure, the
+reconciliations of `react-set-input.js`/`click-by-text.js`/the F4 opt-out, and the driver
+rules (locator fallback order, `browser_route` governance, origin lists, web-first
+waiting). In one paragraph: on the **act** phase, only human-path tools
+(`browser_click`/`type`/`fill_form`/`press_key`/`select_option`/`hover`/`drag`/
+`file_upload` + real navigation) or a **read-only** `browser_evaluate` are allowed — a
+`browser_evaluate` that mutates (`.value =`, `.click()`, `.dispatchEvent(`, a storage/API
+write) on the act path is a workaround, gate-rejected by `checkpointing-qa-memory`'s
+`human-action` evidence kind unless the criterion carries a `nonUiActionReason`.
+Read-only `browser_evaluate` is always OBSERVE and always allowed, on any phase — baking,
+the observe-round, and the UX detectors all depend on it and are never flagged.
+
+### Driver launch + per-criterion delta-slice
+
+Launch the managed Playwright MCP driver with **`--save-session`**. It writes generated
+Playwright code to a SINGLE per-run `session.md` in the MCP output dir (default
+`./.playwright-mcp/session.md`) — every criterion's calls are appended to the same file.
+**`session.md` records Playwright CODE, not MCP tool names** (e.g.
+`await page.locator('#add').click();`), so `scripts/parse-session-log.js` classifies each
+block by code pattern into `{class, mutating, code}` — the classifier that bridges the two
+representations (agent-reported tool calls vs. the independent code log).
+
+Because the file is per-run, not per-criterion, each criterion must be **sliced out of it**:
+
+1. **Before** a `human-action` criterion's act phase, snapshot the baseline:
+   `N = parse-session-log.js(session.md).length`.
+2. **After** the act, this criterion's calls are the delta:
+   `sessionCalls = parse-session-log.js(session.md).slice(N)`.
+3. Under ADR-0003 sequential execution exactly one criterion acts at a time, so the delta
+   is exactly this criterion's calls.
+4. Pass that slice — plus the phase-tagged `steps` (including each evaluate step's
+   `payload`) — to `record-evidence.sh action-trace --steps <json> --session-calls <json>`,
+   and copy `session.md` into the run dir for audit.
+
+For a **tagged-parallel fan-out criterion** (the rare non-sequential case, see
+`fanning-out-criteria`), launch that criterion with its OWN `--output-dir` so its
+`session.md` is naturally scoped instead of delta-sliced.
+
 ## Session Lifecycle
 
 1. Load `auth.storageState` into the session context before the first navigation.
@@ -99,7 +141,7 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
    ```
    - `domDigest.interactive` lists visible buttons/links/inputs with `data-testid`/label/href — this is the snapshot substitute for finding what to act on next. It does not carry a Playwright ref, so build a selector from it (prefer `[data-testid="…"]`) and pass that as the act call's `target` — `browser_click`/`browser_evaluate` accept a unique CSS selector, not only a snapshot ref. Fall back to `scripts/click-by-text.js` for RTL/label-only targeting, or a one-off `browser_snapshot` only when no stable selector exists.
    - `console[]` and `network[]` are DRAINED since the previous round — every console error/warning, `window.onerror`, unhandled rejection, and fetch/XHR that happened between rounds is already in this payload.
-2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), select (`browser_select_option`), or inject a script (`browser_evaluate`, e.g. `react-set-input.js`) using the selector from step 1 — a SEPARATE call from the observe.
+2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), or select (`browser_select_option`) using the selector from step 1 — a SEPARATE call from the observe. Per the interaction discipline (ADR-0015, [`references/interaction-discipline.md`](./references/interaction-discipline.md)), the act itself is UI-only; `browser_evaluate` on this path is reserved for the logged `nonUiActionReason` opt-out (§ below), never a routine substitute for typing/clicking.
 3. **Wait.** After every mutation, wait for the expected next state before asserting (`browser_wait_for`) — still a separate call. Never assert immediately after an act — React renders are async.
 4. **Re-observe.** Call `__qaObserve` again. Its `console[]`/`network[]` now cover everything since step 1's round, so a JavaScript exception (catches bug class: page crash on load, e.g. `p.map` on a bad envelope) or an unexpected 4xx/5xx on a mutation request (catches bug class: endpoint 400/422/500 on wizard steps, wrong route names) surfaces here exactly as it did under the old separate calls — carried in one payload instead of two extra round-trips. Treat any such entry as a **finding**, not noise, regardless of whether the DOM digest looks clean.
 5. **Assert.** Compare the fresh `domDigest`/`console`/`network` to the oracle (the checklist's expected value/rule), not to what the backend code says.
@@ -113,31 +155,25 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
 
 ## React Controlled Inputs
 
-Typing directly into a React-managed `<input>` often does not update component state — the value appears in the DOM but React discards it on the next render. Use `scripts/react-set-input.js` instead:
-
-```
-// Inject via browser_evaluate, passing (selector, value):
-// Returns the element's resulting .value for immediate verification.
-```
-
-The script uses the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement prototype value setter to bypass React's synthetic tracking, then dispatches bubbling `input` and `change` events. Verify the returned value equals what you passed before proceeding.
+Typing directly into a React-managed `<input>` often does not update component state — the value appears in the DOM but React discards it on the next render. Value entry on the act path uses `browser_type`/`browser_fill_form` (per ADR-0015, act is UI-only). If a prior entry is suspected of not landing, use `scripts/react-set-input.js` to **read the field's current `.value` back for assertion** — the script is read-only (it no longer sets a value or dispatches events; see its header comment). A readback that does not match the intended value means the entry did not land and must be redone via `browser_type`/`browser_fill_form`, not patched in by the script.
 
 ### Out-of-Range / Negative Numeric Inputs (`type="number"`)
 
 `browser_type`/fill on an `<input type="number">` sends the value keystroke-by-keystroke through the browser's native number parser. A value the input rejects mid-entry — `-500` (many browsers accept the leading `-` only once a digit follows, some reject it entirely), a bare `-`, a leading `.`, or a value colliding with `min`/`max`/`step` — can silently coerce to an **empty string**, not to `-500`. The app then reads `Number('')` → `NaN` or falls through to `0`, and a criterion asserting "negative share count is rejected" wrongly passes: the agent never actually entered a negative value, it entered nothing, and the missing validation bug is masked as a pass (see bug F4: negative share count accepted as 0-share ownership).
 
-**Fix — set via `browser_evaluate`, then read the value back:**
-1. Inject `scripts/react-set-input.js` with the target selector/ref and the exact out-of-range string (e.g. `"-500"`). This sets `.value` through the native setter and dispatches `input`+`change`, bypassing the native number-input keystroke parser entirely.
-2. The script returns `el.value` — **assert it equals the value you intended** before doing anything else. If it comes back empty or truncated, the input rejected the value at the DOM level and you have not yet tested the scenario; do not proceed to assert on the app's response.
-3. Only once the readback confirms the field holds `-500` (not `''`, not `0`) should you submit and assert the app's behavior (reject vs. accept) against the oracle.
+This is a genuine **tool limitation**, not a routine act-path substitution — per the interaction discipline (§3 reconciliations in `references/interaction-discipline.md`), it is handled through the **logged `nonUiActionReason` opt-out**, not `react-set-input.js` (which is read-only and cannot set the value):
 
-**Rule:** for any criterion testing an out-of-range numeric (negative, zero, decimal-where-integer-expected, huge value), the verdict is unverified until you have read the field's value back and confirmed it holds the intended input — a "rejected" or "zero" outcome observed without that readback is not evidence of validation, it may just be evidence of a swallowed keystroke.
+1. Record the criterion's `nonUiActionReason: "tool: browser_type coerces -500 on type=number"` — this permits a mutating `browser_evaluate` for this one act step and forces confidence `low`.
+2. Set `.value` through the native prototype setter and dispatch `input`+`change` events, then read `el.value` back — **assert it equals the value you intended** before doing anything else. If it comes back empty or truncated, the input rejected the value at the DOM level and you have not yet tested the scenario.
+3. Only once the readback confirms the field holds `-500` (not `''`, not `0`) should you submit and assert the app's behavior (reject vs. accept) against the oracle, noting confidence `low` and the reason in the report.
+
+**Rule:** for any criterion testing an out-of-range numeric (negative, zero, decimal-where-integer-expected, huge value), the verdict is unverified until you have read the field's value back and confirmed it holds the intended input — a "rejected" or "zero" outcome observed without that readback is not evidence of validation, it may just be evidence of a swallowed keystroke. And it is only reachable via the logged opt-out, not a silent workaround.
 
 ## Finding Clickable Elements by Text (RTL/Arabic)
 
-`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. It uses real geometry (`getBoundingClientRect` + computed style), so it also finds `position:fixed`/sticky controls. Inject via `browser_evaluate`. **When MULTIPLE visible elements share the text it returns `{ambiguous:true, count, candidates:[…]}` instead of acting** — do NOT act on a guess: disambiguate with a more specific `[data-testid]`/container selector (or the active/topmost candidate) and re-target before clicking.
+`scripts/click-by-text.js` finds a `button`, `a`, or `[role=button/link/menuitem/option]` by trimmed visible text, stripping Unicode bidi control characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069) so Arabic/RTL labels match correctly. It uses real geometry (`getBoundingClientRect` + computed style), so it also finds `position:fixed`/sticky controls. Inject via `browser_evaluate` to **resolve** the target — the script is resolve-only (it no longer calls `.click()` in-evaluate; see its header comment) and returns the matched element's selector/metadata for the caller to act on via `browser_click`. **When MULTIPLE visible elements share the text it returns `{ambiguous:true, count, candidates:[…]}` instead of resolving** — do NOT act on a guess: disambiguate with a more specific `[data-testid]`/container selector (or the active/topmost candidate) and re-target before clicking.
 
-**Critical: verify where a click lands, not just that it succeeded.** The script returns `{ href, role, textContent, landed }` before and after the click. Check `href` against the expected URL path — a button that looks correct but links to a legacy route is a finding (bug class: quick-action links to `/cap-table` instead of `/governance`).
+**Critical: verify where a click lands, not just that it succeeded.** The script returns `{ href, role, textContent }` for the resolved element before you click it. Check `href` against the expected URL path, then click via `browser_click` and re-observe (`domDigest`/URL) to confirm where it landed — a button that looks correct but links to a legacy route is a finding (bug class: quick-action links to `/cap-table` instead of `/governance`).
 
 ## Checking for Client-Side Exceptions
 
@@ -179,8 +215,9 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 | Script | Purpose |
 |---|---|
 | `scripts/observe.js` | Install-once observe-round: drains console + network since last round, returns compact `domDigest` (ADR-0006) |
-| `scripts/react-set-input.js` | Set value on React-controlled input; dispatches native events |
-| `scripts/click-by-text.js` | Find + click by visible text; LTR/RTL-safe; returns href for route verification |
+| `scripts/react-set-input.js` | Read-only (ADR-0015): reads a React-controlled input's current value/validity back for assertion |
+| `scripts/click-by-text.js` | Resolve-only (ADR-0015): finds an element by visible text (LTR/RTL-safe), returns its selector/href; act via `browser_click` |
+| `scripts/parse-session-log.js` | Classifies `session.md` (`--save-session`) Playwright code into `{class, mutating, code}` — bridges tool calls to code |
 | `scripts/preflight.sh` | App liveness + driver ping + auth check + build-ID capture |
 
 ---
@@ -200,12 +237,12 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 ### Eval 3 — Legacy URL quick-action (bug #14: overview links to wrong page)
 
 **Situation:** The agent is verifying that the overview's "Manage" quick-action navigates to the governance module.  
-**The skill should:** Inject `scripts/click-by-text.js` via `browser_evaluate` with label "Manage". Before calling `.click()` on the element, inspect the returned `href`. If it resolves to `/cap-table` instead of `/governance`, record a finding immediately — the link is wrong regardless of where it navigates. If navigation happens, check `landed` as secondary evidence. Verdict: `fail`, suspected layer `FE`.
+**The skill should:** Inject `scripts/click-by-text.js` via `browser_evaluate` with label "Manage" to RESOLVE the element (the script never clicks in-evaluate). Before clicking, inspect the returned `href`. If it resolves to `/cap-table` instead of `/governance`, record a finding immediately — the link is wrong regardless of where it navigates. Then click via `browser_click` on the resolved selector and re-observe to confirm where it landed as secondary evidence. Verdict: `fail`, suspected layer `FE`.
 
 ### Eval 4 — React input value not retained (bug class: wizard saveStep 422)
 
-**Situation:** The agent fills a business-area field in the wizard, proceeds to the next step, and the backend returns 422 (validation error: field required).  
-**The skill should:** On the previous step, inject `scripts/react-set-input.js` for the business-area input, verify the returned value matches the intended input. If the returned value is empty or stale, note that the native-setter approach was needed and retry. If the 422 persists after confirming the value was set, record the network response body as evidence and mark the finding at suspected layer `service` (the backend validation rule).
+**Situation:** The agent fills a business-area field in the wizard via `browser_type`/`browser_fill_form`, proceeds to the next step, and the backend returns 422 (validation error: field required).  
+**The skill should:** On the previous step, inject `scripts/react-set-input.js` (read-only) for the business-area input to read its current value back and check it matches what was typed. If the returned value is empty or stale, the `browser_type`/`browser_fill_form` entry did not land — redo entry via `browser_type`/`browser_fill_form` (never patch the value in via the script, which no longer sets) and re-check the readback. If the 422 persists after confirming the value was set, record the network response body as evidence and mark the finding at suspected layer `service` (the backend validation rule).
 
 ### Eval 5 — Stale build, fix not deployed (build-freshness check)
 
@@ -215,4 +252,4 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 ### Eval 6 — Negative numeric input silently emptied (bug F4: negative share count accepted)
 
 **Situation:** The criterion asserts that entering a negative share count (`-500`) into a `type="number"` field is rejected. The agent types `-500` via `browser_type`, submits, and the app accepts it with a 0-share ownership record — the agent is about to conclude "verdict: pass, negative rejected (coerced to 0)."  
-**The skill should:** Before trusting that outcome, inject `scripts/react-set-input.js` for the field with `"-500"` and check the returned value. If a prior `browser_type` attempt is suspected of having produced an empty/zero value, redo entry via the evaluate-set path and read back `el.value`. Only after confirming the field genuinely holds `-500` should the agent submit and assert against the oracle (negative share count must be rejected). If the app still accepts it as a valid write with a confirmed `-500` in the field, record a `fail` with suspected layer `service` (missing server-side validation) — not a `pass`.
+**The skill should:** Before trusting that outcome, inject `scripts/react-set-input.js` (read-only) for the field and check the returned value. If it shows `''`/`0` instead of `-500`, the `browser_type` attempt was coerced — this is the genuine tool-limitation case in `references/interaction-discipline.md` §3: record `nonUiActionReason: "tool: browser_type coerces -500 on type=number"`, redo entry via a mutating `browser_evaluate` (native setter + `input`/`change` events, confidence forced to `low`), and read back `el.value` to confirm it now holds `-500`. Only after that readback confirms the value should the agent submit and assert against the oracle (negative share count must be rejected). If the app still accepts it as a valid write with a confirmed `-500` in the field, record a `fail` with suspected layer `service` (missing server-side validation) — not a `pass`.
