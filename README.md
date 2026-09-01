@@ -37,7 +37,8 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 ```
 .claude-plugin/   plugin.json + marketplace.json
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
-commands/         qa-run.md            — /qa-run <target> [checklist|spec]
+commands/         qa-run.md   — /qa-run <target> [checklist|spec]
+                  qa-roles.md — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
 skills/           16 skills (see below)
 scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
 .qa/              config.json.example + per-run output

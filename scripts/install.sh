@@ -45,6 +45,7 @@ link_one "$REPO_ROOT/agents/qa-e2e-pilot.md" "$CLAUDE_DIR/agents/qa-e2e-pilot.md
 
 # Command
 link_one "$REPO_ROOT/commands/qa-run.md" "$CLAUDE_DIR/commands/qa-run.md"
+link_one "$REPO_ROOT/commands/qa-roles.md" "$CLAUDE_DIR/commands/qa-roles.md"
 
 # Skills (one symlink per skill directory)
 for skill_dir in "$REPO_ROOT"/skills/*/; do
