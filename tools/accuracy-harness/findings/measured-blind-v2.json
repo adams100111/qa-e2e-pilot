@@ -1,0 +1,109 @@
+{
+  "source": "MEASURED blind re-run WITH coverage fixes (U2 attribution corrected) \u2014 run-id blind-v2",
+  "estimated": false,
+  "_attribution": "Blind, browser-only. Coverage fixes catch J4/J3/U4. Missed only J1 (Ghost magic-name, unfindable black-box) and F4 (fixture appears to REJECT negative with a false toast = caught as J4-class, so F4-as-specified may not reproduce).",
+  "findings": [
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-001 C1-ownership-pct-fully-diluted",
+      "judgedSeedId": "F1",
+      "axis": "computed-logic"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-002 C2-safe-amount-precision",
+      "judgedSeedId": "F2",
+      "axis": "computed-logic"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-003 C3-total-issued-add-delete",
+      "judgedSeedId": "F3",
+      "axis": "persistence"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-004 C4-add-validation-zero-negative",
+      "judgedSeedId": "J4",
+      "axis": "validation"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-005 C5-add-validation-integer",
+      "axis": "validation"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-006 C6-add-multiplicity-n-adds",
+      "judgedSeedId": "J3",
+      "axis": "persistence"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-007 C7-toast-vs-persistence",
+      "judgedSeedId": "J4",
+      "axis": "human-action"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-008 C8-finalize-writes-holdings",
+      "judgedSeedId": "J2",
+      "axis": "persistence"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-009 C9-refinalize-terminal-state",
+      "axis": "human-action"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-010 C10-archive-founder-action",
+      "judgedSeedId": "H1",
+      "axis": "human-action"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-011 C19-icon-help-button-click-probe",
+      "judgedSeedId": "U4",
+      "axis": "ux-console"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-012 C13-ux-contrast",
+      "judgedSeedId": "U1",
+      "axis": "ux-contrast"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-013 C14-ux-target-size",
+      "judgedSeedId": "U3",
+      "axis": "ux-target-size"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-014 C16-ux-console-errors",
+      "axis": "ux-console"
+    },
+    {
+      "verdict": "fail",
+      "suspectedLayer": "FE",
+      "text": "BUG-015 C17-ux-overflow-clipping",
+      "judgedSeedId": "U2",
+      "axis": "ux-overflow"
+    }
+  ]
+}
