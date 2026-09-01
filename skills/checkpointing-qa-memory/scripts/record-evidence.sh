@@ -271,10 +271,10 @@ PYEOF
 # to key order, which json.dump preserves the same as the jq writer's field
 # order) to the jq path (Fix #27 parity discipline).
 write_py_action_trace() {
-  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6"
-  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, action, steps, session_calls, now = sys.argv[1:8]
+file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints = sys.argv[1:9]
 def smart(v):
     try:
         return json.loads(v)
@@ -289,6 +289,8 @@ data = {
     "steps": smart(steps),
     "sessionCalls": smart(session_calls),
 }
+if fingerprints:
+    data["fingerprints"] = smart(fingerprints)
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
@@ -398,18 +400,39 @@ cmd_action_trace() {
   shift 3
   local steps="" session_calls="[]" action="" have_steps=0
   local session_log="" session_from="0"
+  local fp_before="" fp_after="" have_fp=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --steps)         steps="$2";         have_steps=1; shift 2 ;;
-      --session-calls) session_calls="$2"; shift 2 ;;
-      --session-log)   session_log="$2";   shift 2 ;;
-      --session-from)  session_from="$2";  shift 2 ;;
-      --action)        action="$2";        shift 2 ;;
+      --steps)              steps="$2";         have_steps=1; shift 2 ;;
+      --session-calls)      session_calls="$2"; shift 2 ;;
+      --session-log)        session_log="$2";   shift 2 ;;
+      --session-from)       session_from="$2";  shift 2 ;;
+      --fingerprint-before) fp_before="$2";     have_fp=1; shift 2 ;;
+      --fingerprint-after)  fp_after="$2";      have_fp=1; shift 2 ;;
+      --action)             action="$2";        shift 2 ;;
       *) die "Unknown option for kind 'action-trace': $1" ;;
     esac
   done
   [[ "$have_steps" -eq 1 ]] || die "kind 'action-trace' requires --steps <json-array>"
+
+  # Optional before/after persisted-state fingerprints for Check 3 (the
+  # tool-agnostic net that catches arbitrary non-UI mutators). Built into a
+  # {before, after} object stored as `fingerprints`. Values are stored as parsed
+  # JSON when they look like JSON, else as raw strings (same idiom as the rest).
+  local fingerprints=""
+  if [[ "$have_fp" -eq 1 ]]; then
+    if has_jq; then
+      fingerprints="$(jq -cn --arg b "$fp_before" --arg a "$fp_after" \
+        '{before: ($b | try fromjson catch $b), after: ($a | try fromjson catch $a)}')"
+    else
+      fingerprints="$(FP_B="$fp_before" FP_A="$fp_after" python3 -c "import json,os
+def smart(v):
+    try: return json.loads(v)
+    except Exception: return v
+print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ['FP_A'])}))")"
+    fi
+  fi
 
   # TAMPER-EVIDENCE: when --session-log is given, DERIVE sessionCalls by running
   # parse-session-log.js on the REAL server-written session.md and slicing from
@@ -436,9 +459,13 @@ cmd_action_trace() {
   file="$(evidence_dir "$run_id" "$crit_id" "$persona")/action-trace.json"
 
   if has_jq; then
-    write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls"
+    if [[ -n "$fingerprints" ]]; then
+      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" fingerprints "$fingerprints"
+    else
+      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls"
+    fi
   elif has_py; then
-    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls"
+    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi

@@ -95,6 +95,24 @@ function main() {
     die('session.md shows a mutating "' + mutatingSession[i].class + '" call NOT DISCLOSED by any recorded step (' +
         String(mutatingSession[i].code).slice(0, 60) + ') — concealed workaround');
   }
+
+  // Check 3 — state-fingerprint net (spec A1 Check 3). The tool-agnostic
+  // backstop: the mutation lint is an enumerable denylist and cannot recognize
+  // an ARBITRARY app-global mutator (e.g. window.__APP__.createItem()). If the
+  // action-trace carries before/after persisted-state fingerprints and state
+  // CHANGED across the act, there MUST be a human-path act step that plausibly
+  // caused it; if every act step is a non-human-path tool (evaluate/route/…),
+  // the change came from a non-UI path → unattributed mutation → violation,
+  // regardless of whether the lint recognized the specific write. Inert when no
+  // fingerprints are supplied (then only Check 0/1/2 apply — the driver SHOULD
+  // capture fingerprints for human-action criteria; it reuses the bake read-back).
+  const fp = doc.fingerprints;
+  if (fp && typeof fp === 'object' && ('before' in fp || 'after' in fp)) {
+    const changed = JSON.stringify(fp.before) !== JSON.stringify(fp.after);
+    if (changed && !actSteps.some((s) => HUMAN_PATH_TOOLS.has(s.tool))) {
+      die('persisted state changed across the act but no human-path UI action was recorded — unattributed mutation (Check 3; an arbitrary non-UI mutator the lint cannot enumerate)');
+    }
+  }
   process.exit(0);
 }
 main();

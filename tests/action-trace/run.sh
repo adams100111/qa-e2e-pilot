@@ -154,5 +154,14 @@ MD
 check "record: --session-log derived the concealed POST into sessionCalls" "$(get "$WORK/.qa/runs/$RID4/evidence/C5/action-trace.json" '[.sessionCalls[] | select(.class=="evaluate" and .mutating==true)] | length')" "1"
 ( cd "$WORK" && bash "$CKPT" "$RID4" C5 pass --kinds human-action --evidence-refs evidence/C5/action-trace.json >/dev/null 2>&1 ); check "checkpoint: concealed POST caught via real session.md despite empty agent --session-calls" "$([[ $? -ne 0 ]] && echo yes)" "yes"
 
+# --- #3 Check 3 (state-fingerprint net): an OPAQUE non-UI mutator the lint
+#     cannot enumerate (window.app.create()) is caught when state changed with
+#     no human-path act; a legit UI act with a state change is allowed. ---
+RID5="ht-5"
+( cd "$WORK" && bash "$REC" "$RID5" C6 action-trace --steps '[{"tool":"browser_evaluate","phase":"act","payload":"window.app.create()"}]' --session-calls '[{"class":"evaluate","mutating":false,"code":"window.app.create()"}]' --fingerprint-before '{"items":0}' --fingerprint-after '{"items":1}' --action "opaque create" >/dev/null )
+( cd "$WORK" && bash "$CKPT" "$RID5" C6 pass --kinds human-action --evidence-refs evidence/C6/action-trace.json >/dev/null 2>&1 ); check "checkpoint: opaque non-UI mutator caught by Check 3 (state changed, no human-path act)" "$([[ $? -ne 0 ]] && echo yes)" "yes"
+( cd "$WORK" && bash "$REC" "$RID5" C7 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --fingerprint-before '{"items":0}' --fingerprint-after '{"items":1}' --action "click add" >/dev/null )
+( cd "$WORK" && bash "$CKPT" "$RID5" C7 pass --kinds human-action --evidence-refs evidence/C7/action-trace.json >/dev/null 2>&1 ); check "checkpoint: legit UI act with a state change is allowed (Check 3 no false-reject)" "$?" "0"
+
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

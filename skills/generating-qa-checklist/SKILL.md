@@ -213,7 +213,7 @@ Apply these tags to every criterion in the checklist:
 | `cross-role-fk-chain: true` | Reads back as another persona; asserts absence at a specific `owningChain` hop (general relational case) | Sequential; second auth session on same driver |
 | `role-sensitive: true` | Outcome depends on the acting persona's permissions/ownership (authz matrix marks the entity non-uniform across personas) | Runs once per persona, not once for the whole checklist — see Step 6 |
 | `probe-needed: true` | Expected state cannot be confirmed through the visible UI alone | Sequential; `probing-apis-through-browser` invoked, evidence required |
-| `human-action: true` | The Act phase mutates state or drives a control; the action must be performed through the UI | Sequential; verifier confirms the action through session.md; genuine tool limitation recorded as `nonUiActionReason` |
+| `human-action: true` | The Act phase mutates state or drives a control; the action must be performed through the UI | Sequential; verifier confirms the action through the real `session.md` (`--session-log`) AND captures before/after persisted-state fingerprints (reuse the bake read-back) so Check 3 catches an arbitrary non-UI mutator; genuine tool limitation recorded as `nonUiActionReason` |
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
 
