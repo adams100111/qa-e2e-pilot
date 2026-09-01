@@ -1,0 +1,17 @@
+{
+  "_doc": "Ground truth for the multi-role authz fixture. Personas: alice(team-alpha), bob(team-beta). Entity: submission, owningChain [team], roleScope {alice:owns, bob:none for the OTHER team}. The leak: Bob is not filtered and sees team-alpha's S1/S3.",
+  "fixture": "grants-portal-authz",
+  "seeds": [
+    { "id": "AZ1", "axis": "authz", "kind": "cross-role-leak", "polarity": "positive",
+      "title": "Bob (team-beta) can see team-alpha's submissions (S1, S3) — cross-role/tenant isolation leak; he must see none of another team's submissions",
+      "oracle": "logged in as bob, the submissions list must NOT contain any submission whose team != bob's team (team-beta); S1/S3 (team-alpha) present = leak",
+      "suspectedLayer": "service",
+      "match": ["cross-role","cross-tenant","leak","isolation","bob sees","other team","team-alpha","authz","S1","S3"] },
+    { "id": "AZN1", "axis": "authz", "polarity": "negative",
+      "title": "Alice correctly sees ONLY team-alpha submissions (S1, S3), never team-beta's S2 — correct isolation, MUST NOT be flagged",
+      "match": ["alice isolation wrong","alice sees beta","alice leak"] },
+    { "id": "AZN2", "axis": "authz", "polarity": "negative",
+      "title": "Public announcements (A1, A2) are shared with all users by design — MUST NOT be flagged as a cross-role leak",
+      "match": ["announcement leak","shared announcement flagged"] }
+  ]
+}
