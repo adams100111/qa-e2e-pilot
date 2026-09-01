@@ -6,5 +6,5 @@ python3 -c "import tomllib;tomllib.load(open('dist/codex/agent/qa-e2e-pilot.toml
 python3 -c "import tomllib;d=tomllib.load(open('dist/codex/mcp.snippet','rb'));\
 assert 'playwright-qa' in d['mcp_servers'], d; \
 assert '--save-session' in d['mcp_servers']['playwright-qa']['args']"
-test -x harnesses/codex/install-codex.sh || bash -n harnesses/codex/install-codex.sh
+bash -n harnesses/codex/install-codex.sh
 echo "OK"
