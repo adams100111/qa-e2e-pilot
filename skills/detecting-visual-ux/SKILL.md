@@ -61,8 +61,12 @@ no verdict on its own.
 
 U4 is genuinely two independent signals that both localize to the same class: a missing accessible
 name (static, Step 1) **and/or** a thrown console error on click (dynamic — a static evaluate
-snapshot cannot see a runtime exception). For every element Step 1 flagged with `probeClick: true`,
-or any other icon-only/ambiguous control on the surface:
+snapshot cannot see a runtime exception). **This step is REQUIRED, not optional — a blind
+re-measurement missed U4 precisely because the static detectors (contrast, size) ran but the icon
+button was never CLICKED. A visual-UX sweep is incomplete until every icon-only / symbol-label
+control has been click-probed.** For every element Step 1 flagged with `probeClick: true`, AND
+every icon-only / single-symbol-label / ambiguous control on the surface (a `?`, a gear, an `x`, a
+bare-glyph button/link), do ALL of:
 
 1. Read `browser_console_messages` first to get a baseline (so a pre-existing error isn't misattributed).
 2. Click the element (`browser_click`, or `scripts/click-by-text.js` per driving-browser-qa if text-based).
