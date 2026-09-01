@@ -71,17 +71,17 @@ Playwright code to a SINGLE per-run `session.md` in the MCP output dir (default
 block by code pattern into `{class, mutating, code}` — the classifier that bridges the two
 representations (agent-reported tool calls vs. the independent code log).
 
-Because the file is per-run, not per-criterion, each criterion must be **sliced out of it**:
+Because the file is per-run, not per-criterion, each criterion must be **sliced out of it** — and the slice must be derived from the REAL file by the evidence writer, not hand-transcribed (tamper-evidence, ADR-0015 / final-review #2):
 
-1. **Before** a `human-action` criterion's act phase, snapshot the baseline:
-   `N = parse-session-log.js(session.md).length`.
-2. **After** the act, this criterion's calls are the delta:
-   `sessionCalls = parse-session-log.js(session.md).slice(N)`.
-3. Under ADR-0003 sequential execution exactly one criterion acts at a time, so the delta
-   is exactly this criterion's calls.
-4. Pass that slice — plus the phase-tagged `steps` (including each evaluate step's
-   `payload`) — to `record-evidence.sh action-trace --steps <json> --session-calls <json>`,
-   and copy `session.md` into the run dir for audit.
+1. **Before** a `human-action` criterion's act phase, snapshot the baseline count:
+   `N = parse-session-log.js(session.md).length`. Record `N`.
+2. **After** the act, copy the current `session.md` into the run dir (e.g. `evidence/<crit>/session.md`) for audit.
+3. Pass the phase-tagged `steps` (including each evaluate step's `payload`) AND the real log to
+   `record-evidence.sh action-trace --steps <json> --session-log <path to the copied session.md> --session-from <N>`.
+   The writer runs `parse-session-log.js` on that file and slices from `N` itself, so `sessionCalls`
+   is the **independent** ground truth — never an agent-hand-written array (do NOT use `--session-calls`
+   for a real run; it exists only for tests). Under ADR-0003 sequential execution exactly one criterion
+   acts at a time, so the delta is exactly this criterion's calls.
 
 For a **tagged-parallel fan-out criterion** (the rare non-sequential case, see
 `fanning-out-criteria`), launch that criterion with its OWN `--output-dir` so its

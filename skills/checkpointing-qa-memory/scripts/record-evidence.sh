@@ -7,7 +7,10 @@
 #   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
 #   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
-#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-calls <json-array>] [--action <desc>]
+#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>]
+#     --session-log + --session-from  DERIVE sessionCalls from the REAL session.md
+#       (independent ground truth) by running parse-session-log.js and slicing from
+#       N. This OVERRIDES --session-calls and is the tamper-evident path; prefer it.
 #
 # kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
@@ -394,16 +397,39 @@ cmd_action_trace() {
   local run_id="$1" crit_id="$2" persona="$3"
   shift 3
   local steps="" session_calls="[]" action="" have_steps=0
+  local session_log="" session_from="0"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --steps)         steps="$2";         have_steps=1; shift 2 ;;
       --session-calls) session_calls="$2"; shift 2 ;;
+      --session-log)   session_log="$2";   shift 2 ;;
+      --session-from)  session_from="$2";  shift 2 ;;
       --action)        action="$2";        shift 2 ;;
       *) die "Unknown option for kind 'action-trace': $1" ;;
     esac
   done
   [[ "$have_steps" -eq 1 ]] || die "kind 'action-trace' requires --steps <json-array>"
+
+  # TAMPER-EVIDENCE: when --session-log is given, DERIVE sessionCalls by running
+  # parse-session-log.js on the REAL server-written session.md and slicing from
+  # --session-from N (the per-criterion delta boundary the driver recorded). This
+  # is the independent ground truth — it overrides any agent-supplied
+  # --session-calls, so an agent cannot pass by simply omitting a mutating call
+  # from a hand-written JSON array (final-review finding #2).
+  if [[ -n "$session_log" ]]; then
+    [[ -f "$session_log" ]] || die "--session-log file not found: $session_log"
+    [[ "$session_from" =~ ^[0-9]+$ ]] || die "--session-from must be a non-negative integer"
+    local parse_js all
+    parse_js="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../driving-browser-qa/scripts" && pwd)/parse-session-log.js"
+    [[ -f "$parse_js" ]] || die "parse-session-log.js not found at $parse_js"
+    all="$(node "$parse_js" "$session_log")" || die "parse-session-log.js failed on $session_log"
+    if has_jq; then
+      session_calls="$(printf '%s' "$all" | jq -c ".[${session_from}:]")" || die "failed to slice session calls from $session_from"
+    else
+      session_calls="$(printf '%s' "$all" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)[${session_from}:]))")" || die "failed to slice session calls from $session_from"
+    fi
+  fi
 
   ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file

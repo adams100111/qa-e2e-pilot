@@ -137,5 +137,22 @@ check "checkpoint: opt-out persisted nonUiActionReason" "$(cd "$WORK" && get ".q
 # control: the SAME mutating act WITHOUT --nonui-reason is rejected (the gate still bites)
 ( cd "$WORK" && bash "$CKPT" "$RID3" C4 pass --kinds human-action --evidence-refs evidence/C3/action-trace.json >/dev/null 2>&1 ); check "checkpoint: same workaround WITHOUT opt-out is rejected" "$([[ $? -ne 0 ]] && echo yes)" "yes"
 
+# --- #2 tamper-evidence: sessionCalls DERIVED from the real session.md via
+#     --session-log overrides an agent's hidden --session-calls '[]' ---
+RID4="ht-4"
+cat > "$WORK/session4.md" <<'MD'
+### Ran Playwright code
+```js
+await page.locator('#add').click();
+```
+### Ran Playwright code
+```js
+await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}));
+```
+MD
+( cd "$WORK" && bash "$REC" "$RID4" C5 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[]' --session-log "$WORK/session4.md" --session-from 0 --action "add" >/dev/null )
+check "record: --session-log derived the concealed POST into sessionCalls" "$(get "$WORK/.qa/runs/$RID4/evidence/C5/action-trace.json" '[.sessionCalls[] | select(.class=="evaluate" and .mutating==true)] | length')" "1"
+( cd "$WORK" && bash "$CKPT" "$RID4" C5 pass --kinds human-action --evidence-refs evidence/C5/action-trace.json >/dev/null 2>&1 ); check "checkpoint: concealed POST caught via real session.md despite empty agent --session-calls" "$([[ $? -ne 0 ]] && echo yes)" "yes"
+
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
