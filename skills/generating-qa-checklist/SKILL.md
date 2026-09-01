@@ -96,6 +96,7 @@ For every write-bearing surface, walk this table top to bottom and emit one crit
 | cross-role / cross-tenant absence (when roles or tenants exist) | another persona must NOT see the entity, walked via its authz-matrix `owningChain` (see Step 6 — generalizes the old single-`tenant_id` check to relational FK-ownership chains) | authz | `business-rule` | `cross-role-fk-chain` (or `cross-tenant` for the chain-length-1 flat-column case), `role-sensitive` |
 | idempotent / repeat action on a terminal or locked state | re-invoke a finalize/submit/lock/complete action (or click it again) AFTER the entity is already terminal/locked — the repeat must be an idempotent no-op or an explicit rejection, never a silent "success" that strands/corrupts state and never a permanent lockout with no recovery path | BUG-004 | `business-rule` | `probe-needed` |
 | input-boundary: oversized / decimal-boundary / unicode / whitespace-only | a numeric value that overflows the column/type, a value sitting exactly on a rounding/decimal boundary, unicode/RTL/bidi text (see driving-browser-qa's RTL-safe click helper), or a whitespace-only string that a naive `if(!name)` check would accept as non-empty | (no seed — closes an untested input-type gap, not tied to one prior bug) | `business-rule` | `probe-needed` |
+| action-through-UI (any state-mutating action) | the action-under-test is performed via a real affordance; a UI-impossible action is fail@FE, not a workaround | interaction | `business-rule` | `human-action` |
 
 - [ ] Set `Kind`/`Tags` per the table above and let Step 7 **derive** `Kinds`/`probeNeeded` from them — do not hand-set `Kinds` here; this reuses the existing Phase-1 mapping instead of duplicating it.
 - [ ] **If a row doesn't apply to a surface** (e.g. the surface has no delete action, so delete-then-reconcile can't run; or the project is single-role/single-tenant, so the cross-role row has nothing to probe), still emit the criterion — set its verdict-to-be to `deferred` and state the reason in EXPECTED (e.g. "deferred — surface has no delete action"). Never drop the row silently; a reviewer must be able to see the gap was considered, not missed. `deferred` is one of the five existing verdicts — do not invent a sixth for this.
@@ -212,8 +213,21 @@ Apply these tags to every criterion in the checklist:
 | `cross-role-fk-chain: true` | Reads back as another persona; asserts absence at a specific `owningChain` hop (general relational case) | Sequential; second auth session on same driver |
 | `role-sensitive: true` | Outcome depends on the acting persona's permissions/ownership (authz matrix marks the entity non-uniform across personas) | Runs once per persona, not once for the whole checklist — see Step 6 |
 | `probe-needed: true` | Expected state cannot be confirmed through the visible UI alone | Sequential; `probing-apis-through-browser` invoked, evidence required |
+| `human-action: true` | The Act phase mutates state or drives a control; the action must be performed through the UI | Sequential; verifier confirms the action through session.md; genuine tool limitation recorded as `nonUiActionReason` |
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
+
+**Setting `human-action` (generation-time rule, mechanical)**
+
+- **`human-action`** — add this kind to any criterion whose Act phase **mutates
+  state or drives a control** (create/edit/delete/finalize/submit, toggling,
+  any click/type that changes the app). Record the criterion's `actionUnderTest`
+  (a one-line description of the single action being tested). A criterion that is
+  purely a read/observe (a computed-value check, a contrast/overflow detection,
+  a read-only bake) does NOT get `human-action`. The gate then requires the act
+  to be performed through the UI and reconciles it against `session.md`
+  (checkpointing-qa-memory / ADR-0015). A genuine tool limitation is recorded per
+  criterion as `nonUiActionReason` (confidence drops to low).
 
 **Setting `probe-needed` (generation-time rule, mechanical)**
 
@@ -327,3 +341,9 @@ With this skill: after the catalog walk, the budget-guard sub-step counts the to
 Given: a hackathon platform (`innovation`-shaped) with confirmed personas `super-admin/admin/evaluator/jury/user` and `.qa/authz-matrix.json` carrying the row `{ entity: "submission", owningChain: ["team_id", "hackathon_id"], roleScope: { "team-member": "owns", "evaluator": "read-scoped", "jury": "read-scoped", "admin": "owns", "user": "none" } }`. The `submission` detail surface is write-bearing (a team creates/edits its submission); there is no `tenant_id` column anywhere in the schema.
 Without this skill: the old heuristic assumes a single `tenant_id` filter, finds no such column, and either fails to generate a cross-role criterion at all or generates one that checks the wrong (nonexistent) field — an evaluator seeing another team's unpublished submission would go undetected because nothing was ever probed at the `team_id`/`hackathon_id` hops.
 With this skill: Step 6 reads the authz-matrix row directly. `submission` is not uniformly `"owns"` across personas, so the happy-path create/edit criteria for it are tagged `role-sensitive: true` but still run ONCE, as the most-privileged persona present (`admin`, per the `super-admin > admin > evaluator ≈ jury > user` ordering) — no need to repeat the plain create/edit flow per persona. Separately, Step 6 emits a `cross-role-fk-chain: true` criterion `C-SUBMISSION-XROLE-01`: authenticate as `jury` (whose `roleScope` is `"read-scoped"`), and assert that a submission belonging to a DIFFERENT team is absent at the `team_id` hop (jury may see submissions assigned to them, never an arbitrary other team's) — the probe reads the submission-list API response as `jury` and confirms the other team's `submission_id` is not present in the payload, not merely absent from the rendered UI list. `Kind: business-rule`, `Tags: cross-role-fk-chain, role-sensitive` → `Kinds: bake,probe`. A second criterion `C-SUBMISSION-XROLE-02` does the same for `user` (`roleScope: "none"`) at the same hop. Oracle for both: absence at `team_id`/`hackathon_id`, sourced from the authz matrix, not a `tenant_id` guess. Per Step 6's most-privileged-ordering caveat, `evaluator`-vs-`jury` isolation (two lateral, equally-scoped roles) still gets its own explicit `cross-role-fk-chain` pair rather than being assumed safe because neither outranks the other.
+
+**Eval 9 — Human-action tagging ensures UI-driven verification (state-mutating acts)**
+Given: a criterion "add a founder" whose only Act step is `browser_click` on the
+Add button.
+Without this skill: the criterion's action is inferred from the checklist; no explicit `actionUnderTest` or `human-action` tag tells the gate to verify the action occurred via a real UI affordance and reconcile it against `session.md`.
+With this skill: the criterion is tagged `human-action: true` and carries `actionUnderTest: "click Add button to create a new founder"`. The gate then requires the driver to perform the action through the browser (not mock or API-inject it) and reconciles the session.md checkpoint against `session.md` to confirm the action was performed. A purely read-only criterion like "founders list shows correct totals" has `human-action: false` (or unset); its oracle is `computed` only, with no driver-action verification required. The discipline ensures every state-mutating write criterion is actually exercised in the UI, not skipped or simulated.
