@@ -8,9 +8,11 @@
 #   qa-ci.sh <target> [checklist-path]
 #
 # ENV (all optional — overridable so this works across Claude Code CI setups and is testable):
+#   QA_HARNESS        harness key into harness-profiles.json's agentCmd (default: claude)
 #   QA_PREFLIGHT_CMD  command to run pre-flight   (default: the bundled preflight.sh)
-#   QA_AGENT_CMD      command to drive the agent  (default: claude -p "/qa-run \"$QA_TARGET\" $QA_CHECKLIST")
+#   QA_AGENT_CMD      command to drive the agent  (default: the $QA_HARNESS profile's agentCmd)
 #                     QA_TARGET and QA_CHECKLIST are exported for a custom command to use.
+#   QA_PRINT_AGENT_CMD set to 1 to print the resolved AGENT_CMD and exit (no target required)
 #   QA_JUNIT_OUT      JUnit XML output path        (default: qa-results.xml)
 #   QA_SKIP_PREFLIGHT set to 1 to skip pre-flight (when CI handles app/auth liveness itself)
 #
@@ -20,6 +22,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QA_BASE=".qa/runs"
+
+HARNESS="${QA_HARNESS:-claude}"
+default_agent_cmd() {
+  python3 -c "import json;print(json.load(open('$REPO_ROOT/harness-profiles.json'))['harnesses']['$HARNESS']['agentCmd'])"
+}
+AGENT_CMD="${QA_AGENT_CMD:-$(default_agent_cmd)}"
+if [ "${QA_PRINT_AGENT_CMD:-}" = 1 ]; then echo "$AGENT_CMD"; exit 0; fi
 
 TARGET="${1:-}"
 CHECKLIST="${2:-}"
@@ -45,11 +54,6 @@ fi
 log "driving agent for target: $TARGET${CHECKLIST:+ (checklist: $CHECKLIST)}"
 export QA_TARGET="$TARGET"
 export QA_CHECKLIST="$CHECKLIST"
-if [[ -n "${QA_AGENT_CMD:-}" ]]; then
-  AGENT_CMD="$QA_AGENT_CMD"
-else
-  AGENT_CMD="claude -p \"/qa-run \\\"$TARGET\\\" $CHECKLIST\""
-fi
 if ! eval "$AGENT_CMD"; then
   echo "qa-ci: agent command exited non-zero" >&2
   # Continue to export whatever run state exists, then fail.
