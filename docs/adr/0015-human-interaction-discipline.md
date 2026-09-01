@@ -91,3 +91,28 @@ The `pass` predicate for a `human-action` criterion (Check 0 present) is `Check0
 The gate is **tamper-evident by machine for the concealment and act-phase attack
 classes**, with the above as the explicitly-scoped residual trust — not a
 cryptographic guarantee.
+
+## Decision on the residuals R3/R4/R5 (reviewed, closed-out)
+
+The gate's threat model is an **honest agent taking a shortcut or making a mistake**, not a
+deliberately-adversarial agent. Under that model:
+
+- **R3 (unvalidated `nonUiActionReason`) — ACCEPT.** The opt-out is a human-review escape hatch by
+  design; `maxOptOutRate` flags abuse. Validating the reason string against a fixed vocabulary of
+  "real tool limitations" would be brittle and add no honest-agent value. No change.
+- **R5 (agent-supplied `--session-log` path / `--session-from`) — ACCEPT (defer full closure).**
+  `--session-from` is already length-bounded (N1). Full independence (the gate reading a
+  config-anchored canonical `session.md` location rather than an agent argument) is a follow-up;
+  its value is limited today because **Check 0 is opt-in** (`--save-session` is not the default),
+  so the path only matters when the operator has deliberately enabled the strongest check anyway.
+- **R4 (phase-mislabel: disclose a mutation as `arrange` + a decoy human-path `act`) — ACCEPT,
+  with a scoped future closure.** Closing it cleanly needs **act-boundary fingerprints** (state
+  captured immediately before AND after the act phase, then Check 3 verifies the act ITSELF caused
+  the persisted change — a human-action whose act phase produced no state change while state
+  changed during arrange is a mislabel/decoy). That is a moderate addition (action-trace shape +
+  agent capture + check logic + tests) defending against a *deliberately-adversarial* agent — out
+  of the honest-agent threat model. Deferred as a documented enhancement, not shipped now.
+
+**Net:** the three residuals are reviewed and accepted as the explicit, scoped tamper-evidence
+boundary. The gate remains machine-tamper-evident for concealment (Check 0, when enabled) and
+act-phase non-UI mutation (Check 1/2/3); phase-framing honesty is the reviewer-spot-check residual.
