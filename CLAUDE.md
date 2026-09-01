@@ -5,7 +5,7 @@ This repo is a **Claude Code plugin**, not an app. It ships an agent, a command,
 ## Read these first
 
 - **[CONTEXT.md](./CONTEXT.md)** — the ubiquitous language. Use these words exactly: *criterion/step/run*, *baking*, *multiplicity*, *oracle*, *reconciliation*, *verdict*, *confidence*, *suspected layer*, *driver/session*, *probing*, *memory-spec*, *checkpoint*. Don't invent synonyms.
-- **[docs/adr/](./docs/adr/)** — the hard-to-reverse decisions: 0001 reimplement opslane patterns (don't fork/vendor), 0002 run state in `.qa/runs/` not agent memory, 0003 sequential verification (narrow parallel pool), 0004 per-project `.qa/config.json`.
+- **[docs/adr/](./docs/adr/)** — the hard-to-reverse decisions: 0001 reimplement opslane patterns (don't fork/vendor), 0002 run state in `.qa/runs/` not agent memory, 0003 sequential verification (narrow parallel pool), 0004 per-project `.qa/config.json`, 0017 multi-harness portability (shared core + generated adapters, Claude byte-oracle).
 
 ## Invariants (do not break)
 
@@ -27,7 +27,20 @@ commands/qa-run.md                               /qa-run <target> [checklist|spe
 skills/<gerund-name>/SKILL.md                    one skill each (+ scripts/ and templates/)
 scripts/{install.sh,skills.json}                 manual + npx install paths
 .qa/config.json.example                          per-project config template
+harness-profiles.json                            per-harness naming/model/dispatch/server-key table (ADR-0017)
+core/                                             shared tokenized persona + command sources (Codex/Pi/opencode render from these)
+harnesses/<codex|pi|opencode>/                    per-harness manifest.tmpl + mcp.snippet + install-<h>.sh + README.md
+scripts/build-adapter.sh                          generator: assembles git-ignored dist/<h>/ from core + harness-profiles.json + harnesses/<h>/
+scripts/validate-adapters.sh                      CI gate: builds all 4 adapters, enforces the Claude byte-oracle, checks for residual {{tokens}}
 ```
+
+**Multi-harness note (ADR-0017):** `agents/qa-e2e-pilot.md`, `commands/qa-run.md`, and
+`commands/qa-roles.md` are **generated-and-committed** — their content originates from `core/` +
+`harnesses/claude/manifest.tmpl` via `scripts/build-adapter.sh claude`, and must stay byte-identical to
+that generator's output (`validate-adapters.sh` enforces this diff in CI). Edit `core/persona-body.md`
+or `core/commands/*.md`, not the repo-root files directly, then regenerate. `dist/` is build output and
+is git-ignored — never commit it. See `docs/harness-adapters.md` for per-harness install + the manual
+accuracy-run procedure.
 
 ## Skill conventions (when adding/editing a skill)
 

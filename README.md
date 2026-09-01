@@ -36,15 +36,18 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 
 ```
 .claude-plugin/   plugin.json + marketplace.json
-agents/           qa-e2e-pilot.md      — the 6-phase orchestrator
+agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-and-committed, see below)
 commands/         qa-run.md   — /qa-run <target> [checklist|spec]
                   qa-roles.md — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
 skills/           16 skills (see below)
-scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh
+scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
+                  build-adapter.sh · validate-adapters.sh (multi-harness, see below)
 .qa/              config.json.example + per-run output
-docs/adr/         0001–0015 architecture decisions
-docs/             running-in-ci.md · extending-drivers.md · superpowers/{specs,plans}/
+docs/adr/         0001–0017 architecture decisions
+docs/             running-in-ci.md · extending-drivers.md · harness-adapters.md · superpowers/{specs,plans}/
 CONTEXT.md        the ubiquitous language (read this first)
+harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sources + per-harness glue
+                  (see "Running on other harnesses" below; dist/ is generated, git-ignored)
 ```
 
 **The 6-phase pipeline** (the agent orchestrates these skills in order):
@@ -186,6 +189,26 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 - **Auto-bootstrap config — done:** no `.qa/config.json`? `bootstrapping-qa-config` infers defaults, asks only the gaps, and writes a valid config — zero manual setup.
 - **Cross-platform:** runs on **Windows, macOS, and Linux** (scripts fall back to `perl` where macOS/BSD grep lacks `-P`; see [INSTALL.md](./INSTALL.md) for deps).
 - **Still future:** CLI/artisan verification stays out of browser scope (covered indirectly via API-probing); dedicated .NET/Django/FastAPI/Hono playbooks (they work via the OpenAPI playbook today).
+
+---
+
+## Running on other harnesses
+
+`qa-e2e-pilot` also runs on **Codex**, **Pi**, and **opencode**, generated from the same shared core
+(skills, scripts, ADRs, `.qa/` state model — unchanged) via [`harness-profiles.json`](./harness-profiles.json)
+and `scripts/build-adapter.sh` into thin adapters under [`harnesses/`](./harnesses). v1 is
+sequential-only on every harness (no subagent fan-out is wired). Each adapter installs project-local —
+never mutating a harness's global config — with a uniquely-keyed `playwright-qa` Playwright MCP server
+pinned to `@playwright/mcp@0.0.79`, alongside Claude's official `playwright` server.
+
+```bash
+bash harnesses/codex/install-codex.sh <project>       # or harnesses/pi/, harnesses/opencode/
+```
+
+See [`docs/harness-adapters.md`](./docs/harness-adapters.md) for prerequisites, the per-harness config
+to add, and the manual accuracy-run procedure each adapter must clear (Pi first) — and
+[ADR-0017](./docs/adr/0017-multi-harness-portability.md) for the design decision (shared core + generated
+adapters + a Claude byte-oracle enforced in CI).
 
 ---
 
