@@ -87,7 +87,7 @@ jq -n \
   baseUrl: $base,
   apiOrigin: $api,
   auth: { storageState: $ss },
-  drivers: [ { id: "managed", server: "playwright", preset: "managed" } ],
+  drivers: [ { id: "managed", server: (env.QA_DRIVER_SERVER // "playwright"), preset: "managed" } ],
   maxParallel: 3,
   repos: $repos,
   allowApiWrites: $writes,
@@ -98,7 +98,8 @@ jq -n \
   noProbePaths: [],
   crawlDenyPatterns: [],
   maxRequestsPerSecond: 2,
-  memory: { backend: "file" }
+  memory: { backend: "file" },
+  humanInteraction: { enforce: true, saveSession: false, maxOptOutRate: 0.2, sessionLogDir: ".playwright-mcp" }
 }' > "$OUT"
 
 # Real-project side effects only when writing into an actual `.qa/` dir

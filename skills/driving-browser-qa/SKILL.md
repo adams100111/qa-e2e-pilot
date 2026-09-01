@@ -68,7 +68,9 @@ instance does NOT set it; if the driver's Playwright MCP is configured with `--s
 (add it to that server's args), Check 0 becomes available. When active, it writes a SINGLE
 per-run `session.md` into a per-session subdir of the MCP output dir — the newest
 **`.playwright-mcp/session-*/session.md`** (find it with
-`ls -dt .playwright-mcp/session-*/ | head -1`); every criterion's calls append to that one file.
+`ls -dt .playwright-mcp/session-*/ | head -1`); every criterion's calls append to that one file
+(the directory is `humanInteraction.sessionLogDir` in `.qa/config.json`, default `.playwright-mcp`;
+forward-looking — v1 discovery uses the default).
 The saved format is **`### Tool call: <name>` sections, each carrying the executed Playwright
 code in its `- Result` JSON `code` field** (e.g. `{"code":"await page.locator('#add').click();"}`) —
 NOT the interactive `Ran Playwright code` ```js shape. `scripts/parse-session-log.js` extracts each

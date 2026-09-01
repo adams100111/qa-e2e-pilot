@@ -49,7 +49,7 @@
     "ux": { "objective": true, "advisoryAesthetics": true }
   },
   "passGate": { "enforce": true },
-  "humanInteraction": { "enforce": true, "saveSession": false, "maxOptOutRate": 0.2 },
+  "humanInteraction": { "enforce": true, "saveSession": false, "maxOptOutRate": 0.2, "sessionLogDir": ".playwright-mcp" },
   "isolation": { "maxOpenContexts": 1, "mechanism": "isolated" },
   "criteriaBudget": 60
 }
