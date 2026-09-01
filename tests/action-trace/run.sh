@@ -42,25 +42,25 @@ check "parse: setItem evaluate mutating=true"    "$(echo "$PARSED" | jlen 'a.fil
 
 # --- check-action-trace.js: clean UI-only act -> exit 0 -----------------------
 cat > "$WORK/clean.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_type","target":"#name","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_type","target":"#name","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/clean.json"; check "check: clean UI-only act passes" "$?" "0"
 
 # --- Q2 (fatal FP guard): a read-only observe evaluate in session.md is IGNORED
 cat > "$WORK/observe.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":false,"code":"getComputedStyle(document.body)"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":false,"code":"getComputedStyle(document.body)"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/observe.json"; check "check: read-only observe evaluate NOT flagged (Q2)" "$?" "0"
 
 # --- Check 1/2: an act-phase MUTATING evaluate -> exit 1 (payload classifies) --
 cat > "$WORK/evalact.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"setItem","phase":"act","payload":"localStorage.setItem('captable:founders','[]')"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"setItem","phase":"act","payload":"localStorage.setItem('captable:founders','[]')"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/evalact.json" 2>/dev/null; check "check: mutating evaluate on act rejected" "$?" "1"
 
 # --- a READ-ONLY evaluate ON the act path is allowed (payload doesn't mutate) --
 cat > "$WORK/readact.json" <<'J'
-{"actionUnderTest":"read total","steps":[{"tool":"browser_evaluate","target":"read","phase":"act","payload":"getComputedStyle(document.body).color"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"getComputedStyle"}]}
+{"actionUnderTest":"read total","steps":[{"tool":"browser_evaluate","target":"read","phase":"act","payload":"getComputedStyle(document.body).color"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"getComputedStyle"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/readact.json"; check "check: read-only evaluate on act allowed" "$?" "0"
 
@@ -68,28 +68,28 @@ node "$CHECK" "$WORK/readact.json"; check "check: read-only evaluate on act allo
 #     fetch POST / XHR / framework dispatch) must be caught by the mutation lint,
 #     not just DOM/storage writes (final-review Critical) ---
 cat > "$WORK/fetchact.json" <<'J'
-{"actionUnderTest":"create item","steps":[{"tool":"browser_evaluate","target":"post","phase":"act","payload":"fetch('/api/items',{method:'POST',body:'{}'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}))"}]}
+{"actionUnderTest":"create item","steps":[{"tool":"browser_evaluate","target":"post","phase":"act","payload":"fetch('/api/items',{method:'POST',body:'{}'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}))"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/fetchact.json" 2>/dev/null; check "check: backend fetch POST on act rejected (network-write lint)" "$?" "1"
 cat > "$WORK/dispatchact.json" <<'J'
-{"actionUnderTest":"add via store","steps":[{"tool":"browser_evaluate","target":"dispatch","phase":"act","payload":"store.dispatch({type:'ADD_ITEM'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => store.dispatch({type:'ADD_ITEM'}))"}]}
+{"actionUnderTest":"add via store","steps":[{"tool":"browser_evaluate","target":"dispatch","phase":"act","payload":"store.dispatch({type:'ADD_ITEM'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => store.dispatch({type:'ADD_ITEM'}))"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/dispatchact.json" 2>/dev/null; check "check: framework store.dispatch on act rejected" "$?" "1"
 # a read-only GET fetch on the act path stays allowed (must NOT false-reject)
 cat > "$WORK/getfetch.json" <<'J'
-{"actionUnderTest":"read list","steps":[{"tool":"browser_evaluate","target":"get","phase":"act","payload":"fetch('/api/items').then(r=>r.json())"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"await page.evaluate(() => fetch('/api/items'))"}]}
+{"actionUnderTest":"read list","steps":[{"tool":"browser_evaluate","target":"get","phase":"act","payload":"fetch('/api/items').then(r=>r.json())"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"await page.evaluate(() => fetch('/api/items'))"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/getfetch.json"; check "check: read-only GET fetch on act allowed (no false-reject)" "$?" "0"
 
 # --- a RECORDED mutating evaluate (e.g. arrange seed) covers its session twin --
 cat > "$WORK/recorded.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem('seed','1')"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('seed','1')"},{"class":"human-path","mutating":true,"code":"await page.locator('#add').click()"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem('seed','1')"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"localStorage.setItem('seed','1')"},{"class":"human-path","mutating":true,"code":"await page.locator('#add').click()"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/recorded.json"; check "check: recorded arrange-mutation covers its twin (not concealed)" "$?" "0"
 
 # --- Check 0: concealed MUTATING workaround (in session.md, no recorded step) --
 cat > "$WORK/concealed.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"},{"class":"evaluate","mutating":true,"code":"localStorage.setItem('captable:founders','[]')"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/concealed.json" 2>/dev/null; check "check: concealed mutating workaround rejected (Check 0)" "$?" "1"
 
@@ -97,19 +97,19 @@ node "$CHECK" "$WORK/concealed.json" 2>/dev/null; check "check: concealed mutati
 # an unrelated genuine concealed workaround — a bare count would let this
 # through (the "grades its own homework" bypass this gate exists to stop).
 cat > "$WORK/decoy.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"document.title=\"x\""},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"document.title=\"x\""},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/decoy.json" 2>/dev/null; check "check: decoy mutating step does not cover unrelated concealed call" "$?" "1"
 
 # --- Check 0 (CONTENT-MATCH): a PREFIX of the concealed call must not match --
 cat > "$WORK/prefix-decoy.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"localStorage.setItem("},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"localStorage.setItem("},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/prefix-decoy.json" 2>/dev/null; check "check: prefix-only decoy does not cover the full concealed call" "$?" "1"
 
 # --- Check 0 (CONTENT-MATCH): a genuinely disclosed arrange-mutation IS allowed
 cat > "$WORK/disclosed.json" <<'J'
-{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"seed\",\"1\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"seed\",\"1\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}]}
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"seed\",\"1\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"seed\",\"1\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}],"fingerprints":{"before":0,"after":0}}
 J
 node "$CHECK" "$WORK/disclosed.json"; check "check: disclosed arrange-mutation with matching content is allowed" "$?" "0"
 
@@ -118,7 +118,7 @@ node "$CHECK" "$WORK/evalact.json" --allow-nonui; check "check: --allow-nonui pe
 
 # --- record-evidence writes action-trace.json + checkpoint gates on it --------
 RID="ht-1"
-( cd "$WORK" && bash "$REC" "$RID" C1 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --action "add founder" >/dev/null )
+( cd "$WORK" && bash "$REC" "$RID" C1 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --fingerprint-before '0' --fingerprint-after '0' --action "add founder" >/dev/null )
 check "record: action-trace.json written" "$([[ -f "$WORK/.qa/runs/$RID/evidence/C1/action-trace.json" ]] && echo yes)" "yes"
 ( cd "$WORK" && bash "$CKPT" "$RID" C1 pass --kinds human-action --evidence-refs evidence/C1/action-trace.json >/dev/null 2>&1 ); check "checkpoint: clean human-action pass accepted" "$?" "0"
 
@@ -162,6 +162,30 @@ RID5="ht-5"
 ( cd "$WORK" && bash "$CKPT" "$RID5" C6 pass --kinds human-action --evidence-refs evidence/C6/action-trace.json >/dev/null 2>&1 ); check "checkpoint: opaque non-UI mutator caught by Check 3 (state changed, no human-path act)" "$([[ $? -ne 0 ]] && echo yes)" "yes"
 ( cd "$WORK" && bash "$REC" "$RID5" C7 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --fingerprint-before '{"items":0}' --fingerprint-after '{"items":1}' --action "click add" >/dev/null )
 ( cd "$WORK" && bash "$CKPT" "$RID5" C7 pass --kinds human-action --evidence-refs evidence/C7/action-trace.json >/dev/null 2>&1 ); check "checkpoint: legit UI act with a state change is allowed (Check 3 no false-reject)" "$?" "0"
+
+# --- capstone re-review regressions (N1/N2/R1) ---
+# N1: --session-from past the log length must be REFUSED (not a silent empty slice)
+cat > "$WORK/session6.md" <<'MD'
+### Ran Playwright code
+```js
+await page.locator('#add').click();
+```
+### Ran Playwright code
+```js
+await page.evaluate(() => fetch('/api/items',{method:'POST'}));
+```
+MD
+( cd "$WORK" && bash "$REC" "$RID5" C8 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-log "$WORK/session6.md" --session-from 999 --fingerprint-before 0 --fingerprint-after 0 >/dev/null 2>&1 ); check "record: --session-from past end is refused (N1)" "$([[ $? -ne 0 ]] && echo yes)" "yes"
+# N2: a decoy human-path act step must NOT launder an opaque non-UI mutator act step when state changed
+cat > "$WORK/decoy2.json" <<'J'
+{"actionUnderTest":"opaque+decoy","steps":[{"tool":"browser_evaluate","phase":"act","payload":"window.app.store.createItem({n:1})"},{"tool":"browser_click","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"window.app.store.createItem({n:1})"}],"fingerprints":{"before":{"items":0},"after":{"items":1}}}
+J
+node "$CHECK" "$WORK/decoy2.json" 2>/dev/null; check "check: decoy click does not launder an opaque mutator act step (N2)" "$?" "1"
+# R1: a human-action pass with NO fingerprints is rejected (Check 3 can't be skipped)
+cat > "$WORK/nofp.json" <<'J'
+{"actionUnderTest":"axios","steps":[{"tool":"browser_evaluate","phase":"act","payload":"axios.post('/api/items',{})"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"axios.post('/api/items',{})"}]}
+J
+node "$CHECK" "$WORK/nofp.json" 2>/dev/null; check "check: missing fingerprints rejects a human-action pass (R1)" "$?" "1"
 
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

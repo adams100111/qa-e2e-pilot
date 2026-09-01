@@ -45,3 +45,39 @@ affordance). The agent must behave like a human tester and never work around the
   (manufactures a pass, violates oracle-independence).
 - Verdict enum, oracle rule, ADR-0002 file-state, and ADR-0003 sequential default
   are unchanged. `human-action` is a kind, not a verdict.
+
+## Gate strength & residual-trust boundary (honest)
+
+The `pass` predicate for a `human-action` criterion is `Check0 ∧ Check1 ∧ Check2 ∧ Check3`:
+- **Check 1/2** — no act-phase step is a workaround tool; a `browser_evaluate` on the
+  act path is judged by whether its payload mutates (a payload lint covering DOM /
+  storage / **network** (fetch/XHR/beacon with a write method) / **framework**
+  (dispatch/setState) writes).
+- **Check 0** — every mutating `evaluate`/`route` call in the **real** `session.md`
+  (`--session-log`, derived by the gate via `parse-session-log.js`, not an
+  agent-written array; `--session-from` is bounded against the parsed length) must
+  be **content-matched** (squash + inner-source equality) to a recorded step, else
+  it is a concealed workaround.
+- **Check 3** — before/after persisted-state **fingerprints are MANDATORY**; if state
+  changed across the act while **any** non-human-path act step is present, the change
+  is unattributed to the UI → reject. This is the tool-agnostic backstop for an
+  arbitrary app mutator the payload lint cannot enumerate.
+
+**Residuals (accepted, not hidden):**
+- **Phase framing is agent-supplied.** A real mutation disclosed as an `arrange`
+  step (with a human-path decoy `act`) is treated as "disclosed" by Check 0 and,
+  because the act phase is then all human-path, by Check 3. Reviewer spot-check is
+  the backstop. (The gate catches *concealment* and *act-phase* non-UI mutation
+  by machine; it does not adjudicate a plausibly-mislabeled phase.)
+- **`nonUiActionReason` is an unvalidated escape hatch.** A logged opt-out accepts
+  any string and short-circuits Checks 0-3 at `confidence: low`; the only automated
+  control is `maxOptOutRate` (a rate flag on the run), by design.
+- **`--session-log` path + `--session-from` are agent-supplied.** File-sourcing
+  raises the bar decisively over a hand-written JSON array (tampering now requires
+  forging the actual `session.md` on disk), but a fully-adversarial agent that
+  controls the filesystem could still doctor the file. Check 3's fingerprints, the
+  rate-capped opt-out, and the reviewer spot-check are the layered mitigations.
+
+The gate is **tamper-evident by machine for the concealment and act-phase attack
+classes**, with the above as the explicitly-scoped residual trust — not a
+cryptographic guarantee.

@@ -107,10 +107,23 @@ function main() {
   // fingerprints are supplied (then only Check 0/1/2 apply — the driver SHOULD
   // capture fingerprints for human-action criteria; it reuses the bake read-back).
   const fp = doc.fingerprints;
-  if (fp && typeof fp === 'object' && ('before' in fp || 'after' in fp)) {
-    const changed = JSON.stringify(fp.before) !== JSON.stringify(fp.after);
-    if (changed && !actSteps.some((s) => HUMAN_PATH_TOOLS.has(s.tool))) {
-      die('persisted state changed across the act but no human-path UI action was recorded — unattributed mutation (Check 3; an arbitrary non-UI mutator the lint cannot enumerate)');
+  // R1: fingerprints are MANDATORY for a human-action pass — otherwise Check 3
+  // is trivially skipped by omitting them and an opaque mutator (axios.post,
+  // window.app.*) sails through. Capture before/after persisted state around the
+  // act (reuse the bake read-back).
+  if (!fp || typeof fp !== 'object' || !('before' in fp) || !('after' in fp)) {
+    die('human-action pass requires before/after state fingerprints (Check 3 evidence) — capture the persisted state around the act, or record a non-pass verdict');
+  }
+  const changed = JSON.stringify(fp.before) !== JSON.stringify(fp.after);
+  // N2: if state changed, EVERY act step must be human-path. A single non-human-
+  // path act step (evaluate/route/run_code_unsafe) co-existing with a state change
+  // means the change is not attributable to a UI action — reject, even if the
+  // lint classified that step's payload as non-mutating (opaque mutator). A decoy
+  // human-path click no longer launders it (the check is "all", not "some").
+  if (changed) {
+    const bad = actSteps.find((s) => !HUMAN_PATH_TOOLS.has(s.tool));
+    if (bad) {
+      die('persisted state changed across the act while a non-human-path act step was present ("' + bad.tool + '") — the change is not attributable to a UI action (Check 3)');
     }
   }
   process.exit(0);

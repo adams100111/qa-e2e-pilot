@@ -447,6 +447,12 @@ print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ
     parse_js="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../driving-browser-qa/scripts" && pwd)/parse-session-log.js"
     [[ -f "$parse_js" ]] || die "parse-session-log.js not found at $parse_js"
     all="$(node "$parse_js" "$session_log")" || die "parse-session-log.js failed on $session_log"
+    # N1: bound --session-from against the ACTUAL parsed length. An agent-supplied
+    # N past the end would silently yield an empty slice, neutralizing the whole
+    # tamper-evidence (a concealed call would never be derived). Refuse it.
+    local total
+    if has_jq; then total="$(printf '%s' "$all" | jq 'length')"; else total="$(printf '%s' "$all" | python3 -c "import json,sys;print(len(json.load(sys.stdin)))")"; fi
+    [[ "$session_from" -le "$total" ]] || die "--session-from ($session_from) exceeds the session.md call count ($total) — refusing to derive an empty (tamper-hiding) slice"
     if has_jq; then
       session_calls="$(printf '%s' "$all" | jq -c ".[${session_from}:]")" || die "failed to slice session calls from $session_from"
     else
