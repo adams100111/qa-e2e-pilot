@@ -73,8 +73,11 @@ python3 - "$root/harness-profiles.json" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
 caps=d["capabilities"]; hs=d["harnesses"]
-assert len(caps)==19, f"want 19 capabilities, got {len(caps)}"
+assert len(caps)==20, f"want 20 capabilities, got {len(caps)}"
 assert caps[0]=="browser_navigate" and caps[-1]=="browser_close"
+# browser_network_requests (list) and browser_network_request (read one body) are DISTINCT — both required, in this order
+assert "browser_network_requests" in caps and "browser_network_request" in caps
+assert caps.index("browser_network_requests") < caps.index("browser_network_request")
 assert set(hs)=={"claude","codex","pi","opencode"}, set(hs)
 req={"toolPrefix","serverKey","grantStyle","modelField","tierDefault","tierHeavy","dispatch","globalRolesDir","agentCmd"}
 for k,p in hs.items():
@@ -100,8 +103,9 @@ Expected: FAIL — `harness-profiles.json` does not exist (`FileNotFoundError`).
     "browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_click",
     "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option",
     "browser_hover", "browser_evaluate", "browser_file_upload", "browser_handle_dialog",
-    "browser_wait_for", "browser_console_messages", "browser_network_requests",
-    "browser_network_request", "browser_resize", "browser_take_screenshot",
+    "browser_wait_for", "browser_console_messages",
+    "browser_network_requests", "browser_network_request",
+    "browser_resize", "browser_take_screenshot",
     "browser_tabs", "browser_close"
   ],
   "harnesses": {
