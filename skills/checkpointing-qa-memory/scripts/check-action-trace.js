@@ -69,17 +69,30 @@ function main() {
   // (covers a recorded mutating evaluate opt-out). We count coverage capacity so
   // N concealed mutating calls need N covering steps.
   const sessionCalls = Array.isArray(doc.sessionCalls) ? doc.sessionCalls : [];
-  // Coverage = recorded NON-UI mutations only (a mutating evaluate / run_code_unsafe
-  // / route). A human-path step must NOT count — a click cannot account for a
-  // concealed setItem (this was a real bug the logic proof caught).
-  let coverage = steps.filter(function (s) {
-    return (s.tool === 'browser_evaluate' && mutates(s.payload || '')) || s.tool === 'browser_run_code_unsafe' || s.tool === 'browser_route';
-  }).length;
-  const mutatingSession = sessionCalls.filter(function (c) { return c && c.mutating && c.class !== 'human-path'; });
-  // human-path mutations in session.md are the sanctioned act itself — never concealed.
+  // CONTENT-MATCH disclosure (spoof-resistant). A bare COUNT of recorded mutating
+  // steps was defeatable: a fabricated decoy mutating step (e.g. document.title='x',
+  // never run) would "cover" an unrelated genuine concealed workaround. Instead,
+  // each MUTATING session call's inner source must EQUAL a recorded mutating step's
+  // payload (squashing whitespace + all brackets so wrapper parens are noise) —
+  // a decoy that doesn't equal the concealed call provides no cover. A human-path
+  // session mutation is the sanctioned act and is never concealable.
+  const squash = (x) => String(x || '').replace(/[\s(){}\[\];]+/g, '');
+  const innerCode = (code) => {
+    let c = String(code || '');
+    const a = c.indexOf('=>');
+    if (a >= 0) c = c.slice(a + 2);                 // arrow body: after `() =>`
+    else c = c.replace(/^\s*await\s+/, '').replace(/^page\.(evaluate|evaluateHandle|\$eval|\$\$eval|route|routeFromHAR)\s*/, '');
+    return squash(c);
+  };
+  const disclosed = steps
+    .filter((s) => (s.tool === 'browser_evaluate' && mutates(s.payload || '')) || s.tool === 'browser_run_code_unsafe' || s.tool === 'browser_route')
+    .map((s) => squash(s.payload || ''));
+  const mutatingSession = sessionCalls.filter((c) => c && c.mutating && c.class !== 'human-path');
   for (let i = 0; i < mutatingSession.length; i++) {
-    if (coverage > 0) { coverage -= 1; continue; }
-    die('session.md shows a mutating "' + mutatingSession[i].class + '" call not accounted for by any recorded step (' +
+    const inner = innerCode(mutatingSession[i].code);
+    const idx = inner ? disclosed.indexOf(inner) : -1;
+    if (idx >= 0) { disclosed.splice(idx, 1); continue; }  // disclosed one-to-one
+    die('session.md shows a mutating "' + mutatingSession[i].class + '" call NOT DISCLOSED by any recorded step (' +
         String(mutatingSession[i].code).slice(0, 60) + ') — concealed workaround');
   }
   process.exit(0);

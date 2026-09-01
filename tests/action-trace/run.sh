@@ -9,6 +9,7 @@ CHECK="$HERE/../../skills/checkpointing-qa-memory/scripts/check-action-trace.js"
 PARSE="$HERE/../../skills/driving-browser-qa/scripts/parse-session-log.js"
 PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
+get() { jq -r "$2" "$1" 2>/dev/null; }
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
 # --- parse-session-log.js: classify calls from a REAL Playwright session.md ---
@@ -75,6 +76,26 @@ cat > "$WORK/concealed.json" <<'J'
 J
 node "$CHECK" "$WORK/concealed.json" 2>/dev/null; check "check: concealed mutating workaround rejected (Check 0)" "$?" "1"
 
+# --- Check 0 (CONTENT-MATCH): a fabricated DECOY mutating step must NOT cover
+# an unrelated genuine concealed workaround — a bare count would let this
+# through (the "grades its own homework" bypass this gate exists to stop).
+cat > "$WORK/decoy.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"document.title=\"x\""},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}]}
+J
+node "$CHECK" "$WORK/decoy.json" 2>/dev/null; check "check: decoy mutating step does not cover unrelated concealed call" "$?" "1"
+
+# --- Check 0 (CONTENT-MATCH): a PREFIX of the concealed call must not match --
+cat > "$WORK/prefix-decoy.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"localStorage.setItem("},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"captable:founders\",\"[]\"))"}]}
+J
+node "$CHECK" "$WORK/prefix-decoy.json" 2>/dev/null; check "check: prefix-only decoy does not cover the full concealed call" "$?" "1"
+
+# --- Check 0 (CONTENT-MATCH): a genuinely disclosed arrange-mutation IS allowed
+cat > "$WORK/disclosed.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"seed\",\"1\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"seed\",\"1\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}]}
+J
+node "$CHECK" "$WORK/disclosed.json"; check "check: disclosed arrange-mutation with matching content is allowed" "$?" "0"
+
 # --- --allow-nonui lets a logged opt-out through (confidence low upstream) ----
 node "$CHECK" "$WORK/evalact.json" --allow-nonui; check "check: --allow-nonui permits workaround" "$?" "0"
 
@@ -88,6 +109,16 @@ check "record: action-trace.json written" "$([[ -f "$WORK/.qa/runs/$RID/evidence
 RID2="ht-2"
 ( cd "$WORK" && bash "$REC" "$RID2" C2 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"},{"class":"evaluate","mutating":true,"code":"localStorage.setItem(...)"}]' --action "add founder" >/dev/null )
 ( cd "$WORK" && bash "$CKPT" "$RID2" C2 pass --kinds human-action --evidence-refs evidence/C2/action-trace.json >/dev/null 2>&1 ); check "checkpoint: concealed workaround pass rejected" "$([[ $? -ne 0 ]] && echo yes)" "yes"
+
+# --- opt-out END-TO-END: a mutating act-phase evaluate WITH --nonui-reason is
+#     ACCEPTED at confidence low (F4/§2E). Without the reason it is REJECTED. ---
+RID3="ht-3"
+( cd "$WORK" && bash "$REC" "$RID3" C3 action-trace --steps '[{"tool":"browser_evaluate","phase":"act","payload":"el.value=-500"}]' --session-calls '[{"class":"evaluate","mutating":true,"code":"el.value=-500"}]' --action "enter -500" >/dev/null )
+( cd "$WORK" && bash "$CKPT" "$RID3" C3 pass --kinds human-action --evidence-refs evidence/C3/action-trace.json --nonui-reason "tool: browser_type coerces -500 on type=number" >/dev/null 2>&1 ); check "checkpoint: opt-out (--nonui-reason) accepts a tool-limited workaround" "$?" "0"
+check "checkpoint: opt-out forced confidence low" "$(cd "$WORK" && get ".qa/runs/$RID3/checkpoint.json" '.criteria[] | select(.criterion_id=="C3") | .confidence')" "low"
+check "checkpoint: opt-out persisted nonUiActionReason" "$(cd "$WORK" && get ".qa/runs/$RID3/checkpoint.json" '.criteria[] | select(.criterion_id=="C3") | (.nonUiActionReason != null)')" "true"
+# control: the SAME mutating act WITHOUT --nonui-reason is rejected (the gate still bites)
+( cd "$WORK" && bash "$CKPT" "$RID3" C4 pass --kinds human-action --evidence-refs evidence/C3/action-trace.json >/dev/null 2>&1 ); check "checkpoint: same workaround WITHOUT opt-out is rejected" "$([[ $? -ne 0 ]] && echo yes)" "yes"
 
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
