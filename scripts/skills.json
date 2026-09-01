@@ -3,27 +3,101 @@
   "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
   "version": "0.5.0",
   "agents": [
-    { "name": "qa-e2e-pilot", "path": "agents/qa-e2e-pilot.md" }
+    {
+      "name": "qa-e2e-pilot",
+      "path": "agents/qa-e2e-pilot.md"
+    }
   ],
   "commands": [
-    { "name": "qa-run", "path": "commands/qa-run.md" }
+    {
+      "name": "qa-run",
+      "path": "commands/qa-run.md"
+    },
+    {
+      "name": "qa-roles",
+      "path": "commands/qa-roles.md"
+    }
   ],
   "skills": [
-    { "name": "bootstrapping-qa-config", "path": "skills/bootstrapping-qa-config/SKILL.md", "category": "plan" },
-    { "name": "detecting-stack-profile", "path": "skills/detecting-stack-profile/SKILL.md", "category": "plan" },
-    { "name": "analyzing-feature-ui", "path": "skills/analyzing-feature-ui/SKILL.md", "category": "plan" },
-    { "name": "discovering-user-roles", "path": "skills/discovering-user-roles/SKILL.md", "category": "plan" },
-    { "name": "confirming-discovered-roles", "path": "skills/confirming-discovered-roles/SKILL.md", "category": "plan" },
-    { "name": "generating-qa-checklist", "path": "skills/generating-qa-checklist/SKILL.md", "category": "plan" },
-    { "name": "ingesting-spec-kit", "path": "skills/ingesting-spec-kit/SKILL.md", "category": "plan" },
-    { "name": "driving-browser-qa", "path": "skills/driving-browser-qa/SKILL.md", "category": "verify" },
-    { "name": "detecting-visual-ux", "path": "skills/detecting-visual-ux/SKILL.md", "category": "verify" },
-    { "name": "fanning-out-criteria", "path": "skills/fanning-out-criteria/SKILL.md", "category": "verify" },
-    { "name": "verifying-backend-persistence", "path": "skills/verifying-backend-persistence/SKILL.md", "category": "verify" },
-    { "name": "verifying-computed-logic", "path": "skills/verifying-computed-logic/SKILL.md", "category": "verify" },
-    { "name": "walking-multistep-flows", "path": "skills/walking-multistep-flows/SKILL.md", "category": "verify" },
-    { "name": "probing-apis-through-browser", "path": "skills/probing-apis-through-browser/SKILL.md", "category": "verify" },
-    { "name": "writing-qa-reports", "path": "skills/writing-qa-reports/SKILL.md", "category": "report" },
-    { "name": "checkpointing-qa-memory", "path": "skills/checkpointing-qa-memory/SKILL.md", "category": "memory" }
+    {
+      "name": "bootstrapping-qa-config",
+      "path": "skills/bootstrapping-qa-config/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "detecting-stack-profile",
+      "path": "skills/detecting-stack-profile/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "analyzing-feature-ui",
+      "path": "skills/analyzing-feature-ui/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "discovering-user-roles",
+      "path": "skills/discovering-user-roles/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "confirming-discovered-roles",
+      "path": "skills/confirming-discovered-roles/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "generating-qa-checklist",
+      "path": "skills/generating-qa-checklist/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "ingesting-spec-kit",
+      "path": "skills/ingesting-spec-kit/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "driving-browser-qa",
+      "path": "skills/driving-browser-qa/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "detecting-visual-ux",
+      "path": "skills/detecting-visual-ux/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "fanning-out-criteria",
+      "path": "skills/fanning-out-criteria/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "verifying-backend-persistence",
+      "path": "skills/verifying-backend-persistence/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "verifying-computed-logic",
+      "path": "skills/verifying-computed-logic/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "walking-multistep-flows",
+      "path": "skills/walking-multistep-flows/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "probing-apis-through-browser",
+      "path": "skills/probing-apis-through-browser/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "writing-qa-reports",
+      "path": "skills/writing-qa-reports/SKILL.md",
+      "category": "report"
+    },
+    {
+      "name": "checkpointing-qa-memory",
+      "path": "skills/checkpointing-qa-memory/SKILL.md",
+      "category": "memory"
+    }
   ]
 }
