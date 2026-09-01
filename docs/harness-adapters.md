@@ -180,9 +180,12 @@ result:
    node tools/accuracy-harness/scorer/score.js \
      tools/accuracy-harness/findings/measured-<harness>-run.json --gate
    ```
-   `score.js --gate` exits non-zero if the run falls below the **85% recall / 100% precision** gate
-   (see `tools/accuracy-harness/README.md`'s "What this harness proves" table for the reference
-   Claude-run numbers this gate was calibrated against).
+   `score.js --gate` exits non-zero if the run falls below the configured thresholds in
+   `tools/accuracy-harness/seeds.json` — currently **functional recall ≥ 70%, ux-objective recall ≥ 75%,
+   overall verdict recall ≥ 70%, precision ≥ 80%**. (For calibration context, the reference Claude run
+   measured 78% functional / 100% ux-objective / 85% overall / 100% precision — well clear of the gate;
+   see `tools/accuracy-harness/README.md`'s "What this harness proves" table. Those are the *measured*
+   numbers, not the enforced minimums.)
 6. **Record the result.** If the harness clears the gate, note the measured numbers (recall per axis,
    precision) alongside the run in your own tracking. If it doesn't, document the gap — which axis
    missed and why — rather than silently shipping a below-gate adapter as validated.
