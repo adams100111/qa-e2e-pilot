@@ -88,6 +88,16 @@ for k in ("codex","pi","opencode"):
     assert hs[k]["serverKey"]=="playwright-qa", f"{k} must use playwright-qa"
 print("OK")
 PY
+# Drift guard: capabilities MUST equal the browser tools in the agent frontmatter, in order
+# (the exact invariant the Task 3 byte-oracle depends on).
+python3 - "$root/harness-profiles.json" "$root/agents/qa-e2e-pilot.md" <<'PY'
+import json,sys
+caps=json.load(open(sys.argv[1]))["capabilities"]
+line=[l for l in open(sys.argv[2]) if l.startswith("tools:")][0]
+fm=[t.strip().split("__")[-1] for t in line.split("tools:",1)[1].split(",") if "browser_" in t]
+assert caps==fm, f"capabilities drift from agent frontmatter:\n caps={caps}\n  fm={fm}"
+print("OK (frontmatter order match)")
+PY
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
