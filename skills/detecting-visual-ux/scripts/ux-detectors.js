@@ -140,6 +140,21 @@ function scriptMismatchSignal(text, expectedLocale) {
   return { expectedScript: script, fraction: Number(frac.toFixed(2)), rawSignal: trimmed.slice(0, 40) };
 }
 
+// assets: an <img> that completed loading with zero intrinsic width failed to load.
+// complete:false is still in-flight — do NOT flag (precision guard).
+function isBrokenImage(img) {
+  if (!img) return false;
+  return img.complete === true && img.naturalWidth === 0;
+}
+// invisible-text: foreground ≈ background. Contrast ratio ~1.0 means the text is effectively
+// the same color as its backdrop — distinct from (and stronger than) the WCAG contrast check.
+function invisibleTextSignal(fg, bg) {
+  if (!fg || !bg) return null;
+  const ratio = contrastRatio(fg, bg);
+  if (ratio > 1.1) return null;
+  return { ratio: Number(ratio.toFixed(2)) };
+}
+
 // ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
 function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
@@ -423,6 +438,30 @@ function DETECT() {
     }
   });
 
+  // ---- Asset (broken-image) suspicions ----
+  Array.prototype.slice.call(document.querySelectorAll('img')).forEach(function (img) {
+    if (isBrokenImage(img)) {
+      findings.push(suspicion('asset-broken-image', img,
+        (img.getAttribute('src') || img.currentSrc || '(no src)'),
+        'naturalWidth=0 (failed to load)'));
+    }
+  });
+
+  // ---- Invisible-text suspicions (fg ≈ bg) ----
+  all.forEach(function (el) {
+    const hasText = el.childNodes.length && Array.prototype.some.call(el.childNodes, function (n) {
+      return n.nodeType === 3 && n.textContent.trim();
+    });
+    if (!hasText) return;
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const fg = parseRGB(st.color);
+    if (!fg) return;
+    const bg = effectiveBg(el);
+    const sig = invisibleTextSignal(fg, bg);
+    if (sig) findings.push(suspicion('invisible-text', el, 'fg≈bg contrast ' + sig.ratio + ':1', String(sig.ratio)));
+  });
+
   return findings;
 }
 
@@ -442,5 +481,7 @@ typeof document !== 'undefined'
        contentOracleSignal: contentOracleSignal,
        isEmptyRequiredLabel: isEmptyRequiredLabel,
        rawTranslationKeySignal: rawTranslationKeySignal,
-       scriptMismatchSignal: scriptMismatchSignal
+       scriptMismatchSignal: scriptMismatchSignal,
+       isBrokenImage: isBrokenImage,
+       invisibleTextSignal: invisibleTextSignal
      }));

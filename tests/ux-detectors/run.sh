@@ -135,5 +135,14 @@ check "i18n: ar + lone acronym 'OK' -> still null"            "$(call scriptMism
 check "i18n: ar + Title-Case 'Save Changes' -> still fires" "$(field scriptMismatchSignal '["Save Changes","ar"]' expectedScript)" "Arabic"
 check "i18n: ar + Title-Case 'Sign In' -> still fires"       "$(field scriptMismatchSignal '["Sign In","ar"]' expectedScript)"       "Arabic"
 
+# --- Task 4: assets + invisible-text -------------------------------------------
+check "asset: failed image -> true"     "$(call isBrokenImage '[{"naturalWidth":0,"complete":true}]')"          "true"
+check "asset: loaded image -> false"    "$(call isBrokenImage '[{"naturalWidth":120,"complete":true}]')"        "false"
+check "asset: still-loading -> false"   "$(call isBrokenImage '[{"naturalWidth":0,"complete":false}]')"         "false"
+check "invisible: white-on-white ratio" "$(field invisibleTextSignal '[{"r":255,"g":255,"b":255},{"r":255,"g":255,"b":255}]' ratio)" "1"
+check "invisible: near-equal fires"     "$(field invisibleTextSignal '[{"r":118,"g":118,"b":118},{"r":119,"g":119,"b":119}]' ratio)" "1.01"
+check "invisible: black-on-white -> null" "$(call invisibleTextSignal '[{"r":0,"g":0,"b":0},{"r":255,"g":255,"b":255}]')"           "null"
+check "invisible: mid-contrast -> null" "$(call invisibleTextSignal '[{"r":17,"g":17,"b":17},{"r":255,"g":255,"b":255}]')"          "null"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
