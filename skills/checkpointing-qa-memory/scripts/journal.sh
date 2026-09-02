@@ -179,7 +179,15 @@ journal_append() {
 
   local line
   if has_jq; then
-    if ! jq -e 'type == "object" and (has("event")) and ((.event | type) == "string") and (.event | length > 0)' \
+    # `jq -e` alone is not enough: under multi-value / trailing-content
+    # input, its exit status reflects only the LAST value in the stream, so
+    # e.g. '{"foo":1} {"event":"a"}' would pass the object/event check below
+    # on the trailing value while silently admitting the leading one too.
+    # Guard first that the input parses to EXACTLY ONE JSON value.
+    local value_count
+    value_count="$(jq -c . <<< "$event_json" 2>/dev/null | wc -l)"
+    if [[ "$value_count" -ne 1 ]] || \
+       ! jq -e 'type == "object" and (has("event")) and ((.event | type) == "string") and (.event | length > 0)' \
          >/dev/null 2>&1 <<< "$event_json"; then
       die "journal_append: event JSON must be a single object with a non-empty string 'event' field: ${event_json}"
     fi

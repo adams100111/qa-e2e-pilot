@@ -23,6 +23,15 @@ check "each line json" "$(while read -r l; do echo "$l" | jq -e . >/dev/null || 
 check "reject no-event rc"  "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 check "reject no-event file" "$([[ -f "$WORK/.qa/runs/r2/journal.ndjson" ]] && echo exists || echo none)" "none"
 
+# malformed append: multi-value / trailing-content input (e.g. two
+# concatenated JSON objects) → non-zero, no line written. Regression for a
+# bug where `jq -e`'s exit status reflected only the LAST value in a
+# multi-value stream, so the leading value(s) slipped through unvalidated
+# and corrupted the monotonic seq (two lines written with the same seq).
+( cd "$WORK" && bash "$J" append r4 '{"foo":1} {"event":"a"}' >/dev/null 2>&1 ); rc4=$?
+check "reject multi-value rc"   "$([[ $rc4 -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "reject multi-value file" "$([[ -f "$WORK/.qa/runs/r4/journal.ndjson" ]] && echo exists || echo none)" "none"
+
 # atomic_write produces canonical sorted-key output and leaves no tmp
 echo '{"b":2,"a":1}' | ( cd "$WORK" && bash "$J" atomic_write "$WORK/out.json" )
 check "atomic keys sorted" "$(cat "$WORK/out.json")" '{"a":1,"b":2}'
@@ -54,6 +63,10 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
 
   ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" append pyr2 '{"foo":1}' >/dev/null 2>&1 ); pyrc=$?
   check "py-fallback: reject no-event rc" "$([[ $pyrc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" append pyr4 '{"foo":1} {"event":"a"}' >/dev/null 2>&1 ); pyrc4=$?
+  check "py-fallback: reject multi-value rc"   "$([[ $pyrc4 -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check "py-fallback: reject multi-value file" "$([[ -f "$WORK/.qa/runs/pyr4/journal.ndjson" ]] && echo exists || echo none)" "none"
 
   echo '{"b":2,"a":1}' | ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" atomic_write "$WORK/py-out.json" )
   check "py-fallback: atomic keys sorted" "$(cat "$WORK/py-out.json")" '{"a":1,"b":2}'
