@@ -223,5 +223,34 @@ cat > "$WORK/nofp.json" <<'J'
 J
 node "$CHECK" "$WORK/nofp.json" 2>/dev/null; check "check: missing fingerprints rejects a human-action pass (R1)" "$?" "1"
 
+# --- gap A: act-phase browser_navigate is fail-closed unless carve-out-tagged -
+cat > "$WORK/nav-bare.json" <<'J'
+{"actionUnderTest":"open deliverables","steps":[{"tool":"browser_navigate","target":"/track?dialog=deliverables","phase":"act"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-bare.json" 2>/dev/null; check "check: bare act-phase navigate (URL-skip) rejected" "$?" "1"
+
+cat > "$WORK/nav-deeplink.json" <<'J'
+{"actionUnderTest":"open emailed reset link","steps":[{"tool":"browser_navigate","target":"/password/reset/abc","phase":"act","carveout":"deep-link"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-deeplink.json"; check "check: deep-link-tagged act navigate allowed" "$?" "0"
+
+cat > "$WORK/nav-authbound.json" <<'J'
+{"actionUnderTest":"blocked route negative","steps":[{"tool":"browser_navigate","target":"/admin/settings","phase":"act","carveout":"auth-boundary"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-authbound.json"; check "check: auth-boundary-tagged act navigate allowed" "$?" "0"
+
+# an INVALID carve-out value must NOT pass — this pins NAV_CARVEOUTS.has() set
+# membership, not a truthy `s.carveout` check (which would accept any non-empty tag)
+cat > "$WORK/nav-badtag.json" <<'J'
+{"actionUnderTest":"bogus tag","steps":[{"tool":"browser_navigate","target":"/x","phase":"act","carveout":"nope"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-badtag.json" 2>/dev/null; check "check: invalid carve-out value on act navigate rejected" "$?" "1"
+
+# an ARRANGE-phase navigate is not an act step and never triggers gap A
+cat > "$WORK/nav-arrange.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_navigate","target":"/feature","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-arrange.json"; check "check: arrange-phase navigate + human-path act passes" "$?" "0"
+
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
