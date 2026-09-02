@@ -176,11 +176,31 @@ function main() {
   // re-bake, Plan H2) and show a change (or non-change) as the oracle
   // expects. Absent fingerprintTarget -> this block is a no-op (back-compat;
   // only the aggregate-changed check above applies).
+  // Presence rule (back-compat-safe): a key that is ABSENT, or explicitly
+  // `null` (the schema's legit "no target" value, same convention as
+  // assertedState:null), means "no target declared" -> Check 3b is a no-op,
+  // same as today's behavior. Any other non-object value (string, number,
+  // array, ...) is PRESENT-BUT-MALFORMED -> die, rather than silently
+  // skipping the block (that silent-skip was the hole: fingerprintTarget:
+  // "bogus" sailed through with no diagnostic).
   const target = doc.fingerprintTarget;
-  if (target && typeof target === 'object') {
+  const targetPresent = 'fingerprintTarget' in doc && target !== null;
+  if (targetPresent) {
+    if (typeof target !== 'object') {
+      die('fingerprintTarget must be an object with entity/readBackPath/expectChange');
+    }
     const rbp = target.readBackPath;
     if (typeof rbp !== 'string' || !rbp) {
       die('fingerprintTarget.readBackPath must be a non-empty string');
+    }
+    // expectChange MUST be a strict boolean — the schema declares it a
+    // required boolean. Anything else (omitted, null, "true" the string, 1,
+    // ...) previously matched neither the `=== true` nor `=== false` branch
+    // below and fell through to silent accept, even when the asserted target
+    // was unchanged. Require the caller to declare intent explicitly rather
+    // than guessing a default.
+    if (typeof target.expectChange !== 'boolean') {
+      die('fingerprintTarget.expectChange must be a boolean (true = asserted state must change, false = must stay unchanged)');
     }
     const b = resolvePath(fp.before, rbp);
     const a = resolvePath(fp.after, rbp);

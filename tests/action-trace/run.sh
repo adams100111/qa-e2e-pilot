@@ -350,6 +350,34 @@ cat > "$WORK/ft-absent.json" <<'J'
 J
 node "$CHECK" "$WORK/ft-absent.json"; check "check: no fingerprintTarget (back-compat) still passes on a legit UI change" "$?" "0"
 
+# --- expectChange strictness (silent-accept hole close) -----------------------
+
+# (i) expectChange OMITTED entirely, target unchanged -> reject (was silent-accept)
+cat > "$WORK/ft-nochange-omitted.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":1},"after":{"count":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count"}}
+J
+node "$CHECK" "$WORK/ft-nochange-omitted.json" 2>/dev/null; check "check: fingerprintTarget.expectChange omitted rejected (strict-boolean)" "$?" "1"
+
+# (j) expectChange the STRING "true" (not the boolean) -> reject (was silent-accept)
+cat > "$WORK/ft-expectchange-string.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":1},"after":{"count":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":"true"}}
+J
+node "$CHECK" "$WORK/ft-expectchange-string.json" 2>/dev/null; check "check: fingerprintTarget.expectChange as string \"true\" rejected (strict-boolean)" "$?" "1"
+
+# (k) fingerprintTarget itself is a non-object (bare string) -> reject, not silently skipped
+cat > "$WORK/ft-bogus-string.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":0},"after":{"count":1}},"fingerprintTarget":"bogus"}
+J
+node "$CHECK" "$WORK/ft-bogus-string.json" 2>/dev/null; check "check: non-object fingerprintTarget rejected (was silently skipped)" "$?" "1"
+
+# (l) fingerprintTarget EXPLICITLY null -> back-compat, Check 3b skipped, legit
+#     UI act with a state change still passes (null is the schema's "no target"
+#     value, same convention as assertedState:null)
+cat > "$WORK/ft-null.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":0},"after":{"count":1}},"fingerprintTarget":null}
+J
+node "$CHECK" "$WORK/ft-null.json"; check "check: fingerprintTarget:null is back-compat (Check 3b skipped), passes" "$?" "0"
+
 # --- record-evidence.sh: --fingerprint-target threads into action-trace.json -
 RID6="ht-6"
 ( cd "$WORK" && bash "$REC" "$RID6" C9 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --fingerprint-before '{"count":0}' --fingerprint-after '{"count":1}' --fingerprint-target '{"entity":"founder","readBackPath":"count","expectChange":true}' --action "add founder" >/dev/null )
