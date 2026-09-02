@@ -80,6 +80,14 @@ _Avoid_: gate (the in-run `checkpoint.sh` is the gate; `qa-verify` is the out-of
 The enforcement strength actually achieved on a harness — how tamper-resistant the live gate is (Codex managed-config = agent-proof; Claude plugin-bundled / opencode root-managed; Pi cooperative). Printed in the report; the universal floor is **qa-verify**. A best-effort tier prints an honest banner rather than claiming a guarantee.
 _Avoid_: level, mode.
 
+**Required-kinds**:
+The gate's own independently re-derived required evidence-kind set for a criterion — computed by `required-kinds.sh derive` from the criterion's declared `kind`/`tags`/action shape (a subset of `bake | computed | probe | human-action`), reusing the mutation classifier for the mutates→human-action rule. Read off a **Checklist**'s `checklist.json` row but never trusted from that row's own `requiredKinds` field; `checkpoint.sh`'s pass-gate rejects a `pass` unless the recorded `--kinds` is a superset. In-script, best-effort: catches a *dropped* kind, not a dishonestly-declared `kind`/`tags` shape — the sound form of this check is **qa-verify**.
+_Avoid_: requiredKinds (the agent's advisory field on a `checklist.json` row — not the gate's own derivation, which this term names).
+
+**Asserted state / fingerprint-target**:
+The persisted-state key a mutating criterion's act is expected to touch, declared per-criterion as `assertedState {entity, readBackPath, expectChange}` on a `checklist.json` row and threaded into `action-trace.json` as `fingerprintTarget`. Check 3 (`check-action-trace.js`) requires the act phase's before/after state fingerprint to *cover* `readBackPath` and, per `expectChange`, show it changed or unchanged — a coverage check, not equality, and not proof the fingerprint's own values are real.
+_Avoid_: fingerprint (unqualified — reserve for the general before/after state capture; fingerprint-target is the one asserted key within it that Check 3 enforces).
+
 **Journal**:
 The append-only `journal.ndjson` in `.qa/runs/<run-id>/` — one event per line (`criterion_started`, `act_intent`, `criterion_verdict`, …) — and the **single source of truth** for a Run's resume state. The **Checkpoint** and **Cursor** are *derived projections* of it (see **Fold**); the journal wins on any disagreement. `run-manifest`, `bug-log`, and `traceability` stay separate, agent-authored artifacts — the journal records their triggering events but is never folded into them. Written append-then-flush; the derived files are written atomically (temp→rename→dir-fsync).
 _Avoid_: log (unqualified — the **Toolstream** is a different append-only file), checkpoint (that is one derived projection, not the journal itself).

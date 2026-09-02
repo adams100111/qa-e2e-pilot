@@ -292,6 +292,21 @@ Probe evidence carries an `--ok <true|false>` judgment (the verifier's confirm-v
      — exits non-zero naming the offending entry/field on a malformed row
      (missing `id`, bad `kind` enum value, an incomplete `assertedState`,
      etc.). Fix and re-validate before presenting the checklist for review.
+   - **`assertedState` is the fingerprint-target contract, not just a
+     schema field.** At verification time it is threaded — via
+     `record-evidence.sh action-trace ... --fingerprint-target` — into
+     `action-trace.json.fingerprintTarget`, which `check-action-trace.js`
+     Check 3 then requires the act phase's before/after state fingerprint
+     to *cover* (`readBackPath` present in both) and, per `expectChange`,
+     show changed or unchanged. See
+     `references/checklist-json-schema.md` for the field-level contract and
+     `skills/checkpointing-qa-memory/SKILL.md`'s "Evidence-Kind Gate (#2)
+     and Fingerprint-Target (#4)" section for the enforcement mechanics and
+     the honest-tier boundary (in-script best-effort; not a guarantee the
+     fingerprint's own values are real). The human-readable Act-phase
+     discipline that produces the fingerprint in the first place is
+     `skills/driving-browser-qa/references/interaction-discipline.md`
+     (ADR-0015).
 4. **Stop. Output the checklist path(s) and ask the human to review before any verification begins.**
 
 Do not proceed to driving-browser-qa until the checklist has been reviewed. The checklist is the contract; premature verification against a wrong oracle wastes a full Run.
