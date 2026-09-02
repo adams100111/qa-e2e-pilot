@@ -16,10 +16,21 @@
 #       every write-set member for each entry, then call `apply`.
 #
 #   qa-reconcile.sh apply <run-id> <key> --readbacks <json>
-#       Folds the run, verifies <key> is CURRENTLY an open act (dies with a
-#       clear message if it is not — already committed, or never intended),
-#       joins its writeSet/scenarioId/criterionId/personaId the same way
-#       `plan` does, and calls:
+#       Folds the run, then verifies <key> has an `act_intent` event
+#       SOMEWHERE in the journal (dies with a clear message only if it does
+#       not — a genuinely unknown key that was never intended at all). Unlike
+#       `plan`, `apply` does NOT require <key> to still be an OPEN act:
+#       re-bake, not the journal, is the authority on landed/not, so `apply`
+#       is also how a caller RE-VERIFIES a key the journal already shows as
+#       committed. This closes the self-report hole in the live Verify
+#       loop's `act-commit --outcome landed` (a self-reported outcome, never
+#       itself write-set-verified) — a wrong self-report gets corrected the
+#       next time `apply` is called for that key, because re-bake's readbacks
+#       override it: readbacks-not-found on an already-committed key yields
+#       `retry`/`blocked` (see below), not a silent `done`. `plan` is
+#       unaffected — it still lists only genuinely open acts.
+#       Joins the key's writeSet/scenarioId/criterionId/personaId the same
+#       way `plan` does, and calls:
 #         rebake.sh reconcile <run> <scenarioId> <criterionId> <personaId> \
 #           --write-set <joined writeSet> --readbacks <json>
 #       Then maps rebake's outcome to this script's own return, with a
@@ -287,6 +298,57 @@ join_openacts() {
 }
 
 # ---------------------------------------------------------------------------
+# key_has_act_intent <key> <journal-file> -> "true"/"false" — does ANY
+# `act_intent` event for this key exist anywhere in the journal, regardless
+# of whether a matching `act_committed` also exists? This is `apply`'s gate
+# (a genuinely unknown key — never intended at all — is rejected; an
+# already-committed key is NOT rejected, since `apply` re-verifies those
+# too). Distinct from openActs membership on purpose: unlike the join's
+# writeSet lookup (which reads back "[]" for both "no intent" and "intent
+# with an empty writeSet"), this scans for the event itself so the two
+# cases are never conflated.
+# ---------------------------------------------------------------------------
+
+key_has_act_intent() {
+  local key="$1" journal_file="$2"
+  if has_jq; then
+    jq -R -s --arg k "$key" '
+      (split("\n") | map(select(length > 0))
+         | map(try fromjson catch null)
+         | map(select(. != null and type == "object" and .event == "act_intent"))
+      ) as $intents
+      | any($intents[]; (.key // "") == $k)
+    ' < "$journal_file" || die "qa-reconcile.sh: jq failed to check act_intent presence for key '${key}'."
+  elif has_py; then
+    python3 -c '
+import json, sys
+
+key = sys.argv[1]
+journal_file = sys.argv[2]
+found = False
+try:
+    with open(journal_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and obj.get("event") == "act_intent" and obj.get("key", "") == key:
+                found = True
+                break
+except FileNotFoundError:
+    pass
+print("true" if found else "false")
+' "$key" "$journal_file" || die "qa-reconcile.sh: python3 failed to check act_intent presence for key '${key}'."
+  else
+    die "qa-reconcile.sh needs either 'jq' or 'python3' to check act_intent presence."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # attempt counter — .qa/runs/<run-id>/.reconcile-attempts, a JSON object
 # {"<key>": <int>}. Read-fresh / write-fresh every call (no cached state) —
 # see the header doc-comment's crash-safety note.
@@ -334,6 +396,10 @@ print(int(d.get(sys.argv[2], 0)))
 write_attempts_map() {
   local run_id="$1" map_json="$2"
   local f; f="$(attempts_file_for "$run_id")"
+  # fd 3 carries atomic_write's FSYNC_UNAVAILABLE signal (python3-only
+  # fsync); discarded here same as elsewhere — accepted boundary is
+  # under-counting the attempt marker by at most one on a jq-only box, never
+  # an infinite retry loop (see the header doc-comment's crash-safety note).
   printf '%s' "$map_json" | QA_ENGINE="$ENGINE" bash "$JOURNAL_SH" atomic_write "$f" 3>/dev/null \
     || die "qa-reconcile.sh: failed to write attempt marker for run '${run_id}'."
 }
@@ -420,24 +486,21 @@ cmd_apply() {
 
   fold_run "$run_id"
 
-  local openacts_json
-  openacts_json="$(read_openacts "$run_id")"
+  local journal_file
+  journal_file="$(journal_file_for "$run_id")"
 
-  local is_open
-  if has_jq; then
-    is_open="$(jq -r --arg k "$key" 'any(.[]; . == $k)' <<< "$openacts_json")"
-  else
-    is_open="$(python3 -c '
-import json, sys
-acts = json.loads(sys.argv[1])
-print("true" if sys.argv[2] in acts else "false")
-' "$openacts_json" "$key")"
-  fi
-  [[ "$is_open" == "true" ]] \
-    || die "apply: key '${key}' is not an open act for run '${run_id}' (already committed, or never intended) — nothing to reconcile."
+  # Gate is "does this key have an act_intent ANYWHERE in the journal", NOT
+  # "is this key currently in openActs" — re-bake, not the journal, is the
+  # landed/not authority, so `apply` must be able to re-verify a key the
+  # journal already shows as committed (see the header doc-comment's
+  # corroboration note). Only a genuinely unknown key (never intended) dies.
+  local has_intent
+  has_intent="$(key_has_act_intent "$key" "$journal_file")"
+  [[ "$has_intent" == "true" ]] \
+    || die "apply: key '${key}' has no act_intent event in the journal for run '${run_id}' — genuinely unknown key, nothing to reconcile."
 
   local joined
-  joined="$(join_openacts "$run_id" "$(journal_file_for "$run_id")" "[\"${key}\"]")"
+  joined="$(join_openacts "$run_id" "$journal_file" "[\"${key}\"]")"
 
   local scenario_id criterion_id persona_id write_set
   if has_jq; then
