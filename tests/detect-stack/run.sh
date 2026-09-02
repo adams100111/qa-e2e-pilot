@@ -73,5 +73,29 @@ bash "$ENGINE" --no-code --headers-file "$FIX/server/laravel-headers.txt" --out 
 check "i18n runtime present" "$(get "$OUT8" '.components[0].i18n.present')" "false"
 check "i18n runtime signal"  "$(get "$OUT8" '.components[0].i18n.signal')"  "weak"
 
+# Case 9: JS i18n catalog — per-locale JSON subdirs + library read from package.json
+OUT9="$(mktemp)"
+QA_REPOS="$FIX/react-intl" bash "$ENGINE" --no-runtime --out "$OUT9" >/dev/null 2>&1
+check "js i18n present"   "$(get "$OUT9" '.components[0].i18n.present')"                                     "true"
+check "js i18n mechanism" "$(get "$OUT9" '.components[0].i18n.mechanisms | index("js-catalog") != null')"   "true"
+check "js i18n library"   "$(get "$OUT9" '.components[0].i18n.libraries | index("react-intl") != null')"    "true"
+check "js i18n signal"    "$(get "$OUT9" '.components[0].i18n.signal')"                                      "strong"
+check "js i18n locale ar" "$(get "$OUT9" '.components[0].i18n.locales | index("ar") != null')"              "true"
+check "js i18n json fmt"  "$(get "$OUT9" '[.components[0].i18n.catalogs[].format] | index("json") != null')" "true"
+check "js i18n ns"        "$(get "$OUT9" '[.components[0].i18n.catalogs[].namespace] | index("messages") != null')" "true"
+
+# Case 10: fullstack repo (Laravel php + JS json) → BOTH mechanisms, JS library present
+OUT10="$(mktemp)"
+QA_REPOS="$FIX/fullstack" bash "$ENGINE" --no-runtime --out "$OUT10" >/dev/null 2>&1
+check "both mech laravel"  "$(get "$OUT10" '.components[0].i18n.mechanisms | index("laravel-lang") != null')" "true"
+check "both mech js"       "$(get "$OUT10" '.components[0].i18n.mechanisms | index("js-catalog") != null')"   "true"
+check "both lib react-intl" "$(get "$OUT10" '.components[0].i18n.libraries | index("react-intl") != null')"   "true"
+
+# Case 11: negative control — non-locale json under a scanned root → present:false, "directory present" reason
+OUT11="$(mktemp)"
+QA_REPOS="$FIX/nolocale" bash "$ENGINE" --no-runtime --out "$OUT11" >/dev/null 2>&1
+check "negctrl present"  "$(get "$OUT11" '.components[0].i18n.present')"                                        "false"
+check "negctrl reason"   "$(get "$OUT11" '.components[0].i18n.evidence | join(" ") | contains("directory present")')" "true"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

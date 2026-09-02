@@ -146,6 +146,7 @@
       "router": { "strategy": "static-parse", "rung1": "file-based app/pages dir" },
       "frontendRouting": "file-based",
       "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "i18n": { "roots": ["locales", "public/locales", "src/locales", "messages"], "libraryPackages": ["next-intl", "next-i18next", "react-i18next", "react-intl", "i18next"], "mechanism": "js-catalog" },
       "auth": { "scheme": "none", "csrf": null },
       "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
     },
@@ -157,6 +158,7 @@
       "router": { "strategy": "static-parse", "rung1": "parse router config" },
       "frontendRouting": "config-router",
       "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "i18n": { "roots": ["locales", "src/locales", "public/locales"], "libraryPackages": ["react-i18next", "react-intl", "@lingui/core", "i18next"], "mechanism": "js-catalog" },
       "auth": { "scheme": "none", "csrf": null },
       "commands": { "dev": "npm run dev", "test": "npm test", "build": "npm run build" }
     }
