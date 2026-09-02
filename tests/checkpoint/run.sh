@@ -175,6 +175,70 @@ else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# --- Case 7b: poisoned-jq QA_ENGINE propagation ------------------------------
+# Regression guard for the ext_path leak: checkpoint.sh's ext_path
+# ("${PATH}:${BASH%/*}") appends the running bash binary's OWN directory so
+# journal.sh/fold.sh subprocesses can find mv/rm/dirname/mktemp under the
+# restricted fakebin above — but ${BASH%/*} is almost always /usr/bin, which
+# ALSO holds a real, working jq, silently re-exposing it to those
+# subprocesses even when checkpoint.sh's own PATH has jq masked. Because
+# output is byte-identical either engine, that leak shipped invisibly.
+#
+# Simulate it precisely, but with a jq that PROVES the point instead of
+# hiding it: invoke checkpoint.sh via a bash binary that lives in a
+# directory ("poisoned dir") which also contains mv/rm/dirname/mktemp/grep
+# (what ext_path is legitimately for) PLUS a `jq` that always exits 1 with
+# no output. checkpoint.sh's OWN PATH (the restricted fakebin, no jq) is
+# unaffected -- checkpoint.sh's own has_jq() still reads that and correctly
+# sees no jq. But when checkpoint.sh appends "${BASH%/*}" to build ext_path
+# for its journal.sh/fold.sh subprocess calls, it's the poisoned dir that
+# gets appended -- so a subprocess auto-detecting jq (no override) would
+# find and use the poisoned stub and FAIL. The upsert succeeding here is
+# only possible because checkpoint.sh forwards QA_ENGINE=python3 to those
+# subprocesses, bypassing the poisoned jq entirely.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  QE_FAKEBIN="$WORK/qe-fakebin"
+  mkdir -p "$QE_FAKEBIN"
+  # Same restricted set as the py-fallback FAKEBIN above (Case 7): no jq, so
+  # checkpoint.sh's OWN has_jq (reading THIS PATH) is false.
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$QE_FAKEBIN/$tool"
+  done
+
+  QE_POISONDIR="$WORK/qe-poisondir"
+  mkdir -p "$QE_POISONDIR"
+  # Real bash (so `"$QE_POISONBASH" "$SCRIPT" ...` works and $BASH inside
+  # checkpoint.sh resolves to THIS directory) plus the coreutils
+  # journal.sh/fold.sh need beyond checkpoint.sh's own restricted PATH.
+  for tool in bash mv rm dirname mktemp grep sed wc; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$QE_POISONDIR/$tool"
+  done
+  printf '#!/bin/sh\nexit 1\n' > "$QE_POISONDIR/jq"
+  chmod +x "$QE_POISONDIR/jq"
+  QE_POISONBASH="$QE_POISONDIR/bash"
+
+  QE_RUN_ID="test-run-qa-engine"
+  QE_CKPT_FILE="$WORK/.qa/runs/${QE_RUN_ID}/checkpoint.json"
+
+  (cd "$WORK" && PATH="$QE_FAKEBIN" "$QE_POISONBASH" "$SCRIPT" "$QE_RUN_ID" C1 pass >/dev/null 2>&1)
+  QE_RC=$?
+  check "QA_ENGINE propagation: upsert exits 0 despite poisoned jq on ext_path" "$QE_RC" "0"
+  check "QA_ENGINE propagation: checkpoint file created" \
+    "$([[ -f "$QE_CKPT_FILE" ]] && echo yes)" "yes"
+  check "QA_ENGINE propagation: valid json" \
+    "$(python3 -c "import json; json.load(open('$QE_CKPT_FILE')); print('ok')" 2>/dev/null)" "ok"
+  check "QA_ENGINE propagation: criterion_id C1" \
+    "$(python3 -c "import json;d=json.load(open('$QE_CKPT_FILE'));print(d['criteria'][0]['criterion_id'])" 2>/dev/null)" "C1"
+  check "QA_ENGINE propagation: verdict pass" \
+    "$(python3 -c "import json;d=json.load(open('$QE_CKPT_FILE'));print(d['criteria'][0]['verdict'])" 2>/dev/null)" "pass"
+
+  echo "note - poisoned-jq QA_ENGINE sub-case: RAN (checkpoint.sh forwarded QA_ENGINE=python3 past a poisoned jq on the ext_path leak)"
+else
+  echo "SKIP - poisoned-jq QA_ENGINE sub-case: jq or python3 not present on this host"
+fi
+
 # --- Case 8: record-evidence.sh bake -> bake-read-back.json ------------------
 RE_RUN_ID="test-run-evidence"
 RE_C1_DIR="$WORK/.qa/runs/${RE_RUN_ID}/evidence/C1"
@@ -1035,6 +1099,72 @@ if command -v jq >/dev/null 2>&1; then
 else
   echo "SKIP - mv-guard sub-case: jq not present on this host"
 fi
+
+# ===========================================================================
+# Task 3 (durable substrate) — checkpoint.sh's upsert now appends a
+# criterion_verdict event to the journal, then folds it into checkpoint.json,
+# instead of mutating checkpoint.json in place (journal.ndjson is now the
+# source of truth; checkpoint.json is a derived projection). These cases pin
+# that wiring, additively — no assertion above is touched.
+# ===========================================================================
+
+FOLD_SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/fold.sh"
+
+# --- Case 56: journal-backing — an upsert appends journal.ndjson, whose LAST
+# line is a criterion_verdict event carrying the right criterionId/verdict/
+# personaId -------------------------------------------------------------
+JBACK_RUN_ID="test-run-journal-backing"
+JBACK_JOURNAL="$WORK/.qa/runs/${JBACK_RUN_ID}/journal.ndjson"
+
+(cd "$WORK" && bash "$SCRIPT" "$JBACK_RUN_ID" JB1 pass >/dev/null)
+check "journal-backing: journal.ndjson exists after upsert" \
+  "$([[ -f "$JBACK_JOURNAL" ]] && echo yes)" "yes"
+
+JBACK_LAST_LINE="$(tail -n 1 "$JBACK_JOURNAL")"
+check "journal-backing: last line is a criterion_verdict" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.event')" "criterion_verdict"
+check "journal-backing: last line criterionId is JB1" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.criterionId')" "JB1"
+check "journal-backing: last line verdict is pass" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.verdict')" "pass"
+check "journal-backing: last line personaId is empty (no --persona)" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.personaId')" ""
+
+# --- Case 57: re-fold reproduces the same record — deleting checkpoint.json
+# and re-running fold.sh against the SAME journal must regenerate a
+# canonically identical .criteria[0] record (the journal, not
+# checkpoint.json, is the source of truth) ------------------------------
+JBACK_CKPT="$WORK/.qa/runs/${JBACK_RUN_ID}/checkpoint.json"
+JBACK_BEFORE="$(jq -Sc '.criteria[0]' "$JBACK_CKPT")"
+rm -f "$JBACK_CKPT"
+(cd "$WORK" && bash "$FOLD_SCRIPT" "$JBACK_RUN_ID" >/dev/null)
+JBACK_AFTER="$(jq -Sc '.criteria[0]' "$JBACK_CKPT")"
+check "journal-backing: re-fold recreates checkpoint.json" \
+  "$([[ -f "$JBACK_CKPT" ]] && echo yes)" "yes"
+check "journal-backing: re-fold reproduces the identical .criteria[0] record" \
+  "$JBACK_AFTER" "$JBACK_BEFORE"
+
+# --- Case 58: resume-order parity (grill Q7) — C1 keeps its FIRST-SEEN slot
+# (not moved to the end) when re-upserted with a new verdict; --resume still
+# reports the LAST-in-first-seen-order criterion (C2), matching legacy
+# in-place-upsert behaviour -----------------------------------------------
+RORDER_RUN_ID="test-run-resume-order"
+RORDER_CKPT="$WORK/.qa/runs/${RORDER_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C1 pass >/dev/null)
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C2 pass >/dev/null)
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C1 fail >/dev/null)
+
+check "resume-order parity: C1 keeps its first-seen slot (order == C1,C2)" \
+  "$(jq -c '[.criteria[].criterion_id]' "$RORDER_CKPT")" '["C1","C2"]'
+check "resume-order parity: C1's verdict updated in place (fail)" \
+  "$(jq -r '.criteria[0].verdict' "$RORDER_CKPT")" "fail"
+
+RORDER_RESUME_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$RORDER_RUN_ID")"
+check "resume-order parity: --resume returns C2 as last (not C1)" \
+  "$(echo "$RORDER_RESUME_OUT" | grep -qE 'criterion_id:[[:space:]]+C2' && echo yes)" "yes"
+check "resume-order parity: --resume skip-to line names C2" \
+  "$(echo "$RORDER_RESUME_OUT" | grep -qF 'Skip all criteria up to and including: C2' && echo yes)" "yes"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

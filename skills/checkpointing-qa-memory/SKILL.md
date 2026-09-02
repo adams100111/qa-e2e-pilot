@@ -13,7 +13,7 @@ Every Run produces four memory-spec artifacts in `.qa/runs/<run-id>/`:
 | Artifact | Purpose | Owner |
 |---|---|---|
 | `run-manifest.json` | Run identity, target, driver pool, checklist, overall status | this skill |
-| `checkpoint.json` | Per-criterion resume cursor (verdict, evidence refs, last action) | this skill |
+| `checkpoint.json` | Per-criterion resume record (verdict, evidence refs, last action) | this skill |
 | `bug-log.json` | Append-only findings discovered during the run | this skill |
 | `traceability.json` | Criterion ↔ spec/constitution/tasks ↔ verdict mapping | this skill (only when spec-kit artifacts exist) |
 
@@ -23,8 +23,11 @@ The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the
 
 ```
 .qa/runs/<run-id>/
+  journal.ndjson              ← append-only event log; source of truth (see ADR-0002 Boundary)
   run-manifest.json
-  checkpoint.json
+  checkpoint.json              ← derived: fold(journal)
+  cursor.json                  ← derived: fold(journal) — resume position
+  fold-anomalies.json          ← derived: fold(journal) — torn/malformed-line report
   bug-log.json
   traceability.json          ← only when spec-kit artifacts are present
   report.md                  ← writing-qa-reports skill
@@ -44,7 +47,13 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **What IS allowed (optional):** one durable entry per project-under-test in personal memory — a pointer to the latest run-id and any known-flaky areas. One entry, never per-criterion.
 
-**Optional cross-run recall:** when `memory.backend: "mem0"` is set in `.qa/config.json`, run `bash scripts/memory-sync.sh <run-id>` (top-level scripts) after a run to write-through ONLY the durable artifacts — bug-log entries + one per-project pointer — to a Mem0/vector endpoint for cross-run recall. It NEVER syncs per-criterion checkpoints (those are transient; ADR-0002), and the `.qa/runs/<run-id>/checkpoint.json` file stays the authoritative resume cursor. Default `backend: "file"` makes it a no-op. The file-based layout is the interface; the storage backend is pluggable — see [extending-drivers.md](../../docs/extending-drivers.md).
+**Optional cross-run recall:** when `memory.backend: "mem0"` is set in `.qa/config.json`, run `bash scripts/memory-sync.sh <run-id>` (top-level scripts) after a run to write-through ONLY the durable artifacts — bug-log entries + one per-project pointer — to a Mem0/vector endpoint for cross-run recall. It NEVER syncs per-criterion checkpoints (those are transient; ADR-0002), and the `.qa/runs/<run-id>/checkpoint.json` file stays the authoritative resume record. Default `backend: "file"` makes it a no-op. The file-based layout is the interface; the storage backend is pluggable — see [extending-drivers.md](../../docs/extending-drivers.md).
+
+**Position is `fold(journal)`, never agent memory:** `journal.ndjson` is the append-only source of truth for a Run's state; `checkpoint.json` and `cursor.json` are computed by replaying it (`scripts/fold.sh`) — never re-derived from the agent's own recollection. This is what makes resume reliable across a context compaction, which is a silent partial restart from the agent's point of view.
+
+**Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` and `bug-log.json` remain agent-authored; the fold never writes them, and no future change should wire a fold overwrite of either file.
+
+**Expected `fold-anomalies.json` entries (not errors):** in Plan A, `checkpoint.sh` emits only `criterion_verdict` events (start/phase/act emission is deferred to Plan B), so the fold records one benign `verdict-without-started` anomaly **per criterion** on every normal run — this is the by-design "record-the-verdict + flag" rule, never a suppressed verdict. A clean run therefore shows N such entries; treat `verdict-without-started` as expected until Plan B wires start-event emission. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`).
 
 ---
 
@@ -211,6 +220,21 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 
 ---
 
+### Eval 6 — Torn journal tail: fold still lands on the right cursor
+
+**Given:** `journal.ndjson` has a complete `criterion_started`/`criterion_verdict` pair recording `C1`'s `fail` verdict, a complete unrelated `C3` `pass` entry, and then a further `criterion_verdict` superseding `C1` to `pass` whose line was cut off mid-append (process killed mid-flush) — a torn last line.
+
+**Do:**
+1. Run `scripts/fold.sh <run-id>` (this is also what `checkpoint.sh` calls internally).
+2. Confirm exit 0 — a torn line is never a crash.
+3. Confirm `fold-anomalies.json` records exactly one `unparseable-line` anomaly for the torn line.
+4. Confirm `checkpoint.json` still has `C1` at its last VALID verdict (`fail`) — the torn superseding line is discarded, not partially applied — and `C3` untouched (`pass`).
+5. Confirm `cursor.json`'s `(scenarioId, criterionId)` cursor reflects only the valid lines (no phantom in-progress tuple manufactured from the torn line), and that `checkpoint.json`/`cursor.json`/`fold-anomalies.json` are each fully the new content, never a half-written file at their destination path.
+
+**Must not do:** apply a partially-parsed event, leave a half-written derived JSON file at its destination path, or abort the fold/resume.
+
+---
+
 ## Templates Reference
 
 | Template | Used at |
@@ -224,6 +248,10 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 
 | Script | Usage |
 |---|---|
-| `scripts/checkpoint.sh <run-id> <crit-id> <verdict>` | Upsert checkpoint for one criterion |
+| `scripts/checkpoint.sh <run-id> <crit-id> <verdict>` | Upsert checkpoint for one criterion (appends to the journal, then folds) |
 | `scripts/checkpoint.sh --resume <run-id>` | Print last completed criterion + status for resume |
 | `scripts/checkpoint.sh --list <run-id>` | Print all checkpointed criteria and verdicts |
+| `scripts/journal.sh append <run-id> <event-json>` | Append one validated, seq-stamped event to `journal.ndjson` — the append-only source of truth |
+| `scripts/fold.sh <run-id>` | Replay `journal.ndjson` into `checkpoint.json` + `cursor.json` + `fold-anomalies.json`; dispatches to `fold.jq`/`fold.py`, its jq/python3 reducer engines |
+| `scripts/mutation-flag.sh derive <criterion-json>` | Derive whether a criterion mutates state from its action shape (`kinds`/`httpMethod`/verb) — never trusts an agent-declared flag |
+| `scripts/journal-merge.sh <run-id>` | Fan-out only: merge child journals (`journal.<name>.ndjson`) into `journal.ndjson` under a lock, after all children have joined |

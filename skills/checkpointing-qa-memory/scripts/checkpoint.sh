@@ -114,181 +114,112 @@ checkpoint_file() {
   echo "$(run_dir "$run_id")/checkpoint.json"
 }
 
-ensure_run_dir() {
+# ---------------------------------------------------------------------------
+# Durable substrate (Task 3): checkpoint.json is no longer mutated in place.
+# cmd_upsert instead APPENDS a `criterion_verdict` event (preceded, as
+# needed, by `run_started`/`phase_entered` events so the fold's run_id/phase
+# fields come out identical to the old in-place record) to journal.ndjson via
+# journal.sh, then FOLDS the journal via fold.sh — fold.sh's own atomic_write
+# is what actually (re)writes checkpoint.json. The three builders below
+# construct those event JSON blobs safely (jq/python3, never string concat —
+# same discipline as csv_to_json_array/validate_json_string above, Fix 27's
+# exact lesson).
+# ---------------------------------------------------------------------------
+
+build_run_started_event() {
   local run_id="$1"
-  local dir
-  dir="$(run_dir "$run_id")"
-  mkdir -p "$dir"
-}
-
-# ---------------------------------------------------------------------------
-# init an empty checkpoint file if absent
-# ---------------------------------------------------------------------------
-
-init_checkpoint() {
-  local run_id="$1"
-  local file
-  file="$(checkpoint_file "$run_id")"
-  if [[ ! -f "$file" ]]; then
-    cat > "$file" <<EOF
-{
-  "run_id": "${run_id}",
-  "updated_at": "$(ts)",
-  "criteria": []
-}
-EOF
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# upsert one criterion using jq (preferred)
-# ---------------------------------------------------------------------------
-
-upsert_jq() {
-  local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
-  local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
-  local persona="${10}" nonui_reason="${11}"
-  local now
-  now="$(ts)"
-
-  local tmp
-  tmp="${file}.tmp.$$"
-
-  # Fix 27 (temp-file leak): a `trap ... RETURN` does NOT fire when `set -e`
-  # unwinds out of this function on jq's failure (verified — RETURN/EXIT
-  # traps set on a local scope do not survive an errexit-triggered abort out
-  # of that scope), so cleanup must be explicit: run jq inside `if ! ...`
-  # (which suspends errexit for the check) and rm the tmp file ourselves
-  # before dying, rather than let a bare `cmd1 && cmd2` fail out from under
-  # `set -e` with the tmp file left behind.
-  #
-  # Identity for matching an existing record is the PAIR (criterion_id,
-  # persona). persona defaults to "" (back-compat: identity is criterion_id
-  # alone, exactly today's behavior) — compare via `(.persona // "")` so
-  # records written before this field existed (none should exist within a
-  # single run created by this script, but this keeps the filter total) are
-  # treated as persona "".
-  if ! jq --arg cid "$crit_id" \
-     --arg verdict "$verdict" \
-     --arg confidence "$confidence" \
-     --arg phase "$phase" \
-     --arg last_action "$last_action" \
-     --argjson evidence_refs "$evidence_refs_json" \
-     --arg bug_ref "$bug_ref" \
-     --argjson kinds "$kinds_json" \
-     --arg persona "$persona" \
-     --arg nonui_reason "$nonui_reason" \
-     --arg now "$now" \
-  '
-    .updated_at = $now |
-    if any(.criteria[]; .criterion_id == $cid and ((.persona // "") == $persona)) then
-      .criteria = [
-        .criteria[] |
-        if .criterion_id == $cid and ((.persona // "") == $persona) then
-          .verdict        = $verdict        |
-          .confidence     = $confidence     |
-          .phase          = $phase          |
-          .last_action    = $last_action    |
-          .evidence_refs  = $evidence_refs  |
-          .bug_ref        = (if $bug_ref == "" then null else $bug_ref end) |
-          .kinds          = $kinds          |
-          .persona        = $persona        |
-          .nonUiActionReason = (if $nonui_reason == "" then null else $nonui_reason end) |
-          .checkpointed_at = $now
-        else . end
-      ]
-    else
-      .criteria += [{
-        "criterion_id":   $cid,
-        "verdict":        $verdict,
-        "confidence":     $confidence,
-        "phase":          $phase,
-        "last_action":    $last_action,
-        "evidence_refs":  $evidence_refs,
-        "bug_ref":        (if $bug_ref == "" then null else $bug_ref end),
-        "kinds":          $kinds,
-        "persona":        $persona,
-        "nonUiActionReason": (if $nonui_reason == "" then null else $nonui_reason end),
-        "checkpointed_at": $now
-      }]
-    end
-  ' "$file" > "$tmp"; then
-    rm -f "$tmp"
-    die "jq failed to build the updated checkpoint record (malformed --kinds/--evidence-refs JSON or a jq processing error) — nothing written."
-  fi
-
-  # Fix 2728 (temp-file leak, part 2): jq succeeding does not guarantee the
-  # subsequent mv succeeds (disk full, permission error, etc). Guard it the
-  # same way as the jq step above — suspend errexit via `if ! ...`, clean up
-  # the temp file ourselves, and die with a clear message — rather than let
-  # `set -e` abort out from under a bare `mv` with the tmp file left behind.
-  if ! mv "$tmp" "$file"; then
-    rm -f "$tmp"
-    die "Failed to move the updated checkpoint into place (mv \"${tmp}\" -> \"${file}\" failed — disk full or permission error?) — cleaned up the temp file, nothing changed."
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# upsert one criterion using python3 (fallback, no jq — robust JSON handling)
-# ---------------------------------------------------------------------------
-
-upsert_py() {
-  local file="$1" crit_id="$2" verdict="$3" confidence="$4" phase="$5"
-  local last_action="$6" evidence_refs_json="$7" bug_ref="$8" kinds_json="$9"
-  local persona="${10}" nonui_reason="${11}"
-  local now
-  now="$(ts)"
-
-  python3 - "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-            "$last_action" "$evidence_refs_json" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason" "$now" <<'PYEOF'
+  if has_jq; then
+    jq -cn --arg runId "$run_id" '{event: "run_started", runId: $runId}' \
+      || die "Failed to build the run_started journal event via jq."
+  elif has_py; then
+    python3 -c '
 import json, sys
-
-def parse_json_or_die(raw, label):
-    # Fix 27: the python3 fallback must NOT silently substitute [] on a
-    # JSON decode error — that is exactly the divergence the audit found
-    # (jq hard-fails via --argjson on malformed JSON; python3 must fail the
-    # same way, not succeed-with-[] and report a false pass).
-    if not raw:
-        return []
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        print(f"ERROR: {label} value is not valid JSON: {e}", file=sys.stderr)
-        sys.exit(1)
-
-(file_path, cid, verdict, confidence, phase,
- last_action, evidence_refs_json, bug_ref, kinds_json, persona, nonui_reason, now) = sys.argv[1:13]
-evidence_refs = parse_json_or_die(evidence_refs_json, "evidence_refs")
-kinds = parse_json_or_die(kinds_json, "kinds")
-with open(file_path) as f:
-    data = json.load(f)
-entry = {
-    "criterion_id":    cid,
-    "verdict":         verdict,
-    "confidence":      confidence,
-    "phase":           phase,
-    "last_action":     last_action,
-    "evidence_refs":   evidence_refs,
-    "bug_ref":         bug_ref or None,
-    "kinds":           kinds,
-    "persona":         persona,
-    "nonUiActionReason": nonui_reason or None,
-    "checkpointed_at": now,
+print(json.dumps({"event": "run_started", "runId": sys.argv[1]}))
+' "$run_id" || die "Failed to build the run_started journal event via python3."
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to build journal events."
+  fi
 }
-data["updated_at"] = now
-criteria = data.setdefault("criteria", [])
+
+build_phase_entered_event() {
+  local phase="$1"
+  if has_jq; then
+    jq -cn --arg phase "$phase" '{event: "phase_entered", phase: $phase}' \
+      || die "Failed to build the phase_entered journal event via jq."
+  elif has_py; then
+    python3 -c '
+import json, sys
+print(json.dumps({"event": "phase_entered", "phase": sys.argv[1]}))
+' "$phase" || die "Failed to build the phase_entered journal event via python3."
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
 # Identity for matching an existing record is the PAIR (criterion_id,
-# persona). persona defaults to "" (back-compat: identity is criterion_id
-# alone, exactly today's behavior).
-for i, c in enumerate(criteria):
-    if c.get("criterion_id") == cid and (c.get("persona") or "") == persona:
-        criteria[i] = entry
-        break
-else:
-    criteria.append(entry)
-with open(file_path, "w") as f:
-    json.dump(data, f, indent=2)
+# persona) — scenarioId is the persona when set, else the literal
+# "__shared__" sentinel (persona defaults to "" — back-compat: identity is
+# criterion_id alone, exactly today's behavior — and personaId is stored
+# VERBATIM, i.e. "", never collapsed to the "__shared__" sentinel fold.jq
+# uses only for grouping).
+build_criterion_verdict_event() {
+  local crit_id="$1" verdict="$2" confidence="$3" last_action="$4"
+  local evidence_refs_json="$5" bug_ref="$6" kinds_json="$7"
+  local persona="$8" nonui_reason="$9"
+  local scenario_id
+  if [[ -n "$persona" ]]; then scenario_id="$persona"; else scenario_id="__shared__"; fi
+
+  if has_jq; then
+    jq -cn \
+      --arg scenarioId "$scenario_id" \
+      --arg criterionId "$crit_id" \
+      --arg personaId "$persona" \
+      --arg verdict "$verdict" \
+      --arg confidence "$confidence" \
+      --arg lastAction "$last_action" \
+      --argjson evidenceRefs "$evidence_refs_json" \
+      --argjson kinds "$kinds_json" \
+      --arg bugRef "$bug_ref" \
+      --arg nonUiActionReason "$nonui_reason" \
+      '{
+        event: "criterion_verdict",
+        scenarioId: $scenarioId,
+        criterionId: $criterionId,
+        personaId: $personaId,
+        verdict: $verdict,
+        confidence: $confidence,
+        lastAction: $lastAction,
+        evidenceRefs: $evidenceRefs,
+        kinds: $kinds,
+        bugRef: $bugRef,
+        nonUiActionReason: $nonUiActionReason
+      }' \
+      || die "Failed to build the criterion_verdict journal event via jq."
+  elif has_py; then
+    python3 - "$crit_id" "$verdict" "$confidence" "$last_action" "$evidence_refs_json" \
+              "$bug_ref" "$kinds_json" "$persona" "$nonui_reason" "$scenario_id" <<'PYEOF' \
+      || die "Failed to build the criterion_verdict journal event via python3."
+import json, sys
+(cid, verdict, confidence, last_action, evidence_refs_json,
+ bug_ref, kinds_json, persona, nonui_reason, scenario_id) = sys.argv[1:11]
+event = {
+    "event": "criterion_verdict",
+    "scenarioId": scenario_id,
+    "criterionId": cid,
+    "personaId": persona,
+    "verdict": verdict,
+    "confidence": confidence,
+    "lastAction": last_action,
+    "evidenceRefs": json.loads(evidence_refs_json),
+    "kinds": json.loads(kinds_json),
+    "bugRef": bug_ref,
+    "nonUiActionReason": nonui_reason,
+}
+print(json.dumps(event))
 PYEOF
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to build journal events."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -434,8 +365,9 @@ trim() {
 # round-trips as data, identically whichever engine builds it: jq via
 # `--args`/$ARGS.positional (jq does the escaping), python3 via
 # json.dumps() (same guarantee). Whichever engine is actually available is
-# also the engine that will process the array downstream (upsert_jq /
-# upsert_py), so this never introduces an encode/decode engine mismatch.
+# also the engine that will build the criterion_verdict journal event
+# downstream (build_criterion_verdict_event), so this never introduces an
+# encode/decode engine mismatch.
 csv_to_json_array() {
   local csv="$1"
   local -a arr items=()
@@ -469,7 +401,7 @@ print(json.dumps(sys.argv[1:]))
 # validate that $1 is syntactically valid JSON (used for the raw-JSON-array
 # passthrough form of --evidence-refs, e.g. '["a","b"]') — dies with a clear
 # message naming $2 (the option name) BEFORE the value ever reaches
-# upsert_jq/upsert_py, so a malformed passthrough value fails the SAME way
+# build_criterion_verdict_event, so a malformed passthrough value fails the SAME way
 # (non-zero, nothing written) regardless of which JSON engine is on PATH —
 # closing the other half of Fix 27 (the jq/python3 divergence was not only
 # in the CSV builder, but in trusting an unvalidated raw value).
@@ -806,21 +738,80 @@ cmd_upsert() {
     fi
   fi
 
-  ensure_run_dir "$run_id"
-  init_checkpoint "$run_id"
+  if ! has_jq && ! has_py; then
+    die "checkpoint.sh needs either 'jq' or 'python3' to update JSON safely; neither was found on PATH."
+  fi
 
   local file
   file="$(checkpoint_file "$run_id")"
 
-  if has_jq; then
-    upsert_jq "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason"
-  elif has_py; then
-    upsert_py "$file" "$crit_id" "$verdict" "$confidence" "$phase" \
-              "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason"
-  else
-    die "checkpoint.sh needs either 'jq' or 'python3' to update JSON safely; neither was found on PATH."
+  # Guard: a PRE-EXISTING checkpoint.json that isn't valid JSON blocks the
+  # write with the same "processing failure, nothing new written" symptom
+  # the old in-place jq upsert had (Fix 27/2728) — even though the fold path
+  # below never actually READS this file (checkpoint.json is now a pure
+  # projection of the journal, so a stale/corrupt one would otherwise just
+  # get silently overwritten), that silent self-heal would be a surprising,
+  # undocumented behavior change from a characterization standpoint. Fail
+  # loudly instead; repair/remove the file is the caller's job.
+  if [[ -f "$file" ]] && ! json_is_valid "$file"; then
+    die "Existing checkpoint file '${file}' is not valid JSON — refusing to update it. Repair or remove the file before retrying."
   fi
+
+  # Locate journal.sh/fold.sh relative to this script WITHOUT the external
+  # `dirname` command (pure bash parameter expansion) — this path is taken
+  # on every upsert, including the characterization suite's restricted-PATH
+  # python3-fallback sub-cases, whose fakebin only symlinks the handful of
+  # tools checkpoint.sh's OWN documented dependencies need.
+  local script_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
+  local journal_sh="${script_dir}/journal.sh"
+  local fold_sh="${script_dir}/fold.sh"
+
+  # journal.sh/fold.sh need a few more coreutils (mv, rm, dirname, mktemp,
+  # grep) plus `bash` itself (fold.sh shells out to journal.sh as a
+  # subprocess — see fold.sh's own header comment for why it can't source
+  # it) than checkpoint.sh's fakebin sub-cases symlink. Append (never
+  # prepend) the real bash binary's own directory as a PATH fallback for
+  # JUST these subprocess calls: prepending would shadow a deliberately
+  # placed fake tool (e.g. the mv-guard characterization case's failing
+  # `mv`), but appending only fills gaps the fakebin left open, and is
+  # scoped to this one command (not exported), so checkpoint.sh's OWN
+  # has_jq/has_py elsewhere in this file still see the fakebin's restricted
+  # PATH untouched.
+  local ext_path="${PATH}:${BASH%/*}"
+
+  # ${BASH%/*} is almost always /usr/bin, which ALSO holds jq — so the
+  # PATH-append above can re-expose a jq the characterization suite's
+  # fakebin deliberately hid, silently defeating the fakebin's intent to
+  # force journal.sh/fold.sh onto their python3 fallback. Rather than try
+  # to curate a jq-less PATH (fragile), tell those subprocesses EXPLICITLY
+  # which engine to use, decided from checkpoint.sh's OWN has_jq reading
+  # the real, unaugmented PATH — so the leaked jq on ext_path never matters.
+  # Scoped to just these calls (not exported globally).
+  local eng="python3"
+  has_jq && eng="jq"
+
+  local journal_path="${QA_BASE}/${run_id}/journal.ndjson"
+  if [[ ! -s "$journal_path" ]]; then
+    local run_started_event
+    run_started_event="$(build_run_started_event "$run_id")"
+    QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$run_started_event" \
+      || die "Failed to append the run_started event to the journal for run '${run_id}'."
+  fi
+
+  local phase_event
+  phase_event="$(build_phase_entered_event "$phase")"
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$phase_event" \
+    || die "Failed to append the phase_entered event to the journal for run '${run_id}'."
+
+  local verdict_event
+  verdict_event="$(build_criterion_verdict_event "$crit_id" "$verdict" "$confidence" \
+                    "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason")"
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$verdict_event" \
+    || die "Failed to append the criterion_verdict event to the journal for run '${run_id}'."
+
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$fold_sh" "$run_id" >/dev/null \
+    || die "Failed to fold the journal into checkpoint.json for run '${run_id}'."
 
   if [[ -n "$persona" ]]; then
     echo "Checkpointed: run=${run_id} criterion=${crit_id} persona=${persona} verdict=${verdict} confidence=${confidence}"

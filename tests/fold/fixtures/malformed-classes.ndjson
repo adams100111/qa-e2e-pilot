@@ -1,0 +1,6 @@
+{"seq":1,"t":"2026-09-01T10:00:00Z","event":"run_started","runId":"m"}
+{"seq":2,"t":"2026-09-01T10:00:01Z","event":"criterion_verdict","scenarioId":"__shared__","criterionId":"CX","personaId":"","verdict":"pass","confidence":"high","evidenceRefs":[],"kinds":[]}
+{"seq":3,"t":"2026-09-01T10:00:02Z","event":"plan_frozen","criteria":[],"order":[]}
+{"seq":4,"t":"2026-09-01T10:00:03Z","event":"plan_frozen","criteria":[],"order":["CX"]}
+{"seq":5,"t":"2026-09-01T10:00:04Z","event":"act_committed","key":"m:__shared__:CY","outcome":"ok"}
+{"seq":6,"t":"2026-09-01T10:00:05Z","event":"totally_unknown","foo":1}
