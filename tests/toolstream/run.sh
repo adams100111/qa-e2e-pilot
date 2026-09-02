@@ -62,9 +62,21 @@ ARGS3='{"command":"ls -la /tmp","note":"nothing sensitive here"}'
 OUT3="$( cd "$WORK" && bash "$T" redact "$ARGS3" "$CFG" )"
 check "redact: non-secret unchanged" "$(echo "$OUT3" | jq -c -S .)" "$(echo "$ARGS3" | jq -c -S .)"
 
-# --- redact: absent/empty config -> no-op (args unchanged) ---
+# --- redact: absent config (no `enforcement` key at all, e.g. "{}" or no
+# config-json arg) -> Finding 1 fail-safe: the built-in DEFAULT pattern set
+# applies (NOT a no-op) -- redaction must never silently no-op just because
+# a project's config has no `enforcement` block. ---
 OUT4="$( cd "$WORK" && bash "$T" redact "$ARGS1" )"
-check "redact: no config leaves args untouched" "$(echo "$OUT4" | jq -c -S .)" "$(echo "$ARGS1" | jq -c -S .)"
+not_contains "redact: absent config -> default patterns still catch the secret" "$OUT4" "Sup3rSecret!"
+contains     "redact: absent config -> redacted marker present" "$OUT4" "<redacted>"
+OUT4B="$( cd "$WORK" && bash "$T" redact "$ARGS1" '{}' )"
+not_contains "redact: explicit {} config -> default patterns still catch the secret" "$OUT4B" "Sup3rSecret!"
+
+# --- redact: EXPLICIT "secretPatterns": [] -> operator opt-out honored as
+# truly empty (no default fallback) -- distinct from the absent case above. ---
+OPTOUT_CFG='{"enforcement":{"secretPatterns":[]}}'
+OUT4C="$( cd "$WORK" && bash "$T" redact "$ARGS1" "$OPTOUT_CFG" )"
+check "redact: explicit secretPatterns:[] opts out (args unchanged)" "$(echo "$OUT4C" | jq -c -S .)" "$(echo "$ARGS1" | jq -c -S .)"
 
 # --- python3-fallback pass: mask jq from PATH so has_jq() fails and has_py()
 # succeeds, then re-assert the representative cases under the fallback.
@@ -95,6 +107,12 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
 
   PYOUT3="$( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$T" redact "$ARGS3" "$CFG" )"
   check "py-fallback: non-secret unchanged" "$(echo "$PYOUT3" | jq -c -S .)" "$(echo "$ARGS3" | jq -c -S .)"
+
+  PYOUT4="$( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$T" redact "$ARGS1" )"
+  not_contains "py-fallback: absent config -> default patterns still catch the secret" "$PYOUT4" "Sup3rSecret!"
+
+  PYOUT4C="$( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$T" redact "$ARGS1" "$OPTOUT_CFG" )"
+  check "py-fallback: explicit secretPatterns:[] opts out" "$(echo "$PYOUT4C" | jq -c -S .)" "$(echo "$ARGS1" | jq -c -S .)"
 
   echo "note - jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else

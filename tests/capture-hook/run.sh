@@ -152,4 +152,101 @@ else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# ===========================================================================
+# Case 9 (Finding 1 regression): .qa/config.json has NO `enforcement` key AT
+# ALL + a Bash secret in the command -> the toolstream line still has it
+# redacted (the built-in default pattern set fires; redaction never
+# silently no-ops just because a project's config lacks `enforcement`).
+# ===========================================================================
+setup_run
+printf '%s' '{"baseUrl":"http://localhost:3000"}' > "$WORK/.qa/config.json"
+NOENF_EVENT='{"tool_name":"Bash","tool_input":{"command":"echo password=Sup3rSecret!"},"tool_response":{"stdout":"ok","stderr":"","exitCode":0},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$NOENF_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook10.err" ); rc10=$?
+check "case9: hook exit 0" "$rc10" "0"
+LINE9="$(tail -n1 "$(TF)" 2>/dev/null)"
+not_contains "case9: secret redacted with NO enforcement block in config" "$LINE9" "Sup3rSecret!"
+contains "case9: redacted marker present (default pattern fired)" "$(echo "$LINE9" | jq -r '.args.command')" "<redacted>"
+
+# ===========================================================================
+# Case 10 (Finding 2 regression): a Bash tool_response (stdout) containing a
+# secret -> the toolstream line's responseBody has it redacted too, not
+# just the args. Uses the same no-`enforcement`-block config as case 9 to
+# also prove the default pattern set covers tool_response.
+# ===========================================================================
+setup_run
+printf '%s' '{"baseUrl":"http://localhost:3000"}' > "$WORK/.qa/config.json"
+RESPSECRET_EVENT='{"tool_name":"Bash","tool_input":{"command":"env"},"tool_response":{"stdout":"PASSWORD=hunter2\n","stderr":"","exitCode":0},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$RESPSECRET_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook11.err" ); rc11=$?
+check "case10: hook exit 0" "$rc11" "0"
+LINE10="$(tail -n1 "$(TF)" 2>/dev/null)"
+not_contains "case10: secret redacted out of responseBody" "$LINE10" "hunter2"
+contains "case10: responseBody carries a redacted marker" "$(echo "$LINE10" | jq -r '.responseBody')" "<redacted>"
+
+# ===========================================================================
+# Case 11 (opt-out honored): an EXPLICIT `"secretPatterns": []` in
+# enforcement -> the operator deliberately opted OUT of pattern-based
+# redaction, so the Bash secret is NOT redacted (distinct from the absent-
+# enforcement case above, which falls back to defaults).
+# ===========================================================================
+setup_run
+cat > "$WORK/.qa/config.json" <<'EOF'
+{
+  "enforcement": {
+    "captureHook": true,
+    "secretPatterns": [],
+    "redactedKeys": []
+  }
+}
+EOF
+( cd "$WORK" && printf '%s' "$NOENF_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook12.err" ); rc12=$?
+check "case11: hook exit 0" "$rc12" "0"
+LINE11="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case11: explicit secretPatterns:[] opt-out honored (args NOT redacted)" \
+  "$(echo "$LINE11" | jq -r '.args.command')" "echo password=Sup3rSecret!"
+
+# ===========================================================================
+# Case 12 (unchanged): a browser_* call still records its args IN FULL even
+# with the default pattern set active (no enforcement block) -- redaction
+# is Bash-only; browser_* is the documented residual, unaffected by
+# Finding 1/2's fixes.
+# ===========================================================================
+setup_run
+printf '%s' '{"baseUrl":"http://localhost:3000"}' > "$WORK/.qa/config.json"
+BROWSER_PW_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_type","tool_input":{"text":"password=Sup3rSecret!"},"tool_response":{"ok":true},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$BROWSER_PW_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook13.err" ); rc13=$?
+check "case12: hook exit 0" "$rc13" "0"
+LINE12="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case12: browser_* arg kept IN FULL despite default patterns being active" \
+  "$(echo "$LINE12" | jq -r '.args.text')" "password=Sup3rSecret!"
+
+# ===========================================================================
+# Case 13 (Finding 1+2, python3-fallback dual-engine proof): re-run cases 9
+# and 10 with jq masked from PATH.
+# ===========================================================================
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  setup_run
+  printf '%s' '{"baseUrl":"http://localhost:3000"}' > "$WORK/.qa/config.json"
+  BASH_BIN="$(command -v bash)"
+  FAKEBIN="$WORK/fakebin"
+  mkdir -p "$FAKEBIN"
+  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  ( cd "$WORK" && printf '%s' "$NOENF_EVENT" | PATH="$FAKEBIN" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook14.err" ); rc14=$?
+  check "py-fallback case9: hook exit 0" "$rc14" "0"
+  PYLINE9="$(tail -n1 "$(TF)" 2>/dev/null)"
+  not_contains "py-fallback case9: secret redacted with NO enforcement block" "$PYLINE9" "Sup3rSecret!"
+
+  ( cd "$WORK" && printf '%s' "$RESPSECRET_EVENT" | PATH="$FAKEBIN" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook15.err" ); rc15=$?
+  check "py-fallback case10: hook exit 0" "$rc15" "0"
+  PYLINE10="$(tail -n1 "$(TF)" 2>/dev/null)"
+  not_contains "py-fallback case10: secret redacted out of responseBody" "$PYLINE10" "hunter2"
+
+  echo "note - jq-fallback sub-case (Finding 1/2): RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - jq-fallback sub-case (Finding 1/2): jq or python3 not present on this host, cannot exercise fallback"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

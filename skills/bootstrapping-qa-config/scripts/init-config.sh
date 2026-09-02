@@ -99,7 +99,25 @@ jq -n \
   crawlDenyPatterns: [],
   maxRequestsPerSecond: 2,
   memory: { backend: "file" },
-  humanInteraction: { enforce: true, saveSession: false, maxOptOutRate: 0.2, sessionLogDir: ".playwright-mcp" }
+  humanInteraction: { enforce: true, saveSession: false, maxOptOutRate: 0.2, sessionLogDir: ".playwright-mcp" },
+  enforcement: {
+    _doc: "Layer 1 (record) of the out-of-agent evidence enforcement (ADR-0018/Plan H2). captureHook: whether the PostToolUse capture-hook (scripts/capture-hook.sh) is active. secretPatterns is left EXPLICIT here (not omitted) so a bootstrapped config never depends on the built-in fail-safe default by accident -- edit this list to fit the project; setting it to [] deliberately opts OUT of pattern-based redaction (an ABSENT secretPatterns key, e.g. if this line is deleted, falls back to the hard-coded DEFAULT_SECRET_PATTERNS_JSON in scripts/toolstream.sh instead of silently disabling redaction). redactedKeys: literal declared credential VALUES (not regexes) redacted wherever they appear as a substring. Bash args AND Bash tool_response (stdout/stderr) are both redacted; browser_* args are captured in FULL (test data) -- a browser_type into a password field can still capture a typed secret, a documented residual.",
+    captureHook: true,
+    secretPatterns: [
+      "(password)\"?\\s*[:=]\\s*\\S+",
+      "(passwd)\"?\\s*[:=]\\s*\\S+",
+      "(secret)\"?\\s*[:=]\\s*\\S+",
+      "(token)\"?\\s*[:=]\\s*\\S+",
+      "(api[_-]?key)\"?\\s*[:=]\\s*\\S+",
+      "(apikey)\"?\\s*[:=]\\s*\\S+",
+      "(authorization)\"?\\s*[:=]\\s*.+",
+      "(bearer)\\s+\\S+",
+      "(access[_-]?key)\"?\\s*[:=]\\s*\\S+",
+      "(private[_-]?key)\"?\\s*[:=]\\s*\\S+",
+      "(client[_-]?secret)\"?\\s*[:=]\\s*\\S+"
+    ],
+    redactedKeys: []
+  }
 }' > "$OUT"
 
 # Real-project side effects only when writing into an actual `.qa/` dir

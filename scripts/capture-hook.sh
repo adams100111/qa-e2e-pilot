@@ -4,13 +4,30 @@
 # Reads the hook's stdin JSON ({tool_name, tool_input, tool_response, cwd,
 # session_id}), resolves the active run via .qa/runs/latest (Plan B), and
 # appends a {tool, args, resultDigest, responseBody} event to
-# .qa/runs/<run>/toolstream.jsonl via toolstream.sh. Bash args are redacted
-# against .qa/config.json's (or, absent that, the plugin's shipped
-# .qa/config.json.example's) `enforcement.secretPatterns` +
-# `enforcement.redactedKeys` before writing; browser_* args are recorded in
-# full (test data — see the plan's documented typed-secret residual: a
-# browser_type into a password field can still capture a typed secret; not
-# silently claimed safe).
+# .qa/runs/<run>/toolstream.jsonl via toolstream.sh.
+#
+# REDACTION (Findings 1+2 of the security review):
+#   (a) FAIL-SAFE DEFAULTS: redaction is driven by toolstream.sh's `redact`
+#       command, which NEVER silently no-ops just because a project's
+#       .qa/config.json has no `enforcement` block. When the effective
+#       config has no `enforcement.secretPatterns` KEY AT ALL (absent — the
+#       default for a bootstrapped-but-not-yet-hand-edited config), a
+#       hard-coded built-in default pattern set applies (password, passwd,
+#       secret, token, api[_-]?key, apikey, authorization, bearer,
+#       access[_-]?key, private[_-]?key, client[_-]?secret). An operator who
+#       explicitly sets `"secretPatterns": []` has opted OUT of pattern
+#       redaction and that choice is honored (redactedKeys literal-substring
+#       redaction still applies). See toolstream.sh's `redact` usage comment
+#       for the full contract.
+#   (b) Bash args AND Bash tool_response are BOTH redacted before being
+#       written — a command's OUTPUT (`env`, `cat .env`, `echo $API_KEY`,
+#       `curl -v` echoing an Authorization header) can leak a secret just as
+#       easily as its arguments can, so `responseBody` is redacted for Bash
+#       calls using the exact same toolstream.sh redact pass as tool_input.
+#   (c) browser_* args (and non-Bash tool_response) are recorded in FULL
+#       (test data) — DOCUMENTED RESIDUAL: a `browser_type` into a password
+#       field can still capture a typed secret; this is not silently claimed
+#       safe.
 #
 # CONTRACT: this is a PostToolUse RECORD hook, never a gate. It must NEVER
 # fail (or block) the tool call it observes:
@@ -175,12 +192,52 @@ print("true" if v else "false")
   # toolstream line's JSON (known limitation: a byte-bounded cut can split a
   # multi-byte UTF-8 sequence at the boundary -- if that makes the truncated
   # bytes invalid UTF-8, JSON-encoding degrades to an empty string rather
-  # than crashing the hook). ---
+  # than crashing the hook).
+  #
+  # Finding 2 fix: for tool_name == Bash, this truncated text is redacted via
+  # the SAME toolstream.sh redact pass as the args, BEFORE being written --
+  # a Bash command's stdout/stderr can echo a secret just as easily as its
+  # arguments can (`env`, `cat .env`, `echo $API_KEY`, `curl -v` showing an
+  # Authorization header). The truncated text is wrapped as {"body": <text>}
+  # so toolstream.sh redact (which walks JSON string leaves) can run over it
+  # like any other args object, then unwrapped again. Non-Bash tools are NOT
+  # redacted here -- recorded in full per spec (see the header residual
+  # note). A redact failure on a Bash response withholds the body rather
+  # than risking an unredacted leak, mirroring the args-redact-failure
+  # handling above. ---
+  local truncated_response
+  truncated_response="$(printf '%s' "$tool_response" | head -c "$RESPONSE_BODY_CAP")"
+
+  if [[ "$tool_name" == "Bash" ]]; then
+    local wrapped="" redacted_wrapped="" redacted_body=""
+    if has_jq; then
+      wrapped="$(printf '%s' "$truncated_response" | jq -Rs -c '{body: .}' 2>/dev/null)"
+    elif has_py; then
+      wrapped="$(printf '%s' "$truncated_response" | python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}, separators=(",", ":")))' 2>/dev/null)"
+    fi
+    if [[ -n "$wrapped" ]]; then
+      redacted_wrapped="$(bash "$TOOLSTREAM" redact "$wrapped" "$config_json" 2>/dev/null)"
+    fi
+    if [[ -n "$redacted_wrapped" ]]; then
+      if has_jq; then
+        redacted_body="$(jq -r '.body' <<< "$redacted_wrapped" 2>/dev/null)"
+      elif has_py; then
+        redacted_body="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["body"])' <<< "$redacted_wrapped" 2>/dev/null)"
+      fi
+    fi
+    if [[ -n "$redacted_body" || -z "$truncated_response" ]]; then
+      truncated_response="$redacted_body"
+    else
+      warn "redact failed for a Bash tool_response, withholding responseBody to avoid a potential unredacted leak"
+      truncated_response="<redacted: responseBody withheld, redact failed>"
+    fi
+  fi
+
   local response_body_json=""
   if has_jq; then
-    response_body_json="$(printf '%s' "$tool_response" | head -c "$RESPONSE_BODY_CAP" | jq -Rs '.' 2>/dev/null)"
+    response_body_json="$(printf '%s' "$truncated_response" | jq -Rs '.' 2>/dev/null)"
   elif has_py; then
-    response_body_json="$(printf '%s' "$tool_response" | head -c "$RESPONSE_BODY_CAP" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null)"
+    response_body_json="$(printf '%s' "$truncated_response" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null)"
   fi
   [[ -z "$response_body_json" ]] && response_body_json='""'
 

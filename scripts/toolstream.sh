@@ -22,20 +22,39 @@
 #
 #   toolstream.sh redact <args-json> [config-json]
 #       Recursively walk <args-json> (typically an object, e.g. a Bash
-#       tool's tool_input); for every STRING leaf value:
+#       tool's tool_input, or a Bash tool_response wrapped as {"body": ...});
+#       for every STRING leaf value:
 #         1. any LITERAL occurrence of a value in [config-json]'s
 #            .enforcement.redactedKeys (declared credential values) is
 #            replaced with "<redacted>" (literal substring match — no regex
 #            interpretation of the credential value itself);
-#         2. any SUBSTRING matching a regex in .enforcement.secretPatterns is
-#            replaced with "<redacted>" (case-insensitive always; a leading
-#            literal "(?i)" in the pattern is stripped first since
+#         2. any SUBSTRING matching a regex in the EFFECTIVE secretPatterns
+#            list is replaced with "<redacted>" (case-insensitive always; a
+#            leading literal "(?i)" in the pattern is stripped first since
 #            case-insensitivity is already applied globally by this script,
 #            not by the pattern).
+#       EFFECTIVE secretPatterns (Finding 1 fail-safe — redaction must NEVER
+#       silently no-op just because a project's config has no `enforcement`
+#       block):
+#         - .enforcement.secretPatterns KEY ABSENT (no `enforcement` block at
+#           all, or an `enforcement` block that doesn't mention
+#           secretPatterns) -> fall back to $DEFAULT_SECRET_PATTERNS (below):
+#           a hard-coded default covering password/passwd/secret/token/
+#           api[_-]?key/apikey/authorization/bearer/access[_-]?key/
+#           private[_-]?key/client[_-]?secret in KEY=value, "KEY": value, and
+#           "KEY":"value" forms.
+#         - .enforcement.secretPatterns KEY PRESENT AND EXPLICITLY [] -> the
+#           operator opted OUT of pattern-based redaction; honored as truly
+#           empty (redactedKeys literal-substring redaction still applies).
+#         - .enforcement.secretPatterns KEY PRESENT with a non-empty array ->
+#           that array is the effective list (defaults do NOT also apply —
+#           an explicit list REPLACES the default, it doesn't extend it).
 #       Prints the redacted JSON (same shape; non-string values untouched;
-#       array order preserved) to stdout. [config-json] defaults to "{}";
-#       missing/absent .enforcement.* degrades to a no-op (leave args alone)
-#       rather than an error — redact must never die mid-hook.
+#       array order preserved) to stdout. [config-json] defaults to "{}",
+#       which — per the above — still triggers the DEFAULT pattern fallback
+#       (no `enforcement` key present in "{}"); redact only becomes a true
+#       no-op when secretPatterns is explicitly [] AND redactedKeys is empty
+#       or absent. redact must never die mid-hook.
 #
 # PORTABILITY: secretPatterns MUST be POSIX-ERE-compatible (no lookaround, no
 # backreferences) — the jq engine matches them via jq's built-in Oniguruma
@@ -74,6 +93,42 @@ has_jq() {
 has_py() { command -v python3 >/dev/null 2>&1; }
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# ---------------------------------------------------------------------------
+# DEFAULT_SECRET_PATTERNS_JSON — Finding 1 fail-safe default pattern set.
+# Applied by cmd_redact ONLY when the effective config has no
+# `.enforcement.secretPatterns` KEY AT ALL (absent, not an explicit empty
+# array — see the `redact` usage comment above). Each entry matches a common
+# secret-bearing key name followed by a `KEY=value` / `KEY: value` /
+# `"KEY":"value"` assignment; case-insensitivity is applied globally by
+# cmd_redact (not by these patterns). `authorization` and `bearer` use a
+# broader value match since an Authorization header's value ("Bearer
+# <token>") legitimately contains internal whitespace that a plain `\S+`
+# would truncate at, leaking the token itself while only redacting the
+# scheme word.
+#
+# POSIX-ERE-safe subset only (see the PORTABILITY note above this file's
+# header): no lookaround, no backreferences, no PCRE-only `(?i)` (handled by
+# the case-insensitive match itself, not the pattern). `\s`/`\S` are
+# supported identically by jq's Oniguruma engine and Python's `re` — both
+# engines used here, neither ever shells out to `grep -P`/`perl`.
+# ---------------------------------------------------------------------------
+DEFAULT_SECRET_PATTERNS_JSON=$(cat <<'JSONEOF'
+[
+  "(password)\"?\\s*[:=]\\s*\\S+",
+  "(passwd)\"?\\s*[:=]\\s*\\S+",
+  "(secret)\"?\\s*[:=]\\s*\\S+",
+  "(token)\"?\\s*[:=]\\s*\\S+",
+  "(api[_-]?key)\"?\\s*[:=]\\s*\\S+",
+  "(apikey)\"?\\s*[:=]\\s*\\S+",
+  "(authorization)\"?\\s*[:=]\\s*.+",
+  "(bearer)\\s+\\S+",
+  "(access[_-]?key)\"?\\s*[:=]\\s*\\S+",
+  "(private[_-]?key)\"?\\s*[:=]\\s*\\S+",
+  "(client[_-]?secret)\"?\\s*[:=]\\s*\\S+"
+]
+JSONEOF
+)
 
 # ---------------------------------------------------------------------------
 # validate_run_id <run-id> — reject anything that could escape
@@ -232,9 +287,14 @@ cmd_redact() {
   if has_jq; then
     jq -e . >/dev/null 2>&1 <<< "$args_json"   || die "redact: args-json is not valid JSON."
     jq -e . >/dev/null 2>&1 <<< "$config_json" || die "redact: config-json is not valid JSON."
-    jq -c --argjson cfg "$config_json" '
-      (($cfg.enforcement.secretPatterns // []) | map(select(type == "string"))) as $pats
-      | (($cfg.enforcement.redactedKeys // []) | map(select(type == "string" and length > 0))) as $keys
+    jq -c --argjson cfg "$config_json" --argjson defaultPats "$DEFAULT_SECRET_PATTERNS_JSON" '
+      (($cfg.enforcement // {})) as $enf
+      | ($enf | type == "object" and has("secretPatterns")) as $hasExplicit
+      | (if $hasExplicit
+         then ($enf.secretPatterns // [] | map(select(type == "string")))
+         else $defaultPats
+         end) as $pats
+      | (($enf.redactedKeys // []) | map(select(type == "string" and length > 0))) as $keys
       | def redact_str(s):
           (reduce $keys[] as $k (s; . / $k | join("<redacted>"))) as $s1
           | reduce $pats[] as $p ($s1;
@@ -247,6 +307,7 @@ cmd_redact() {
     python3 -c '
 import json, re, sys
 config_json = sys.argv[1]
+default_pats_json = sys.argv[2]
 args_json = sys.stdin.read()
 try:
     args = json.loads(args_json)
@@ -258,9 +319,17 @@ try:
 except json.JSONDecodeError:
     print("ERROR: redact: config-json is not valid JSON.", file=sys.stderr)
     sys.exit(1)
+try:
+    default_patterns = json.loads(default_pats_json)
+except json.JSONDecodeError:
+    default_patterns = []
 
 enforcement = cfg.get("enforcement") or {}
-patterns = [p for p in (enforcement.get("secretPatterns") or []) if isinstance(p, str)]
+has_explicit = isinstance(enforcement, dict) and "secretPatterns" in enforcement
+if has_explicit:
+    patterns = [p for p in (enforcement.get("secretPatterns") or []) if isinstance(p, str)]
+else:
+    patterns = [p for p in default_patterns if isinstance(p, str)]
 keys = [k for k in (enforcement.get("redactedKeys") or []) if isinstance(k, str) and k]
 
 compiled = []
@@ -288,7 +357,7 @@ def walk(v):
     return v
 
 print(json.dumps(walk(args), separators=(",", ":")))
-' "$config_json" <<< "$args_json"
+' "$config_json" "$DEFAULT_SECRET_PATTERNS_JSON" <<< "$args_json"
   else
     die "toolstream.sh needs either 'jq' or 'python3' to redact args."
   fi
