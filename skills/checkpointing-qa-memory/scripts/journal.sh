@@ -93,7 +93,21 @@ QA_BASE="${QA_BASE:-.qa/runs}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-has_jq() { command -v jq >/dev/null 2>&1; }
+# QA_ENGINE (unset by default) lets a caller force which JSON engine this
+# script uses, overriding the auto-detect below: QA_ENGINE=python3 forces
+# the python3 branch even if jq is on PATH; QA_ENGINE=jq forces the jq
+# branch. Unset/any other value = today's auto-detect (jq if present, else
+# python3). This exists so checkpoint.sh — which shells out to this script
+# with an augmented PATH that may re-expose a jq the caller deliberately
+# hid — can force the SAME engine it itself detected on the caller's real,
+# unaugmented PATH (see checkpoint.sh's ext_path/QA_ENGINE comment).
+has_jq() {
+  case "${QA_ENGINE:-}" in
+    python3) return 1 ;;
+    jq) return 0 ;;
+    *) command -v jq >/dev/null 2>&1 ;;
+  esac
+}
 
 has_py() { command -v python3 >/dev/null 2>&1; }
 

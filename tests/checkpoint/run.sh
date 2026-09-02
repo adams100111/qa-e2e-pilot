@@ -175,6 +175,70 @@ else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# --- Case 7b: poisoned-jq QA_ENGINE propagation ------------------------------
+# Regression guard for the ext_path leak: checkpoint.sh's ext_path
+# ("${PATH}:${BASH%/*}") appends the running bash binary's OWN directory so
+# journal.sh/fold.sh subprocesses can find mv/rm/dirname/mktemp under the
+# restricted fakebin above — but ${BASH%/*} is almost always /usr/bin, which
+# ALSO holds a real, working jq, silently re-exposing it to those
+# subprocesses even when checkpoint.sh's own PATH has jq masked. Because
+# output is byte-identical either engine, that leak shipped invisibly.
+#
+# Simulate it precisely, but with a jq that PROVES the point instead of
+# hiding it: invoke checkpoint.sh via a bash binary that lives in a
+# directory ("poisoned dir") which also contains mv/rm/dirname/mktemp/grep
+# (what ext_path is legitimately for) PLUS a `jq` that always exits 1 with
+# no output. checkpoint.sh's OWN PATH (the restricted fakebin, no jq) is
+# unaffected -- checkpoint.sh's own has_jq() still reads that and correctly
+# sees no jq. But when checkpoint.sh appends "${BASH%/*}" to build ext_path
+# for its journal.sh/fold.sh subprocess calls, it's the poisoned dir that
+# gets appended -- so a subprocess auto-detecting jq (no override) would
+# find and use the poisoned stub and FAIL. The upsert succeeding here is
+# only possible because checkpoint.sh forwards QA_ENGINE=python3 to those
+# subprocesses, bypassing the poisoned jq entirely.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  QE_FAKEBIN="$WORK/qe-fakebin"
+  mkdir -p "$QE_FAKEBIN"
+  # Same restricted set as the py-fallback FAKEBIN above (Case 7): no jq, so
+  # checkpoint.sh's OWN has_jq (reading THIS PATH) is false.
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$QE_FAKEBIN/$tool"
+  done
+
+  QE_POISONDIR="$WORK/qe-poisondir"
+  mkdir -p "$QE_POISONDIR"
+  # Real bash (so `"$QE_POISONBASH" "$SCRIPT" ...` works and $BASH inside
+  # checkpoint.sh resolves to THIS directory) plus the coreutils
+  # journal.sh/fold.sh need beyond checkpoint.sh's own restricted PATH.
+  for tool in bash mv rm dirname mktemp grep sed wc; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$QE_POISONDIR/$tool"
+  done
+  printf '#!/bin/sh\nexit 1\n' > "$QE_POISONDIR/jq"
+  chmod +x "$QE_POISONDIR/jq"
+  QE_POISONBASH="$QE_POISONDIR/bash"
+
+  QE_RUN_ID="test-run-qa-engine"
+  QE_CKPT_FILE="$WORK/.qa/runs/${QE_RUN_ID}/checkpoint.json"
+
+  (cd "$WORK" && PATH="$QE_FAKEBIN" "$QE_POISONBASH" "$SCRIPT" "$QE_RUN_ID" C1 pass >/dev/null 2>&1)
+  QE_RC=$?
+  check "QA_ENGINE propagation: upsert exits 0 despite poisoned jq on ext_path" "$QE_RC" "0"
+  check "QA_ENGINE propagation: checkpoint file created" \
+    "$([[ -f "$QE_CKPT_FILE" ]] && echo yes)" "yes"
+  check "QA_ENGINE propagation: valid json" \
+    "$(python3 -c "import json; json.load(open('$QE_CKPT_FILE')); print('ok')" 2>/dev/null)" "ok"
+  check "QA_ENGINE propagation: criterion_id C1" \
+    "$(python3 -c "import json;d=json.load(open('$QE_CKPT_FILE'));print(d['criteria'][0]['criterion_id'])" 2>/dev/null)" "C1"
+  check "QA_ENGINE propagation: verdict pass" \
+    "$(python3 -c "import json;d=json.load(open('$QE_CKPT_FILE'));print(d['criteria'][0]['verdict'])" 2>/dev/null)" "pass"
+
+  echo "note - poisoned-jq QA_ENGINE sub-case: RAN (checkpoint.sh forwarded QA_ENGINE=python3 past a poisoned jq on the ext_path leak)"
+else
+  echo "SKIP - poisoned-jq QA_ENGINE sub-case: jq or python3 not present on this host"
+fi
+
 # --- Case 8: record-evidence.sh bake -> bake-read-back.json ------------------
 RE_RUN_ID="test-run-evidence"
 RE_C1_DIR="$WORK/.qa/runs/${RE_RUN_ID}/evidence/C1"

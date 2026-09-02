@@ -160,6 +160,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Case: poisoned-jq — QA_ENGINE=python3 must actually FORCE python3, not
+# just happen to be picked because jq was absent. Put a `jq` on PATH that
+# always fails (exit 1, no stdout); if has_jq() ever consulted it (auto-
+# detect, or a broken override), fold.jq would never run and every jq-branch
+# call would error. Asserting success + a correct checkpoint here is proof
+# the python3 engine actually ran. Regression guard for checkpoint.sh's
+# ext_path leak (${BASH%/*} re-exposing a real jq that would have masked
+# this) -- output being byte-identical either engine is exactly why that
+# leak shipped silently, so this asserts the MECHANISM, not just output.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+  seed_run poisoned-run basic.ndjson
+  POISONBIN="$WORK/poisonbin"
+  mkdir -p "$POISONBIN"
+  for tool in date mkdir mv rm cat dirname sed wc grep mktemp python3 bash; do
+    tp="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$tp" ]] && ln -sf "$tp" "$POISONBIN/$tool"
+  done
+  printf '#!/bin/sh\nexit 1\n' > "$POISONBIN/jq"
+  chmod +x "$POISONBIN/jq"
+
+  ( cd "$WORK" && QA_ENGINE=python3 PATH="$POISONBIN" bash "$FOLD" poisoned-run >/dev/null 2>&1 ); rc_poison=$?
+  PCKPT="$WORK/.qa/runs/poisoned-run/checkpoint.json"
+  check "poisoned-jq: QA_ENGINE=python3 fold exit 0" "$rc_poison" "0"
+  check "poisoned-jq: checkpoint criteria order (same as basic case)" \
+    "$(get "$PCKPT" '[.criteria[].criterion_id] | join(",")')" "C3,C1"
+  check "poisoned-jq: C1 verdict correct (proves real reduce ran, not the poisoned jq)" \
+    "$(get "$PCKPT" '.criteria[] | select(.criterion_id=="C1") | .verdict')" "pass"
+
+  # Optional sanity: without the override, auto-detect finds the poisoned jq
+  # first and the fold fails -- proving the poisoned jq is really reachable
+  # and this isn't a no-op regression guard.
+  seed_run poisoned-run-nooverride basic.ndjson
+  ( cd "$WORK" && PATH="$POISONBIN" bash "$FOLD" poisoned-run-nooverride >/dev/null 2>&1 ); rc_poison_no=$?
+  check "unset QA_ENGINE + poisoned jq: fold fails (auto-detect picked the poisoned jq)" \
+    "$([[ $rc_poison_no -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  echo "note - poisoned-jq sub-case: RAN (QA_ENGINE=python3 override proven against a jq that always fails)"
+else
+  echo "SKIP - poisoned-jq sub-case: python3 not present on this host"
+fi
+
+# ---------------------------------------------------------------------------
 # Case: regenerate — AC-1. fold.sh on basic, delete checkpoint.json, fold.sh
 # again -> canonically-equal to the first (a full re-fold from the journal
 # alone reproduces the same checkpoint, since fold is a pure function of the

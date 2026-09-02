@@ -780,26 +780,37 @@ cmd_upsert() {
   # PATH untouched.
   local ext_path="${PATH}:${BASH%/*}"
 
+  # ${BASH%/*} is almost always /usr/bin, which ALSO holds jq — so the
+  # PATH-append above can re-expose a jq the characterization suite's
+  # fakebin deliberately hid, silently defeating the fakebin's intent to
+  # force journal.sh/fold.sh onto their python3 fallback. Rather than try
+  # to curate a jq-less PATH (fragile), tell those subprocesses EXPLICITLY
+  # which engine to use, decided from checkpoint.sh's OWN has_jq reading
+  # the real, unaugmented PATH — so the leaked jq on ext_path never matters.
+  # Scoped to just these calls (not exported globally).
+  local eng="python3"
+  has_jq && eng="jq"
+
   local journal_path="${QA_BASE}/${run_id}/journal.ndjson"
   if [[ ! -s "$journal_path" ]]; then
     local run_started_event
     run_started_event="$(build_run_started_event "$run_id")"
-    PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$run_started_event" \
+    QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$run_started_event" \
       || die "Failed to append the run_started event to the journal for run '${run_id}'."
   fi
 
   local phase_event
   phase_event="$(build_phase_entered_event "$phase")"
-  PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$phase_event" \
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$phase_event" \
     || die "Failed to append the phase_entered event to the journal for run '${run_id}'."
 
   local verdict_event
   verdict_event="$(build_criterion_verdict_event "$crit_id" "$verdict" "$confidence" \
                     "$last_action" "$evidence_refs" "$bug_ref" "$kinds_json" "$persona" "$nonui_reason")"
-  PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$verdict_event" \
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$verdict_event" \
     || die "Failed to append the criterion_verdict event to the journal for run '${run_id}'."
 
-  PATH="$ext_path" "$BASH" "$fold_sh" "$run_id" >/dev/null \
+  QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$fold_sh" "$run_id" >/dev/null \
     || die "Failed to fold the journal into checkpoint.json for run '${run_id}'."
 
   if [[ -n "$persona" ]]; then

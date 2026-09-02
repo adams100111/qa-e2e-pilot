@@ -111,4 +111,49 @@ else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# --- poisoned-jq sub-case: QA_ENGINE=python3 must actually force python3,
+# not just "python3 happens to be picked because jq was absent". Put a `jq`
+# on PATH that always FAILS (exit 1, no stdout) -- if has_jq() ever consulted
+# it (auto-detect, or a broken override), every jq-branch call would error
+# out and the operation would fail. Asserting SUCCESS + correct output here
+# is proof the python3 branch ran, not the poisoned jq. Regression guard for
+# checkpoint.sh's ext_path leak (${BASH%/*} re-exposing a real /usr/bin/jq
+# that would have masked this): output being byte-identical either engine is
+# exactly why that leak shipped silently, so this test asserts the MECHANISM
+# (QA_ENGINE override), never just output.
+if command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="$(command -v bash)"
+  POISONBIN="$WORK/poisonbin"
+  mkdir -p "$POISONBIN"
+  for tool in date mkdir mv rm cat dirname sed wc python3; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$POISONBIN/$tool"
+  done
+  printf '#!/bin/sh\nexit 1\n' > "$POISONBIN/jq"
+  chmod +x "$POISONBIN/jq"
+
+  ( cd "$WORK" && QA_ENGINE=python3 PATH="$POISONBIN" "$BASH_BIN" "$J" append qer1 '{"event":"run_started","runId":"qer1"}' >/dev/null 2>&1 ); qerc=$?
+  QEJF="$WORK/.qa/runs/qer1/journal.ndjson"
+  check "QA_ENGINE=python3 + poisoned jq: append rc 0" "$qerc" "0"
+  check "QA_ENGINE=python3 + poisoned jq: line written" "$(wc -l < "$QEJF" 2>/dev/null | tr -d ' ')" "1"
+  check "QA_ENGINE=python3 + poisoned jq: event field correct" \
+    "$(sed -n 1p "$QEJF" 2>/dev/null | python3 -c 'import json,sys;print(json.loads(sys.stdin.read())["event"])' 2>/dev/null)" \
+    "run_started"
+
+  echo "$BIGJSON" | ( cd "$WORK" && QA_ENGINE=python3 PATH="$POISONBIN" "$BASH_BIN" "$J" canonical ) > "$WORK/qe-canon.out" 2>/dev/null
+  check "QA_ENGINE=python3 + poisoned jq: canonical rc 0 + correct" "$(cat "$WORK/qe-canon.out")" "$BIG_EXPECT"
+
+  # Optional sanity: WITHOUT the override, auto-detect finds the poisoned jq
+  # first (has_jq() only checks presence, not that it works) and the
+  # operation fails -- proving the poisoned jq is actually reachable/picked
+  # by default, i.e. this is a real regression guard and not a no-op.
+  ( cd "$WORK" && PATH="$POISONBIN" "$BASH_BIN" "$J" append qer2 '{"event":"run_started","runId":"qer2"}' >/dev/null 2>&1 ); qerc2=$?
+  check "unset QA_ENGINE + poisoned jq: append fails (auto-detect picked the poisoned jq)" \
+    "$([[ $qerc2 -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  echo "note - poisoned-jq sub-case: RAN (QA_ENGINE=python3 override proven against a jq that always fails)"
+else
+  echo "SKIP - poisoned-jq sub-case: python3 not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
