@@ -18,7 +18,7 @@
 const fs = require('fs');
 
 // Does this snippet WRITE app/DOM/storage state? (read-only reads are ignored.)
-const MUTATION_RE = /\.setItem\(|\.removeItem\(|localStorage\.clear\(|sessionStorage\.(set|remove|clear)|\.value\s*=|\.checked\s*=|\.innerHTML\s*=|\.innerText\s*=|\.textContent\s*=|\.setAttribute\(|\.dispatchEvent\(|\.click\(\)|\.submit\(\)|\.requestSubmit\(|\.remove\(\)|\[['\"](value|checked|innerHTML|innerText|textContent)['\"]\]\s*=|document\.\w+\s*=|window\.\w+\s*=|method\s*:\s*['\"](POST|PUT|PATCH|DELETE)|\.open\(\s*['\"](POST|PUT|PATCH|DELETE)|sendBeacon\(|\.dispatch\(|setState\(/;
+const MUTATION_RE = /\.setItem\(|\.removeItem\(|localStorage\.clear\(|sessionStorage\.(set|remove|clear)|\.value\s*=|\.checked\s*=|\.innerHTML\s*=|\.innerText\s*=|\.textContent\s*=|\.setAttribute\(|\.dispatchEvent\(|\.click\(\)|\.submit\(\)|\.requestSubmit\(|\.remove\(\)|\[['"`](value|checked|innerHTML|innerText|textContent)['"`]\]\s*=|document\.\w+\s*=|window\.\w+\s*=|method\s*:\s*['"`]\s*(POST|PUT|PATCH|DELETE)|\.open\(\s*['"`]\s*(POST|PUT|PATCH|DELETE)|\.(post|put|patch|delete)\s*\(|sendBeacon\(|\.dispatch\(|setState\(/i;
 
 // True iff a raw JS snippet writes state. Used BOTH for full session.md code
 // AND for a bare action-trace evaluate `payload` (which has no `page.evaluate(`

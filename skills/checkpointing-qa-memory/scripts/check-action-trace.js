@@ -28,7 +28,12 @@ const fs = require('fs');
 const path = require('path');
 // Reuse the ONE classifier so act-payloads and session code are judged identically.
 const { mutates } = require(path.join(__dirname, '..', '..', 'driving-browser-qa', 'scripts', 'parse-session-log.js'));
-const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload','browser_navigate']);
+const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload']);
+// browser_navigate is NOT a human-path act tool: following a real link is a
+// browser_click side effect, so an act-phase browser_navigate is an address-bar
+// URL-skip (gap A) — fail-closed unless the step is carve-out-tagged.
+const NAV_CARVEOUTS = new Set(['deep-link', 'auth-boundary']);
+function navIsCarvedOut(s) { return s.tool === 'browser_navigate' && NAV_CARVEOUTS.has(s.carveout); }
 function die(msg) { process.stderr.write('HUMAN-ACTION GATE: ' + msg + '\n'); process.exit(1); }
 
 // Is this self-reported act step a workaround? human-path tools are fine; an
@@ -36,6 +41,7 @@ function die(msg) { process.stderr.write('HUMAN-ACTION GATE: ' + msg + '\n'); pr
 // evaluate is allowed); anything else on the act path (run_code_unsafe / route /
 // unknown) is a workaround. `mutates()` is the same lint used on session.md.
 function actStepIsWorkaround(s) {
+  if (s.tool === 'browser_navigate') return !navIsCarvedOut(s); // act-phase URL-skip unless carve-out-tagged
   if (HUMAN_PATH_TOOLS.has(s.tool)) return false;
   if (s.tool === 'browser_evaluate') return mutates(s.payload || '') === true;
   return true; // browser_run_code_unsafe, browser_route, or any non-human-path tool
@@ -121,7 +127,7 @@ function main() {
   // lint classified that step's payload as non-mutating (opaque mutator). A decoy
   // human-path click no longer launders it (the check is "all", not "some").
   if (changed) {
-    const bad = actSteps.find((s) => !HUMAN_PATH_TOOLS.has(s.tool));
+    const bad = actSteps.find((s) => !HUMAN_PATH_TOOLS.has(s.tool) && !navIsCarvedOut(s));
     if (bad) {
       die('persisted state changed across the act while a non-human-path act step was present ("' + bad.tool + '") — the change is not attributable to a UI action (Check 3)');
     }

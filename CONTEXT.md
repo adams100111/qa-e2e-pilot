@@ -45,8 +45,64 @@ Comparing the *same* quantity across layers — recomputed-expected vs FE displa
 _Avoid_: comparison, diffing.
 
 **Oracle**:
-The authority a result is judged correct against. Here the oracle is the spec/domain rule, carried in the checklist — not the backend implementation.
-_Avoid_: source of truth (reserve "backend source of truth" for *what the backend computed/stored*, which reconciliation localizes against, not the correctness oracle).
+The **authority of last resort** a result is judged correct against — ground truth. Here the oracle is the spec/domain rule, carried in the checklist; on the UI/UX plane a **definite** oracle may also be a standard (WCAG), the i18n catalog, a design token, or the content rule that `undefined`/`NaN`/a raw key is never valid. Never the backend implementation, and never the app's own self-consistency (a uniformly-buggy app is self-consistent). Only a definite oracle can ground a **verdict**.
+_Avoid_: source of truth (reserve "backend source of truth" for *what the backend computed/stored*, which reconciliation localizes against, not the correctness oracle); calling an **expectation heuristic** an oracle.
+
+**Expectation heuristic**:
+A *non-authoritative* source of what "should" happen — the app's own conventions (self-consistency), cross-state comparison (en/ar, viewport, before/after), convention priors (Nielsen/HIG), or the multimodal generative critic. Yields a **suspicion**, never a standalone verdict; it becomes a verdict only when a definite **Oracle** corroborates it or a human confirms it in a HITL round — otherwise it stays advisory. Keeps detection from circular reasoning.
+_Avoid_: oracle (a heuristic is not ground truth), rule.
+
+**Suspicion**:
+A candidate finding emitted by a detector before adjudication — `{family, selector, evidence}`, no verdict. Promoted to a verdict only by **adjudication** against a definite **Oracle** (or HITL); otherwise reported as advisory.
+_Avoid_: finding (reserve for an adjudicated result), bug (not yet confirmed).
+
+**Adjudication**:
+The deliberate-vs-bug determination: localize a **suspicion** to its source (component, style rule, i18n key, data field) and judge it against the **Oracle**. Confirms a real defect *or* clears an intentional design (e.g. an Arabic-catalog value intentionally in Latin script). Reading the code only *localizes and adjudicates* — it is never itself the oracle.
+_Avoid_: verification (reserve for the layer-agreement of a criterion), review.
+
+**Capture-hook / Toolstream**:
+The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies, secrets redacted) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-drive, not the file.
+_Avoid_: log (unqualified), trace (reserve "action-trace" for the agent's self-report), hash-chain (cut).
+
+**Block-hook**:
+A plugin-bundled `PreToolUse` hook that **denies before running** the *phase-independent absolutes* — a mutating `browser_evaluate`, `browser_run_code_unsafe`, `browser_route` on the tested origin. It sees tool calls, not the agent-supplied phase, so it never gates phase-dependent cases (a `browser_navigate` URL-skip is record-only → **qa-verify**). Distinct from the in-run **checkpoint** gate and from **qa-verify**.
+_Avoid_: gate (reserve for the checkpoint enforcement), block (unqualified).
+
+**Provenance binding**:
+The rule that every evidence artifact must reference the **Capture** call that produced it — a bake read-back to the captured backend read (XHR, navigation response, or Bash read); an act step to the captured tool call. Evidence with no corresponding captured call is rejected.
+_Avoid_: signature, checksum.
+
+**qa-verify**:
+The **out-of-agent** authoritative verifier — a standalone process (local or CI) whose core is deterministic code. It re-checks a Run's evidence + **Toolstream** and independently corroborates high-stakes criteria: a fresh operator-invoked agent **re-drives** read-only isolation probes, while **mutating** human-action passes are **re-baked** (persisted state read again, never the mutation re-performed). Its verdict overrides the in-run report; a Run is "verified" only when every pass survives it.
+_Avoid_: gate (the in-run `checkpoint.sh` is the gate; `qa-verify` is the out-of-agent re-verification), CI.
+
+**Assurance tier**:
+The enforcement strength actually achieved on a harness — how tamper-resistant the live gate is (Codex managed-config = agent-proof; Claude plugin-bundled / opencode root-managed; Pi cooperative). Printed in the report; the universal floor is **qa-verify**. A best-effort tier prints an honest banner rather than claiming a guarantee.
+_Avoid_: level, mode.
+
+**Journal**:
+The append-only `journal.ndjson` in `.qa/runs/<run-id>/` — one event per line (`criterion_started`, `act_intent`, `criterion_verdict`, …) — and the **single source of truth** for a Run's state. The **Checkpoint**, run-manifest, bug-log, and traceability are *derived projections* of it (see **Fold**); the journal wins on any disagreement. Written append-then-flush; the derived files are written atomically (temp→rename→dir-fsync).
+_Avoid_: log (unqualified — the **Toolstream** is a different append-only file), checkpoint (that is the derived cursor).
+
+**Fold**:
+The pure function that replays the **Journal** to compute current Run state — "where am I" = `fold(journal)`, never the agent's memory (context compaction is a silent partial restart, so folded state is the only reliable position). Fold is also the crash-recovery pass: a torn last journal line is discarded on fold.
+_Avoid_: reduce, replay (acceptable as a gloss), restore.
+
+**Scenario**:
+One role's ordered storyline of criteria in a Run — the unit a single persona plays. A Run has one scenario per confirmed role; the **current scenario** always has exactly one current role. Cross-tenant isolation and two-actor races are individual **criteria** inside a role's scenario, not multi-actor scenarios. The atomic resumable unit is the `(scenario, criterion)` tuple.
+_Avoid_: journey (a criterion may be a multi-step flow), test suite, multi-actor scenario (not modeled).
+
+**Idempotency probe**:
+A read-only check a **mutating** criterion declares — entity + natural key — used on resume to decide whether its act already landed, so a crash mid-act never double-creates. Paired with a deterministic key `runId:scenarioId:criterionId` and the `act_intent`/`act_committed` journal events; an unresolved probe on resume yields `blocked`, never a blind retry. Reuses the bake read-back.
+_Avoid_: idempotency key (that is the identifier; the probe is the check), dedup.
+
+**Transition guard**:
+A predicate on a state-machine edge that must pass before `checkpoint.sh` (the transition API) will commit the transition to the **Journal** — e.g. `→ verdict:pass` requires the honesty gate, `acting → baking` requires an `act_committed`. Guards make the invariants (five verdicts, evidence gate, bounded surface) mechanical rather than prose. An illegal or unguarded transition is rejected with a remediation message.
+_Avoid_: gate (reserve for the pass/honesty enforcement), check.
+
+**Frozen plan**:
+The criterion set + order (+ personas/scenarios) recorded once at Run start (`plan_frozen`) and replayed on resume — never re-derived from the running app, which may have drifted. A criterion added mid-Run is an explicit `plan_amended` event, never a silent re-derivation.
+_Avoid_: checklist (the frozen plan is the checklist *pinned at a moment*), replan.
 
 **Memory-spec**:
 The typed schema for a Run's resumable artifacts — run-manifest, checkpoint, bug-log, traceability. These are *run artifacts* belonging to the run, not durable facts in the agent's personal memory system.
@@ -65,8 +121,8 @@ A criterion's outcome — exactly one of: **pass** (matched the oracle), **fail*
 _Avoid_: skipped, n/a, partial. "blocked" = the environment stopped us; "error" = our tooling broke; "deferred" = we chose not to.
 
 **Confidence**:
-An orthogonal attribute on a pass/fail verdict — **low** when the expected value could only be derived from backend code (no spec/domain oracle), **high** otherwise. Not a verdict value.
-_Avoid_: certainty, weight.
+An orthogonal attribute on a pass/fail verdict — **low** when the expectation is **not grounded in a spec/domain oracle**, **high** when it is. One definition, two instances: a value derivable only from backend code (computed-logic), *and* a bare standards threshold with no spec reconciliation (WCAG contrast/target-size, and other UX). Not a verdict value.
+_Avoid_: certainty, weight; two separate definitions (the backend-code case and the standards-threshold case are the same "no spec/domain oracle" rule).
 
 **Suspected layer**:
 The layer a **fail** is localized to — exactly one of: **FE** (frontend render/format/wiring), **route** (wrong/missing endpoint or path), **service** (the computed formula or business-rule predicate), **migration** (schema/column precision/constraints definition), **DB** (the stored row or runtime constraint violation). The deliverable of a fail: it tells the fixer where to look and is the value the report's suspected-layer field and the bug-log carry. Reconciliation produces it.
