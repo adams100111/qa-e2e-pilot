@@ -14,7 +14,12 @@ INPUT:  {"events": [<valid, schema-known event objects, any order>],
                       / unknown-event>]}
 OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...]},
          "anomalies": [...wrapper skipped ++ engine-detected...],
-         "openActs": [...act_intent keys with no matching act_committed...]}
+         "openActs": [...act_intent keys with no matching act_committed...],
+         "cursor": {"run_id", "phase", "criteria_total", "criteria_done",
+                    "personas": [...sorted], "scenarios": [...sorted],
+                    "cursor": {"scenarioId","criterionId"}|None}}
+         (Task 4 -- cursor is a resumable projection over the SAME journal; it
+         is written to cursor.json, never merged into checkpoint.json.)
 
 ACCEPTED COST (grill Q4): this is a full O(n) fold over the journal's events
 for ONE fold.sh invocation. A caller that re-folds after EVERY single
@@ -186,6 +191,87 @@ def main():
 
     open_acts = [k for k in intent_order if k not in committed_set]
 
+    # ---- pass 3 (Task 4): resumable cursor projection -- independent of
+    # pass 2's checkpoint groups. Tracks tuples touched by criterion_started,
+    # plan_frozen's criteria[] entries (a "planned" tuple counts the same as
+    # "started" for cursor purposes), and criterion_verdict, in first-seen
+    # order; also pairs phase_entered/phase_exited for cursor.json's
+    # top-level `phase` (NOT the same as pass 2's per-criterion `phase`,
+    # which is a carried-forward "last phase_entered" that never resets --
+    # this one resets to None once a matching phase_exited closes it, per
+    # the Task 4 brief).
+    cur_phase = None
+    cur_order = []
+    cur_groups = {}
+
+    def touch(k, sid, cid, pid, started=False, verdict=False):
+        if k in cur_groups:
+            if started:
+                cur_groups[k]["started"] = True
+            if verdict:
+                cur_groups[k]["verdict"] = True
+        else:
+            cur_order.append(k)
+            cur_groups[k] = {
+                "scenarioId": sid, "criterionId": cid, "personaId": pid,
+                "started": started, "verdict": verdict,
+            }
+
+    for e in events:
+        ev = e.get("event")
+        if ev == "phase_entered":
+            ph = e.get("phase")
+            cur_phase = ph if ph is not None else cur_phase
+        elif ev == "phase_exited":
+            ph = e.get("phase")
+            if ph is not None and ph == cur_phase:
+                cur_phase = None
+        elif ev == "criterion_started":
+            k = tuple_key(e)
+            touch(k, s(e, "scenarioId"), s(e, "criterionId"), s(e, "personaId"), started=True)
+        elif ev == "plan_frozen":
+            for c in (e.get("criteria") or []):
+                k = tuple_key(c)
+                touch(k, s(c, "scenarioId"), s(c, "criterionId"), s(c, "personaId"), started=True)
+        elif ev == "criterion_verdict":
+            k = tuple_key(e)
+            touch(k, s(e, "scenarioId"), s(e, "criterionId"), s(e, "personaId"), verdict=True)
+        # else: run_started/act_intent/act_committed/scenario_started/
+        # bug_logged/run_ended -- not projected into the cursor.
+
+    # finalize the cursor doc: total/done counts, distinct sorted
+    # personas/scenarios (a personaId of "" -- ADR-0012 legacy back-compat --
+    # normalizes its scenario to "__shared__" for the scenarios list and for
+    # the cursor pointer; personas excludes "" itself, it is not a persona),
+    # and the first started-or-planned-but-unverdicted tuple by seq (else
+    # None).
+    criteria_total = len(cur_order)
+    criteria_done = sum(1 for k in cur_order if cur_groups[k]["verdict"])
+    personas = sorted({cur_groups[k]["personaId"] for k in cur_order if cur_groups[k]["personaId"] != ""})
+    scenarios = sorted({
+        ("__shared__" if cur_groups[k]["personaId"] == "" else cur_groups[k]["scenarioId"])
+        for k in cur_order
+    })
+    cursor_ptr = None
+    for k in cur_order:
+        g = cur_groups[k]
+        if g["started"] and not g["verdict"]:
+            cursor_ptr = {
+                "scenarioId": "__shared__" if g["personaId"] == "" else g["scenarioId"],
+                "criterionId": g["criterionId"],
+            }
+            break
+
+    cursor_doc = {
+        "run_id": run_id,
+        "phase": cur_phase,
+        "criteria_total": criteria_total,
+        "criteria_done": criteria_done,
+        "personas": personas,
+        "scenarios": scenarios,
+        "cursor": cursor_ptr,
+    }
+
     out = {
         "checkpoint": {
             "run_id": run_id,
@@ -194,6 +280,7 @@ def main():
         },
         "anomalies": wrapper_skipped + anomalies + vws,
         "openActs": open_acts,
+        "cursor": cursor_doc,
     }
     print(json.dumps(out, separators=(",", ":")))
 

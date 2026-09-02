@@ -108,13 +108,56 @@ check "acts: C2 persona verbatim (literal personaId \"__shared__\", NOT collapse
   "$(get "$ACKPT" '.criteria[] | select(.criterion_id=="C2") | .persona')" "__shared__"
 
 # ---------------------------------------------------------------------------
+# Case: malformed-classes cursor.json — legacy persona:"" back-compat
+# (ADR-0012). The only criterion tuple here is a persona:"" verdict (CX,
+# scenarioId already "__shared__") with NO criterion_started -- it folds
+# under scenario "__shared__" and, since it never started, does not block
+# the cursor (there IS no pending started-without-verdict tuple) -> null.
+# ---------------------------------------------------------------------------
+MCUR="$WORK/.qa/runs/mal-run/cursor.json"
+check "malformed: cursor.json scenarios == [__shared__] (legacy persona:\"\" back-compat)" \
+  "$(get "$MCUR" '.scenarios | join(",")')" "__shared__"
+check "malformed: cursor.json cursor==null (no start events -> complete)" \
+  "$(get "$MCUR" '.cursor')" "null"
+
+# ---------------------------------------------------------------------------
+# Case: cursor — Task 4. Two personas (admin, user) each start a criterion;
+# admin's C1 gets a verdict, user's C2 does not; a __shared__ C0 is started
+# and verdicted. The first started-without-verdict tuple in seq order is
+# user/C2 -> cursor points there. Also asserts run-manifest.json/bug-log.json
+# are NOT created by the fold (grill Q2/Q3 — those stay agent-authored).
+# ---------------------------------------------------------------------------
+seed_run cursor-run cursor.ndjson
+( cd "$WORK" && bash "$FOLD" cursor-run >/dev/null ); rc_cursor=$?
+CURDIR="$WORK/.qa/runs/cursor-run"
+CUR="$CURDIR/cursor.json"
+
+check "cursor: exit 0"                    "$rc_cursor"                         "0"
+check "cursor: phase == verify"           "$(get "$CUR" '.phase')"             "verify"
+check "cursor: cursor.scenarioId == user" "$(get "$CUR" '.cursor.scenarioId')" "user"
+check "cursor: cursor.criterionId == C2"  "$(get "$CUR" '.cursor.criterionId')" "C2"
+check "cursor: criteria_done == 2 (C0 + C1)" "$(get "$CUR" '.criteria_done')"  "2"
+check "cursor: criteria_total == 3 (C0 + C1 + C2)" "$(get "$CUR" '.criteria_total')" "3"
+check "cursor: scenarios contains __shared__" \
+  "$(get "$CUR" '(.scenarios | index("__shared__")) != null')" "true"
+check "cursor: personas sorted == admin,user" \
+  "$(get "$CUR" '.personas | join(",")')" "admin,user"
+check "cursor: run_id == cursor-run" "$(get "$CUR" '.run_id')" "cursor-run"
+check "cursor: fold does NOT create run-manifest.json" \
+  "$([[ -e "$CURDIR/run-manifest.json" ]] && echo exists || echo missing)" "missing"
+check "cursor: fold does NOT create bug-log.json" \
+  "$([[ -e "$CURDIR/bug-log.json" ]] && echo exists || echo missing)" "missing"
+
+# ---------------------------------------------------------------------------
 # Case: dual-equiv — fold the SAME journal under jq, then again with jq
 # masked from PATH (forcing python3 for BOTH the line-parse and reduce
 # passes), canonicalize both checkpoint.json outputs via journal.sh
 # canonical, and assert they are STRING-EQUAL. Run for basic AND (as a
 # second, independent malformed-class case) malformed-classes, since a
 # divergence is far more likely to hide in the anomaly-rule branches than
-# in the happy path.
+# in the happy path. Also canonically compares cursor.json (Task 4) across
+# engines for every case, including the dedicated `cursor` fixture, which is
+# the only one that exercises a non-null cursor pointer.
 # ---------------------------------------------------------------------------
 dual_equiv_case() {
   local label="$1" fixture="$2"
@@ -146,6 +189,11 @@ dual_equiv_case() {
   canon_anom_jq="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_jq}/fold-anomalies.json")"
   canon_anom_py="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_py}/fold-anomalies.json")"
   check "dual-equiv ${label}: fold-anomalies.json canonically equal across engines" "$canon_anom_jq" "$canon_anom_py"
+
+  local canon_cur_jq canon_cur_py
+  canon_cur_jq="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_jq}/cursor.json")"
+  canon_cur_py="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_py}/cursor.json")"
+  check "dual-equiv ${label}: cursor.json canonically equal across engines" "$canon_cur_jq" "$canon_cur_py"
 }
 
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
@@ -155,6 +203,11 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   # Finding-1 openActs jq crash ship: dual-equiv previously never exercised
   # an act_intent event under the jq engine at all.
   dual_equiv_case acts acts.ndjson
+  # cursor.ndjson under both engines -- the only fixture that exercises a
+  # non-null cursor pointer (Task 4); basic/malformed/acts above all fold to
+  # cursor:null, so this is the case most likely to hide an engine
+  # divergence in the cursor-pointer selection logic itself.
+  dual_equiv_case cursor cursor.ndjson
 else
   echo "SKIP - dual-equiv: jq or python3 not present on this host, cannot exercise both engines"
 fi

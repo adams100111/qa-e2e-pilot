@@ -7,8 +7,12 @@
 # Reads .qa/runs/<run-id>/journal.ndjson, parses+validates each line ITSELF
 # (torn/malformed lines never reach the pure reducers fold.jq/fold.py),
 # dispatches {events, skipped} to fold.jq (has_jq) or fold.py (has_py),
-# atomic_write's the derived checkpoint.json and fold-anomalies.json into
-# the run dir, and echoes the checkpoint JSON to stdout.
+# atomic_write's the derived checkpoint.json, fold-anomalies.json, and
+# cursor.json (Task 4 — the resumable {phase, criteria_total/done, personas,
+# scenarios, cursor} projection) into the run dir, and echoes the checkpoint
+# JSON to stdout. This script NEVER writes run-manifest.json or bug-log.json
+# — those stay agent-authored (grill Q2/Q3); a fold overwrite would clobber
+# their richer hand-filled fields.
 #
 # DEPENDENCIES: bash, coreutils, and EITHER jq OR python3 (jq preferred). No
 # node — same convention as journal.sh/checkpoint.sh. Whichever engine is
@@ -145,11 +149,12 @@ main() {
       || die "fold.sh: fold.py failed to reduce the journal."
   fi
 
-  local checkpoint_json anomalies_json openacts_json
+  local checkpoint_json anomalies_json openacts_json cursor_json
   if [[ "$engine" == "jq" ]]; then
     checkpoint_json="$(jq -c '.checkpoint' <<< "$engine_out")"
     anomalies_json="$(jq -c '.anomalies' <<< "$engine_out")"
     openacts_json="$(jq -c '.openActs' <<< "$engine_out")"
+    cursor_json="$(jq -c '.cursor' <<< "$engine_out")"
   else
     checkpoint_json="$(python3 -c 'import json,sys
 d=json.load(sys.stdin); print(json.dumps(d["checkpoint"]))' <<< "$engine_out")"
@@ -157,6 +162,8 @@ d=json.load(sys.stdin); print(json.dumps(d["checkpoint"]))' <<< "$engine_out")"
 d=json.load(sys.stdin); print(json.dumps(d["anomalies"]))' <<< "$engine_out")"
     openacts_json="$(python3 -c 'import json,sys
 d=json.load(sys.stdin); print(json.dumps(d["openActs"]))' <<< "$engine_out")"
+    cursor_json="$(python3 -c 'import json,sys
+d=json.load(sys.stdin); print(json.dumps(d["cursor"]))' <<< "$engine_out")"
   fi
 
   mkdir -p "$run_dir"
@@ -207,6 +214,25 @@ print(json.dumps({"anomalies": anomalies, "openActs": openActs}))' "$anomalies_j
     echo "NOTE: fsync unavailable while writing fold-anomalies.json itself (jq-only host, no portable fsync primitive) — not self-recorded." >&2
   fi
   rm -f "$fsync_capture2"
+
+  # Third atomic_write: cursor.json (Task 4) — the resumable
+  # {phase, criteria_total/done, personas, scenarios, cursor} projection.
+  # ACCEPTED BOUNDARY (same shape as the fold-anomalies.json write above):
+  # if THIS write itself signals FSYNC_UNAVAILABLE, note it to stderr rather
+  # than silently drop it — there is no third file left to record it in.
+  # run-manifest.json and bug-log.json are NEVER written here — they stay
+  # agent-authored (grill Q2/Q3); this fold writes checkpoint.json,
+  # fold-anomalies.json, and cursor.json only.
+  local fsync_capture3
+  fsync_capture3="$(mktemp)"
+  if ! printf '%s' "$cursor_json" | bash "$JOURNAL_SH" atomic_write "${run_dir}/cursor.json" 3>"$fsync_capture3"; then
+    rm -f "$fsync_capture3"
+    die "fold.sh: atomic_write of cursor.json failed."
+  fi
+  if grep -q FSYNC_UNAVAILABLE "$fsync_capture3" 2>/dev/null; then
+    echo "NOTE: fsync unavailable while writing cursor.json (jq-only host, no portable fsync primitive) — not self-recorded." >&2
+  fi
+  rm -f "$fsync_capture3"
 
   echo "$checkpoint_json"
 }

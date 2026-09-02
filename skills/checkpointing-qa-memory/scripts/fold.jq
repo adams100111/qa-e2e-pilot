@@ -13,7 +13,12 @@
 #                       / unknown-event>]}
 # OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...]},
 #          "anomalies": [...wrapper skipped ++ engine-detected...],
-#          "openActs": [...act_intent keys with no matching act_committed...]}
+#          "openActs": [...act_intent keys with no matching act_committed...],
+#          "cursor": {"run_id", "phase", "criteria_total", "criteria_done",
+#                     "personas": [...sorted], "scenarios": [...sorted],
+#                     "cursor": {"scenarioId","criterionId"}|null}}
+#          (Task 4 — cursor is a resumable projection over the SAME journal;
+#          it is written to cursor.json, never merged into checkpoint.json.)
 #
 # ACCEPTED COST (grill Q4): this is a full O(n) fold over the journal's
 # events for ONE fold.sh invocation. A caller that re-folds after EVERY
@@ -123,6 +128,85 @@ def tuple_key($e):
 # first-seen order. ---------------------------------------------------------
 | ([ $intent_order[] | select(. as $k | ($committed_set | has($k)) | not) ]) as $open_acts
 
+# ---- pass 3 (Task 4): resumable cursor projection — independent of pass 2's
+# checkpoint groups. Tracks tuples touched by criterion_started, plan_frozen's
+# criteria[] entries (a "planned" tuple counts the same as "started" for
+# cursor purposes), and criterion_verdict, in first-seen order; also pairs
+# phase_entered/phase_exited for cursor.json's top-level `phase` (this is
+# NOT the same as pass 2's per-criterion `phase`, which is a carried-forward
+# "last phase_entered" that never resets — this one resets to null once a
+# matching phase_exited closes it, per the Task 4 brief). ------------------
+| (reduce $ev[] as $e (
+    {phase: null, order: [], groups: {}};
+    if $e.event == "phase_entered" then
+      .phase = ($e.phase // .phase)
+    elif $e.event == "phase_exited" then
+      (if ($e.phase != null) and ($e.phase == .phase) then .phase = null else . end)
+    elif $e.event == "criterion_started" then
+      (tuple_key($e)) as $k
+      | if (.groups | has($k)) then
+          .groups[$k].started = true
+        else
+          .order += [$k]
+          | .groups[$k] = {
+              scenarioId: ($e.scenarioId // ""), criterionId: ($e.criterionId // ""), personaId: ($e.personaId // ""),
+              started: true, verdict: false
+            }
+        end
+    elif $e.event == "plan_frozen" then
+      reduce ($e.criteria // [])[] as $c (.;
+        (tuple_key($c)) as $k
+        | if (.groups | has($k)) then
+            .groups[$k].started = true
+          else
+            .order += [$k]
+            | .groups[$k] = {
+                scenarioId: ($c.scenarioId // ""), criterionId: ($c.criterionId // ""), personaId: ($c.personaId // ""),
+                started: true, verdict: false
+              }
+          end
+      )
+    elif $e.event == "criterion_verdict" then
+      (tuple_key($e)) as $k
+      | if (.groups | has($k)) then
+          .groups[$k].verdict = true
+        else
+          .order += [$k]
+          | .groups[$k] = {
+              scenarioId: ($e.scenarioId // ""), criterionId: ($e.criterionId // ""), personaId: ($e.personaId // ""),
+              started: false, verdict: true
+            }
+        end
+    else . end
+  )) as $cur
+
+# ---- finalize the cursor doc: total/done counts, distinct sorted
+# personas/scenarios (a personaId of "" — ADR-0012 legacy back-compat —
+# normalizes its scenario to "__shared__" for the scenarios list and for the
+# cursor pointer; personas excludes "" itself, it is not a persona), and the
+# first started-or-planned-but-unverdicted tuple by seq (else null). --------
+| ($cur.order) as $c_order
+| ([ $c_order[] | select($cur.groups[.].verdict) ] | length) as $criteria_done
+| ($c_order | length) as $criteria_total
+| ([ $c_order[] | $cur.groups[.].personaId ] | map(select(. != "")) | unique) as $personas
+| ([ $c_order[] | (if $cur.groups[.].personaId == "" then "__shared__" else $cur.groups[.].scenarioId end) ] | unique) as $scenarios
+| ([ $c_order[] | select($cur.groups[.].started and ($cur.groups[.].verdict | not)) ] | .[0]) as $cursor_key
+| (if $cursor_key == null then null else
+    {
+      scenarioId: (if $cur.groups[$cursor_key].personaId == "" then "__shared__" else $cur.groups[$cursor_key].scenarioId end),
+      criterionId: $cur.groups[$cursor_key].criterionId
+    }
+  end) as $cursor_ptr
+| {
+    run_id: $state.run_id,
+    phase: $cur.phase,
+    criteria_total: $criteria_total,
+    criteria_done: $criteria_done,
+    personas: $personas,
+    scenarios: $scenarios,
+    cursor: $cursor_ptr
+  } as $cursor_doc
+
 | {
     checkpoint: {
       run_id: $state.run_id,
@@ -130,5 +214,6 @@ def tuple_key($e):
       criteria: $finalized.criteria
     },
     anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws),
-    openActs: $open_acts
+    openActs: $open_acts,
+    cursor: $cursor_doc
   }
