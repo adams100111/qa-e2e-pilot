@@ -85,6 +85,52 @@ function isEmptyRequiredLabel(labelText) {
   return String(labelText == null ? '' : labelText).trim() === '';
 }
 
+// i18n: a bare translation key rendered as a label (whole-text dotted identifier),
+// excluding URLs / emails / domains / file names / numbers to hold precision.
+function rawTranslationKeySignal(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t || /\s/.test(t)) return null;                       // real labels have spaces
+  if (t.indexOf('@') !== -1 || t.indexOf('://') !== -1) return null;   // email / URL
+  // Q4 (human-like precision): version strings, ccTLD domains, and file names are NOT keys.
+  if (/^v\d/i.test(t)) return null;                          // v1.2.3, v2 — a version, not a key
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2}$/.test(t)) return null;  // ccTLD domain: example.co.uk
+  if (/\.(com|org|net|io|dev|co|gov|edu|app|html?|js|mjs|cjs|jsx|ts|tsx|vue|css|scss|less|json|ya?ml|toml|xml|md|txt|csv|pdf|png|jpe?g|gif|webp|svg|ico|py|rb|go|rs|java|kt|swift|php)$/i.test(t)) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(t)) return null;  // dotted identifier
+  return { rawSignal: t };
+}
+// i18n: locale -> expected Unicode script. Latin/unknown locales carry no script oracle.
+const LOCALE_SCRIPT = {
+  ar: 'Arabic', fa: 'Arabic', ur: 'Arabic', ps: 'Arabic',
+  he: 'Hebrew', yi: 'Hebrew',
+  ru: 'Cyrillic', uk: 'Cyrillic', bg: 'Cyrillic', sr: 'Cyrillic',
+  el: 'Greek', ja: 'Han', zh: 'Han', ko: 'Hangul',
+  hi: 'Devanagari', mr: 'Devanagari', th: 'Thai'
+};
+function scriptMismatchSignal(text, expectedLocale) {
+  const loc = String(expectedLocale || '').toLowerCase().split(/[-_]/)[0];
+  const script = LOCALE_SCRIPT[loc];
+  if (!script) return null;                                  // no non-Latin script expected
+  const trimmed = String(text == null ? '' : text).trim();
+  const letters = trimmed.match(/\p{L}/gu) || [];
+  if (letters.length < 3) return null;                       // abbrev/brand/symbol — precision guard
+  // Q3 (human-like precision): a human does NOT read a brand / acronym / URL / code identifier as
+  // "untranslated" just because it's Latin on an Arabic page (GitHub, PDF, https://…, api.v2).
+  // Exempt when NO token reads as translatable lowercase prose. A brand/acronym/CamelCase token
+  // ("GitHub", "PDF", "iPhone") has no lowercase-initial all-lowercase word; a translatable phrase
+  // ("Save changes", "Sohranit izmeneniya") does. URLs/emails/code punctuation are exempt outright.
+  if (/:\/\/|[@<>{}=;\\]|www\./.test(trimmed)) return null;  // URL / email / code
+  const proseToken = trimmed.split(/\s+/).some(function (tok) {
+    return /^[a-z][a-z]+$/.test(tok);                        // a lowercase word => reads as prose
+  });
+  if (!proseToken) return null;                              // all brand/acronym/proper-noun -> not a bug
+  const re = new RegExp('\\p{Script=' + script + '}', 'u');
+  let inScript = 0;
+  for (let i = 0; i < letters.length; i++) if (re.test(letters[i])) inScript++;
+  const frac = inScript / letters.length;
+  if (frac >= 0.5) return null;                              // predominantly correct script
+  return { expectedScript: script, fraction: Number(frac.toFixed(2)), rawSignal: trimmed.slice(0, 40) };
+}
+
 // ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
 function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
@@ -351,6 +397,23 @@ function DETECT() {
       }
     });
 
+  // ---- i18n-script suspicions ----
+  const EXPECTED_LOCALE = (document.documentElement.getAttribute('lang') || '').trim();
+  all.forEach(function (el) {
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const direct = directText(el);
+    if (!direct) return;
+    const key = rawTranslationKeySignal(direct);
+    if (key) { findings.push(suspicion('i18n-raw-key', el, direct, key.rawSignal)); return; }
+    const mm = scriptMismatchSignal(direct, EXPECTED_LOCALE);
+    if (mm) {
+      findings.push(suspicion('i18n-script-mismatch', el,
+        'expected ' + mm.expectedScript + ' script; ' + Math.round(mm.fraction * 100) + '% in-script',
+        mm.rawSignal));
+    }
+  });
+
   return findings;
 }
 
@@ -368,5 +431,7 @@ typeof document !== 'undefined'
        contrastRatio: contrastRatio,
        DETECT: DETECT,
        contentOracleSignal: contentOracleSignal,
-       isEmptyRequiredLabel: isEmptyRequiredLabel
+       isEmptyRequiredLabel: isEmptyRequiredLabel,
+       rawTranslationKeySignal: rawTranslationKeySignal,
+       scriptMismatchSignal: scriptMismatchSignal
      }));

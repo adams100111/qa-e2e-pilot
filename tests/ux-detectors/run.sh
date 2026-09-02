@@ -61,5 +61,28 @@ check "content: prose ending in NaN (2) -> null"    "$(call contentOracleSignal 
 check "content: empty label -> true"    "$(call isEmptyRequiredLabel '["   "]')"                               "true"
 check "content: real label -> false"    "$(call isEmptyRequiredLabel '["Email"]')"                             "false"
 
+# --- Task 3: i18n-script -------------------------------------------------------
+# raw translation key (whole-label dotted identifier)
+check "i18n: raw key rawSignal"          "$(field rawTranslationKeySignal '["deliverables.title"]' rawSignal)"   "deliverables.title"
+check "i18n: nested raw key"             "$(field rawTranslationKeySignal '["common.buttons.save"]' rawSignal)"  "common.buttons.save"
+check "i18n: label with space -> null"   "$(call rawTranslationKeySignal '["Save changes"]')"                    "null"
+check "i18n: domain -> null"             "$(call rawTranslationKeySignal '["www.example.com"]')"                  "null"
+check "i18n: email -> null"              "$(call rawTranslationKeySignal '["user@site.com"]')"                    "null"
+check "i18n: decimal -> null"            "$(call rawTranslationKeySignal '["3.14"]')"                             "null"
+# Q4 adversarial: version strings, ccTLD domains, and file names are NOT translation keys
+check "i18n: version v1.2.3 -> null"     "$(call rawTranslationKeySignal '["v1.2.3"]')"                           "null"
+check "i18n: ccTLD domain -> null"       "$(call rawTranslationKeySignal '["example.co.uk"]')"                    "null"
+check "i18n: source file -> null"        "$(call rawTranslationKeySignal '["Component.tsx"]')"                    "null"
+# script mismatch vs expected locale
+check "i18n: ar expected, latin text"    "$(field scriptMismatchSignal '["Save changes","ar"]' expectedScript)"  "Arabic"
+check "i18n: ar expected, arabic text"   "$(call scriptMismatchSignal '["حفظ التغييرات","ar"]')"                 "null"
+check "i18n: en expected (latin) -> null" "$(call scriptMismatchSignal '["Save changes","en"]')"                  "null"
+check "i18n: too short -> null"          "$(call scriptMismatchSignal '["OK","ar"]')"                             "null"
+check "i18n: ru expected, latin text"    "$(field scriptMismatchSignal '["Sohranit izmeneniya","ru"]' expectedScript)" "Cyrillic"
+# Q3 adversarial: a human does NOT flag a brand/acronym on an Arabic page as untranslated
+check "i18n: ar + brand GitHub -> null"  "$(call scriptMismatchSignal '["GitHub","ar"]')"                        "null"
+check "i18n: ar + acronym PDF -> null"   "$(call scriptMismatchSignal '["PDF","ar"]')"                           "null"
+check "i18n: ar + URL -> null"           "$(call scriptMismatchSignal '["https://example.com","ar"]')"           "null"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
