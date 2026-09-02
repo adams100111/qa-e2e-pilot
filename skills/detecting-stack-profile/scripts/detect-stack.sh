@@ -51,6 +51,116 @@ if [[ -z "$REPOS" && -f "$CONFIG_FILE" ]] && have jq; then
   REPOS="$(jq -r '.repos[]?.path' "$CONFIG_FILE" 2>/dev/null | paste -sd, -)"
 fi
 
+# ── i18n mechanism map (data-driven) ──────────────────────────────────────────
+# Locate WHERE translations live so a later localization phase can resolve a
+# rendered string → key → catalog entry. Read-only filesystem scan whose roots,
+# library packages, and mechanism come from stack-signatures.json (.stacks[].i18n
+# + ._fallback.i18n) — the engine holds only the generic procedure. LOCATES only,
+# never judges. Degrades to a present:false / signal:weak map with a distinct
+# reason; never hard-fails. jq is guaranteed here (callers run after the have-jq
+# guards). NOTE: LOCALE_RE is used UNQUOTED in [[ =~ ]] (quoting makes it literal).
+LOCALE_RE='^[a-z]{2}([-_][A-Za-z]{2,4})?$'
+
+i18n_absent() {  # $1 = reason
+  jq -n --arg r "${1:-no i18n catalog directory found}" \
+    '{present:false, libraries:[], mechanisms:[], catalogs:[], locales:[], signal:"weak", evidence:[$r]}'
+}
+
+manifest_path() {  # <repo> <manifest-glob-or-name>  → echoes the matched file or nothing
+  local repo="$1" manifest="$2"
+  if [[ "$manifest" == \** ]]; then
+    find "$repo" -maxdepth 2 -name "$manifest" 2>/dev/null | head -1
+  elif [[ -f "$repo/$manifest" ]]; then
+    printf '%s' "$repo/$manifest"
+  fi
+}
+
+# detect_i18n <repo>  → echoes the i18n map JSON, unioned across EVERY signature
+# actually present in the repo (manifest + package match), so a fullstack repo
+# reports both mechanisms and both libraries; each catalog is tagged with its
+# row's mechanism, and each path points at the real file (with namespace).
+detect_i18n() {
+  local repo="$1"
+  [[ -d "$repo" ]] || { i18n_absent "no repo path to scan"; return 0; }
+  local n; n="$(jq '.stacks | length' "$SIGNATURES")"
+  local cats="[]" libs="[]" locset="" rootseen=0 i
+  for i in $(seq 0 $((n-1))); do
+    jq -e ".stacks[$i].i18n" "$SIGNATURES" >/dev/null 2>&1 || continue
+    local manifest mfile mech
+    manifest="$(jq -r ".stacks[$i].manifest" "$SIGNATURES")"
+    mfile="$(manifest_path "$repo" "$manifest")"
+    [[ -n "$mfile" ]] || continue
+    # same gate as detect_code_component: require a package signature in the manifest,
+    # so a bare package.json does not fire every JS stack's i18n rows.
+    local pkgmatch=0 p
+    while IFS= read -r p; do
+      [[ -z "$p" ]] && continue
+      grep -q -- "$p" "$mfile" 2>/dev/null && pkgmatch=1
+    done < <(jq -r ".stacks[$i].packages[]?" "$SIGNATURES")
+    [[ "$pkgmatch" -eq 1 ]] || continue
+    mech="$(jq -r ".stacks[$i].i18n.mechanism" "$SIGNATURES")"
+    # i18n library packages from THIS manifest
+    local L
+    while IFS= read -r L; do
+      [[ -z "$L" ]] && continue
+      if grep -q -- "\"$L\"" "$mfile" 2>/dev/null; then
+        libs="$(jq -c --arg l "$L" 'if index($l) then . else . + [$l] end' <<< "$libs")"
+      fi
+    done < <(jq -r ".stacks[$i].i18n.libraryPackages[]?" "$SIGNATURES")
+    # catalog scan across THIS stack's declared roots
+    local root
+    while IFS= read -r root; do
+      [[ -z "$root" ]] && continue
+      local dir="$repo/$root"
+      [[ -d "$dir" ]] || continue
+      rootseen=1
+      # per-locale subdirectories: one catalog entry PER FILE (php or json), namespace=file stem
+      local sub loc
+      while IFS= read -r sub; do
+        [[ -n "$sub" ]] || continue
+        loc="$(basename "$sub")"
+        [[ "$loc" =~ $LOCALE_RE ]] || continue
+        local f fmt ns
+        while IFS= read -r f; do
+          [[ -n "$f" ]] || continue
+          case "$f" in *.php) fmt="php" ;; *.json) fmt="json" ;; *) continue ;; esac
+          ns="$(basename "$f")"; ns="${ns%.*}"
+          cats="$(jq -c --arg r "$root" --arg l "$loc" --arg f "$fmt" --arg m "$mech" \
+                     --arg p "$root/$loc/$(basename "$f")" --arg ns "$ns" \
+            '. + [{root:$r, locale:$l, format:$f, mechanism:$m, path:$p, namespace:$ns}]' <<< "$cats")"
+          locset="$locset $loc"
+        done < <(find "$sub" -maxdepth 1 -type f \( -name '*.php' -o -name '*.json' \) 2>/dev/null | sort)
+      done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+      # flat per-locale JSON files (Laravel lang/<locale>.json); namespace null
+      local jf base
+      while IFS= read -r jf; do
+        [[ -n "$jf" ]] || continue
+        base="$(basename "$jf" .json)"
+        [[ "$base" =~ $LOCALE_RE ]] || continue
+        cats="$(jq -c --arg r "$root" --arg l "$base" --arg m "$mech" --arg p "$root/$base.json" \
+          '. + [{root:$r, locale:$l, format:"json", mechanism:$m, path:$p, namespace:null}]' <<< "$cats")"
+        locset="$locset $base"
+      done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort)
+    done < <(jq -r ".stacks[$i].i18n.roots[]?" "$SIGNATURES")
+  done
+  if [[ "$cats" == "[]" ]]; then
+    if [[ "$rootseen" -eq 1 ]]; then
+      i18n_absent "i18n catalog directory present but no locale-named php/json catalog found (e.g. unsupported yml/po, or non-locale filenames)"
+    else
+      i18n_absent "no i18n catalog directory found"
+    fi
+    return 0
+  fi
+  cats="$(jq -c 'unique' <<< "$cats")"   # dedup when two rows share a root (e.g. next + react-router both declare "locales")
+  local locs mechs evid
+  locs="$(printf '%s\n' $locset | sort -u | grep -v '^$' | jq -R . | jq -sc .)"
+  mechs="$(jq -c '[.[].mechanism] | unique' <<< "$cats")"
+  evid="$(jq -c '[.[] | "code: " + .path] | unique' <<< "$cats")"
+  jq -n --argjson cats "$cats" --argjson locs "$locs" --argjson libs "$libs" \
+        --argjson mechs "$mechs" --argjson evid "$evid" \
+    '{present:true, libraries:$libs, mechanisms:$mechs, catalogs:$cats, locales:$locs, signal:"strong", evidence:$evid}'
+}
+
 # ── code-based detection ──────────────────────────────────────────────────────
 # Detect one repo path against signatures. Echoes a JSON component or nothing.
 detect_code_component() {
@@ -86,13 +196,15 @@ detect_code_component() {
         fr="$ifr"
       fi
     done < <(jq -c ".stacks[$i].implies[]?" "$SIGNATURES")
+    local i18n_json; i18n_json="$(detect_i18n "$repo")"
     jq -n --argjson row "$(jq ".stacks[$i]" "$SIGNATURES")" \
-          --arg repo "$repo" --arg fr "$fr" --arg ev "code: $mfile ($id)" '{
+          --arg repo "$repo" --arg fr "$fr" --arg ev "code: $mfile ($id)" \
+          --argjson i18n "$i18n_json" '{
       role: $row.role, path: $repo, language: $row.language, languageVersion: "",
       framework: $row.id, frameworkVersion: "", packages: [],
       router: $row.router, frontend: { routing: $fr },
       orm: $row.orm, auth: $row.auth, commands: $row.commands,
-      buildIdSource: "none", playbook: $row.playbook,
+      buildIdSource: "none", playbook: $row.playbook, i18n: $i18n,
       signal: "strong", evidence: [$ev], drift: [] }'
     return 0
   done
@@ -124,12 +236,13 @@ detect_runtime_component() {
     done < <(jq -r ".stacks[$i].runtime.headers | to_entries[]? | .key" "$SIGNATURES")
     [[ "$matched" -eq 1 ]] || continue
     jq -n --argjson row "$(jq ".stacks[$i]" "$SIGNATURES")" \
-          --arg ev "runtime: header/cookie match" '{
+          --arg ev "runtime: header/cookie match" \
+          --argjson i18n "$(i18n_absent "runtime-only component — no repo scanned")" '{
       role: $row.role, path: null, language: $row.language, languageVersion: "",
       framework: $row.id, frameworkVersion: "", packages: [],
       router: $row.router, frontend: { routing: $row.frontendRouting },
       orm: $row.orm, auth: $row.auth, commands: $row.commands,
-      buildIdSource: "none", playbook: $row.playbook,
+      buildIdSource: "none", playbook: $row.playbook, i18n: $i18n,
       signal: "weak", evidence: [$ev], drift: [] }'
     return 0
   done
@@ -166,12 +279,13 @@ main() {
 
   if [[ "$comps" == "[]" ]]; then
     local fb
-    fb="$(jq -n --argjson row "$(jq '._fallback' "$SIGNATURES")" '{
+    fb="$(jq -n --argjson row "$(jq '._fallback' "$SIGNATURES")" \
+              --argjson i18n "$(i18n_absent "no i18n catalog directory found")" '{
       role:$row.role, path:null, language:$row.language, languageVersion:"",
       framework:"generic", frameworkVersion:"", packages:[],
       router:$row.router, frontend:{routing:$row.frontendRouting},
       orm:$row.orm, auth:$row.auth, commands:$row.commands,
-      buildIdSource:"none", playbook:$row.playbook, signal:"weak", evidence:["fallback"], drift:[] }')"
+      buildIdSource:"none", playbook:$row.playbook, i18n:$i18n, signal:"weak", evidence:["fallback"], drift:[] }')"
     comps="$(jq -c ". + [$fb]" <<< "$comps")"
   fi
 

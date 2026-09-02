@@ -47,5 +47,31 @@ QA_REPOS="$FIX/laravel" bash "$ENGINE" --no-runtime --base-url "http://localhost
 check "local env"        "$(get "$OUT5" '.environment')"        "disposable"
 check "local guardrails" "$(get "$OUT5" '.guardrails')"         "null"
 
+# Case 6: Laravel i18n mechanism map — php per-locale dirs + flat lang/<locale>.json; non-locale json ignored
+OUT6="$(mktemp)"
+QA_REPOS="$FIX/laravel" bash "$ENGINE" --no-runtime --out "$OUT6" >/dev/null 2>&1
+check "i18n present"      "$(get "$OUT6" '.components[0].i18n.present')"                                        "true"
+check "i18n mechanism"    "$(get "$OUT6" '.components[0].i18n.mechanisms | index("laravel-lang") != null')"    "true"
+check "i18n signal"       "$(get "$OUT6" '.components[0].i18n.signal')"                                         "strong"
+check "i18n locale ar"    "$(get "$OUT6" '.components[0].i18n.locales | index("ar") != null')"                 "true"
+check "i18n locale en"    "$(get "$OUT6" '.components[0].i18n.locales | index("en") != null')"                 "true"
+check "i18n has php"      "$(get "$OUT6" '[.components[0].i18n.catalogs[].format] | index("php") != null')"    "true"
+check "i18n has json"     "$(get "$OUT6" '[.components[0].i18n.catalogs[].format] | index("json") != null')"   "true"
+check "i18n file path"    "$(get "$OUT6" '[.components[0].i18n.catalogs[] | select(.format=="php") | .path] | index("lang/ar/messages.php") != null')" "true"
+check "i18n namespace"    "$(get "$OUT6" '[.components[0].i18n.catalogs[] | select(.format=="php") | .namespace] | index("messages") != null')" "true"
+check "i18n gate config"  "$(get "$OUT6" '.components[0].i18n.locales | index("config") == null')"             "true"
+
+# Case 7: unknown repo → fallback component's i18n degrades to present:false / signal:weak (never fails)
+OUT7="$(mktemp)"
+QA_REPOS="$FIX/unknown" bash "$ENGINE" --no-runtime --out "$OUT7" >/dev/null 2>&1
+check "i18n absent present" "$(get "$OUT7" '.components[0].i18n.present')" "false"
+check "i18n absent signal"  "$(get "$OUT7" '.components[0].i18n.signal')"  "weak"
+
+# Case 8: runtime-only component (no repo to scan) still carries a weak i18n map
+OUT8="$(mktemp)"
+bash "$ENGINE" --no-code --headers-file "$FIX/server/laravel-headers.txt" --out "$OUT8" >/dev/null 2>&1
+check "i18n runtime present" "$(get "$OUT8" '.components[0].i18n.present')" "false"
+check "i18n runtime signal"  "$(get "$OUT8" '.components[0].i18n.signal')"  "weak"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

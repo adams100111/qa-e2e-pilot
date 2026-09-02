@@ -10,6 +10,7 @@
       "router": { "strategy": "local-cli", "rung1": "php artisan route:list --json" },
       "frontendRouting": "server-bridge",
       "orm": { "name": "eloquent", "modelsPath": "app/Models", "migrationsPath": "database/migrations" },
+      "i18n": { "roots": ["lang", "resources/lang"], "libraryPackages": ["laravel-lang/lang", "laravel-lang/common"], "mechanism": "laravel-lang" },
       "auth": { "scheme": "session-cookie", "csrf": "laravel-xsrf" },
       "commands": { "dev": "composer dev", "test": "composer test", "build": "npm run build" }
     },
@@ -32,6 +33,7 @@
       "router": { "strategy": "local-cli", "rung1": "python manage.py show_urls" },
       "frontendRouting": "server-bridge",
       "orm": { "name": "django-orm", "modelsPath": ".", "migrationsPath": "migrations" },
+      "i18n": { "roots": ["locale"], "libraryPackages": [], "mechanism": "gettext-po" },
       "auth": { "scheme": "session-cookie", "csrf": "django-csrf" },
       "commands": { "dev": "python manage.py runserver", "test": "pytest", "build": "" }
     },
@@ -87,6 +89,7 @@
       "router": { "strategy": "local-cli", "rung1": "bin/rails routes" },
       "frontendRouting": "server-bridge",
       "orm": { "name": "active-record", "modelsPath": "app/models", "migrationsPath": "db/migrate" },
+      "i18n": { "roots": ["config/locales"], "libraryPackages": ["rails-i18n"], "mechanism": "rails-yml" },
       "auth": { "scheme": "session-cookie", "csrf": "rails-csrf" },
       "commands": { "dev": "bin/rails server", "test": "bin/rails test", "build": "" }
     },
@@ -164,6 +167,7 @@
     "router": { "strategy": "live-nav", "rung1": "browse + snapshot" },
     "frontendRouting": "black-box",
     "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+    "i18n": { "roots": [], "libraryPackages": [], "mechanism": "none" },
     "auth": { "scheme": "none", "csrf": null },
     "commands": { "dev": "", "test": "", "build": "" }
   }
