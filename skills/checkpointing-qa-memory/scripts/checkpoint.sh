@@ -706,6 +706,146 @@ gate_pass() {
 }
 
 # ---------------------------------------------------------------------------
+# Plan H1 Task 3 (#2 binding) — the pass-gate independently RE-DERIVES a
+# criterion's required evidence kinds from its checklist.json row (never
+# trusting the row's own agent-authored `requiredKinds` field) and rejects a
+# `pass` unless the recorded --kinds is a SUPERSET of that re-derivation.
+# ---------------------------------------------------------------------------
+
+# checklist_row_for <run-id> <crit-id> — print the checklist.json row (a
+# single-line JSON object) whose "id" == <crit-id>, or nothing (empty
+# stdout) when .qa/runs/<run-id>/checklist.json is absent, not valid JSON,
+# not a top-level array, or has no row with a matching id. NEVER dies on an
+# absent/malformed checklist.json — "no row found" must be indistinguishable
+# from "checklist.json doesn't exist" (today's un-gated pass-gate behavior),
+# never treated as an error that blocks a pass.
+checklist_row_for() {
+  local run_id="$1" crit_id="$2"
+  local file
+  file="$(run_dir "$run_id")/checklist.json"
+  [[ -f "$file" ]] || return 0
+  json_is_valid "$file" || return 0
+
+  if has_jq; then
+    jq -c --arg id "$crit_id" '
+      if type == "array" then
+        (([ .[] | select(type == "object" and .id == $id) ] | .[0]) // empty)
+      else
+        empty
+      end
+    ' "$file" 2>/dev/null || true
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if not isinstance(data, list):
+    sys.exit(0)
+for row in data:
+    if isinstance(row, dict) and row.get("id") == sys.argv[2]:
+        print(json.dumps(row))
+        sys.exit(0)
+' "$file" "$crit_id" || true
+  fi
+  return 0
+}
+
+# missing_required_kinds <recorded-csv> <required-csv> — print (CSV) the
+# kinds present in <required-csv> but absent from <recorded-csv>; empty
+# output means <recorded-csv> is already a superset. Trims whitespace on
+# each item; exact (case-sensitive) match — both CSVs use the same
+# lowercase-hyphenated evidence-kind vocabulary, so no further
+# normalization is needed.
+missing_required_kinds() {
+  local recorded_csv="$1" required_csv="$2"
+  local -a req_arr rec_arr rec_trimmed=() missing=()
+  IFS=',' read -ra req_arr <<< "$required_csv"
+  IFS=',' read -ra rec_arr <<< "$recorded_csv"
+
+  local r
+  for r in "${rec_arr[@]}"; do
+    r="$(trim "$r")"
+    [[ -n "$r" ]] && rec_trimmed+=("$r")
+  done
+
+  local rk item found
+  for rk in "${req_arr[@]}"; do
+    rk="$(trim "$rk")"
+    [[ -z "$rk" ]] && continue
+    found=""
+    for item in "${rec_trimmed[@]}"; do
+      [[ "$item" == "$rk" ]] && { found="yes"; break; }
+    done
+    [[ -z "$found" ]] && missing+=("$rk")
+  done
+
+  (IFS=,; echo "${missing[*]}")
+}
+
+# print the reject message for a checklist.json-tracked criterion whose
+# independently re-derived required kind(s) are missing from --kinds.
+gate_reject_required_kinds() {
+  local crit_id="$1" missing_csv="$2" required_csv="$3" recorded_csv="$4"
+  echo "EVIDENCE GATE: pass rejected for criterion '${crit_id}' — checklist.json row requires kind(s) '${missing_csv}' (independently re-derived from kind/tags/action via required-kinds.sh; full required set: ${required_csv}) not present in recorded --kinds '${recorded_csv:-<none>}'. Supply the missing evidence (record-evidence.sh) and include it in --kinds, or record 'blocked'/'fail' instead." >&2
+}
+
+# gate_required_kinds <run-id> <crit-id> <kinds-csv> — when this run's
+# checklist.json carries a row for <crit-id>, re-derive its required
+# evidence kinds via required-kinds.sh (reading ONLY that row's structural
+# kind/tags/action — never its own requiredKinds field) and return 1
+# (having printed a gate_reject_required_kinds message) unless <kinds-csv>
+# is a superset. No checklist.json / no matching row / an empty derivation
+# -> returns 0 (today's behavior, unchanged). Called BEFORE gate_pass's
+# artifact checks so a dropped required kind fails fast, and BEFORE the
+# "--kinds omitted" un-gated note so a checklist.json-tracked criterion with
+# a non-empty derivation can no longer slip through un-gated by omitting
+# --kinds entirely.
+gate_required_kinds() {
+  local run_id="$1" crit_id="$2" kinds_csv="$3"
+
+  local checklist_row
+  checklist_row="$(checklist_row_for "$run_id" "$crit_id")"
+  [[ -z "$checklist_row" ]] && return 0
+
+  local rk_script_dir required_kinds_sh
+  rk_script_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$rk_script_dir" == "${BASH_SOURCE[0]}" ]] && rk_script_dir="."
+  required_kinds_sh="${rk_script_dir}/required-kinds.sh"
+  [[ -f "$required_kinds_sh" ]] \
+    || die "checkpoint.sh: cannot find required-kinds.sh at ${required_kinds_sh} (expected alongside this script)."
+
+  # Same ext_path/QA_ENGINE discipline cmd_upsert uses for its journal.sh/
+  # fold.sh subprocess calls below: append (never prepend) the real bash
+  # binary's own directory so required-kinds.sh's OWN shell-out to
+  # mutation-flag.sh can find bash/grep/sort even under a deliberately
+  # restricted PATH (the characterization suite's fakebin sub-cases), while
+  # telling it EXPLICITLY which JSON engine checkpoint.sh itself resolved to
+  # (read from the real, unaugmented PATH) so a jq that ext_path incidentally
+  # re-exposes never causes an engine mismatch with checkpoint.sh's own
+  # decision.
+  local rk_ext_path rk_eng
+  rk_ext_path="${PATH}:${BASH%/*}"
+  rk_eng="python3"
+  has_jq && rk_eng="jq"
+
+  local required_kinds_csv
+  required_kinds_csv="$(QA_ENGINE="$rk_eng" PATH="$rk_ext_path" "$BASH" "$required_kinds_sh" derive "$checklist_row")" \
+    || die "checkpoint.sh: required-kinds.sh derive failed for criterion '${crit_id}' (row: ${checklist_row})."
+
+  [[ -z "$required_kinds_csv" ]] && return 0
+
+  local missing_csv
+  missing_csv="$(missing_required_kinds "$kinds_csv" "$required_kinds_csv")"
+  if [[ -n "$missing_csv" ]]; then
+    gate_reject_required_kinds "$crit_id" "$missing_csv" "$required_kinds_csv" "$kinds_csv"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # upsert mode
 # ---------------------------------------------------------------------------
 
@@ -785,6 +925,13 @@ cmd_upsert() {
   # deferred|error) are exempt regardless of --kinds. Absent --kinds on a
   # pass is back-compat (untagged criteria) but un-gated — note it and move on.
   if [[ "$verdict" == "pass" ]]; then
+    # Plan H1 Task 3 (#2 binding): re-derive against checklist.json BEFORE
+    # the artifact checks below (a dropped required kind fails fast) and
+    # BEFORE the un-gated "--kinds omitted" note (a checklist.json-tracked
+    # criterion with a non-empty derivation must reject, not slide into the
+    # un-gated note, when --kinds is omitted entirely).
+    gate_required_kinds "$run_id" "$crit_id" "$kinds_csv" || exit 1
+
     if [[ -z "$kinds_csv" ]]; then
       echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
     else

@@ -265,7 +265,49 @@ Probe evidence carries an `--ok <true|false>` judgment (the verifier's confirm-v
 
 1. Copy `templates/checklist.md` to `.qa/runs/<run-id>/checklist.md`.
 2. Fill every criterion block (header + per-criterion fields).
-3. **Stop. Output the checklist path and ask the human to review before any verification begins.**
+3. **Also write `.qa/runs/<run-id>/checklist.json`** — the machine-readable
+   sibling checkpointing-qa-memory's gate scripts parse programmatically.
+   One JSON object per criterion, per the schema in
+   `references/checklist-json-schema.md`: `{id, surface, kind, tags,
+   action, requiredKinds, assertedState, humanAction}`. Populate it
+   straight from the same fields you just filled in each `checklist.md`
+   block — `id`/`Surface`/`Kind`/`Tags`/`Kinds`/`humanAction` map directly;
+   for a write criterion, set `assertedState` from its Baking assertion's
+   `Entity` + `Read-back path`, with `expectChange: true` unless the
+   oracle expects the write to be rejected/no-op (then `false`). A
+   criterion with no baking assertion (pure read/observe) gets
+   `assertedState: null`.
+   - **`checklist.json` is a PROPOSAL, not ground truth.** `checkpoint.sh`
+     (Plan H1 Task 3) never trusts this file's own `requiredKinds` field —
+     it re-derives the required evidence kinds itself from `kind`/`tags`/
+     `action` via `required-kinds.sh` and rejects a checkpointed `pass`
+     unless the recorded `--kinds` is a superset of that independent
+     re-derivation. Writing a weaker `requiredKinds` here (e.g. dropping
+     `human-action` off a mutating criterion) does not help an adversarial
+     agent evade the gate later — it is simply ignored at pass time. Write
+     it accurately anyway; it is what a human reviewer cross-checks against
+     `checklist.md`.
+   - Validate structurally before stopping:
+     `bash scripts/validate-checklist-json.sh .qa/runs/<run-id>/checklist.json`
+     — exits non-zero naming the offending entry/field on a malformed row
+     (missing `id`, bad `kind` enum value, an incomplete `assertedState`,
+     etc.). Fix and re-validate before presenting the checklist for review.
+   - **`assertedState` is the fingerprint-target contract, not just a
+     schema field.** At verification time it is threaded — via
+     `record-evidence.sh action-trace ... --fingerprint-target` — into
+     `action-trace.json.fingerprintTarget`, which `check-action-trace.js`
+     Check 3 then requires the act phase's before/after state fingerprint
+     to *cover* (`readBackPath` present in both) and, per `expectChange`,
+     show changed or unchanged. See
+     `references/checklist-json-schema.md` for the field-level contract and
+     `skills/checkpointing-qa-memory/SKILL.md`'s "Evidence-Kind Gate (#2)
+     and Fingerprint-Target (#4)" section for the enforcement mechanics and
+     the honest-tier boundary (in-script best-effort; not a guarantee the
+     fingerprint's own values are real). The human-readable Act-phase
+     discipline that produces the fingerprint in the first place is
+     `skills/driving-browser-qa/references/interaction-discipline.md`
+     (ADR-0015).
+4. **Stop. Output the checklist path(s) and ask the human to review before any verification begins.**
 
 Do not proceed to driving-browser-qa until the checklist has been reviewed. The checklist is the contract; premature verification against a wrong oracle wastes a full Run.
 
@@ -348,3 +390,8 @@ Given: a criterion "add a founder" whose only Act step is `browser_click` on the
 Add button.
 Without this skill: the criterion's action is inferred from the checklist; no explicit `actionUnderTest` or `human-action` tag tells the gate to verify the action occurred via a real UI affordance and reconcile it against `session.md`.
 With this skill: the criterion is tagged `human-action: true` and carries `actionUnderTest: "click Add button to create a new founder"`. The gate then requires the driver to perform the action through the browser (not mock or API-inject it) and reconciles the session.md checkpoint against `session.md` to confirm the action was performed. A purely read-only criterion like "founders list shows correct totals" has `human-action: false` (or unset); its oracle is `computed` only, with no driver-action verification required. The discipline ensures every state-mutating write criterion is actually exercised in the UI, not skipped or simulated.
+
+**Eval 10 — `checklist.json` row for the same mutating criterion (proposal, not trusted)**
+Given: the same "add a founder" criterion from Eval 9 — `Kind: happy-path`, `Tags: human-action`, `Kinds: bake,human-action` per Step 7 — is now also being written to `checklist.json` per Step 8's new sub-step.
+Without this skill: only `checklist.md` exists. `checkpoint.sh` (Plan H1 Task 3) has no per-criterion row to read a shape from, so it falls back to today's un-gated behavior (a `pass` is recorded with whatever `--kinds` the verifier happens to pass, no independent check).
+With this skill: the checklist.json row is `{"id":"C-FOUNDERS-01","surface":"/governance/founders","kind":"happy-path","tags":["human-action"],"action":"click Add button to create a new founder","requiredKinds":["bake","human-action"],"assertedState":{"entity":"Founder","readBackPath":"count","expectChange":true},"humanAction":true}` — validated structurally by `scripts/validate-checklist-json.sh` before the checklist is presented for review. At verification time, `checkpoint.sh` reads this row's `kind`/`tags`/`action` (never its `requiredKinds`) and runs `required-kinds.sh derive` on them, independently landing on `bake,human-action`. If the verifier later tries to checkpoint `pass --kinds bake` (dropping `human-action`, e.g. because the driver skipped the real click and API-injected the founder), the gate rejects it — even though this file's own `requiredKinds` field said `bake,human-action` too, the enforcement path never read that field to begin with. A dishonest write to this file's `requiredKinds` (say, an agent had instead written `["bake"]` to look permissive) would have been just as ineffective: the rejection still fires, because `required-kinds.sh` re-derives from `kind`/`tags`/`action`, not from anything this file claims. The `assertedState` row similarly feeds Task 4's Check 3: the act-phase fingerprint must show `count` present and changed before→after, closing the "toast said success but nothing persisted" hole for this criterion specifically.

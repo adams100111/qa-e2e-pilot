@@ -1166,5 +1166,123 @@ check "resume-order parity: --resume returns C2 as last (not C1)" \
 check "resume-order parity: --resume skip-to line names C2" \
   "$(echo "$RORDER_RESUME_OUT" | grep -qF 'Skip all criteria up to and including: C2' && echo yes)" "yes"
 
+# --- Case 59-63: Plan H1 Task 3 (#2 binding) — the pass-gate independently
+# RE-DERIVES a criterion's required evidence kinds from its checklist.json
+# row (via required-kinds.sh) and rejects a `pass` unless the recorded
+# --kinds is a SUPERSET, closing the "drop human-action from --kinds" hole
+# (AC-3). Each row below deliberately understates its OWN `requiredKinds`
+# field (e.g. C_MUT claims only `["bake"]`) to prove the gate never trusts
+# it — only the row's kind/tags/action (fed to required-kinds.sh) govern
+# enforcement. Back-compat: no checklist.json, no matching row, or an empty
+# derivation must all keep TODAY's un-gated behavior (Case 19) unchanged. ---
+KGATE2_RUN_ID="test-run-kinds-gate"
+KGATE2_DIR="$WORK/.qa/runs/${KGATE2_RUN_ID}"
+mkdir -p "$KGATE2_DIR"
+cat > "$KGATE2_DIR/checklist.json" <<'EOF'
+[
+  {"id":"C_MUT","surface":"/founders","kind":"happy-path","tags":[],"action":"Create a founder","requiredKinds":["bake"],"assertedState":null,"humanAction":true},
+  {"id":"C_RO","surface":"/founders","kind":"loading-state","tags":["read-only"],"action":"See the spinner","requiredKinds":[],"assertedState":null,"humanAction":false}
+]
+EOF
+
+# --- Case 59: mutating criterion, --kinds bake (drops the re-derived
+# human-action) -> REJECTED naming human-action, nothing written (AC-3) ----
+KGATE2_REJ_ERR="$(cd "$WORK" && bash "$SCRIPT" "$KGATE2_RUN_ID" C_MUT pass --kinds bake 2>&1 >/dev/null)"
+RC_KGATE2_REJ=$?
+check "kinds-gate: mutating criterion pass --kinds bake (drops human-action) rejected" \
+  "$([[ "$RC_KGATE2_REJ" -ne 0 ]] && echo yes)" "yes"
+check "kinds-gate: reject message names the missing kind human-action" \
+  "$(echo "$KGATE2_REJ_ERR" | grep -qF 'human-action' && echo yes)" "yes"
+check "kinds-gate: reject writes no checkpoint file" \
+  "$([[ ! -f "$KGATE2_DIR/checkpoint.json" ]] && echo yes)" "yes"
+
+# --- Case 60: same criterion, --kinds bake,human-action (a true superset)
+# with BOTH artifacts recorded -> ACCEPTED ----------------------------------
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$KGATE2_RUN_ID" C_MUT bake --read-back '{"founders":1}' --multiplicity N >/dev/null)
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$KGATE2_RUN_ID" C_MUT action-trace \
+  --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' \
+  --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' \
+  --fingerprint-before '0' --fingerprint-after '1' \
+  --action "add founder" >/dev/null)
+
+RC_KGATE2_OK="$(cd "$WORK" && bash "$SCRIPT" "$KGATE2_RUN_ID" C_MUT pass --kinds bake,human-action >/dev/null 2>&1; echo $?)"
+check "kinds-gate: --kinds bake,human-action (superset) accepted" "$RC_KGATE2_OK" "0"
+check "kinds-gate: accepted record written" "$([[ -f "$KGATE2_DIR/checkpoint.json" ]] && echo yes)" "yes"
+check "kinds-gate: accepted verdict is pass" \
+  "$(get "$KGATE2_DIR/checkpoint.json" '.criteria[0].verdict')" "pass"
+check "kinds-gate: accepted stored kinds has both bake and human-action" \
+  "$(get "$KGATE2_DIR/checkpoint.json" '.criteria[0].kinds | (index("bake") != null) and (index("human-action") != null)')" "true"
+
+# --- Case 61: a criterion with NO row in checklist.json (file present, id
+# absent) -> today's un-gated note preserved, exactly Case 19's semantics --
+KGATE2_NOROW_ERR="$(cd "$WORK" && bash "$SCRIPT" "$KGATE2_RUN_ID" C_NOROW pass 2>&1 >/dev/null)"
+RC_KGATE2_NOROW=$?
+check "kinds-gate: criterion absent from checklist.json -> pass with no --kinds still accepted" \
+  "$RC_KGATE2_NOROW" "0"
+check "kinds-gate: absent-row pass keeps the un-gated stderr note" \
+  "$(echo "$KGATE2_NOROW_ERR" | grep -qi 'un-gated\|ungated' && echo yes)" "yes"
+
+# --- Case 62: a read-only criterion (row derives the EMPTY set) -> any/no
+# kinds accepted; an empty derivation must NOT force gating ----------------
+KGATE2_RO_ERR="$(cd "$WORK" && bash "$SCRIPT" "$KGATE2_RUN_ID" C_RO pass 2>&1 >/dev/null)"
+RC_KGATE2_RO=$?
+check "kinds-gate: read-only criterion (empty derivation) pass with no --kinds accepted" \
+  "$RC_KGATE2_RO" "0"
+check "kinds-gate: read-only pass with no --kinds still gets the un-gated note" \
+  "$(echo "$KGATE2_RO_ERR" | grep -qi 'un-gated\|ungated' && echo yes)" "yes"
+
+(cd "$WORK" && bash "$RECORD_SCRIPT" "$KGATE2_RUN_ID" C_RO bake --read-back '{"x":1}' --multiplicity N >/dev/null)
+RC_KGATE2_RO_EXTRA="$(cd "$WORK" && bash "$SCRIPT" "$KGATE2_RUN_ID" C_RO pass --kinds bake >/dev/null 2>&1; echo $?)"
+check "kinds-gate: read-only criterion pass --kinds bake (extra, not required) still accepted" \
+  "$RC_KGATE2_RO_EXTRA" "0"
+
+# --- Case 63: kinds-gate re-derivation exercised under the jq-masked
+# python3 fallback (required-kinds.sh's OWN dual-engine discipline, shelled
+# out from checkpoint.sh under a restricted PATH). The "accepted" sub-case
+# deliberately uses a `probe`-only criterion (not human-action) so it never
+# reaches check-action-trace.js's `node` dependency, which the restricted
+# fakebin below does not provide (matching the existing fakebin cases'
+# convention of never exercising the human-action/node path under a
+# restricted PATH) -----------------------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+  FAKEBIN="${FAKEBIN:-$WORK/fakebin}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir cat python3; do
+    TOOL_PATH="$(command -v "$tool")"
+    ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  PYKGATE_RUN_ID="test-run-py-kinds-gate"
+  PYKGATE_DIR="$WORK/.qa/runs/${PYKGATE_RUN_ID}"
+  mkdir -p "$PYKGATE_DIR"
+  cat > "$PYKGATE_DIR/checklist.json" <<'EOF'
+[
+  {"id":"C_MUT","surface":"/founders","kind":"happy-path","tags":[],"action":"Create a founder","requiredKinds":["bake"],"assertedState":null,"humanAction":true},
+  {"id":"C_PROBE","surface":"/founders","kind":"cross-tenant","tags":["cross-tenant","probe-needed"],"action":"Confirm no leak","requiredKinds":[],"assertedState":null,"humanAction":false}
+]
+EOF
+
+  PYKGATE_REJ_ERR="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYKGATE_RUN_ID" C_MUT pass --kinds bake 2>&1 >/dev/null)"
+  RC_PYKGATE_REJ=$?
+  check "py-fallback kinds-gate: drop human-action rejected" \
+    "$([[ "$RC_PYKGATE_REJ" -ne 0 ]] && echo yes)" "yes"
+  check "py-fallback kinds-gate: reject names human-action" \
+    "$(echo "$PYKGATE_REJ_ERR" | grep -qF 'human-action' && echo yes)" "yes"
+  check "py-fallback kinds-gate: reject writes no checkpoint file" \
+    "$([[ ! -f "$PYKGATE_DIR/checkpoint.json" ]] && echo yes)" "yes"
+
+  (cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$RECORD_SCRIPT" "$PYKGATE_RUN_ID" C_PROBE probe --status 403 --shape '{}' --ok true >/dev/null 2>&1)
+  RC_PYKGATE_OK="$(cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$SCRIPT" "$PYKGATE_RUN_ID" C_PROBE pass --kinds probe >/dev/null 2>&1; echo $?)"
+  check "py-fallback kinds-gate: probe-only criterion --kinds probe (superset) accepted" \
+    "$RC_PYKGATE_OK" "0"
+  check "py-fallback kinds-gate: accepted record written" \
+    "$([[ -f "$PYKGATE_DIR/checkpoint.json" ]] && echo yes)" "yes"
+
+  echo "note - kinds-gate jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - kinds-gate jq-fallback sub-case: jq or python3 not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

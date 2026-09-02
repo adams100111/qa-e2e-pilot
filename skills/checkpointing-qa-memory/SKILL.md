@@ -29,6 +29,12 @@ The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the
   <run-id>/
     journal.ndjson              ← append-only event log; source of truth (see ADR-0002 Boundary)
     run-manifest.json
+    checklist.json               ← generating-qa-checklist's PROPOSAL (per-criterion
+                                     kind/tags/action/requiredKinds/assertedState); this
+                                     skill's pass-gate reads it read-only for the #2/#4
+                                     bindings — see "Evidence-Kind Gate" below; absent
+                                     entirely on a run predating Plan H1, or one with no
+                                     spec-kit/checklist emission step
     checkpoint.json              ← derived: fold(journal)
     cursor.json                  ← derived: fold(journal) — resume position
     fold-anomalies.json          ← derived: fold(journal) — torn/malformed-line report; also
@@ -60,6 +66,82 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 **Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` and `bug-log.json` remain agent-authored; the fold never writes them, and no future change should wire a fold overwrite of either file.
 
 **Expected `fold-anomalies.json` entries (not errors):** the orchestrator now emits `plan_frozen`/`plan_amended` (Generate→Verify boundary), `criterion_started` (per-criterion, at Verify's start), and `act_intent`/`act_committed` (bracketing a mutating criterion's act) via `journal-emit.sh` — see the Scripts Reference below — so a clean run normally shows NO `verdict-without-started` anomalies. If a caller writes a verdict via `checkpoint.sh` without ever having called `journal-emit.sh started` for that tuple (e.g. a script or fixture driving `checkpoint.sh` directly, bypassing the orchestrator prose), the fold still records the verdict and flags it with a benign `verdict-without-started` anomaly rather than rejecting it — the "record-the-verdict + flag" rule, never a suppressed verdict. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`).
+
+---
+
+## Evidence-Kind Gate (#2) and Fingerprint-Target (#4)
+
+Plan H1 closed two specific gaps in the pass-gate. **Read the honest-tier note at the
+end of this section before treating either as a sound guarantee** — they are in-script,
+best-effort checks, not an adversary-proof verifier.
+
+### #2 — required-kinds binding
+
+When `generating-qa-checklist` has written `.qa/runs/<run-id>/checklist.json` (its
+per-criterion **proposal** — see that skill's `references/checklist-json-schema.md`),
+`checkpoint.sh`'s pass-gate reads the criterion's row and independently re-derives its
+required evidence kinds via `scripts/required-kinds.sh derive <row>` — from the row's
+*structural* fields (`kind`, `tags`, and, through `mutation-flag.sh`, the action shape)
+— **never** from the row's own `requiredKinds` field, which the gate ignores outright.
+A checkpointed `pass` is rejected unless the recorded `--kinds` is a **superset** of
+that independent re-derivation; the rejection names the missing kind(s). Absent
+`checklist.json`, or no row for this criterion, falls back to today's behavior (the
+un-gated "--kinds omitted" note) — full back-compat with runs that predate Plan H1.
+
+### #4 — fingerprint-target
+
+When a criterion's `checklist.json` row carries `assertedState
+{entity, readBackPath, expectChange}`, that target is threaded through
+`record-evidence.sh action-trace ... --fingerprint-target '<json>'` into
+`action-trace.json.fingerprintTarget`. `check-action-trace.js` Check 3 then requires the
+before/after state fingerprint to **cover** `readBackPath` (the key/path must be present
+in both) and, when `expectChange` is `true`, to show the target's value **differ**
+before→after (`expectChange: false` instead requires the target be present and
+**unchanged**). `expectChange` must be a strict JSON boolean — a truthy-but-non-boolean
+value (e.g. the string `"true"`, or `1`) is rejected as malformed rather than silently
+coerced. No `fingerprintTarget` (the field absent, or `assertedState: null`) is
+back-compat — Check 3's existing aggregate-`changed` behavior applies unchanged.
+
+### THE HONEST TIER (read before relying on either check)
+
+Both #2 and #4 are **in-script and best-effort**. They close two specific holes: "drop a
+required evidence kind at checkpoint time" (#2), and "fingerprint an irrelevant field
+while the asserted state itself never changed" (#4). They do **NOT** close:
+
+- **"Lie about the criterion's `kind`/`tags`."** `required-kinds.sh` re-derives from the
+  *declared* shape in `checklist.json` — a row whose `kind`/`tags` were themselves
+  written dishonestly re-derives a dishonestly-narrow required set. The gate has no
+  independent signal about what the criterion actually is, only what the row claims it
+  is.
+- **"Fabricate the fingerprint's values."** Check 3 checks that the fingerprint
+  *covers* and *changes* the asserted target — it never re-reads the backend itself to
+  confirm the fingerprint's own numbers are real.
+
+**Specific residual — the `read-only` tag / a missing probe tag.**
+`required-kinds.sh` Rule 3 suppresses the derived `bake` requirement whenever the row is
+tagged `read-only`, and Rule 4 only derives `probe` when the row is explicitly tagged
+`cross-tenant`/`cross-role-fk-chain`/`probe-needed`. Both are agent-declared `tags`
+values in the very file being policed — so a genuinely-mutating, cross-tenant criterion
+tagged `read-only` (or simply missing its probe tag) evades `bake`/`probe` without
+tripping the gate. This is **asymmetric** with the `human-action` rule, which is immune
+to tag-spoofing: `mutation-flag.sh` never reads `tags` at all, it fires off the action
+verb / `kinds` / `httpMethod` shape alone. Closing the tag-honesty hole needs an
+independent read of what the criterion actually does, not what it claims to be — that
+is `qa-verify`'s job, not this gate's.
+
+**Fourth residual — row omission.** Because there is no hard `checklist.json`
+dependency (a criterion with no matching row falls through to the un-gated back-compat
+note), an adversary can simply never emit a `checklist.json` row for a criterion to
+un-gate #2 for it entirely. This is the same family as lie-about-`kind`/`tags`: it is
+closed only by `qa-verify` re-deriving from the captured toolstream independent of
+`checklist.json`, never by this in-script gate.
+
+**The authoritative tier is `qa-verify`** (out-of-agent, Plan H2, ADR-0018) — a
+standalone verifier in a trust domain the agent does not control, re-deriving from the
+captured toolstream and re-baking mutating passes rather than trusting anything the
+agent wrote. `qa-verify` does not exist yet. Until it does, a run whose passes rely on
+#2/#4 alone should be reported `confidence: low`, framed as *"authoritative verdict
+pending qa-verify"* — never presented as a sound, adversary-proof result.
 
 ---
 
@@ -310,6 +392,34 @@ is killed before `journal-emit.sh act-commit` ever runs — a crash mid-act, no 
 
 ---
 
+### Eval 8 — #2 required-kinds binding rejects a dropped kind
+
+**Given:** `.qa/runs/20241115T143022-founder-cap-table/checklist.json` has a row for
+`C-004` (create-founder-persists): `{"id":"C-004","kind":"happy-path","tags":["human-action"],"action":"click Add Founder to submit the form","requiredKinds":["bake","human-action"],"assertedState":{"entity":"Founder","readBackPath":"count","expectChange":true},"humanAction":true}`.
+`required-kinds.sh derive` on this row's `kind`/`tags`/`action` independently lands on
+`bake,human-action` (a mutating action verb plus a `happy-path` kind not tagged
+`read-only`) — the row's own `requiredKinds` field is never consulted.
+
+**Do:**
+1. The driver skipped the real click and API-injected the founder instead. Suppose it
+   still checkpoints: `scripts/checkpoint.sh 20241115T143022-founder-cap-table C-004 pass --kinds bake`
+   (dropping `human-action`).
+2. Confirm `checkpoint.sh` rejects with a message naming the missing kind, e.g.
+   `EVIDENCE GATE: pass rejected for criterion 'C-004' — checklist.json row requires
+   kind(s) 'human-action' ... not present in recorded --kinds 'bake'`.
+3. Re-run with `scripts/checkpoint.sh 20241115T143022-founder-cap-table C-004 pass --kinds bake,human-action`
+   (plus the corresponding evidence files on disk) → accepted.
+
+**Must not do:** accept a `pass` for a `checklist.json`-tracked criterion whose recorded
+`--kinds` is missing any kind `required-kinds.sh derive` independently produced, or trust
+the row's own `requiredKinds` field to decide the outcome.
+
+**Why this eval is not the whole story:** it shows the gate catching a *dropped* kind. It
+does not show the gate catching a *dishonest* `kind`/`tags` value in the row — see the
+honest-tier note above ("Evidence-Kind Gate (#2) and Fingerprint-Target (#4)").
+
+---
+
 ## Templates Reference
 
 | Template | Used at |
@@ -329,6 +439,7 @@ is killed before `journal-emit.sh act-commit` ever runs — a crash mid-act, no 
 | `scripts/journal.sh append <run-id> <event-json>` | Append one validated, seq-stamped event to `journal.ndjson` — the append-only source of truth |
 | `scripts/fold.sh <run-id>` | Replay `journal.ndjson` into `checkpoint.json` + `cursor.json` + `fold-anomalies.json`; dispatches to `fold.jq`/`fold.py`, its jq/python3 reducer engines |
 | `scripts/mutation-flag.sh derive <criterion-json>` | Derive whether a criterion mutates state from its action shape (`kinds`/`httpMethod`/verb) — never trusts an agent-declared flag |
+| `scripts/required-kinds.sh derive <criterion-json>` | Independently re-derive a criterion's required evidence kinds (⊆ `bake,computed,probe,human-action`) from its `kind`/`tags`/action shape, reusing `mutation-flag.sh` for the mutates→`human-action` rule; never reads the agent's own `requiredKinds` field. Consumed by `checkpoint.sh`'s pass-gate against a `checklist.json` row (the #2 binding, see "Evidence-Kind Gate" above) |
 | `scripts/journal-merge.sh <run-id>` | Fan-out only: merge child journals (`journal.<name>.ndjson`) into `journal.ndjson` under a lock, after all children have joined |
 | `scripts/journal-emit.sh started\|freeze\|amend\|act-intent\|act-commit ...` | The single emission entrypoint for start/plan/act events: `started` journals `criterion_started`; `freeze` journals `plan_frozen` (or `plan_amended` per new criterion if a plan is already frozen); `amend` journals one `plan_amended`; `act-intent`/`act-commit` bracket a mutating criterion's act (`act-intent` is derive-gated via `mutation-flag.sh` — a no-op for a non-mutating criterion). Also atomic-writes `.qa/runs/latest` on a run's first event |
 | `scripts/rebake.sh classify\|reconcile --write-set <json> --readbacks <json>` | The write-set re-bake classifier: given a criterion's declared write-set and read-back results (supplied by the caller — this script never fetches), classifies `landed`/`none`/`partial`/`deferred`; `reconcile` also journals the outcome (`act_committed` on landed, a `blocked` verdict naming the missing key on partial) — never a silent "done" |
