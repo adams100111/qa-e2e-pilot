@@ -31,26 +31,29 @@
  * controls (N2 et al). Do not lower thresholds "to be safe"; a false positive here becomes a false
  * `fail` in a real QA run.
  */
-(function () {
-  function relLuminance(r, g, b) {
-    const a = [r, g, b].map(function (v) {
-      v /= 255;
-      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
-  }
-  function parseRGB(s) {
-    const m = (s || '').match(/rgba?\(([^)]+)\)/);
-    if (!m) return null;
-    const p = m[1].split(',').map(function (x) { return parseFloat(x.trim()); });
-    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
-  }
-  function contrastRatio(fg, bg) {
-    const L1 = relLuminance(fg.r, fg.g, fg.b);
-    const L2 = relLuminance(bg.r, bg.g, bg.b);
-    const hi = Math.max(L1, L2), lo = Math.min(L1, L2);
-    return (hi + 0.05) / (lo + 0.05);
-  }
+// ===== Pure, DOM-free cores (shared by the browser walk AND the node unit tests) =====
+function relLuminance(r, g, b) {
+  const a = [r, g, b].map(function (v) {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+}
+function parseRGB(s) {
+  const m = (s || '').match(/rgba?\(([^)]+)\)/);
+  if (!m) return null;
+  const p = m[1].split(',').map(function (x) { return parseFloat(x.trim()); });
+  return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+}
+function contrastRatio(fg, bg) {
+  const L1 = relLuminance(fg.r, fg.g, fg.b);
+  const L2 = relLuminance(bg.r, bg.g, bg.b);
+  const hi = Math.max(L1, L2), lo = Math.min(L1, L2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
+function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
   function compositeOver(fg, bg) {
     const a = fg.a;
@@ -268,4 +271,19 @@
     });
 
   return findings;
-})();
+}
+
+// ===== Dual entry point =====
+// Browser (injected via browser_evaluate): run the DOM walk — the ternary's VALUE is the
+// findings array, exactly like the previous IIFE form, so the evaluate() contract is preserved.
+// Node (unit tests / tooling): export the pure cores; DETECT() is never called, so `document`
+// is never referenced on require.
+typeof document !== 'undefined'
+  ? DETECT()
+  : (typeof module !== 'undefined' && module.exports &&
+     (module.exports = {
+       relLuminance: relLuminance,
+       parseRGB: parseRGB,
+       contrastRatio: contrastRatio,
+       DETECT: DETECT
+     }));
