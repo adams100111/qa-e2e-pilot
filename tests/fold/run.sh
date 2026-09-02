@@ -82,6 +82,32 @@ check "malformed: unknown-event anomaly for totally_unknown" \
   "$(get "$MANOM" '[.anomalies[] | select(.rule=="unknown-event" and .event=="totally_unknown")] | length')" "1"
 
 # ---------------------------------------------------------------------------
+# Case: acts — act_intent/act_committed openActs computation (Finding-1
+# regression: fold.jq's openActs pipe used to rebind `.` to the committed-set
+# object before calling has(.), causing a jq type error / crash on ANY
+# act_intent event). K1 is intent+committed (excluded from openActs); K2 is
+# intent-only (open); K2b is committed with no matching intent (anomaly).
+# Also doubles as the persona-verbatim regression (Finding 3): C2's
+# personaId is the LITERAL string "__shared__" (as opposed to basic.ndjson's
+# C3, whose scenarioId is "__shared__" and personaId is already "") — the
+# emitted `persona` field must be personaId AS-IS, with no collapse.
+# ---------------------------------------------------------------------------
+seed_run acts-run acts.ndjson
+( cd "$WORK" && bash "$FOLD" acts-run >/dev/null ); rc_acts=$?
+ACKPT="$WORK/.qa/runs/acts-run/checkpoint.json"
+AANOM="$WORK/.qa/runs/acts-run/fold-anomalies.json"
+
+check "acts: exit 0 (no jq crash on act_intent)" "$rc_acts" "0"
+check "acts: openActs == [K2] (K1 committed, excluded)" \
+  "$(get "$AANOM" '.openActs | join(",")')" "K2"
+check "acts: act-committed-no-intent anomaly for K2b" \
+  "$(get "$AANOM" '[.anomalies[] | select(.rule=="act-committed-no-intent" and .key=="K2b")] | length')" "1"
+check "acts: C1 persona verbatim (personaId \"alice\")" \
+  "$(get "$ACKPT" '.criteria[] | select(.criterion_id=="C1") | .persona')" "alice"
+check "acts: C2 persona verbatim (literal personaId \"__shared__\", NOT collapsed)" \
+  "$(get "$ACKPT" '.criteria[] | select(.criterion_id=="C2") | .persona')" "__shared__"
+
+# ---------------------------------------------------------------------------
 # Case: dual-equiv — fold the SAME journal under jq, then again with jq
 # masked from PATH (forcing python3 for BOTH the line-parse and reduce
 # passes), canonicalize both checkpoint.json outputs via journal.sh
@@ -125,6 +151,10 @@ dual_equiv_case() {
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   dual_equiv_case basic basic.ndjson
   dual_equiv_case malformed malformed-classes.ndjson
+  # acts.ndjson under both engines -- closes the coverage gap that let the
+  # Finding-1 openActs jq crash ship: dual-equiv previously never exercised
+  # an act_intent event under the jq engine at all.
+  dual_equiv_case acts acts.ndjson
 else
   echo "SKIP - dual-equiv: jq or python3 not present on this host, cannot exercise both engines"
 fi

@@ -195,7 +195,7 @@ journal_append() {
     if ! python3 -c '
 import json, sys
 try:
-    obj = json.loads(sys.argv[1])
+    obj = json.loads(sys.stdin.read())
 except json.JSONDecodeError as e:
     print(f"not valid JSON: {e}", file=sys.stderr)
     sys.exit(1)
@@ -206,7 +206,7 @@ ev = obj.get("event")
 if not isinstance(ev, str) or len(ev) == 0:
     print("missing non-empty string \"event\" field", file=sys.stderr)
     sys.exit(1)
-' "$event_json" 2>&1 1>/dev/null; then
+' <<< "$event_json" 2>&1 1>/dev/null; then
       die "journal_append: event JSON must be a single object with a non-empty string 'event' field: ${event_json}"
     fi
   else
@@ -225,11 +225,11 @@ if not isinstance(ev, str) or len(ev) == 0:
   elif has_py; then
     line="$(python3 -c '
 import json, sys
-obj = json.loads(sys.argv[1])
-obj["seq"] = int(sys.argv[2])
-obj["t"] = sys.argv[3]
+obj = json.loads(sys.stdin.read())
+obj["seq"] = int(sys.argv[1])
+obj["t"] = sys.argv[2]
 print(json.dumps(obj, separators=(",", ":")))
-' "$event_json" "$seq" "$now")" \
+' "$seq" "$now" <<< "$event_json")" \
       || die "journal_append: python3 failed to stamp seq/t onto the event."
   fi
 
@@ -281,9 +281,9 @@ atomic_write() {
   elif has_py; then
     if ! canon="$(python3 -c '
 import json, sys
-obj = json.loads(sys.argv[1])
+obj = json.loads(sys.stdin.read())
 print(json.dumps(obj, sort_keys=True, separators=(",", ":")))
-' "$input" 2>/dev/null)"; then
+' <<< "$input" 2>/dev/null)"; then
       die "atomic_write: input on stdin is not valid JSON."
     fi
   else

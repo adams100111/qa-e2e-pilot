@@ -55,10 +55,6 @@ def tuple_key(e):
     return (s(e, "scenarioId"), s(e, "criterionId"), s(e, "personaId"))
 
 
-def known_persona(p):
-    return "" if p == "__shared__" else (p or "")
-
-
 def main():
     payload = json.load(sys.stdin)
     events = sorted(payload.get("events") or [], key=lambda e: e.get("seq") or 0)
@@ -176,7 +172,7 @@ def main():
             "evidence_refs": v.get("evidenceRefs") or [],
             "bug_ref": bug_ref,
             "kinds": v.get("kinds") or [],
-            "persona": known_persona(g["personaId"]),
+            "persona": g["personaId"],
             "nonUiActionReason": nonui,
             "checkpointed_at": v.get("t"),
         })

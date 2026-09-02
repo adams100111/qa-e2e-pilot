@@ -22,8 +22,6 @@
 # Plan A/Task 2; no snapshot/incremental-fold cache is implemented here.
 # Callers control their own fold cadence.
 
-def known_persona($p): if $p == "__shared__" then "" else $p end;
-
 def tuple_key($e):
   ($e.scenarioId // "") + "" + ($e.criterionId // "") + "" + ($e.personaId // "");
 
@@ -111,7 +109,7 @@ def tuple_key($e):
             evidence_refs: ($g.verdict.evidenceRefs // []),
             bug_ref: (if ($g.verdict.bugRef // "") == "" then null else $g.verdict.bugRef end),
             kinds: ($g.verdict.kinds // []),
-            persona: known_persona($g.personaId),
+            persona: $g.personaId,
             nonUiActionReason: (if ($g.verdict.nonUiActionReason // "") == "" then null else $g.verdict.nonUiActionReason end),
             checkpointed_at: $g.verdict.t
           }])
@@ -123,7 +121,7 @@ def tuple_key($e):
 
 # ---- openActs: act_intent keys with no matching act_committed key,
 # first-seen order. ---------------------------------------------------------
-| ([ $intent_order[] | select(($committed_set | has(.)) | not) ]) as $open_acts
+| ([ $intent_order[] | select(. as $k | ($committed_set | has($k)) | not) ]) as $open_acts
 
 | {
     checkpoint: {

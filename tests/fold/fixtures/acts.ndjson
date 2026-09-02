@@ -1,0 +1,10 @@
+{"seq":1,"t":"2026-09-01T11:00:00Z","event":"run_started","runId":"acts-run"}
+{"seq":2,"t":"2026-09-01T11:00:01Z","event":"phase_entered","phase":"verify"}
+{"seq":3,"t":"2026-09-01T11:00:02Z","event":"criterion_started","scenarioId":"alice","criterionId":"C1","personaId":"alice"}
+{"seq":4,"t":"2026-09-01T11:00:03Z","event":"act_intent","key":"K1","writeSet":["users/1"]}
+{"seq":5,"t":"2026-09-01T11:00:04Z","event":"act_committed","key":"K1","outcome":"ok"}
+{"seq":6,"t":"2026-09-01T11:00:05Z","event":"act_intent","key":"K2","writeSet":["users/2"]}
+{"seq":7,"t":"2026-09-01T11:00:06Z","event":"criterion_verdict","scenarioId":"alice","criterionId":"C1","personaId":"alice","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":[],"kinds":[],"bugRef":null,"lastAction":"acted","nonUiActionReason":null}
+{"seq":8,"t":"2026-09-01T11:00:07Z","event":"criterion_started","scenarioId":"weird","criterionId":"C2","personaId":"__shared__"}
+{"seq":9,"t":"2026-09-01T11:00:08Z","event":"criterion_verdict","scenarioId":"weird","criterionId":"C2","personaId":"__shared__","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":[],"kinds":[],"bugRef":null,"lastAction":"checked","nonUiActionReason":null}
+{"seq":10,"t":"2026-09-01T11:00:09Z","event":"act_committed","key":"K2b","outcome":"ok"}

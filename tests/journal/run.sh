@@ -7,6 +7,13 @@ get() { jq -r "$2" "$1" 2>/dev/null; }
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
+# a >=300 KB single string value -- regression fixture for the E2BIG bug
+# below (generated once, reused by both the normal pass and the
+# python3-fallback pass).
+BIG="$(head -c 300000 /dev/zero | tr '\0' 'x')"
+BIGJSON="{\"b\":\"$BIG\",\"a\":1}"
+BIG_EXPECT="{\"a\":1,\"b\":\"$BIG\"}"
+
 # append two events → two lines, seq 1 then 2, both parse, event field preserved
 ( cd "$WORK" && bash "$J" append r1 '{"event":"run_started","runId":"r1"}' >/dev/null )
 ( cd "$WORK" && bash "$J" append r1 '{"event":"phase_entered","phase":"verify"}' >/dev/null )
@@ -39,6 +46,19 @@ check "no tmp left"        "$(ls "$WORK"/out.json.tmp.* 2>/dev/null | wc -l | tr
 
 # canonical helper sorts nested keys
 check "canonical nested" "$(echo '{"z":{"y":1,"x":2},"a":3}' | ( cd "$WORK" && bash "$J" canonical ))" '{"a":3,"z":{"x":2,"y":1}}'
+
+# large payload (>=300 KB single string value) through canonical/atomic_write
+# -- regression for the python3-fallback branches passing the JSON payload
+# as a `python3 -c` command-line ARGUMENT, which exceeds the kernel's
+# per-argument length limit (E2BIG) on a payload this size. The python3
+# branches now read the JSON via stdin instead.
+BIGOUT="$(echo "$BIGJSON" | ( cd "$WORK" && bash "$J" canonical ))"; bigrc=$?
+check "large payload canonical rc"  "$bigrc" "0"
+check "large payload canonical out" "$BIGOUT" "$BIG_EXPECT"
+
+echo "$BIGJSON" | ( cd "$WORK" && bash "$J" atomic_write "$WORK/big-out.json" ); bigrc2=$?
+check "large payload atomic_write rc"  "$bigrc2" "0"
+check "large payload atomic_write out" "$(cat "$WORK/big-out.json")" "$BIG_EXPECT"
 
 # --- python3-fallback pass: mask jq from PATH so has_jq() fails and has_py()
 # succeeds, then re-assert four representative cases under the fallback.
@@ -74,6 +94,17 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "py-fallback: canonical nested" \
     "$(echo '{"z":{"y":1,"x":2},"a":3}' | ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" canonical ))" \
     '{"a":3,"z":{"x":2,"y":1}}'
+
+  # large payload (>=300 KB single string value) through the python3-only
+  # canonical/atomic_write branches -- proves the E2BIG fix on the actual
+  # fallback path, not just the (already stdin-based) jq path.
+  PYBIGOUT="$(echo "$BIGJSON" | ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" canonical ))"; pybigrc=$?
+  check "py-fallback: large payload canonical rc"  "$pybigrc" "0"
+  check "py-fallback: large payload canonical out" "$PYBIGOUT" "$BIG_EXPECT"
+
+  echo "$BIGJSON" | ( cd "$WORK" && PATH="$FAKEBIN" "$BASH_BIN" "$J" atomic_write "$WORK/py-big-out.json" ); pybigrc2=$?
+  check "py-fallback: large payload atomic_write rc"  "$pybigrc2" "0"
+  check "py-fallback: large payload atomic_write out" "$(cat "$WORK/py-big-out.json")" "$BIG_EXPECT"
 
   echo "note - jq-fallback sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else
