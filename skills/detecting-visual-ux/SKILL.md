@@ -151,7 +151,7 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 
 | Script | Purpose |
 |---|---|
-| `scripts/ux-detectors.js` | Dependency-free, read-only in-page objective UX detectors (contrast/overflow/target-size/accessible-name) — inject via `browser_evaluate` |
+| `scripts/ux-detectors.js` | Dependency-free, read-only in-page objective UX detectors (contrast/overflow/target-size/accessible-name), plus read-only ux-suspicion families (content/data-rendering, i18n script-mismatch + raw-key, broken-image, invisible-text, overlap/z-index) — inject via `browser_evaluate` |
 
 ## Mini-Evals
 

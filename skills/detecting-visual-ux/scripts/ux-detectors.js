@@ -5,8 +5,7 @@
  * `browser_run_code_unsafe`. Runs read-only against the single rendered page: no golden
  * baseline, no axe-core, no npm dependency. Returns a JSON-serializable array of findings.
  *
- * Adapted from tools/accuracy-harness/detectors/ux-detectors.js for skills/detecting-visual-ux
- * (Phase 3, see docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md).
+ * See docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md (Phase 3).
  *
  * Each finding is OBJECTIVE and machine-checkable — it maps to verdict `fail`, suspected layer
  * `FE`, confidence `low` (low because the threshold is a WCAG standard, not a spec/domain numeric
@@ -486,13 +485,20 @@ function DETECT() {
   // (a) a dialog/overlay whose stacking sits below a sibling backdrop/scrim
   Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .dialog, .overlay'))
     .forEach(function (modal) {
-      const mz = parseInt(getComputedStyle(modal).zIndex, 10);
+      const modalStyle = getComputedStyle(modal);
+      // A closed-but-mounted modal (display:none/visibility:hidden, common in React/Vue) isn't
+      // painted behind its backdrop -- it isn't painted at all. Same guard as every sibling DOM
+      // block in this file (contrast, invisible-text, target-size, etc): skip it here.
+      if (modalStyle.visibility === 'hidden' || modalStyle.display === 'none' || parseFloat(modalStyle.opacity) === 0) return;
+      const mz = parseInt(modalStyle.zIndex, 10);
       const parent = modal.parentElement;
       if (!parent) return;
       Array.prototype.slice.call(parent.children).forEach(function (sib) {
         if (sib === modal) return;
         if (!/backdrop|overlay|scrim|mask/i.test(sib.className ? sib.className.toString() : '')) return;
-        const bz = parseInt(getComputedStyle(sib).zIndex, 10);
+        const sibStyle = getComputedStyle(sib);
+        if (sibStyle.visibility === 'hidden' || sibStyle.display === 'none' || parseFloat(sibStyle.opacity) === 0) return;
+        const bz = parseInt(sibStyle.zIndex, 10);
         if (modalBehindBackdrop(mz, bz)) {
           findings.push(suspicion('overlap-modal-behind-backdrop', modal,
             'modal z-index ' + mz + ' below backdrop z-index ' + bz, String(mz)));

@@ -153,5 +153,54 @@ check "collide: adjacent -> false"       "$(call rectsCollide '[{"left":0,"top":
 check "frac: contained -> 1"             "$(call rectOverlapFraction '[{"left":0,"top":0,"right":100,"bottom":100},{"left":10,"top":10,"right":30,"bottom":30}]')" "1"
 check "frac: adjacent -> 0"              "$(call rectOverlapFraction '[{"left":0,"top":0,"right":50,"bottom":50},{"left":50,"top":0,"right":100,"bottom":50}]')" "0"
 
+# --- Fix: modal-behind-backdrop DOM block needs a visibility guard -------------
+# A closed-but-mounted modal (display:none / visibility:hidden, common in React/Vue) sitting at
+# a low z-index under a backdrop must NOT fire -- it isn't actually painted behind anything, it
+# isn't painted at all. A genuinely VISIBLE modal behind its backdrop must still fire (regression
+# guard). Exercised at the DOM-block level (DETECT()) since modalBehindBackdrop's pure core is
+# only a stacking comparator and carries no visibility concept.
+modal_backdrop_scenario() {
+  # $1 = modal display value ("none" or "block")
+  node -e '
+    const m = require(process.argv[1]);
+    function makeEl(over) {
+      const attrs = (over && over.attrs) || {};
+      const el = Object.assign({
+        getAttribute: function (n) { return attrs[n] !== undefined ? attrs[n] : null; },
+        tagName: "DIV",
+        className: "",
+        id: "",
+        childNodes: [],
+        children: [],
+        textContent: "",
+        querySelectorAll: function () { return []; }
+      }, over || {});
+      return el;
+    }
+    const modal = makeEl({ className: "modal", style: { zIndex: "10", display: process.argv[3], visibility: "visible", opacity: "1" } });
+    const backdrop = makeEl({ className: "backdrop", style: { zIndex: "100", display: "block", visibility: "visible", opacity: "1" } });
+    const parent = { children: [modal, backdrop] };
+    modal.parentElement = parent;
+    backdrop.parentElement = parent;
+    global.document = {
+      documentElement: { getAttribute: function () { return null; } },
+      querySelectorAll: function (sel) {
+        if (sel.indexOf("dialog") !== -1) return [modal];
+        return [];
+      },
+      querySelector: function () { return null; },
+      getElementById: function () { return null; }
+    };
+    global.getComputedStyle = function (el) { return el.style || {}; };
+    const findings = m.DETECT();
+    const hit = findings.some(function (f) { return f.detector === "overlap-modal-behind-backdrop"; });
+    process.stdout.write(hit ? "found" : "none");
+  ' "$MOD" "$1" "$1" 2>/dev/null
+}
+check "overlap: closed modal (display:none) behind backdrop -> no finding" \
+  "$(modal_backdrop_scenario none)" "none"
+check "overlap: visible modal behind backdrop -> still fires (regression guard)" \
+  "$(modal_backdrop_scenario block)" "found"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
