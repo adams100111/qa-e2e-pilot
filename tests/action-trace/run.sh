@@ -44,6 +44,34 @@ check "parse: 2 human-path clicks/fills"   "$(echo "$PARSED" | jlen 'a.filter(c=
 check "parse: read-only evaluate mutating=false" "$(echo "$PARSED" | jlen 'a.filter(c=>c.class==="evaluate"&&!c.mutating).length')" "1"
 check "parse: setItem evaluate mutating=true"    "$(echo "$PARSED" | jlen 'a.filter(c=>c.class==="evaluate"&&c.mutating).length')" "1"
 
+# --- #3 semantic mutation classifier: writes the old regex missed ------------
+mut() { node -e 'const{mutates}=require(process.argv[1]);process.stdout.write(String(mutates(process.argv[2])))' "$PARSE" "$1"; }
+check "classify: fetch POST uppercase mutates"      "$(mut "fetch('/x',{method:'POST'})")"            "true"
+check "classify: fetch post lowercase mutates"      "$(mut "fetch('/x',{method:'post'})")"            "true"
+check "classify: fetch method backtick mutates"     "$(mut 'fetch("/x",{method:`POST`})')"            "true"
+check "classify: page.request.post mutates"         "$(mut "page.request.post('/x',{data:{}})")"      "true"
+check "classify: axios.post mutates"                "$(mut "axios.post('/x',{})")"                    "true"
+check "classify: axios.delete mutates"              "$(mut "axios.delete('/x/1')")"                   "true"
+check "classify: XHR open('post') mutates"          "$(mut "x.open('post','/x')")"                    "true"
+check "classify: GET fetch NOT mutating"            "$(mut "fetch('/x').then(r=>r.json())")"          "false"
+check "classify: page.request.get NOT mutating"     "$(mut "page.request.get('/x')")"                 "false"
+check "classify: getComputedStyle NOT mutating"     "$(mut "getComputedStyle(document.body).color")"  "false"
+# negative control: `.post|put|patch|delete` must require the call delimiter, so a
+# substring method like postMessage is NOT flagged (guards against dropping `\s*\(`)
+check "classify: .postMessage NOT mutating"         "$(mut "window.postMessage('x','*')")"            "false"
+
+# --- #3 act-path integration: a NEW mutation form on the ACT PATH (through the
+#     gate, not just the classifier unit) is workaround-rejected — spec §5A/#2 ---
+cat > "$WORK/axiosact.json" <<'J'
+{"actionUnderTest":"create via axios","steps":[{"tool":"browser_evaluate","target":"post","phase":"act","payload":"axios.post('/x',{})"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/axiosact.json" 2>/dev/null; check "check: axios.post on act rejected (new-form act-path)" "$?" "1"
+# a read-only page.request.get on the act path stays allowed (no false-reject)
+cat > "$WORK/reqget.json" <<'J'
+{"actionUnderTest":"read via request","steps":[{"tool":"browser_evaluate","target":"get","phase":"act","payload":"page.request.get('/x')"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/reqget.json"; check "check: page.request.get on act allowed (no false-reject)" "$?" "0"
+
 # --- check-action-trace.js: clean UI-only act -> exit 0 -----------------------
 cat > "$WORK/clean.json" <<'J'
 {"actionUnderTest":"add founder","steps":[{"tool":"browser_type","target":"#name","phase":"arrange"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}],"fingerprints":{"before":0,"after":0}}
@@ -191,7 +219,7 @@ J
 node "$CHECK" "$WORK/decoy2.json" 2>/dev/null; check "check: decoy click does not launder an opaque mutator act step (N2)" "$?" "1"
 # R1: a human-action pass with NO fingerprints is rejected (Check 3 can't be skipped)
 cat > "$WORK/nofp.json" <<'J'
-{"actionUnderTest":"axios","steps":[{"tool":"browser_evaluate","phase":"act","payload":"axios.post('/api/items',{})"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"axios.post('/api/items',{})"}]}
+{"actionUnderTest":"axios","steps":[{"tool":"browser_evaluate","phase":"act","payload":"window.app.create()"}],"sessionCalls":[{"class":"evaluate","mutating":false,"code":"window.app.create()"}]}
 J
 node "$CHECK" "$WORK/nofp.json" 2>/dev/null; check "check: missing fingerprints rejects a human-action pass (R1)" "$?" "1"
 
