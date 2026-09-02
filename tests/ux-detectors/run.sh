@@ -84,5 +84,40 @@ check "i18n: ar + brand GitHub -> null"  "$(call scriptMismatchSignal '["GitHub"
 check "i18n: ar + acronym PDF -> null"   "$(call scriptMismatchSignal '["PDF","ar"]')"                           "null"
 check "i18n: ar + URL -> null"           "$(call scriptMismatchSignal '["https://example.com","ar"]')"           "null"
 
+# --- Critical fix 1: script-mismatch must catch Title-Case prose (false-NEGATIVE) --------
+# Title-Case / lowercase multi-word English phrases are prose and MUST fire on locale ar.
+check "i18n: ar + Title-Case 'Save Changes' -> fires"   "$(field scriptMismatchSignal '["Save Changes","ar"]' expectedScript)"   "Arabic"
+check "i18n: ar + Title-Case 'Sign In' -> fires"        "$(field scriptMismatchSignal '["Sign In","ar"]' expectedScript)"        "Arabic"
+check "i18n: ar + Title-Case 'Contact Us' -> fires"     "$(field scriptMismatchSignal '["Contact Us","ar"]' expectedScript)"     "Arabic"
+check "i18n: ar + Title-Case 'Delete Account' -> fires" "$(field scriptMismatchSignal '["Delete Account","ar"]' expectedScript)" "Arabic"
+check "i18n: ar + Title-Case 'View Details' -> fires"   "$(field scriptMismatchSignal '["View Details","ar"]' expectedScript)"   "Arabic"
+# existing lowercase phrase must still fire (regression guard)
+check "i18n: ar + lowercase 'Save changes' -> fires"    "$(field scriptMismatchSignal '["Save changes","ar"]' expectedScript)"   "Arabic"
+# still exempt: single-token brands, ALLCAPS acronyms, CamelCase/product names, URLs, emails, code
+check "i18n: ar + brand GitHub -> still null"       "$(call scriptMismatchSignal '["GitHub","ar"]')"                    "null"
+check "i18n: ar + acronym PDF -> still null"        "$(call scriptMismatchSignal '["PDF","ar"]')"                       "null"
+check "i18n: ar + product 'iPhone 15' -> still null" "$(call scriptMismatchSignal '["iPhone 15","ar"]')"                "null"
+check "i18n: ar + acronym OK -> still null"         "$(call scriptMismatchSignal '["OK","ar"]')"                        "null"
+check "i18n: ar + URL x.com -> still null"          "$(call scriptMismatchSignal '["https://x.com","ar"]')"             "null"
+check "i18n: ar + email a@b.com -> still null"      "$(call scriptMismatchSignal '["a@b.com","ar"]')"                   "null"
+check "i18n: ar + Component.tsx -> still null"      "$(call scriptMismatchSignal '["Component.tsx","ar"]')"             "null"
+
+# --- Critical fix 2: raw-key must NOT fire on PascalCase.PascalCase (false-POSITIVE) -----
+check "i18n: React.Component -> no finding"  "$(call rawTranslationKeySignal '["React.Component"]')"          "null"
+check "i18n: Foo.Bar -> no finding"          "$(call rawTranslationKeySignal '["Foo.Bar"]')"                  "null"
+check "i18n: Error.NotFound -> no finding"   "$(call rawTranslationKeySignal '["Error.NotFound"]')"            "null"
+# real keys still fire
+check "i18n: deliverables.title still fires" "$(field rawTranslationKeySignal '["deliverables.title"]' rawSignal)" "deliverables.title"
+check "i18n: foo.bar.baz still fires"        "$(field rawTranslationKeySignal '["foo.bar.baz"]' rawSignal)"        "foo.bar.baz"
+check "i18n: user.profile.name still fires"  "$(field rawTranslationKeySignal '["user.profile.name"]' rawSignal)"  "user.profile.name"
+# Q4 exemptions stay green
+check "i18n: v1.2.3 -> still null"           "$(call rawTranslationKeySignal '["v1.2.3"]')"                    "null"
+check "i18n: example.co.uk -> still null"    "$(call rawTranslationKeySignal '["example.co.uk"]')"             "null"
+check "i18n: Component.tsx -> still null"    "$(call rawTranslationKeySignal '["Component.tsx"]')"             "null"
+check "i18n: app.py -> still null"           "$(call rawTranslationKeySignal '["app.py"]')"                    "null"
+check "i18n: a@b.com -> still null"          "$(call rawTranslationKeySignal '["a@b.com"]')"                   "null"
+check "i18n: www.example.com -> still null"  "$(call rawTranslationKeySignal '["www.example.com"]')"           "null"
+check "i18n: 3.14 -> still null"             "$(call rawTranslationKeySignal '["3.14"]')"                      "null"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -96,6 +96,9 @@ function rawTranslationKeySignal(text) {
   if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2}$/.test(t)) return null;  // ccTLD domain: example.co.uk
   if (/\.(com|org|net|io|dev|co|gov|edu|app|html?|js|mjs|cjs|jsx|ts|tsx|vue|css|scss|less|json|ya?ml|toml|xml|md|txt|csv|pdf|png|jpe?g|gif|webp|svg|ico|py|rb|go|rs|java|kt|swift|php)$/i.test(t)) return null;
   if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(t)) return null;  // dotted identifier
+  // PascalCase.PascalCase (React.Component, Foo.Bar, Error.NotFound) is a breadcrumb/namespace,
+  // not a translation key: every segment starts uppercase. Real keys are lowercase-dotted.
+  if (t.split('.').every(function (seg) { return /^[A-Z]/.test(seg); })) return null;
   return { rawSignal: t };
 }
 // i18n: locale -> expected Unicode script. Latin/unknown locales carry no script oracle.
@@ -115,14 +118,17 @@ function scriptMismatchSignal(text, expectedLocale) {
   if (letters.length < 3) return null;                       // abbrev/brand/symbol — precision guard
   // Q3 (human-like precision): a human does NOT read a brand / acronym / URL / code identifier as
   // "untranslated" just because it's Latin on an Arabic page (GitHub, PDF, https://…, api.v2).
-  // Exempt when NO token reads as translatable lowercase prose. A brand/acronym/CamelCase token
-  // ("GitHub", "PDF", "iPhone") has no lowercase-initial all-lowercase word; a translatable phrase
-  // ("Save changes", "Sohranit izmeneniya") does. URLs/emails/code punctuation are exempt outright.
+  // Exempt when NO token reads as translatable prose. A word-like token is Title-case or
+  // lowercase ONLY (^[A-Za-z][a-z]+$) — a brand/acronym/CamelCase token ("GitHub", "PDF",
+  // "iPhone") or a bare digit token never matches. A phrase reads as prose once it has >=2
+  // such tokens ("Save changes", "Save Changes", "Sign In", "Sohranit izmeneniya" all do);
+  // a lone Title-Case/lowercase word stays exempt as a possible proper noun.
+  // URLs/emails/code punctuation are exempt outright.
   if (/:\/\/|[@<>{}=;\\]|www\./.test(trimmed)) return null;  // URL / email / code
-  const proseToken = trimmed.split(/\s+/).some(function (tok) {
-    return /^[a-z][a-z]+$/.test(tok);                        // a lowercase word => reads as prose
+  const wordTokens = trimmed.split(/\s+/).filter(function (tok) {
+    return /^[A-Za-z][a-z]+$/.test(tok);                     // Title-case/lowercase word => reads as prose
   });
-  if (!proseToken) return null;                              // all brand/acronym/proper-noun -> not a bug
+  if (wordTokens.length < 2) return null;                    // <2 prose words -> brand/acronym/proper-noun, not a bug
   const re = new RegExp('\\p{Script=' + script + '}', 'u');
   let inScript = 0;
   for (let i = 0; i < letters.length; i++) if (re.test(letters[i])) inScript++;
