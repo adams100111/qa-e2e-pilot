@@ -5,6 +5,12 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$HERE/../../skills/detecting-stack-profile/scripts/detect-stack.sh"
 FIX="$HERE/fixtures"
+# Hermetic: point QA_CONFIG at a guaranteed-nonexistent file so the engine's cfg()
+# falls back to its built-in defaults instead of inheriting whatever .qa/config.json
+# happens to sit in the cwd (the repo ships one with seedableEnvMarker + environment
+# set, which otherwise leaks in and forces Case 4's production inference to disposable).
+# A case that means to test config behavior sets its own QA_CONFIG.
+export QA_CONFIG="$HERE/.no-such-config.json"
 PASS=0; FAIL=0
 get() { jq -r "$2" "$1" 2>/dev/null; }
 check() { # desc, actual, expected
