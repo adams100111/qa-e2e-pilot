@@ -1036,5 +1036,71 @@ else
   echo "SKIP - mv-guard sub-case: jq not present on this host"
 fi
 
+# ===========================================================================
+# Task 3 (durable substrate) — checkpoint.sh's upsert now appends a
+# criterion_verdict event to the journal, then folds it into checkpoint.json,
+# instead of mutating checkpoint.json in place (journal.ndjson is now the
+# source of truth; checkpoint.json is a derived projection). These cases pin
+# that wiring, additively — no assertion above is touched.
+# ===========================================================================
+
+FOLD_SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/fold.sh"
+
+# --- Case 56: journal-backing — an upsert appends journal.ndjson, whose LAST
+# line is a criterion_verdict event carrying the right criterionId/verdict/
+# personaId -------------------------------------------------------------
+JBACK_RUN_ID="test-run-journal-backing"
+JBACK_JOURNAL="$WORK/.qa/runs/${JBACK_RUN_ID}/journal.ndjson"
+
+(cd "$WORK" && bash "$SCRIPT" "$JBACK_RUN_ID" JB1 pass >/dev/null)
+check "journal-backing: journal.ndjson exists after upsert" \
+  "$([[ -f "$JBACK_JOURNAL" ]] && echo yes)" "yes"
+
+JBACK_LAST_LINE="$(tail -n 1 "$JBACK_JOURNAL")"
+check "journal-backing: last line is a criterion_verdict" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.event')" "criterion_verdict"
+check "journal-backing: last line criterionId is JB1" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.criterionId')" "JB1"
+check "journal-backing: last line verdict is pass" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.verdict')" "pass"
+check "journal-backing: last line personaId is empty (no --persona)" \
+  "$(echo "$JBACK_LAST_LINE" | jq -r '.personaId')" ""
+
+# --- Case 57: re-fold reproduces the same record — deleting checkpoint.json
+# and re-running fold.sh against the SAME journal must regenerate a
+# canonically identical .criteria[0] record (the journal, not
+# checkpoint.json, is the source of truth) ------------------------------
+JBACK_CKPT="$WORK/.qa/runs/${JBACK_RUN_ID}/checkpoint.json"
+JBACK_BEFORE="$(jq -Sc '.criteria[0]' "$JBACK_CKPT")"
+rm -f "$JBACK_CKPT"
+(cd "$WORK" && bash "$FOLD_SCRIPT" "$JBACK_RUN_ID" >/dev/null)
+JBACK_AFTER="$(jq -Sc '.criteria[0]' "$JBACK_CKPT")"
+check "journal-backing: re-fold recreates checkpoint.json" \
+  "$([[ -f "$JBACK_CKPT" ]] && echo yes)" "yes"
+check "journal-backing: re-fold reproduces the identical .criteria[0] record" \
+  "$JBACK_AFTER" "$JBACK_BEFORE"
+
+# --- Case 58: resume-order parity (grill Q7) — C1 keeps its FIRST-SEEN slot
+# (not moved to the end) when re-upserted with a new verdict; --resume still
+# reports the LAST-in-first-seen-order criterion (C2), matching legacy
+# in-place-upsert behaviour -----------------------------------------------
+RORDER_RUN_ID="test-run-resume-order"
+RORDER_CKPT="$WORK/.qa/runs/${RORDER_RUN_ID}/checkpoint.json"
+
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C1 pass >/dev/null)
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C2 pass >/dev/null)
+(cd "$WORK" && bash "$SCRIPT" "$RORDER_RUN_ID" C1 fail >/dev/null)
+
+check "resume-order parity: C1 keeps its first-seen slot (order == C1,C2)" \
+  "$(jq -c '[.criteria[].criterion_id]' "$RORDER_CKPT")" '["C1","C2"]'
+check "resume-order parity: C1's verdict updated in place (fail)" \
+  "$(jq -r '.criteria[0].verdict' "$RORDER_CKPT")" "fail"
+
+RORDER_RESUME_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$RORDER_RUN_ID")"
+check "resume-order parity: --resume returns C2 as last (not C1)" \
+  "$(echo "$RORDER_RESUME_OUT" | grep -qE 'criterion_id:[[:space:]]+C2' && echo yes)" "yes"
+check "resume-order parity: --resume skip-to line names C2" \
+  "$(echo "$RORDER_RESUME_OUT" | grep -qF 'Skip all criteria up to and including: C2' && echo yes)" "yes"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
