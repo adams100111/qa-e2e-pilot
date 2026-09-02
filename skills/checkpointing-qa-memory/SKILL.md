@@ -22,21 +22,27 @@ The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the
 ## Run Directory Layout
 
 ```
-.qa/runs/<run-id>/
-  journal.ndjson              ← append-only event log; source of truth (see ADR-0002 Boundary)
-  run-manifest.json
-  checkpoint.json              ← derived: fold(journal)
-  cursor.json                  ← derived: fold(journal) — resume position
-  fold-anomalies.json          ← derived: fold(journal) — torn/malformed-line report
-  bug-log.json
-  traceability.json          ← only when spec-kit artifacts are present
-  report.md                  ← writing-qa-reports skill
-  report.html                ← writing-qa-reports skill
-  evidence/
-    <criterion-id>/
-      screenshot-after.png
-      bake-read-back.json
-      network-response.json
+.qa/runs/
+  latest                      ← one-line file: the run-id of the run whose first journal
+                                 event was written most recently (atomic-written); the
+                                 default target for `/qa-resume` when no run-id is given
+  <run-id>/
+    journal.ndjson              ← append-only event log; source of truth (see ADR-0002 Boundary)
+    run-manifest.json
+    checkpoint.json              ← derived: fold(journal)
+    cursor.json                  ← derived: fold(journal) — resume position
+    fold-anomalies.json          ← derived: fold(journal) — torn/malformed-line report; also
+                                     carries `openActs` (act_intent with no matching
+                                     act_committed — the resume-time reconciliation work-list)
+    bug-log.json
+    traceability.json          ← only when spec-kit artifacts are present
+    report.md                  ← writing-qa-reports skill
+    report.html                ← writing-qa-reports skill
+    evidence/
+      <criterion-id>/
+        screenshot-after.png
+        bake-read-back.json
+        network-response.json
 ```
 
 ## ADR-0002 Boundary (read this first)
@@ -53,7 +59,7 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` and `bug-log.json` remain agent-authored; the fold never writes them, and no future change should wire a fold overwrite of either file.
 
-**Expected `fold-anomalies.json` entries (not errors):** in Plan A, `checkpoint.sh` emits only `criterion_verdict` events (start/phase/act emission is deferred to Plan B), so the fold records one benign `verdict-without-started` anomaly **per criterion** on every normal run — this is the by-design "record-the-verdict + flag" rule, never a suppressed verdict. A clean run therefore shows N such entries; treat `verdict-without-started` as expected until Plan B wires start-event emission. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`).
+**Expected `fold-anomalies.json` entries (not errors):** the orchestrator now emits `plan_frozen`/`plan_amended` (Generate→Verify boundary), `criterion_started` (per-criterion, at Verify's start), and `act_intent`/`act_committed` (bracketing a mutating criterion's act) via `journal-emit.sh` — see the Scripts Reference below — so a clean run normally shows NO `verdict-without-started` anomalies. If a caller writes a verdict via `checkpoint.sh` without ever having called `journal-emit.sh started` for that tuple (e.g. a script or fixture driving `checkpoint.sh` directly, bypassing the orchestrator prose), the fold still records the verdict and flags it with a benign `verdict-without-started` anomaly rather than rejecting it — the "record-the-verdict + flag" rule, never a suppressed verdict. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`).
 
 ---
 
@@ -90,28 +96,64 @@ After completing each criterion (any verdict: pass/fail/blocked/deferred/error):
 
 ### Step 3 — Resume Protocol
 
-On any restart (context compaction, interrupted run, new session):
+On any restart (context compaction, interrupted run, new session), resume is **portable and
+operator-invoked**: `/qa-resume [run-id]` (or, run directly, `bash
+skills/checkpointing-qa-memory/scripts/qa-resume.sh [run-id]`). There is no directory scan and no
+grep over `run-manifest.json` files — the run resolves via `.qa/runs/latest`.
 
 ```
-1. Find the latest in-progress run for this target:
-   ls -t .qa/runs/ | head -20
-   grep -l '"status": "in-progress"' .qa/runs/*/run-manifest.json | tail -1
+1. Resolve + fold + brief:
+   bash skills/checkpointing-qa-memory/scripts/qa-resume.sh [run-id]
+   run-id defaults to the (trimmed) content of `.qa/runs/latest` when omitted — the pointer
+   is atomic-written on a run's first journal event, so it always names the most recently
+   STARTED run, not necessarily the last one you personally touched; pass an explicit run-id
+   to target any other run. This folds journal.ndjson (scripts/fold.sh) and prints ONE line
+   of JSON, the resume briefing:
+     {run_id, phase, cursor: {scenarioId, criterionId} | null, openActs: [...], skip: [...]}
+   - `phase`  — the phase cursor.json last recorded (e.g. Verify).
+   - `cursor` — the first (scenario, criterion) tuple that is started/planned but has no
+     criterion_verdict yet; null when every planned tuple already has one.
+   - `openActs` — every act_intent with no matching act_committed (qa-reconcile.sh plan's
+     output verbatim): a crash mid-act leaves its key here.
+   - `skip`   — every (scenarioId, criterionId) tuple that ALREADY has a criterion_verdict —
+     completed work the resumed Verify loop must never re-run or re-verdict.
 
-2. Read run-manifest:
-   cat .qa/runs/<run-id>/run-manifest.json
+2. Reconcile every open act BEFORE touching the UI (skip this step when openActs is empty):
+   for each {key, scenarioId, criterionId, personaId, writeSet} in openActs, read back every
+   write-set member with your OWN browser/probe capability (qa-resume.sh does not drive the
+   browser or fetch anything itself), then:
+     bash skills/checkpointing-qa-memory/scripts/qa-reconcile.sh apply <run_id> <key> \
+       --readbacks <json>
+   Handle the outcome: `done` -> move on; `blocked` -> the criterion is now recorded blocked,
+   move on; `retry` -> re-drive the act once (through real UI affordances, bracketed by
+   `journal-emit.sh act-intent`/`act-commit` as usual) and call `apply` again — a SECOND
+   consecutive `retry` for the same key auto-escalates to `blocked`, so `apply` never loops;
+   `deferred` -> a write-only write-set member with no read path — landing cannot be
+   confirmed — record a low-confidence deferred note and move on, never re-drive the act for
+   this outcome.
 
-3. Read the last completed checkpoint:
-   scripts/checkpoint.sh --resume <run-id>
-   (prints: last completed criterion-id, verdict, phase, evidence_refs, last_action)
+3. SKIP every tuple in the briefing's `skip` list. Continue Verify at exactly the `cursor`
+   tuple, replaying the FROZEN plan (the `plan_frozen`/`plan_amended` events already in the
+   journal) — no re-observation of the app for any already-planned criterion. A crash BEFORE
+   `plan_frozen` (Pre-flight/Analyze/Generate) instead resumes by re-running those setup
+   phases from their own checkpoints; only Verify forbids re-observation.
 
-4. SKIP all criteria whose checkpoint verdict is already recorded.
-   Continue from the FIRST criterion with no checkpoint entry.
-
-5. Re-verify the immediate preconditions for that criterion
-   (the environment may have changed; don't assume prior state holds).
+4. Re-verify only the IMMEDIATE preconditions for the cursor criterion itself (auth, env up)
+   — never re-derive the plan or re-check already-skipped criteria.
 ```
 
-This is the mechanism that made the original governance QA run survive context compaction: the agent re-reads checkpoint.json on every resume and jumps straight to the first unfinished criterion.
+**Auto-rehydrate is a protocol step, not a hook.** At every phase entry the agent re-reads
+`fold(journal)` (the same fold `/qa-resume` runs) rather than trusting its own recollection —
+this is what makes an *induced* compaction (no explicit `/qa-resume` call) land on the same
+cursor a manual resume would. `harness-profiles.json` has no hooks field today: there is no
+Claude/Codex/Pi SessionStart hook wired up, and opencode has no session-hook mechanism at all —
+a future harness-specific hook is a possible accelerant on top of this protocol step, never a
+substitute for it. `/qa-resume` + the rehydrate-at-phase-entry protocol is the guaranteed floor
+on every harness today.
+
+This is the mechanism that made the original governance QA run survive context compaction: the
+agent re-reads the fold on every resume and jumps straight to the first unverdicted
+`(scenario, criterion)` tuple, reconciling any act a crash left open along the way.
 
 ### Step 4 — Close a Run
 
@@ -235,6 +277,39 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 
 ---
 
+### Eval 7 — Kill mid-act, resume, full-write-set reconcile, no double-create
+
+**Given:** Run `20241115T143022-founder-cap-table` is mid-Verify. Criterion `C-004`
+(create-founder-persists, mutating, write-set `[{"entity":"founder","key":"founder-42"}]`) has a
+journaled `criterion_started` and `act_intent` (from `journal-emit.sh act-intent`) but the process
+is killed before `journal-emit.sh act-commit` ever runs — a crash mid-act, no `act_committed`.
+`C-001`–`C-003` already have recorded verdicts.
+
+**Do:**
+1. New session. Run `/qa-resume` (or `bash .../qa-resume.sh` with no run-id) — it resolves
+   `20241115T143022-founder-cap-table` from `.qa/runs/latest`, folds, and prints the briefing.
+   Confirm `skip` contains `C-001`–`C-003` and `cursor` points at `C-004`; confirm `openActs`
+   contains exactly one entry keyed to `C-004`'s write-set.
+2. **Before touching the UI**, read back `founder-42` with the resumed session's own browser/probe
+   capability. It IS found (the create actually landed before the crash; only the commit event was
+   lost). Call `qa-reconcile.sh apply <run-id> <key> --readbacks '[{"entity":"founder","key":"founder-42","found":true}]'`.
+   Confirm it returns `done` and journals `act_committed{outcome:"landed"}` — re-fold shows
+   `openActs` now empty for `C-004`.
+3. Confirm the agent does NOT re-drive the create action for `C-004` (the reconciled act already
+   landed) and does NOT re-run or re-verdict `C-001`–`C-003`.
+4. Continue Verify at `C-004`'s remaining steps (bake/compute-logic) using the reconciled write-back,
+   then record its verdict and move to `C-005`.
+5. **Contrast:** repeat from step 1 with the read-back showing `found:false` instead. `apply`
+   returns `retry` — the agent re-drives the create ONCE (through real UI affordances, bracketed by
+   a fresh `act-intent`/`act-commit`) and calls `apply` again. A SECOND consecutive `not-found`
+   auto-escalates to a `blocked` verdict naming the key — `apply` never loops.
+
+**Must not do:** re-create `founder-42` when the reconciled read-back already shows it landed
+(double-create), silently mark `C-004` `done` without the write-set read-back, or re-verify
+`C-001`–`C-003` from scratch.
+
+---
+
 ## Templates Reference
 
 | Template | Used at |
@@ -255,3 +330,8 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 | `scripts/fold.sh <run-id>` | Replay `journal.ndjson` into `checkpoint.json` + `cursor.json` + `fold-anomalies.json`; dispatches to `fold.jq`/`fold.py`, its jq/python3 reducer engines |
 | `scripts/mutation-flag.sh derive <criterion-json>` | Derive whether a criterion mutates state from its action shape (`kinds`/`httpMethod`/verb) — never trusts an agent-declared flag |
 | `scripts/journal-merge.sh <run-id>` | Fan-out only: merge child journals (`journal.<name>.ndjson`) into `journal.ndjson` under a lock, after all children have joined |
+| `scripts/journal-emit.sh started\|freeze\|amend\|act-intent\|act-commit ...` | The single emission entrypoint for start/plan/act events: `started` journals `criterion_started`; `freeze` journals `plan_frozen` (or `plan_amended` per new criterion if a plan is already frozen); `amend` journals one `plan_amended`; `act-intent`/`act-commit` bracket a mutating criterion's act (`act-intent` is derive-gated via `mutation-flag.sh` — a no-op for a non-mutating criterion). Also atomic-writes `.qa/runs/latest` on a run's first event |
+| `scripts/rebake.sh classify\|reconcile --write-set <json> --readbacks <json>` | The write-set re-bake classifier: given a criterion's declared write-set and read-back results (supplied by the caller — this script never fetches), classifies `landed`/`none`/`partial`/`deferred`; `reconcile` also journals the outcome (`act_committed` on landed, a `blocked` verdict naming the missing key on partial) — never a silent "done" |
+| `scripts/qa-reconcile.sh plan <run-id>` | Fold the run and list every open act (`act_intent` with no matching `act_committed`) as the resume-time reconciliation work-list |
+| `scripts/qa-reconcile.sh apply <run-id> <key> --readbacks <json>` | Reconcile one open act via `rebake.sh reconcile`; returns `done`/`retry`/`blocked`/`deferred` (a second consecutive `retry` for the same key auto-escalates to `blocked`) |
+| `scripts/qa-resume.sh [run-id]` | Resolve a run (arg, else `.qa/runs/latest`), fold it, and print the resume briefing `{run_id, phase, cursor, openActs, skip}` — the primitive behind `/qa-resume` |

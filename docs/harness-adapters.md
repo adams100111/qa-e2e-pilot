@@ -33,6 +33,15 @@ verify first, start there. Codex and opencode follow the identical procedure bel
   tool, or glob), the same `checkpoint.sh` + `check-action-trace.js` (+ `parse-session-log.js` when
   `--save-session` is enabled) inspects what was actually done after the fact. No harness relies on its
   own tool-enforcement mechanism as the safety boundary.
+- **Resume is the same portable `/qa-resume` on every harness — there is no session hook.** A run's
+  resume path (ADR-0020 Plan B) is `/qa-resume [run-id]` + `.qa/runs/latest`, identical across Claude,
+  Codex, Pi, and opencode. Auto-rehydrate mid-run (landing on the same cursor after an *induced*
+  context compaction, with no explicit `/qa-resume` call) is a **protocol step**, not a hook: the
+  agent's own prose re-reads `fold(journal)` at every phase entry. `harness-profiles.json` has no
+  hooks field today — there is no Claude/Codex/Pi SessionStart hook wired up, and opencode has no
+  session-hook mechanism at all to wire one into. A harness-specific hook is a possible future
+  accelerant on top of the protocol step; it is not built, and no harness should be assumed to have
+  one.
 
 ---
 
