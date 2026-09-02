@@ -57,6 +57,15 @@ A fifth entry, `accessible-name-probe`, is not a finding — it is a **hint** (`
 marking symbol-only labels (e.g. a bare `"?"` button) that need Step 2's dynamic check. It carries
 no verdict on its own.
 
+**Suspicion entries are NEVER verdicts (`axis:"ux-suspicion"`).** Alongside the four objective
+detectors, `ux-detectors.js` may return entries whose `axis` is `"ux-suspicion"` (the new
+content/i18n/assets/invisible-text/overlap families). These carry **no** `verdict`,
+`suspectedLayer`, or `confidence`. Do **not** apply Step 3 to them — an `axis:"ux-suspicion"`
+entry never becomes a `fail` and is never counted in the pass/fail tally. Route each into the
+report's advisory stream as `- [selector] <evidence> (ux-suspicion — not a verdict; awaiting
+adjudication)`, exactly like the `overflow-ellipsis-hint` / `accessible-name-probe` hint carve-out.
+Turning suspicions into verdicts (adjudication — design §1 steps 2–4) is a separate, later effort.
+
 ### Step 2 — Click-probe for U4's dynamic half (console error on click)
 
 U4 is genuinely two independent signals that both localize to the same class: a missing accessible
@@ -79,6 +88,9 @@ This reuses driving-browser-qa's existing "Checking for Client-Side Exceptions" 
 browser capability is introduced, only the direction to run it specifically for UX-flagged controls.
 
 ### Step 3 — Objective finding -> criterion verdict
+
+*(applies only to `axis:"ux-objective"` findings from the four detectors above; `axis:"ux-suspicion"`
+entries are handled by the Step 1 rule and never reach a verdict).*
 
 Each confirmed Step 1 or Step 2 finding becomes (or fails) the surface's visual-UX criterion:
 
@@ -139,7 +151,7 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 
 | Script | Purpose |
 |---|---|
-| `scripts/ux-detectors.js` | Dependency-free, read-only in-page objective UX detectors (contrast/overflow/target-size/accessible-name) — inject via `browser_evaluate` |
+| `scripts/ux-detectors.js` | Dependency-free, read-only in-page objective UX detectors (contrast/overflow/target-size/accessible-name), plus read-only ux-suspicion families (content/data-rendering, i18n script-mismatch + raw-key, broken-image, invisible-text, overlap/z-index) — inject via `browser_evaluate` |
 
 ## Mini-Evals
 

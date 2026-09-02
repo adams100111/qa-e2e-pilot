@@ -5,8 +5,7 @@
  * `browser_run_code_unsafe`. Runs read-only against the single rendered page: no golden
  * baseline, no axe-core, no npm dependency. Returns a JSON-serializable array of findings.
  *
- * Adapted from tools/accuracy-harness/detectors/ux-detectors.js for skills/detecting-visual-ux
- * (Phase 3, see docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md).
+ * See docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md (Phase 3).
  *
  * Each finding is OBJECTIVE and machine-checkable — it maps to verdict `fail`, suspected layer
  * `FE`, confidence `low` (low because the threshold is a WCAG standard, not a spec/domain numeric
@@ -31,26 +30,152 @@
  * controls (N2 et al). Do not lower thresholds "to be safe"; a false positive here becomes a false
  * `fail` in a real QA run.
  */
-(function () {
-  function relLuminance(r, g, b) {
-    const a = [r, g, b].map(function (v) {
-      v /= 255;
-      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+// ===== Pure, DOM-free cores (shared by the browser walk AND the node unit tests) =====
+function relLuminance(r, g, b) {
+  const a = [r, g, b].map(function (v) {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+}
+function parseRGB(s) {
+  const m = (s || '').match(/rgba?\(([^)]+)\)/);
+  if (!m) return null;
+  const p = m[1].split(',').map(function (x) { return parseFloat(x.trim()); });
+  return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+}
+function contrastRatio(fg, bg) {
+  const L1 = relLuminance(fg.r, fg.g, fg.b);
+  const L2 = relLuminance(bg.r, bg.g, bg.b);
+  const hi = Math.max(L1, L2), lo = Math.min(L1, L2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// content/data-rendering: definite content-oracle artifacts in a rendered value.
+// Q2 (human-like precision): the bare literals `undefined`/`null`/`NaN` are flagged ONLY
+// WHOLE-CELL — i.e. when the element's entire trimmed direct text IS the literal, exactly how
+// they leak from a data slot that rendered nothing but the raw value. A human does NOT flag
+// prose that merely CONTAINS or ENDS IN the word ("The result is NaN", "This field is
+// undefined", "Value is null", "The null hypothesis"), so those must NOT match — whole-string
+// equality (not a trailing-token regex) is what keeps that boundary precise. `$NaN` (currency),
+// `[object Object]`, `Invalid Date`, and raw `{{interp}}` never occur in legitimate prose, so
+// they stay position-independent (matched anywhere in the text).
+function contentOracleSignal(text) {
+  const t = String(text == null ? '' : text);
+  const trimmed = t.trim();
+  if (trimmed === 'null') return { kind: 'null', rawSignal: 'null' };
+  if (trimmed === 'undefined') return { kind: 'undefined', rawSignal: 'undefined' };
+  if (trimmed === 'NaN') return { kind: 'nan', rawSignal: 'NaN' };
+  const checks = [
+    ['object-object', /\[object [A-Z]\w*\]/],                 // [object Object], [object Array]
+    ['currency-nan', /\$NaN(?=\s*$)/],                        // value-position; unambiguous anywhere
+    ['invalid-date', /\bInvalid Date\b/],
+    ['raw-interp', /\{\{[^}]+\}\}/],                          // unrendered {{ interpolation }}
+    ['raw-iso', /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/]
+  ];
+  for (let i = 0; i < checks.length; i++) {
+    const m = t.match(checks[i][1]);
+    if (m) return { kind: checks[i][0], rawSignal: m[0].trim() };
   }
-  function parseRGB(s) {
-    const m = (s || '').match(/rgba?\(([^)]+)\)/);
-    if (!m) return null;
-    const p = m[1].split(',').map(function (x) { return parseFloat(x.trim()); });
-    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
-  }
-  function contrastRatio(fg, bg) {
-    const L1 = relLuminance(fg.r, fg.g, fg.b);
-    const L2 = relLuminance(bg.r, bg.g, bg.b);
-    const hi = Math.max(L1, L2), lo = Math.min(L1, L2);
-    return (hi + 0.05) / (lo + 0.05);
-  }
+  return null;
+}
+// A required control whose resolved label is empty is a content gap.
+function isEmptyRequiredLabel(labelText) {
+  return String(labelText == null ? '' : labelText).trim() === '';
+}
+
+// i18n: a bare translation key rendered as a label (whole-text dotted identifier),
+// excluding URLs / emails / domains / file names / numbers to hold precision.
+function rawTranslationKeySignal(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t || /\s/.test(t)) return null;                       // real labels have spaces
+  if (t.indexOf('@') !== -1 || t.indexOf('://') !== -1) return null;   // email / URL
+  // Q4 (human-like precision): version strings, ccTLD domains, and file names are NOT keys.
+  if (/^v\d/i.test(t)) return null;                          // v1.2.3, v2 — a version, not a key
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2}$/.test(t)) return null;  // ccTLD domain: example.co.uk
+  if (/\.(com|org|net|io|dev|co|gov|edu|app|html?|js|mjs|cjs|jsx|ts|tsx|vue|css|scss|less|json|ya?ml|toml|xml|md|txt|csv|pdf|png|jpe?g|gif|webp|svg|ico|py|rb|go|rs|java|kt|swift|php)$/i.test(t)) return null;
+  if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(t)) return null;  // dotted identifier
+  // PascalCase.PascalCase (React.Component, Foo.Bar, Error.NotFound) is a breadcrumb/namespace,
+  // not a translation key: every segment starts uppercase. Real keys are lowercase-dotted.
+  if (t.split('.').every(function (seg) { return /^[A-Z]/.test(seg); })) return null;
+  return { rawSignal: t };
+}
+// i18n: locale -> expected Unicode script. Latin/unknown locales carry no script oracle.
+const LOCALE_SCRIPT = {
+  ar: 'Arabic', fa: 'Arabic', ur: 'Arabic', ps: 'Arabic',
+  he: 'Hebrew', yi: 'Hebrew',
+  ru: 'Cyrillic', uk: 'Cyrillic', bg: 'Cyrillic', sr: 'Cyrillic',
+  el: 'Greek', ja: 'Han', zh: 'Han', ko: 'Hangul',
+  hi: 'Devanagari', mr: 'Devanagari', th: 'Thai'
+};
+function scriptMismatchSignal(text, expectedLocale) {
+  const loc = String(expectedLocale || '').toLowerCase().split(/[-_]/)[0];
+  const script = LOCALE_SCRIPT[loc];
+  if (!script) return null;                                  // no non-Latin script expected
+  const trimmed = String(text == null ? '' : text).trim();
+  const letters = trimmed.match(/\p{L}/gu) || [];
+  if (letters.length < 3) return null;                       // abbrev/brand/symbol — precision guard
+  // Q3 (human-like precision): a human does NOT read a brand / acronym / URL / code identifier as
+  // "untranslated" just because it's Latin on an Arabic page (GitHub, PDF, https://…, api.v2).
+  // Exempt when NO token reads as translatable prose. A word-like token is Title-case or
+  // lowercase ONLY (^[A-Za-z][a-z]+$) — a brand/acronym/CamelCase token ("GitHub", "PDF",
+  // "iPhone") or a bare digit token never matches. A phrase reads as prose once it has >=2
+  // such tokens ("Save changes", "Save Changes", "Sign In", "Sohranit izmeneniya" all do);
+  // a lone Title-Case word stays exempt as a possible proper noun/brand ("Dashboard", "GitHub"),
+  // but a lone ALL-LOWERCASE word still reads as prose ("loading", "search", "changes") — a
+  // human wouldn't mistake it for a brand — so it still fires on its own.
+  // URLs/emails/code punctuation are exempt outright.
+  if (/:\/\/|[@<>{}=;\\]|www\./.test(trimmed)) return null;  // URL / email / code
+  const wordTokens = trimmed.split(/\s+/).filter(function (tok) {
+    return /^[A-Za-z][a-z]+$/.test(tok);                     // Title-case/lowercase word => reads as prose
+  });
+  const loneLowerProse = wordTokens.length === 1 && /^[a-z]/.test(wordTokens[0]);
+  if (wordTokens.length < 2 && !loneLowerProse) return null; // <2 prose words -> brand/acronym/proper-noun, not a bug (unless a lone lowercase word)
+  const re = new RegExp('\\p{Script=' + script + '}', 'u');
+  let inScript = 0;
+  for (let i = 0; i < letters.length; i++) if (re.test(letters[i])) inScript++;
+  const frac = inScript / letters.length;
+  if (frac >= 0.5) return null;                              // predominantly correct script
+  return { expectedScript: script, fraction: Number(frac.toFixed(2)), rawSignal: trimmed.slice(0, 40) };
+}
+
+// assets: an <img> that completed loading with zero intrinsic width failed to load.
+// complete:false is still in-flight — do NOT flag (precision guard).
+function isBrokenImage(img) {
+  if (!img) return false;
+  return img.complete === true && img.naturalWidth === 0;
+}
+// invisible-text: foreground ≈ background. Contrast ratio ~1.0 means the text is effectively
+// the same color as its backdrop — distinct from (and stronger than) the WCAG contrast check.
+function invisibleTextSignal(fg, bg) {
+  if (!fg || !bg) return null;
+  const ratio = contrastRatio(fg, bg);
+  if (ratio > 1.1) return null;
+  return { ratio: Number(ratio.toFixed(2)) };
+}
+
+// overlap/z-index: a modal painted below its backdrop is invisible behind it.
+function modalBehindBackdrop(modalZ, backdropZ) {
+  return Number.isFinite(modalZ) && Number.isFinite(backdropZ) && modalZ < backdropZ;
+}
+// AABB intersection over {left,top,right,bottom} rects.
+function rectsCollide(a, b) {
+  if (!a || !b) return false;
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+function rectArea(r) { return Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top); }
+// Intersection area as a fraction of the SMALLER rect's area (0..1).
+function rectOverlapFraction(a, b) {
+  if (!rectsCollide(a, b)) return 0;
+  const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  const inter = Math.max(0, ix) * Math.max(0, iy);
+  const minA = Math.min(rectArea(a), rectArea(b));
+  return minA > 0 ? inter / minA : 0;
+}
+
+// ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
+function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
   function compositeOver(fg, bg) {
     const a = fg.a;
@@ -103,6 +228,23 @@
       text: visibleText(el),
       message: message
     }, extra || {});
+  }
+  // A SUSPICION carries NO verdict/suspectedLayer/confidence — adjudication assigns those.
+  function suspicion(detector, el, evidence, rawSignal) {
+    return {
+      detector: detector,
+      axis: 'ux-suspicion',
+      selector: cssPath(el),
+      text: visibleText(el),
+      evidence: evidence,
+      rawSignal: rawSignal
+    };
+  }
+  // Direct (own) text of an element, whitespace-collapsed — avoids double-flagging on ancestors.
+  function directText(el) {
+    let s = '';
+    Array.prototype.forEach.call(el.childNodes, function (n) { if (n.nodeType === 3) s += n.textContent; });
+    return s.replace(/\s+/g, ' ').trim();
   }
 
   const findings = [];
@@ -267,5 +409,148 @@
       }
     });
 
+  // ---- Content / data-rendering suspicions ----
+  all.forEach(function (el) {
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const direct = directText(el);
+    if (!direct) return;
+    const sig = contentOracleSignal(direct);
+    if (sig) findings.push(suspicion('content-' + sig.kind, el, direct, sig.rawSignal));
+  });
+  Array.prototype.slice.call(document.querySelectorAll('[required], [aria-required="true"]'))
+    .forEach(function (el) {
+      let lbl = '';
+      if (el.id) {
+        const forLbl = document.querySelector('label[for="' + el.id + '"]');
+        if (forLbl) lbl = (forLbl.textContent || '').trim();
+      }
+      if (!lbl && el.getAttribute('aria-label')) lbl = el.getAttribute('aria-label').trim();
+      // Q5: aria-labelledby is a first-class labelling mechanism — resolve referenced elements'
+      // text, else a properly-labelled required control is falsely flagged as label-less.
+      if (!lbl && el.getAttribute('aria-labelledby')) {
+        lbl = el.getAttribute('aria-labelledby').split(/\s+/).map(function (id) {
+          const t = document.getElementById(id);
+          return t ? (t.textContent || '').trim() : '';
+        }).filter(Boolean).join(' ').trim();
+      }
+      if (!lbl && el.closest) { const wrap = el.closest('label'); if (wrap) lbl = (wrap.textContent || '').trim(); }
+      if (isEmptyRequiredLabel(lbl)) {
+        findings.push(suspicion('content-empty-required-label', el, 'required control has no visible/aria label', ''));
+      }
+    });
+
+  // ---- i18n-script suspicions ----
+  const EXPECTED_LOCALE = (document.documentElement.getAttribute('lang') || '').trim();
+  all.forEach(function (el) {
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const direct = directText(el);
+    if (!direct) return;
+    const key = rawTranslationKeySignal(direct);
+    if (key) { findings.push(suspicion('i18n-raw-key', el, direct, key.rawSignal)); return; }
+    const mm = scriptMismatchSignal(direct, EXPECTED_LOCALE);
+    if (mm) {
+      findings.push(suspicion('i18n-script-mismatch', el,
+        'expected ' + mm.expectedScript + ' script; ' + Math.round(mm.fraction * 100) + '% in-script',
+        mm.rawSignal));
+    }
+  });
+
+  // ---- Asset (broken-image) suspicions ----
+  Array.prototype.slice.call(document.querySelectorAll('img')).forEach(function (img) {
+    if (isBrokenImage(img)) {
+      findings.push(suspicion('asset-broken-image', img,
+        (img.getAttribute('src') || img.currentSrc || '(no src)'),
+        'naturalWidth=0 (failed to load)'));
+    }
+  });
+
+  // ---- Invisible-text suspicions (fg ≈ bg) ----
+  all.forEach(function (el) {
+    const hasText = el.childNodes.length && Array.prototype.some.call(el.childNodes, function (n) {
+      return n.nodeType === 3 && n.textContent.trim();
+    });
+    if (!hasText) return;
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const fg = parseRGB(st.color);
+    if (!fg) return;
+    const bg = effectiveBg(el);
+    const sig = invisibleTextSignal(fg, bg);
+    if (sig) findings.push(suspicion('invisible-text', el, 'fg≈bg contrast ' + sig.ratio + ':1', String(sig.ratio)));
+  });
+
+  // ---- Overlap / z-index suspicions ----
+  // (a) a dialog/overlay whose stacking sits below a sibling backdrop/scrim
+  Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .dialog, .overlay'))
+    .forEach(function (modal) {
+      const modalStyle = getComputedStyle(modal);
+      // A closed-but-mounted modal (display:none/visibility:hidden, common in React/Vue) isn't
+      // painted behind its backdrop -- it isn't painted at all. Same guard as every sibling DOM
+      // block in this file (contrast, invisible-text, target-size, etc): skip it here.
+      if (modalStyle.visibility === 'hidden' || modalStyle.display === 'none' || parseFloat(modalStyle.opacity) === 0) return;
+      const mz = parseInt(modalStyle.zIndex, 10);
+      const parent = modal.parentElement;
+      if (!parent) return;
+      Array.prototype.slice.call(parent.children).forEach(function (sib) {
+        if (sib === modal) return;
+        if (!/backdrop|overlay|scrim|mask/i.test(sib.className ? sib.className.toString() : '')) return;
+        const sibStyle = getComputedStyle(sib);
+        if (sibStyle.visibility === 'hidden' || sibStyle.display === 'none' || parseFloat(sibStyle.opacity) === 0) return;
+        const bz = parseInt(sibStyle.zIndex, 10);
+        if (modalBehindBackdrop(mz, bz)) {
+          findings.push(suspicion('overlap-modal-behind-backdrop', modal,
+            'modal z-index ' + mz + ' below backdrop z-index ' + bz, String(mz)));
+        }
+      });
+    });
+  // (b) interactive controls whose boxes collide by more than half the smaller box.
+  // Q9: hoist every getBoundingClientRect ONCE before the O(n^2) pair loop — computing rects
+  // inside the inner loop forces a layout reflow per pair (O(n^2) reflows) on a read-only sweep.
+  // NOTE (precision, stacked-controls FP): legitimately overlapping controls exist — segmented
+  // controls, a custom-select trigger layered over a native <select>, overlapping avatar buttons.
+  // This is an advisory `ux-suspicion` (routed per the Q1 consumer rule), never a standalone
+  // verdict; adjudication (deferred) clears the deliberate cases. Keep the >50% threshold strict.
+  const controls = Array.prototype.slice.call(
+    document.querySelectorAll('button, a[href], [role="button"], input, select'));
+  const rects = controls.map(function (c) { return c.getBoundingClientRect(); });
+  for (let i = 0; i < controls.length; i++) {
+    const A = controls[i], ra = rects[i];
+    if (ra.width === 0 || ra.height === 0) continue;
+    for (let j = i + 1; j < controls.length; j++) {
+      const B = controls[j], rb = rects[j];
+      if (rb.width === 0 || rb.height === 0) continue;
+      if (A.contains(B) || B.contains(A)) continue;          // nesting isn't a collision
+      if (rectOverlapFraction(ra, rb) > 0.5) {
+        findings.push(suspicion('overlap-controls', A, 'overlaps ' + cssPath(B) + ' by >50%', cssPath(B)));
+      }
+    }
+  }
+
   return findings;
-})();
+}
+
+// ===== Dual entry point =====
+// Browser (injected via browser_evaluate): run the DOM walk — the ternary's VALUE is the
+// findings array, exactly like the previous IIFE form, so the evaluate() contract is preserved.
+// Node (unit tests / tooling): export the pure cores; DETECT() is never called, so `document`
+// is never referenced on require.
+typeof document !== 'undefined'
+  ? DETECT()
+  : (typeof module !== 'undefined' && module.exports &&
+     (module.exports = {
+       relLuminance: relLuminance,
+       parseRGB: parseRGB,
+       contrastRatio: contrastRatio,
+       DETECT: DETECT,
+       contentOracleSignal: contentOracleSignal,
+       isEmptyRequiredLabel: isEmptyRequiredLabel,
+       rawTranslationKeySignal: rawTranslationKeySignal,
+       scriptMismatchSignal: scriptMismatchSignal,
+       isBrokenImage: isBrokenImage,
+       invisibleTextSignal: invisibleTextSignal,
+       modalBehindBackdrop: modalBehindBackdrop,
+       rectsCollide: rectsCollide,
+       rectOverlapFraction: rectOverlapFraction
+     }));
