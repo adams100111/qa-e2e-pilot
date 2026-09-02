@@ -71,7 +71,7 @@ It reads `.qa/config.json` for `baseUrl` and `repos[]`. Flags: `--no-runtime`
 - [ ] Each `components[].i18n` map locates where translations live: `mechanisms[]`
       (`laravel-lang` | `js-catalog` | `rails-yml` | `gettext-po` | `none`; an array
       because a fullstack repo can carry more than one), `catalogs[]` (each
-      `{locale, format: php|json, mechanism, path, namespace}` — `path` points at the
+      `{root, locale, format: php|json, mechanism, path, namespace}` — `path` points at the
       actual file so keys are resolvable), `locales[]`, and `libraries[]`.
       `present: false` with `signal: weak` means no catalog was found — the `evidence`
       distinguishes "no catalog directory found" from "directory present but no
