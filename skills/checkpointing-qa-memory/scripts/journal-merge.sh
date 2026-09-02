@@ -18,6 +18,17 @@
 # main journal's current max. Each event's original `t` is preserved
 # UNCHANGED (never re-stamped).
 #
+# PRECONDITION — run merge only AFTER every fan-out child has TERMINATED.
+# The parent's fan-out flow (ADR-0003) spawns children, JOINS (waits for) all
+# of them, THEN calls this merge. Running merge concurrently with a child that
+# is STILL appending to its journal.<name>.ndjson is a usage error: an event
+# that lands in the window between merge's verify-read and its `rm` of the
+# child file would be lost (deleted with the file, never folded into
+# journal.ndjson). The idempotency property below covers a crash of the MERGE
+# process, not a child racing the merge — the caller must guarantee children
+# are done first. (This tool is not yet wired into fanning-out-criteria; when
+# it is, the join-before-merge ordering is the integrator's responsibility.)
+#
 # IDEMPOTENCY (the headline property): dedup is on (childId, childSeq), not
 # on file presence. A child file is removed ONLY AFTER its events are
 # confirmed present in journal.ndjson (append → verify-by-reading-the-file-
@@ -33,7 +44,8 @@
 # is atomic across processes) and prints a NOTE about the fallback.
 #
 # DEPENDENCIES: bash, coreutils (find, sort, basename, dirname, mkdir, rm,
-# cat), and EITHER jq OR python3 (jq preferred; QA_ENGINE can force either —
+# cat, sleep — the last used by the mkdir-lock retry loop), and EITHER jq OR
+# python3 (jq preferred; QA_ENGINE can force either —
 # see has_jq below, same convention as journal.sh/fold.sh). No node, no
 # `grep -P`/perl.
 set -uo pipefail
