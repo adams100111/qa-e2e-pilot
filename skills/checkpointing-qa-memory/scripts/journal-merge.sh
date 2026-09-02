@@ -24,7 +24,12 @@
 # is STILL appending to its journal.<name>.ndjson is a usage error: an event
 # that lands in the window between merge's verify-read and its `rm` of the
 # child file would be lost (deleted with the file, never folded into
-# journal.ndjson). The idempotency property below covers a crash of the MERGE
+# journal.ndjson). For the same reason the MAIN-journal writer must also be
+# quiesced during a merge: `journal.sh journal_append` (used by checkpoint.sh)
+# takes no lock, so a concurrent default append racing this merge's global-seq
+# re-stamp could gap/collide the seq — the integrator must ensure no
+# checkpoint.sh upsert runs concurrently with journal-merge.sh on the same run.
+# The idempotency property below covers a crash of the MERGE
 # process, not a child racing the merge — the caller must guarantee children
 # are done first. (This tool is not yet wired into fanning-out-criteria; when
 # it is, the join-before-merge ordering is the integrator's responsibility.)

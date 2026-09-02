@@ -53,6 +53,8 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` and `bug-log.json` remain agent-authored; the fold never writes them, and no future change should wire a fold overwrite of either file.
 
+**Expected `fold-anomalies.json` entries (not errors):** in Plan A, `checkpoint.sh` emits only `criterion_verdict` events (start/phase/act emission is deferred to Plan B), so the fold records one benign `verdict-without-started` anomaly **per criterion** on every normal run — this is the by-design "record-the-verdict + flag" rule, never a suppressed verdict. A clean run therefore shows N such entries; treat `verdict-without-started` as expected until Plan B wires start-event emission. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`).
+
 ---
 
 ## Process
