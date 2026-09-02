@@ -13,7 +13,7 @@ Every Run produces four memory-spec artifacts in `.qa/runs/<run-id>/`:
 | Artifact | Purpose | Owner |
 |---|---|---|
 | `run-manifest.json` | Run identity, target, driver pool, checklist, overall status | this skill |
-| `checkpoint.json` | Per-criterion resume cursor (verdict, evidence refs, last action) | this skill |
+| `checkpoint.json` | Per-criterion resume record (verdict, evidence refs, last action) | this skill |
 | `bug-log.json` | Append-only findings discovered during the run | this skill |
 | `traceability.json` | Criterion ↔ spec/constitution/tasks ↔ verdict mapping | this skill (only when spec-kit artifacts exist) |
 
@@ -47,7 +47,7 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **What IS allowed (optional):** one durable entry per project-under-test in personal memory — a pointer to the latest run-id and any known-flaky areas. One entry, never per-criterion.
 
-**Optional cross-run recall:** when `memory.backend: "mem0"` is set in `.qa/config.json`, run `bash scripts/memory-sync.sh <run-id>` (top-level scripts) after a run to write-through ONLY the durable artifacts — bug-log entries + one per-project pointer — to a Mem0/vector endpoint for cross-run recall. It NEVER syncs per-criterion checkpoints (those are transient; ADR-0002), and the `.qa/runs/<run-id>/checkpoint.json` file stays the authoritative resume cursor. Default `backend: "file"` makes it a no-op. The file-based layout is the interface; the storage backend is pluggable — see [extending-drivers.md](../../docs/extending-drivers.md).
+**Optional cross-run recall:** when `memory.backend: "mem0"` is set in `.qa/config.json`, run `bash scripts/memory-sync.sh <run-id>` (top-level scripts) after a run to write-through ONLY the durable artifacts — bug-log entries + one per-project pointer — to a Mem0/vector endpoint for cross-run recall. It NEVER syncs per-criterion checkpoints (those are transient; ADR-0002), and the `.qa/runs/<run-id>/checkpoint.json` file stays the authoritative resume record. Default `backend: "file"` makes it a no-op. The file-based layout is the interface; the storage backend is pluggable — see [extending-drivers.md](../../docs/extending-drivers.md).
 
 **Position is `fold(journal)`, never agent memory:** `journal.ndjson` is the append-only source of truth for a Run's state; `checkpoint.json` and `cursor.json` are computed by replaying it (`scripts/fold.sh`) — never re-derived from the agent's own recollection. This is what makes resume reliable across a context compaction, which is a silent partial restart from the agent's point of view.
 
