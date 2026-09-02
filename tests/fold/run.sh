@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# tests/fold/run.sh — TDD suite for fold(journal) (Plan A Task 2). Exercises
+# fold.sh (dispatcher) end-to-end against three fixtures, then a dual-engine
+# (jq vs jq-masked/python3) canonical-equivalence check and an AC-1
+# regenerate-is-idempotent check.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+FOLD="$HERE/../../skills/checkpointing-qa-memory/scripts/fold.sh"
+JOURNAL="$HERE/../../skills/checkpointing-qa-memory/scripts/journal.sh"
+FIXTURES="$HERE/fixtures"
+PASS=0; FAIL=0
+
+get() { jq -r "$2" "$1" 2>/dev/null; }
+check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+
+seed_run() {
+  local run_id="$1" fixture="$2"
+  mkdir -p "$WORK/.qa/runs/${run_id}"
+  cp "$FIXTURES/${fixture}" "$WORK/.qa/runs/${run_id}/journal.ndjson"
+}
+
+# ---------------------------------------------------------------------------
+# Case: basic — three tuples, one shared, one persona, one superseding verdict
+# ---------------------------------------------------------------------------
+seed_run basic-run basic.ndjson
+( cd "$WORK" && bash "$FOLD" basic-run >/dev/null ); rc_basic=$?
+CKPT="$WORK/.qa/runs/basic-run/checkpoint.json"
+
+check "basic: exit 0"              "$rc_basic"                                          "0"
+check "basic: run_id"              "$(get "$CKPT" '.run_id')"                           "authz-run"
+check "basic: criteria order"      "$(get "$CKPT" '[.criteria[].criterion_id] | join(",")')" "C3,C1"
+check "basic: C1 verdict (last-wins, seq7 pass not seq6 fail)" \
+  "$(get "$CKPT" '.criteria[] | select(.criterion_id=="C1") | .verdict')" "pass"
+check "basic: C1 bug_ref cleared by superseding pass" \
+  "$(get "$CKPT" '.criteria[] | select(.criterion_id=="C1") | .bug_ref')" "null"
+check "basic: C3 persona is empty string (__shared__ -> \"\")" \
+  "$(get "$CKPT" '.criteria[] | select(.criterion_id=="C3") | .persona')" ""
+check "basic: C1 persona alice" \
+  "$(get "$CKPT" '.criteria[] | select(.criterion_id=="C1") | .persona')" "alice"
+check "basic: updated_at == max event t" "$(get "$CKPT" '.updated_at')" "2026-09-01T10:00:06Z"
+check "basic: fold-anomalies.json empty" \
+  "$(get "$WORK/.qa/runs/basic-run/fold-anomalies.json" '.anomalies | length')" "0"
+
+# ---------------------------------------------------------------------------
+# Case: torn — truncated last line is dropped, not a crash; the already-
+# durable PRECEDING verdict for the same tuple (seq 6, a real complete line)
+# survives untouched, only the superseding seq-7 pass is lost.
+# ---------------------------------------------------------------------------
+seed_run torn-run torn.ndjson
+( cd "$WORK" && bash "$FOLD" torn-run >/dev/null ); rc_torn=$?
+TCKPT="$WORK/.qa/runs/torn-run/checkpoint.json"
+TANOM="$WORK/.qa/runs/torn-run/fold-anomalies.json"
+
+check "torn: exit 0 (does not error on a torn line)" "$rc_torn" "0"
+check "torn: criteria present (C3 + C1, C1 keeps its last VALID verdict)" \
+  "$(get "$TCKPT" '[.criteria[].criterion_id] | sort | join(",")')" "C1,C3"
+check "torn: C1 verdict is the last VALID one (seq6 fail; seq7 pass was torn)" \
+  "$(get "$TCKPT" '.criteria[] | select(.criterion_id=="C1") | .verdict')" "fail"
+check "torn: fold-anomalies.json records the torn line" \
+  "$(get "$TANOM" '[.anomalies[] | select(.rule=="unparseable-line" and .line==7)] | length')" "1"
+
+# ---------------------------------------------------------------------------
+# Case: malformed-classes — one of each named anomaly class
+# ---------------------------------------------------------------------------
+seed_run mal-run malformed-classes.ndjson
+( cd "$WORK" && bash "$FOLD" mal-run >/dev/null ); rc_mal=$?
+MCKPT="$WORK/.qa/runs/mal-run/checkpoint.json"
+MANOM="$WORK/.qa/runs/mal-run/fold-anomalies.json"
+
+check "malformed: exit 0" "$rc_mal" "0"
+check "malformed: CX verdict record IS present (record-the-verdict rule)" \
+  "$(get "$MCKPT" '.criteria[] | select(.criterion_id=="CX") | .verdict')" "pass"
+check "malformed: verdict-without-started anomaly for CX" \
+  "$(get "$MANOM" '[.anomalies[] | select(.rule=="verdict-without-started" and .criterionId=="CX")] | length')" "1"
+check "malformed: duplicate-plan-frozen anomaly" \
+  "$(get "$MANOM" '[.anomalies[] | select(.rule=="duplicate-plan-frozen")] | length')" "1"
+check "malformed: act-committed-no-intent anomaly for m:__shared__:CY" \
+  "$(get "$MANOM" '[.anomalies[] | select(.rule=="act-committed-no-intent" and .key=="m:__shared__:CY")] | length')" "1"
+check "malformed: unknown-event anomaly for totally_unknown" \
+  "$(get "$MANOM" '[.anomalies[] | select(.rule=="unknown-event" and .event=="totally_unknown")] | length')" "1"
+
+# ---------------------------------------------------------------------------
+# Case: dual-equiv — fold the SAME journal under jq, then again with jq
+# masked from PATH (forcing python3 for BOTH the line-parse and reduce
+# passes), canonicalize both checkpoint.json outputs via journal.sh
+# canonical, and assert they are STRING-EQUAL. Run for basic AND (as a
+# second, independent malformed-class case) malformed-classes, since a
+# divergence is far more likely to hide in the anomaly-rule branches than
+# in the happy path.
+# ---------------------------------------------------------------------------
+dual_equiv_case() {
+  local label="$1" fixture="$2"
+  local run_jq="dual-${label}-jq" run_py="dual-${label}-py"
+  seed_run "$run_jq" "$fixture"
+  seed_run "$run_py" "$fixture"
+
+  ( cd "$WORK" && bash "$FOLD" "$run_jq" >/dev/null 2>&1 )
+  local rc_jq=$?
+
+  local FAKEBIN="$WORK/fakebin-${label}"
+  mkdir -p "$FAKEBIN"
+  for tool in date mkdir mv rm cat dirname sed wc grep mktemp python3 bash; do
+    local tp; tp="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$tp" ]] && ln -sf "$tp" "$FAKEBIN/$tool"
+  done
+  ( cd "$WORK" && PATH="$FAKEBIN" bash "$FOLD" "$run_py" >/dev/null 2>&1 )
+  local rc_py=$?
+
+  check "dual-equiv ${label}: jq run exit 0" "$rc_jq" "0"
+  check "dual-equiv ${label}: python3 run exit 0" "$rc_py" "0"
+
+  local canon_jq canon_py
+  canon_jq="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_jq}/checkpoint.json")"
+  canon_py="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_py}/checkpoint.json")"
+  check "dual-equiv ${label}: checkpoint.json canonically equal across engines" "$canon_jq" "$canon_py"
+
+  local canon_anom_jq canon_anom_py
+  canon_anom_jq="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_jq}/fold-anomalies.json")"
+  canon_anom_py="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/${run_py}/fold-anomalies.json")"
+  check "dual-equiv ${label}: fold-anomalies.json canonically equal across engines" "$canon_anom_jq" "$canon_anom_py"
+}
+
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  dual_equiv_case basic basic.ndjson
+  dual_equiv_case malformed malformed-classes.ndjson
+else
+  echo "SKIP - dual-equiv: jq or python3 not present on this host, cannot exercise both engines"
+fi
+
+# ---------------------------------------------------------------------------
+# Case: regenerate — AC-1. fold.sh on basic, delete checkpoint.json, fold.sh
+# again -> canonically-equal to the first (a full re-fold from the journal
+# alone reproduces the same checkpoint, since fold is a pure function of the
+# journal).
+# ---------------------------------------------------------------------------
+seed_run regen-run basic.ndjson
+( cd "$WORK" && bash "$FOLD" regen-run >/dev/null )
+canon_first="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/regen-run/checkpoint.json")"
+rm -f "$WORK/.qa/runs/regen-run/checkpoint.json"
+( cd "$WORK" && bash "$FOLD" regen-run >/dev/null ); rc_regen=$?
+canon_second="$(bash "$JOURNAL" canonical < "$WORK/.qa/runs/regen-run/checkpoint.json")"
+
+check "regenerate (AC-1): second fold exit 0" "$rc_regen" "0"
+check "regenerate (AC-1): re-fold canonically equal to first" "$canon_second" "$canon_first"
+
+echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

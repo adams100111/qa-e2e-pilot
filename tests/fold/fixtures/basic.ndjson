@@ -1,0 +1,7 @@
+{"seq":1,"t":"2026-09-01T10:00:00Z","event":"run_started","runId":"authz-run"}
+{"seq":2,"t":"2026-09-01T10:00:01Z","event":"phase_entered","phase":"verify"}
+{"seq":3,"t":"2026-09-01T10:00:02Z","event":"criterion_started","scenarioId":"__shared__","criterionId":"C3","personaId":""}
+{"seq":4,"t":"2026-09-01T10:00:03Z","event":"criterion_verdict","scenarioId":"__shared__","criterionId":"C3","personaId":"","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":["evidence/C3/recompute.json"],"kinds":["computed"],"bugRef":null,"lastAction":"checked","nonUiActionReason":null}
+{"seq":5,"t":"2026-09-01T10:00:04Z","event":"criterion_started","scenarioId":"alice","criterionId":"C1","personaId":"alice"}
+{"seq":6,"t":"2026-09-01T10:00:05Z","event":"criterion_verdict","scenarioId":"alice","criterionId":"C1","personaId":"alice","verdict":"fail","confidence":"high","layer":"service","evidenceRefs":["evidence/alice/C1/probe.json"],"kinds":["probe"],"bugRef":"B1","lastAction":"probed","nonUiActionReason":null}
+{"seq":7,"t":"2026-09-01T10:00:06Z","event":"criterion_verdict","scenarioId":"alice","criterionId":"C1","personaId":"alice","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":["evidence/alice/C1/probe2.json"],"kinds":["probe"],"bugRef":null,"lastAction":"reprobed","nonUiActionReason":null}
