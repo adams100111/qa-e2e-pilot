@@ -52,6 +52,36 @@ function contrastRatio(fg, bg) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+// content/data-rendering: definite content-oracle artifacts in a rendered value.
+// Q2 (human-like precision): the bare literals `undefined`/`null`/`NaN`/`$NaN` are flagged ONLY
+// in VALUE POSITION — i.e. as the trailing token of the rendered value (`(?=\s*$)`), which is
+// how they leak from a data slot ("Name: undefined", "Value null", "Total: NaN"). A human does
+// NOT flag them mid-prose ("The null hypothesis", "a truly undefined concept"), so those must
+// NOT match. `[object Object]`, `Invalid Date`, raw `{{interp}}`, and raw ISO never occur in
+// legitimate prose, so they stay position-independent. Lookbehind/lookahead keep boundaries clean.
+function contentOracleSignal(text) {
+  const t = String(text == null ? '' : text);
+  const checks = [
+    ['object-object', /\[object [A-Z]\w*\]/],                 // [object Object], [object Array]
+    ['currency-nan', /\$NaN(?=\s*$)/],                        // value-position; before generic nan
+    ['nan', /(?<![A-Za-z])NaN(?![A-Za-z])(?=\s*$)/],          // value-position only
+    ['invalid-date', /\bInvalid Date\b/],
+    ['undefined', /(?<![A-Za-z])undefined(?![A-Za-z])(?=\s*$)/], // value-position only (not prose)
+    ['null', /(?<![A-Za-z])null(?![A-Za-z])(?=\s*$)/],           // value-position only (not prose)
+    ['raw-interp', /\{\{[^}]+\}\}/],                          // unrendered {{ interpolation }}
+    ['raw-iso', /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/]
+  ];
+  for (let i = 0; i < checks.length; i++) {
+    const m = t.match(checks[i][1]);
+    if (m) return { kind: checks[i][0], rawSignal: m[0].trim() };
+  }
+  return null;
+}
+// A required control whose resolved label is empty is a content gap.
+function isEmptyRequiredLabel(labelText) {
+  return String(labelText == null ? '' : labelText).trim() === '';
+}
+
 // ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
 function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
@@ -106,6 +136,23 @@ function DETECT() {
       text: visibleText(el),
       message: message
     }, extra || {});
+  }
+  // A SUSPICION carries NO verdict/suspectedLayer/confidence — adjudication assigns those.
+  function suspicion(detector, el, evidence, rawSignal) {
+    return {
+      detector: detector,
+      axis: 'ux-suspicion',
+      selector: cssPath(el),
+      text: visibleText(el),
+      evidence: evidence,
+      rawSignal: rawSignal
+    };
+  }
+  // Direct (own) text of an element, whitespace-collapsed — avoids double-flagging on ancestors.
+  function directText(el) {
+    let s = '';
+    Array.prototype.forEach.call(el.childNodes, function (n) { if (n.nodeType === 3) s += n.textContent; });
+    return s.replace(/\s+/g, ' ').trim();
   }
 
   const findings = [];
@@ -270,6 +317,37 @@ function DETECT() {
       }
     });
 
+  // ---- Content / data-rendering suspicions ----
+  all.forEach(function (el) {
+    const st = getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return;
+    const direct = directText(el);
+    if (!direct) return;
+    const sig = contentOracleSignal(direct);
+    if (sig) findings.push(suspicion('content-' + sig.kind, el, direct, sig.rawSignal));
+  });
+  Array.prototype.slice.call(document.querySelectorAll('[required], [aria-required="true"]'))
+    .forEach(function (el) {
+      let lbl = '';
+      if (el.id) {
+        const forLbl = document.querySelector('label[for="' + el.id + '"]');
+        if (forLbl) lbl = (forLbl.textContent || '').trim();
+      }
+      if (!lbl && el.getAttribute('aria-label')) lbl = el.getAttribute('aria-label').trim();
+      // Q5: aria-labelledby is a first-class labelling mechanism — resolve referenced elements'
+      // text, else a properly-labelled required control is falsely flagged as label-less.
+      if (!lbl && el.getAttribute('aria-labelledby')) {
+        lbl = el.getAttribute('aria-labelledby').split(/\s+/).map(function (id) {
+          const t = document.getElementById(id);
+          return t ? (t.textContent || '').trim() : '';
+        }).filter(Boolean).join(' ').trim();
+      }
+      if (!lbl && el.closest) { const wrap = el.closest('label'); if (wrap) lbl = (wrap.textContent || '').trim(); }
+      if (isEmptyRequiredLabel(lbl)) {
+        findings.push(suspicion('content-empty-required-label', el, 'required control has no visible/aria label', ''));
+      }
+    });
+
   return findings;
 }
 
@@ -285,5 +363,7 @@ typeof document !== 'undefined'
        relLuminance: relLuminance,
        parseRGB: parseRGB,
        contrastRatio: contrastRatio,
-       DETECT: DETECT
+       DETECT: DETECT,
+       contentOracleSignal: contentOracleSignal,
+       isEmptyRequiredLabel: isEmptyRequiredLabel
      }));

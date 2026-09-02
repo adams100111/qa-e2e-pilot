@@ -29,5 +29,29 @@ check "DETECT() returns an array on an empty document" \
     global.getComputedStyle=function(){return {};};
     const r=m.DETECT();process.stdout.write(Array.isArray(r)?"array":"NOT-ARRAY");' "$MOD" 2>/dev/null)" "array"
 
+# --- Task 2: content / data-rendering ------------------------------------------
+check "content: [object Object] kind"   "$(field contentOracleSignal '["Owner: [object Object]"]' kind)"       "object-object"
+check 'content: $NaN kind'              "$(field contentOracleSignal '["Total: $NaN"]' kind)"                  "currency-nan"
+check "content: NaN kind"               "$(field contentOracleSignal '["Total: NaN"]' kind)"                   "nan"
+check "content: NaN rawSignal clean"    "$(field contentOracleSignal '["Total: NaN"]' rawSignal)"             "NaN"
+check "content: Invalid Date kind"      "$(field contentOracleSignal '["Due Invalid Date"]' kind)"             "invalid-date"
+check "content: undefined kind"         "$(field contentOracleSignal '["Name: undefined"]' kind)"              "undefined"
+check "content: null kind"              "$(field contentOracleSignal '["Value null"]' kind)"                   "null"
+check "content: raw interp kind"        "$(field contentOracleSignal '["Hello {{ user.name }}"]' kind)"        "raw-interp"
+check "content: raw ISO kind"           "$(field contentOracleSignal '["2026-09-02T14:33:00Z"]' kind)"         "raw-iso"
+# negative controls: clean rendered values -> null (zero findings)
+check "content: clean name -> null"     "$(call contentOracleSignal '["Alice Smith"]')"                        "null"
+check "content: clean money -> null"    "$(call contentOracleSignal '["$1,240.00"]')"                          "null"
+check "content: clean count -> null"    "$(call contentOracleSignal '["12 items"]')"                           "null"
+check "content: bare date -> null"      "$(call contentOracleSignal '["2026-09-02"]')"                         "null"
+check "content: humanized date -> null" "$(call contentOracleSignal '["Jan 3, 2026"]')"                        "null"
+# Q2 adversarial: prose containing a bare literal NOT in value position -> null (a human
+# reads "The null hypothesis" as prose, never a rendering bug). Value-position stays flagged.
+check "content: prose null -> null"     "$(call contentOracleSignal '["The null hypothesis"]')"                "null"
+check "content: prose undefined -> null" "$(call contentOracleSignal '["a truly undefined concept in math"]')" "null"
+# empty-required-label core
+check "content: empty label -> true"    "$(call isEmptyRequiredLabel '["   "]')"                               "true"
+check "content: real label -> false"    "$(call isEmptyRequiredLabel '["Email"]')"                             "false"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
