@@ -17,29 +17,50 @@
 #       stdout: {outcome, missing:[...], writeSetSize, foundCount,
 #       deferredKeys:[...]}  where `outcome` is exactly one of:
 #         landed   — every write-set member's readback has found:true.
-#         none     — no write-set member's readback has found:true.
-#         partial  — some (not all, not none) members found; `missing`
-#                    lists the exact keys of the NOT-found, non-writeOnly
-#                    members (a `partial` outcome ALWAYS has a non-empty
-#                    `missing`).
-#         deferred — at least one write-set member is `writeOnly:true` AND
-#                    its readback shows found:false (or no matching
-#                    readback at all) — i.e. we could not, even in
-#                    principle, confirm that member's landing via a read
-#                    path. Its key(s) are listed in `deferredKeys`.
+#         none     — no write-set member's readback has found:true, and
+#                    there are no unconfirmable (writeOnly-unfound) members
+#                    either — nothing landed at all, caller should retry.
+#         partial  — at least one non-writeOnly ("normal") member is
+#                    NOT found; `missing` lists the exact keys of those
+#                    NOT-found normal members (a `partial` outcome ALWAYS
+#                    has a non-empty `missing`). This fires even when some
+#                    writeOnly members are ALSO unconfirmable — the hard
+#                    failure (a normal key genuinely missing) always wins
+#                    over "can't confirm" (`deferredKeys` is still included
+#                    in the output when present).
+#         deferred — writeSetSize == 0 (nothing to verify — an empty
+#                    write-set must never vacuously read as `landed`), OR
+#                    every normal member is found/absent-none AND at least
+#                    one write-set member is `writeOnly:true` with its
+#                    readback showing found:false (or no matching readback
+#                    at all) — i.e. we could not, even in principle,
+#                    confirm that member's landing via a read path. Its
+#                    key(s) are listed in `deferredKeys`.
 #
-#       PRECEDENCE (deliberate, see the header note below): `deferred` is
-#       decided FIRST, before `landed`/`none`/`partial` — an unconfirmed
-#       writeOnly member means the classifier cannot certify the whole
-#       write-set as landed, even if every OTHER member is found. A
-#       writeOnly member whose readback DOES show found:true is NOT
-#       deferred-triggering — it counts as a normal landed member (a
+#       PRECEDENCE (deliberate, first match wins):
+#         1. writeSetSize == 0            -> deferred ("no write-set to
+#                                             verify"); NEVER `landed`.
+#         2. normalMissing != [] AND
+#            foundCount == 0 AND
+#            deferredKeys == []           -> none (nothing landed at all).
+#         3. normalMissing != []          -> partial (a genuinely-missing
+#                                             normal key surfaces even if a
+#                                             writeOnly member is also
+#                                             unconfirmable — the hard
+#                                             failure wins over "can't
+#                                             confirm").
+#         4. deferredKeys != []           -> deferred (only writeOnly
+#                                             members are unconfirmable; no
+#                                             normal key is missing).
+#         5. else                         -> landed (every member found).
+#       A writeOnly member whose readback DOES show found:true is NOT
+#       deferred-triggering — it counts as a normal found member (a
 #       writeOnly member that IS found still counts as landed for that
 #       member). `missing` (used by `partial`) never includes a writeOnly
-#       key that triggered `deferred` — that key's story is told by
-#       `deferredKeys`, not `missing`, because "deferred" and "confirmed
-#       missing via a read" are different claims (writeOnly members have
-#       no read path to confirm absence with).
+#       key — that key's story is told by `deferredKeys`, not `missing`,
+#       because "deferred" and "confirmed missing via a read" are different
+#       claims (writeOnly members have no read path to confirm absence
+#       with).
 #
 #   rebake.sh reconcile <run-id> <scenarioId> <criterionId> <personaId> --write-set <json> --readbacks <json>
 #       Calls `classify` on the same write-set/readbacks, then:
@@ -56,7 +77,9 @@
 #                     key(s) in last_action; prints the classify summary,
 #                     then `blocked`.
 #         deferred -> journals NOTHING; prints the classify summary, then
-#                     `deferred: <reason naming the unconfirmable key(s)>`.
+#                     `deferred: <reason>` — either "no write-set to
+#                     verify" (writeSetSize == 0) or a reason naming the
+#                     unconfirmable writeOnly key(s).
 #       Every branch prints an EXPLICIT outcome word as its final line —
 #       there is no code path that reconciles a non-landed write-set and
 #       silently returns `done`.
@@ -231,23 +254,24 @@ classify_jq() {
             found: (if $match == null then false else ($match.found // false) end) }
       )) as $joined
     | ($joined | map(select(.found == true)) | length) as $foundCount
-    | ($joined | map(select(.found == false and .writeOnly == true)) | length) as $unfoundWriteOnlyCount
-    | if $unfoundWriteOnlyCount > 0 then
-        { outcome: "deferred",
-          missing: [ $joined[] | select(.found == false and .writeOnly == false) | .key ],
-          writeSetSize: $writeSetSize,
-          foundCount: $foundCount,
-          deferredKeys: [ $joined[] | select(.found == false and .writeOnly == true) | .key ] }
-      elif $foundCount == $writeSetSize then
-        { outcome: "landed", missing: [], writeSetSize: $writeSetSize, foundCount: $foundCount, deferredKeys: [] }
-      elif $foundCount == 0 then
-        { outcome: "none", missing: [ $joined[] | .key ], writeSetSize: $writeSetSize, foundCount: 0, deferredKeys: [] }
+    | ($joined | map(select(.found == false and .writeOnly == false) | .key)) as $normalMissing
+    | ($joined | map(select(.found == false and .writeOnly == true) | .key)) as $deferredKeys
+    | if $writeSetSize == 0 then
+        # Rule 1: an empty write-set has nothing to verify — deferred,
+        # NEVER landed (never vacuously completes an unverified mutation).
+        { outcome: "deferred", missing: [], writeSetSize: 0, foundCount: 0, deferredKeys: [] }
+      elif ($normalMissing | length) > 0 and $foundCount == 0 and ($deferredKeys | length) == 0 then
+        # Rule 2: nothing landed at all (no found, no unconfirmable either).
+        { outcome: "none", missing: $normalMissing, writeSetSize: $writeSetSize, foundCount: 0, deferredKeys: [] }
+      elif ($normalMissing | length) > 0 then
+        # Rule 3: a genuinely-missing normal key wins over "cannot confirm".
+        { outcome: "partial", missing: $normalMissing, writeSetSize: $writeSetSize, foundCount: $foundCount, deferredKeys: $deferredKeys }
+      elif ($deferredKeys | length) > 0 then
+        # Rule 4: only writeOnly-unfound members remain unconfirmable.
+        { outcome: "deferred", missing: [], writeSetSize: $writeSetSize, foundCount: $foundCount, deferredKeys: $deferredKeys }
       else
-        { outcome: "partial",
-          missing: [ $joined[] | select(.found == false) | .key ],
-          writeSetSize: $writeSetSize,
-          foundCount: $foundCount,
-          deferredKeys: [] }
+        # Rule 5: every member found.
+        { outcome: "landed", missing: [], writeSetSize: $writeSetSize, foundCount: $foundCount, deferredKeys: [] }
       end
   ' || die "classify: jq failed to classify --write-set/--readbacks."
 }
@@ -274,24 +298,32 @@ for m in ws:
 
 write_set_size = len(ws)
 found_count = sum(1 for j in joined if j["found"])
-unfound_write_only = [j for j in joined if (not j["found"]) and j["writeOnly"]]
+normal_missing = [j["key"] for j in joined if (not j["found"]) and (not j["writeOnly"])]
+deferred_keys = [j["key"] for j in joined if (not j["found"]) and j["writeOnly"]]
 
-if unfound_write_only:
+if write_set_size == 0:
+    # Rule 1: an empty write-set has nothing to verify — deferred, NEVER
+    # landed (never vacuously completes an unverified mutation).
     outcome = "deferred"
-    missing = [j["key"] for j in joined if (not j["found"]) and (not j["writeOnly"])]
-    deferred_keys = [j["key"] for j in unfound_write_only]
-elif found_count == write_set_size:
+    missing = []
+    found_count = 0
+    deferred_keys = []
+elif normal_missing and found_count == 0 and not deferred_keys:
+    # Rule 2: nothing landed at all (no found, no unconfirmable either).
+    outcome = "none"
+    missing = normal_missing
+elif normal_missing:
+    # Rule 3: a genuinely-missing normal key wins over "cannot confirm".
+    outcome = "partial"
+    missing = normal_missing
+elif deferred_keys:
+    # Rule 4: only writeOnly-unfound members remain unconfirmable.
+    outcome = "deferred"
+    missing = []
+else:
+    # Rule 5: every member found.
     outcome = "landed"
     missing = []
-    deferred_keys = []
-elif found_count == 0:
-    outcome = "none"
-    missing = [j["key"] for j in joined]
-    deferred_keys = []
-else:
-    outcome = "partial"
-    missing = [j["key"] for j in joined if not j["found"]]
-    deferred_keys = []
 
 print(json.dumps({
     "outcome": outcome,
@@ -439,12 +471,19 @@ cmd_reconcile() {
       echo "blocked"
       ;;
     deferred)
-      # Journal NOTHING: a deferred write-set member has no read path at
-      # all, so there is nothing new to record — the criterion's own
-      # verdict (already logged with --nonui-reason if applicable) stands.
-      local deferred_csv
-      deferred_csv="$(summary_deferred_keys_csv "$summary")"
-      echo "deferred: write-only key(s) with no read path could not be confirmed: ${deferred_csv}"
+      # Journal NOTHING: either there was no write-set to verify at all, or
+      # a deferred write-set member has no read path — either way there is
+      # nothing new to record — the criterion's own verdict (already logged
+      # with --nonui-reason if applicable) stands.
+      local write_set_size
+      write_set_size="$(summary_field "$summary" writeSetSize)"
+      if [[ "$write_set_size" == "0" ]]; then
+        echo "deferred: no write-set to verify"
+      else
+        local deferred_csv
+        deferred_csv="$(summary_deferred_keys_csv "$summary")"
+        echo "deferred: write-only key(s) with no read path could not be confirmed: ${deferred_csv}"
+      fi
       ;;
     *)
       die "reconcile: classify returned an unexpected outcome '${outcome}' for run=${run_id} criterion=${criterion_id} — refusing to reconcile."
@@ -457,7 +496,8 @@ cmd_reconcile() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -lt 1 ]] && die "Usage: rebake.sh classify --write-set <json> --readbacks <json>\n       rebake.sh reconcile <run-id> <scenarioId> <criterionId> <personaId> --write-set <json> --readbacks <json>"
+  [[ $# -lt 1 ]] && die "Usage: rebake.sh classify --write-set <json> --readbacks <json>
+       rebake.sh reconcile <run-id> <scenarioId> <criterionId> <personaId> --write-set <json> --readbacks <json>"
   local cmd="$1"; shift
   case "$cmd" in
     classify)  cmd_classify "$@" ;;

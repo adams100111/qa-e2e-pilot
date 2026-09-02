@@ -69,16 +69,53 @@ OUT_MIX_LANDED="$(bash "$REBAKE" classify --write-set "$WS_MIX" --readbacks "$RB
 check "precedence: writeOnly FOUND + others found -> landed (not deferred)" \
   "$(jq -r '.outcome' <<< "$OUT_MIX_LANDED")" "landed"
 
-# PRECEDENCE: deferred wins over partial/none when the writeOnly member is
-# unfound, even though a normal member IS found (i.e. not "none").
+# PRECEDENCE: writeOnly-unfound alone (no normal miss) -> deferred, since
+# the only unconfirmable member is writeOnly and the normal member IS found.
 RB_MIX_WO_UNFOUND='[{"entity":"founder","key":"f1","found":true},{"entity":"webhook","key":"w1","found":false}]'
 OUT_MIX_DEFERRED="$(bash "$REBAKE" classify --write-set "$WS_MIX" --readbacks "$RB_MIX_WO_UNFOUND")"
-check "precedence: writeOnly UNFOUND -> deferred wins even with a found normal member" \
+check "precedence: writeOnly UNFOUND + normal found -> deferred (no normal miss)" \
   "$(jq -r '.outcome' <<< "$OUT_MIX_DEFERRED")" "deferred"
 check "precedence: deferredKeys == [w1] (only the writeOnly one)" \
   "$(jq -c '.deferredKeys' <<< "$OUT_MIX_DEFERRED")" '["w1"]'
 check "precedence: missing == [] (f1 is found, w1 is deferred not missing)" \
   "$(jq -c '.missing' <<< "$OUT_MIX_DEFERRED")" '[]'
+
+# ---------------------------------------------------------------------------
+# PRECEDENCE (Finding 2): a normal-miss co-occurring with a writeOnly-unfound
+# member surfaces as `partial` naming the normal key — the hard failure wins
+# over "can't confirm". `deferred` now fires ONLY when the sole unconfirmable
+# members are writeOnly and NO normal key is missing (see case above).
+# ---------------------------------------------------------------------------
+WS_MIX3='[{"entity":"webhook","key":"w1","writeOnly":true},{"entity":"founder","key":"f2"},{"entity":"founder","key":"f3"}]'
+RB_MIX3_ONE_NORMAL_MISS='[{"entity":"webhook","key":"w1","found":false},{"entity":"founder","key":"f2","found":false},{"entity":"founder","key":"f3","found":true}]'
+OUT_MIX3="$(bash "$REBAKE" classify --write-set "$WS_MIX3" --readbacks "$RB_MIX3_ONE_NORMAL_MISS")"
+check "precedence: writeOnly-unfound + normal-unfound + normal-found -> partial (hard failure wins)" \
+  "$(jq -r '.outcome' <<< "$OUT_MIX3")" "partial"
+check "precedence: partial missing == [f2] (only the normal miss, not the writeOnly one)" \
+  "$(jq -c '.missing' <<< "$OUT_MIX3")" '["f2"]'
+check "precedence: partial still reports deferredKeys == [w1]" \
+  "$(jq -c '.deferredKeys' <<< "$OUT_MIX3")" '["w1"]'
+check "precedence: partial foundCount == 1" "$(jq -r '.foundCount' <<< "$OUT_MIX3")" "1"
+
+# ---------------------------------------------------------------------------
+# Finding 1: an EMPTY write-set has nothing to verify -> deferred (NEVER
+# landed — must not vacuously complete an unverified mutation).
+# ---------------------------------------------------------------------------
+OUT_EMPTY="$(bash "$REBAKE" classify --write-set '[]' --readbacks '[]')"
+check "classify empty write-set: outcome deferred (never landed)" "$(jq -r '.outcome' <<< "$OUT_EMPTY")" "deferred"
+check "classify empty write-set: missing == []" "$(jq -c '.missing' <<< "$OUT_EMPTY")" '[]'
+check "classify empty write-set: deferredKeys == []" "$(jq -c '.deferredKeys' <<< "$OUT_EMPTY")" '[]'
+check "classify empty write-set: writeSetSize == 0" "$(jq -r '.writeSetSize' <<< "$OUT_EMPTY")" "0"
+check "classify empty write-set: foundCount == 0" "$(jq -r '.foundCount' <<< "$OUT_EMPTY")" "0"
+
+# ---------------------------------------------------------------------------
+# pure writeOnly-unfound, single-member write-set (no normal member at all)
+# -> deferred.
+# ---------------------------------------------------------------------------
+OUT_PURE_WO="$(bash "$REBAKE" classify --write-set "$WS_WO" --readbacks "$RB_WO_NOTFOUND")"
+check "classify pure writeOnly-unfound (no normal miss): outcome deferred" "$(jq -r '.outcome' <<< "$OUT_PURE_WO")" "deferred"
+check "classify pure writeOnly-unfound: deferredKeys == [w1]" "$(jq -c '.deferredKeys' <<< "$OUT_PURE_WO")" '["w1"]'
+check "classify pure writeOnly-unfound: missing == []" "$(jq -c '.missing' <<< "$OUT_PURE_WO")" '[]'
 
 # ---------------------------------------------------------------------------
 # classify: missing/unmatched readback for a member is treated as not-found
@@ -192,6 +229,63 @@ check "reconcile deferred: no checkpoint.json was created for rc4" \
   "$([[ -e "$WORK/.qa/runs/rc4/checkpoint.json" ]] && echo exists || echo none)" "none"
 
 # ---------------------------------------------------------------------------
+# reconcile (Finding 2): mixed writeOnly-unfound + normal-unfound + normal-
+# found -> `partial` wins over `deferred` — journals a BLOCKED verdict
+# naming the normal key (f2), NOT a "deferred" no-op. The open act is NOT
+# closed (same crash-safety as the plain-partial case).
+# ---------------------------------------------------------------------------
+( cd "$WORK" && bash "$EMIT" act-intent rc6 admin AC6 admin --criterion '{"criterionId":"AC6","kinds":["human-action"],"action":"Mixed writeOnly + normal"}' --write-set "$WS_MIX3" >/dev/null )
+
+RECON_MIX_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc6 admin AC6 admin --write-set "$WS_MIX3" --readbacks "$RB_MIX3_ONE_NORMAL_MISS" )"
+check "reconcile mixed precedence: last line is literal 'blocked' (partial wins over deferred)" \
+  "$(tail -n1 <<< "$RECON_MIX_OUT")" "blocked"
+check "reconcile mixed precedence: first line outcome == partial" \
+  "$(head -n1 <<< "$RECON_MIX_OUT" | jq -r '.outcome')" "partial"
+
+CKPT_RC6="$WORK/.qa/runs/rc6/checkpoint.json"
+check "reconcile mixed precedence: checkpoint verdict == blocked" \
+  "$(get "$CKPT_RC6" '.criteria[] | select(.criterion_id=="AC6") | .verdict')" "blocked"
+LAST_ACTION_RC6="$(get "$CKPT_RC6" '.criteria[] | select(.criterion_id=="AC6") | .last_action')"
+check "reconcile mixed precedence: last_action names the normal missing key f2" \
+  "$([[ "$LAST_ACTION_RC6" == *f2* ]] && echo yes || echo no)" "yes"
+check "reconcile mixed precedence: last_action does NOT claim w1 (the writeOnly one) is missing" \
+  "$([[ "$LAST_ACTION_RC6" == *w1* ]] && echo yes || echo no)" "no"
+
+( cd "$WORK" && bash "$FOLD" rc6 >/dev/null )
+ANOM_RC6="$WORK/.qa/runs/rc6/fold-anomalies.json"
+check "reconcile mixed precedence: open act NOT closed (no act_committed on partial)" \
+  "$(get "$ANOM_RC6" '.openActs | length')" "1"
+check "reconcile mixed precedence: no act_committed line was journaled" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")] | length' "$WORK/.qa/runs/rc6/journal.ndjson")" "0"
+
+# ---------------------------------------------------------------------------
+# reconcile (Finding 1): an EMPTY write-set -> `deferred`, prints "deferred:
+# no write-set to verify", journals NOTHING (no act_committed, no
+# criterion_verdict). A pre-existing open act for the same run/criterion
+# stays OPEN and unchanged (fold openActs unaffected).
+# ---------------------------------------------------------------------------
+( cd "$WORK" && bash "$EMIT" act-intent rc7 admin AC7 admin --criterion '{"criterionId":"AC7","kinds":["human-action"],"action":"Create founders"}' --write-set "$WS_ALL" >/dev/null )
+JF_RC7="$WORK/.qa/runs/rc7/journal.ndjson"
+LINES_BEFORE_RC7="$(wc -l < "$JF_RC7" | tr -d ' ')"
+
+RECON_EMPTY_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc7 admin AC7 admin --write-set '[]' --readbacks '[]' )"
+check "reconcile empty write-set: last line is literal 'deferred: no write-set to verify'" \
+  "$(tail -n1 <<< "$RECON_EMPTY_OUT")" "deferred: no write-set to verify"
+check "reconcile empty write-set: first line outcome == deferred" \
+  "$(head -n1 <<< "$RECON_EMPTY_OUT" | jq -r '.outcome')" "deferred"
+check "reconcile empty write-set: journals NOTHING (journal line count unchanged)" \
+  "$(wc -l < "$JF_RC7" | tr -d ' ')" "$LINES_BEFORE_RC7"
+check "reconcile empty write-set: no act_committed line was journaled" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")] | length' "$JF_RC7")" "0"
+check "reconcile empty write-set: no checkpoint.json was created for rc7" \
+  "$([[ -e "$WORK/.qa/runs/rc7/checkpoint.json" ]] && echo exists || echo none)" "none"
+
+( cd "$WORK" && bash "$FOLD" rc7 >/dev/null )
+ANOM_RC7="$WORK/.qa/runs/rc7/fold-anomalies.json"
+check "reconcile empty write-set: pre-existing open act still OPEN (unaffected/unchanged)" \
+  "$(get "$ANOM_RC7" '.openActs | length')" "1"
+
+# ---------------------------------------------------------------------------
 # reconcile: rejects a malformed invocation (missing --write-set/--readbacks
 # or wrong positional count) — nothing journaled.
 # ---------------------------------------------------------------------------
@@ -228,6 +322,33 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   canon_jq_def="$(bash "$JOURNAL" canonical <<< "$OUT_JQ_DEF")"
   canon_py_def="$(bash "$JOURNAL" canonical <<< "$OUT_PY_DEF")"
   check "dual-equiv: classify deferred summary canonically equal across engines" "$canon_jq_def" "$canon_py_def"
+
+  # classify (Finding 2): mixed writeOnly-unfound + normal-unfound -> partial
+  # wins over deferred, same result under both engines.
+  OUT_JQ_MIX3="$(bash "$REBAKE" classify --write-set "$WS_MIX3" --readbacks "$RB_MIX3_ONE_NORMAL_MISS")"
+  OUT_PY_MIX3="$(PATH="$FAKEBIN" "$BASH_BIN" "$REBAKE" classify --write-set "$WS_MIX3" --readbacks "$RB_MIX3_ONE_NORMAL_MISS")"
+  canon_jq_mix3="$(bash "$JOURNAL" canonical <<< "$OUT_JQ_MIX3")"
+  canon_py_mix3="$(bash "$JOURNAL" canonical <<< "$OUT_PY_MIX3")"
+  check "dual-equiv: classify mixed-precedence (partial-wins) summary canonically equal across engines" "$canon_jq_mix3" "$canon_py_mix3"
+  check "dual-equiv: py-side mixed-precedence outcome == partial" "$(jq -r '.outcome' <<< "$OUT_PY_MIX3")" "partial"
+
+  # classify (Finding 1): empty write-set -> deferred, same result under
+  # both engines.
+  OUT_JQ_EMPTY="$(bash "$REBAKE" classify --write-set '[]' --readbacks '[]')"
+  OUT_PY_EMPTY="$(PATH="$FAKEBIN" "$BASH_BIN" "$REBAKE" classify --write-set '[]' --readbacks '[]')"
+  canon_jq_empty="$(bash "$JOURNAL" canonical <<< "$OUT_JQ_EMPTY")"
+  canon_py_empty="$(bash "$JOURNAL" canonical <<< "$OUT_PY_EMPTY")"
+  check "dual-equiv: classify empty write-set summary canonically equal across engines" "$canon_jq_empty" "$canon_py_empty"
+  check "dual-equiv: py-side empty write-set outcome == deferred" "$(jq -r '.outcome' <<< "$OUT_PY_EMPTY")" "deferred"
+
+  # reconcile (Finding 1): empty write-set under python3 -- prints the exact
+  # "deferred: no write-set to verify" message and journals nothing.
+  WORK_PY_EMPTY="$WORK/dual-py-empty"; mkdir -p "$WORK_PY_EMPTY"
+  RECON_PY_EMPTY_OUT="$( cd "$WORK_PY_EMPTY" && PATH="$FAKEBIN" "$BASH_BIN" "$REBAKE" reconcile dual-rce admin ACE admin --write-set '[]' --readbacks '[]' )"
+  check "dual-equiv: py-side reconcile empty write-set prints 'deferred: no write-set to verify'" \
+    "$(tail -n1 <<< "$RECON_PY_EMPTY_OUT")" "deferred: no write-set to verify"
+  check "dual-equiv: py-side reconcile empty write-set journals nothing (no run dir created)" \
+    "$([[ -e "$WORK_PY_EMPTY/.qa/runs/dual-rce/journal.ndjson" ]] && echo exists || echo none)" "none"
 
   # reconcile (landed) under jq vs python3 (forced by masking jq from PATH
   # for journal-emit.sh/checkpoint.sh/fold.sh/rebake.sh all together, since
