@@ -32,11 +32,12 @@ check "DETECT() returns an array on an empty document" \
 # --- Task 2: content / data-rendering ------------------------------------------
 check "content: [object Object] kind"   "$(field contentOracleSignal '["Owner: [object Object]"]' kind)"       "object-object"
 check 'content: $NaN kind'              "$(field contentOracleSignal '["Total: $NaN"]' kind)"                  "currency-nan"
-check "content: NaN kind"               "$(field contentOracleSignal '["Total: NaN"]' kind)"                   "nan"
-check "content: NaN rawSignal clean"    "$(field contentOracleSignal '["Total: NaN"]' rawSignal)"             "NaN"
+# Whole-cell bare literals: fires ONLY when the entire trimmed direct text IS the literal.
+check "content: NaN kind (whole-cell)"       "$(field contentOracleSignal '["NaN"]' kind)"                    "nan"
+check "content: NaN rawSignal clean"         "$(field contentOracleSignal '["NaN"]' rawSignal)"               "NaN"
 check "content: Invalid Date kind"      "$(field contentOracleSignal '["Due Invalid Date"]' kind)"             "invalid-date"
-check "content: undefined kind"         "$(field contentOracleSignal '["Name: undefined"]' kind)"              "undefined"
-check "content: null kind"              "$(field contentOracleSignal '["Value null"]' kind)"                   "null"
+check "content: undefined kind (whole-cell)" "$(field contentOracleSignal '["undefined"]' kind)"               "undefined"
+check "content: null kind (whole-cell)"      "$(field contentOracleSignal '["null"]' kind)"                   "null"
 check "content: raw interp kind"        "$(field contentOracleSignal '["Hello {{ user.name }}"]' kind)"        "raw-interp"
 check "content: raw ISO kind"           "$(field contentOracleSignal '["2026-09-02T14:33:00Z"]' kind)"         "raw-iso"
 # negative controls: clean rendered values -> null (zero findings)
@@ -49,6 +50,13 @@ check "content: humanized date -> null" "$(call contentOracleSignal '["Jan 3, 20
 # reads "The null hypothesis" as prose, never a rendering bug). Value-position stays flagged.
 check "content: prose null -> null"     "$(call contentOracleSignal '["The null hypothesis"]')"                "null"
 check "content: prose undefined -> null" "$(call contentOracleSignal '["a truly undefined concept in math"]')" "null"
+# Whole-cell precision fix regression guard: a longer string merely ENDING in the bare literal
+# (realistic prose, not a data slot) must NOT fire -- a human QA doesn't flag help-text ending
+# in "NaN". These previously false-positived under the old trailing-token regex.
+check "content: prose ending in NaN -> null"        "$(call contentOracleSignal '["The result is NaN"]')"                "null"
+check "content: prose ending in undefined -> null"  "$(call contentOracleSignal '["This field is undefined"]')"          "null"
+check "content: prose ending in null -> null"       "$(call contentOracleSignal '["Value is null"]')"                    "null"
+check "content: prose ending in NaN (2) -> null"    "$(call contentOracleSignal '["Division by zero returns NaN"]')"     "null"
 # empty-required-label core
 check "content: empty label -> true"    "$(call isEmptyRequiredLabel '["   "]')"                               "true"
 check "content: real label -> false"    "$(call isEmptyRequiredLabel '["Email"]')"                             "false"

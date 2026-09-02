@@ -53,21 +53,24 @@ function contrastRatio(fg, bg) {
 }
 
 // content/data-rendering: definite content-oracle artifacts in a rendered value.
-// Q2 (human-like precision): the bare literals `undefined`/`null`/`NaN`/`$NaN` are flagged ONLY
-// in VALUE POSITION — i.e. as the trailing token of the rendered value (`(?=\s*$)`), which is
-// how they leak from a data slot ("Name: undefined", "Value null", "Total: NaN"). A human does
-// NOT flag them mid-prose ("The null hypothesis", "a truly undefined concept"), so those must
-// NOT match. `[object Object]`, `Invalid Date`, raw `{{interp}}`, and raw ISO never occur in
-// legitimate prose, so they stay position-independent. Lookbehind/lookahead keep boundaries clean.
+// Q2 (human-like precision): the bare literals `undefined`/`null`/`NaN` are flagged ONLY
+// WHOLE-CELL — i.e. when the element's entire trimmed direct text IS the literal, exactly how
+// they leak from a data slot that rendered nothing but the raw value. A human does NOT flag
+// prose that merely CONTAINS or ENDS IN the word ("The result is NaN", "This field is
+// undefined", "Value is null", "The null hypothesis"), so those must NOT match — whole-string
+// equality (not a trailing-token regex) is what keeps that boundary precise. `$NaN` (currency),
+// `[object Object]`, `Invalid Date`, and raw `{{interp}}` never occur in legitimate prose, so
+// they stay position-independent (matched anywhere in the text).
 function contentOracleSignal(text) {
   const t = String(text == null ? '' : text);
+  const trimmed = t.trim();
+  if (trimmed === 'null') return { kind: 'null', rawSignal: 'null' };
+  if (trimmed === 'undefined') return { kind: 'undefined', rawSignal: 'undefined' };
+  if (trimmed === 'NaN') return { kind: 'nan', rawSignal: 'NaN' };
   const checks = [
     ['object-object', /\[object [A-Z]\w*\]/],                 // [object Object], [object Array]
-    ['currency-nan', /\$NaN(?=\s*$)/],                        // value-position; before generic nan
-    ['nan', /(?<![A-Za-z])NaN(?![A-Za-z])(?=\s*$)/],          // value-position only
+    ['currency-nan', /\$NaN(?=\s*$)/],                        // value-position; unambiguous anywhere
     ['invalid-date', /\bInvalid Date\b/],
-    ['undefined', /(?<![A-Za-z])undefined(?![A-Za-z])(?=\s*$)/], // value-position only (not prose)
-    ['null', /(?<![A-Za-z])null(?![A-Za-z])(?=\s*$)/],           // value-position only (not prose)
     ['raw-interp', /\{\{[^}]+\}\}/],                          // unrendered {{ interpolation }}
     ['raw-iso', /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/]
   ];
