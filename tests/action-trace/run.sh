@@ -145,6 +145,42 @@ cat > "$WORK/disclosed.json" <<'J'
 J
 node "$CHECK" "$WORK/disclosed.json"; check "check: disclosed arrange-mutation with matching content is allowed" "$?" "0"
 
+# --- #8 squash hardening: structure-preserving content match ------------------
+# (a) ALIAS ATTACK: a disclosed decoy that stores "x" must NOT cover a concealed
+#     call that stores the STRUCTURALLY-different "[x]". The old bracket-collapsing
+#     squash aliased these (both -> localStorage.setItem"k","x"); the hardened,
+#     structure-preserving squash keeps them distinct -> concealed call rejected.
+cat > "$WORK/alias.json" <<'J'
+{"actionUnderTest":"alias attack","steps":[{"tool":"browser_evaluate","target":"decoy","phase":"arrange","payload":"localStorage.setItem(\"k\",\"x\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"},{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"k\",\"[x]\"))"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/alias.json" 2>/dev/null; check "check: bracket-differing decoy no longer squash-aliases a concealed call (#8)" "$?" "1"
+
+# (b) POSITIVE CONTROL (no over-tightening): a genuinely disclosed mutation whose
+#     inner content CONTAINS brackets ("[]") is still matched to its wrapped
+#     session twin -> allowed. Guards against the hardening rejecting real writes.
+cat > "$WORK/brackets-ok.json" <<'J'
+{"actionUnderTest":"seed empty array","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"founders\",\"[]\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"founders\",\"[]\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/brackets-ok.json"; check "check: genuinely disclosed bracket-containing mutation still matches its twin (#8 no over-tighten)" "$?" "0"
+
+# (c) QUOTE-STYLE CANONICALIZATION: a disclosed single-quoted payload matches its
+#     double-quoted session twin (same inner content) -> allowed. The old squash
+#     kept quote chars verbatim and FALSE-REJECTED this honest disclosure.
+cat > "$WORK/quote-ok.json" <<'J'
+{"actionUnderTest":"seed city","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem('city','riyadh')"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"city\",\"riyadh\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/quote-ok.json"; check "check: disclosed single-quoted payload matches double-quoted session twin (#8 quote canon)" "$?" "0"
+
+# (d) STRING-LITERAL PAREN (no content corruption): a disclosed payload whose string
+#     VALUE contains a ')' must still match its wrapped twin. innerCode's arrow branch
+#     drops EXACTLY ONE wrapper ')', leaving the literal ')' intact -> allowed. A greedy
+#     "strip while closes > opens" balancer would eat the literal ')' and FALSE-REJECT
+#     this honest write; this control guards that regression.
+cat > "$WORK/litparen-ok.json" <<'J'
+{"actionUnderTest":"seed label","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"k\",\"a)\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"k\",\"a)\"))"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/litparen-ok.json"; check "check: disclosed payload with ')' inside a string literal still matches its twin (#8 no corruption)" "$?" "0"
+
 # --- --allow-nonui lets a logged opt-out through (confidence low upstream) ----
 node "$CHECK" "$WORK/evalact.json" --allow-nonui; check "check: --allow-nonui permits workaround" "$?" "0"
 

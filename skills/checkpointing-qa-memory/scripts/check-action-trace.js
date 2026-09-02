@@ -82,12 +82,28 @@ function main() {
   // payload (squashing whitespace + all brackets so wrapper parens are noise) —
   // a decoy that doesn't equal the concealed call provides no cover. A human-path
   // session mutation is the sanctioned act and is never concealable.
-  const squash = (x) => String(x || '').replace(/[\s(){}\[\];]+/g, '');
+  // #8 squash hardening — STRUCTURE-PRESERVING normalization. The old form
+  // `.replace(/[\s(){}\[\];]+/g,'')` deleted every bracket/brace/paren, so two
+  // structurally-different snippets (store "x" vs store "[x]") collapsed to the
+  // SAME string and a disclosed decoy could alias an UNRELATED concealed call.
+  // Instead: drop only whitespace + statement separators and canonicalize quote
+  // style (', ", ` -> "), KEEPING structural brackets so distinct structures stay
+  // distinct while quote-style-only and whitespace-only differences still match.
+  const squash = (x) => String(x || '').replace(/[\s;]+/g, '').replace(/['"`]/g, '"');
   const innerCode = (code) => {
     let c = String(code || '');
     const a = c.indexOf('=>');
-    if (a >= 0) c = c.slice(a + 2);                 // arrow body: after `() =>`
-    else c = c.replace(/^\s*await\s+/, '').replace(/^page\.(evaluate|evaluateHandle|\$eval|\$\$eval|route|routeFromHAR)\s*/, '');
+    if (a >= 0) {
+      // Arrow body: everything after `() =>`. The body is self-balanced, so the
+      // slice carries EXACTLY ONE extra trailing ')' from the enclosing
+      // `evaluate(`/`route(` wrapper. Drop precisely that one — NOT a greedy
+      // "strip while unbalanced" — so a ')' inside a string literal (e.g.
+      // setItem("k","a)") ) is preserved and an honest disclosure still matches
+      // instead of being false-rejected.
+      c = c.slice(a + 2).replace(/\)\s*$/, '');
+    } else {
+      c = c.replace(/^\s*await\s+/, '').replace(/^page\.(evaluate|evaluateHandle|\$eval|\$\$eval|route|routeFromHAR)\s*/, '');
+    }
     return squash(c);
   };
   const disclosed = steps
