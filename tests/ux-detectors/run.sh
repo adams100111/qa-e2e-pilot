@@ -144,5 +144,14 @@ check "invisible: near-equal fires"     "$(field invisibleTextSignal '[{"r":118,
 check "invisible: black-on-white -> null" "$(call invisibleTextSignal '[{"r":0,"g":0,"b":0},{"r":255,"g":255,"b":255}]')"           "null"
 check "invisible: mid-contrast -> null" "$(call invisibleTextSignal '[{"r":17,"g":17,"b":17},{"r":255,"g":255,"b":255}]')"          "null"
 
+# --- Task 5: overlap / z-index -------------------------------------------------
+check "z: modal below backdrop -> true"  "$(call modalBehindBackdrop '[10,100]')"    "true"
+check "z: modal above backdrop -> false" "$(call modalBehindBackdrop '[1000,999]')"  "false"
+check "z: equal -> false"                "$(call modalBehindBackdrop '[50,50]')"     "false"
+check "collide: overlapping -> true"     "$(call rectsCollide '[{"left":0,"top":0,"right":50,"bottom":50},{"left":25,"top":25,"right":75,"bottom":75}]')" "true"
+check "collide: adjacent -> false"       "$(call rectsCollide '[{"left":0,"top":0,"right":50,"bottom":50},{"left":50,"top":0,"right":100,"bottom":50}]')" "false"
+check "frac: contained -> 1"             "$(call rectOverlapFraction '[{"left":0,"top":0,"right":100,"bottom":100},{"left":10,"top":10,"right":30,"bottom":30}]')" "1"
+check "frac: adjacent -> 0"              "$(call rectOverlapFraction '[{"left":0,"top":0,"right":50,"bottom":50},{"left":50,"top":0,"right":100,"bottom":50}]')" "0"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

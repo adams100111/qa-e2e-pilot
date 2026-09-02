@@ -155,6 +155,26 @@ function invisibleTextSignal(fg, bg) {
   return { ratio: Number(ratio.toFixed(2)) };
 }
 
+// overlap/z-index: a modal painted below its backdrop is invisible behind it.
+function modalBehindBackdrop(modalZ, backdropZ) {
+  return Number.isFinite(modalZ) && Number.isFinite(backdropZ) && modalZ < backdropZ;
+}
+// AABB intersection over {left,top,right,bottom} rects.
+function rectsCollide(a, b) {
+  if (!a || !b) return false;
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+function rectArea(r) { return Math.max(0, r.right - r.left) * Math.max(0, r.bottom - r.top); }
+// Intersection area as a fraction of the SMALLER rect's area (0..1).
+function rectOverlapFraction(a, b) {
+  if (!rectsCollide(a, b)) return 0;
+  const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  const inter = Math.max(0, ix) * Math.max(0, iy);
+  const minA = Math.min(rectArea(a), rectArea(b));
+  return minA > 0 ? inter / minA : 0;
+}
+
 // ===== Browser-only DOM walk. Returns the findings array (browser_evaluate completion value). =====
 function DETECT() {
   // Alpha-composite `fg` OVER `bg` (both {r,g,b,a}), returning an opaque {r,g,b,a:1}.
@@ -462,6 +482,46 @@ function DETECT() {
     if (sig) findings.push(suspicion('invisible-text', el, 'fg≈bg contrast ' + sig.ratio + ':1', String(sig.ratio)));
   });
 
+  // ---- Overlap / z-index suspicions ----
+  // (a) a dialog/overlay whose stacking sits below a sibling backdrop/scrim
+  Array.prototype.slice.call(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .dialog, .overlay'))
+    .forEach(function (modal) {
+      const mz = parseInt(getComputedStyle(modal).zIndex, 10);
+      const parent = modal.parentElement;
+      if (!parent) return;
+      Array.prototype.slice.call(parent.children).forEach(function (sib) {
+        if (sib === modal) return;
+        if (!/backdrop|overlay|scrim|mask/i.test(sib.className ? sib.className.toString() : '')) return;
+        const bz = parseInt(getComputedStyle(sib).zIndex, 10);
+        if (modalBehindBackdrop(mz, bz)) {
+          findings.push(suspicion('overlap-modal-behind-backdrop', modal,
+            'modal z-index ' + mz + ' below backdrop z-index ' + bz, String(mz)));
+        }
+      });
+    });
+  // (b) interactive controls whose boxes collide by more than half the smaller box.
+  // Q9: hoist every getBoundingClientRect ONCE before the O(n^2) pair loop — computing rects
+  // inside the inner loop forces a layout reflow per pair (O(n^2) reflows) on a read-only sweep.
+  // NOTE (precision, stacked-controls FP): legitimately overlapping controls exist — segmented
+  // controls, a custom-select trigger layered over a native <select>, overlapping avatar buttons.
+  // This is an advisory `ux-suspicion` (routed per the Q1 consumer rule), never a standalone
+  // verdict; adjudication (deferred) clears the deliberate cases. Keep the >50% threshold strict.
+  const controls = Array.prototype.slice.call(
+    document.querySelectorAll('button, a[href], [role="button"], input, select'));
+  const rects = controls.map(function (c) { return c.getBoundingClientRect(); });
+  for (let i = 0; i < controls.length; i++) {
+    const A = controls[i], ra = rects[i];
+    if (ra.width === 0 || ra.height === 0) continue;
+    for (let j = i + 1; j < controls.length; j++) {
+      const B = controls[j], rb = rects[j];
+      if (rb.width === 0 || rb.height === 0) continue;
+      if (A.contains(B) || B.contains(A)) continue;          // nesting isn't a collision
+      if (rectOverlapFraction(ra, rb) > 0.5) {
+        findings.push(suspicion('overlap-controls', A, 'overlaps ' + cssPath(B) + ' by >50%', cssPath(B)));
+      }
+    }
+  }
+
   return findings;
 }
 
@@ -483,5 +543,8 @@ typeof document !== 'undefined'
        rawTranslationKeySignal: rawTranslationKeySignal,
        scriptMismatchSignal: scriptMismatchSignal,
        isBrokenImage: isBrokenImage,
-       invisibleTextSignal: invisibleTextSignal
+       invisibleTextSignal: invisibleTextSignal,
+       modalBehindBackdrop: modalBehindBackdrop,
+       rectsCollide: rectsCollide,
+       rectOverlapFraction: rectOverlapFraction
      }));
