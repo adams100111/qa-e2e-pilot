@@ -181,6 +181,16 @@ cat > "$WORK/litparen-ok.json" <<'J'
 J
 node "$CHECK" "$WORK/litparen-ok.json"; check "check: disclosed payload with ')' inside a string literal still matches its twin (#8 no corruption)" "$?" "0"
 
+# (e) TRAILING SEMICOLON (real @playwright/mcp session.md `code` fields end with
+#     ';', e.g. "await page.evaluate(() => localStorage.setItem(...));"): the
+#     arrow-branch wrapper-paren strip must absorb the trailing ';' along with the
+#     wrapper ')', or an honest disclosed arrange-mutation false-rejects because an
+#     extra unbalanced ')' survives into the squashed comparison.
+cat > "$WORK/trailing-semi.json" <<'J'
+{"actionUnderTest":"seed value","steps":[{"tool":"browser_evaluate","target":"seed","phase":"arrange","payload":"localStorage.setItem(\"seed\",\"1\")"},{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => localStorage.setItem(\"seed\",\"1\"));"},{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click()"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/trailing-semi.json"; check "check: disclosed arrange-mutation with a trailing-semicolon session twin matches (#8 trailing-;)" "$?" "0"
+
 # --- --allow-nonui lets a logged opt-out through (confidence low upstream) ----
 node "$CHECK" "$WORK/evalact.json" --allow-nonui; check "check: --allow-nonui permits workaround" "$?" "0"
 

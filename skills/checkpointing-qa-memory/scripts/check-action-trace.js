@@ -100,7 +100,7 @@ function main() {
       // "strip while unbalanced" — so a ')' inside a string literal (e.g.
       // setItem("k","a)") ) is preserved and an honest disclosure still matches
       // instead of being false-rejected.
-      c = c.slice(a + 2).replace(/\)\s*$/, '');
+      c = c.slice(a + 2).replace(/\)[\s;]*$/, '');
     } else {
       c = c.replace(/^\s*await\s+/, '').replace(/^page\.(evaluate|evaluateHandle|\$eval|\$\$eval|route|routeFromHAR)\s*/, '');
     }
