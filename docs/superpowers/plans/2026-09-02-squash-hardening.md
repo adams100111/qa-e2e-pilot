@@ -38,7 +38,7 @@ But the bracket deletion was **also intentional**: it normalized the wrapper's d
 
 **Fix (two coordinated edits — must land together):**
 1. Make `squash()` **structure-preserving**: strip only whitespace + `;`, and canonicalize quote characters (`'` `"` `` ` `` → one sentinel `"`) while **keeping** structural brackets — so structurally-different snippets stay distinct, and quote-style-only differences still match (spec §5A: "normalize whitespace + string literals only; stop collapsing structural brackets" — here "normalize string literals" = **quote-style canonicalization**; `;` is retained from the old squash as a statement-separator ≈ whitespace).
-2. In `innerCode()`, the **arrow branch** strips **exactly one** trailing wrapper `)` (`c = c.replace(/\)\s*$/, '')`) after slicing the arrow body — **not** a greedy count-balance. The arrow body `() => <body>` is self-balanced, so the slice ` <body>)` carries exactly one extra `)` from the enclosing `evaluate(`. Dropping precisely one leaves `<body>` intact even when `<body>` contains a `)` inside a string literal (`…"a)")`), which a greedy "strip while closes > opens" would corrupt (it would eat the literal's `)` too, false-rejecting an honest write).
+2. In `innerCode()`, the **arrow branch** strips **exactly one** trailing wrapper `)` (`c = c.replace(/\)[\s;]*$/, '')`) after slicing the arrow body — **not** a greedy count-balance. The arrow body `() => <body>` is self-balanced, so the slice ` <body>)` carries exactly one extra `)` from the enclosing `evaluate(`. Dropping precisely one leaves `<body>` intact even when `<body>` contains a `)` inside a string literal (`…"a)")`), which a greedy "strip while closes > opens" would corrupt (it would eat the literal's `)` too, false-rejecting an honest write).
 
 **Files:**
 - Modify: `skills/checkpointing-qa-memory/scripts/check-action-trace.js:79-86` (the `squash` const and the `innerCode` const inside `main()`)
@@ -138,7 +138,7 @@ with (structure-preserving squash + single wrapper-paren strip in the arrow bran
       // "strip while unbalanced" — so a ')' inside a string literal (e.g.
       // setItem("k","a)") ) is preserved and an honest disclosure still matches
       // instead of being false-rejected.
-      c = c.slice(a + 2).replace(/\)\s*$/, '');
+      c = c.slice(a + 2).replace(/\)[\s;]*$/, '');
     } else {
       c = c.replace(/^\s*await\s+/, '').replace(/^page\.(evaluate|evaluateHandle|\$eval|\$\$eval|route|routeFromHAR)\s*/, '');
     }
@@ -160,7 +160,7 @@ Expected: `node --check` prints nothing (exit 0); the runner prints `action-trac
   - `check: concealed mutating workaround rejected (Check 0)` (line 98) → still exit 1. No disclosed step at all.
   - Checks 1/2/3 cases (`clean`, `observe`, `evalact`, `readact`, `fetchact`, `dispatchact`, `getfetch`, `decoy2`, `nofp`) do not reach the Check-0 disclosed-match loop with a MUTATING non-human-path session call that needs `innerCode` matching (act-phase mutating evaluates are rejected earlier at Checks 1/2; read-only session evaluates are filtered out of `mutatingSession`) and are unaffected.
 
-If any pre-existing case flips (especially `disclosed` or `recorded`), STOP: the single wrapper-paren strip in the arrow branch is the load-bearing part — re-check the arrow branch applies `c.replace(/\)\s*$/, '')` exactly once and that `squash` no longer strips parens/brackets. Do not weaken the new tests to force green.
+If any pre-existing case flips (especially `disclosed` or `recorded`), STOP: the single wrapper-paren strip in the arrow branch is the load-bearing part — re-check the arrow branch applies `c.replace(/\)[\s;]*$/, '')` exactly once and that `squash` no longer strips parens/brackets. Do not weaken the new tests to force green.
 
 - [ ] **Step 5: Regenerate dist/ (CI-parity gate), then commit core + test (dist is git-ignored, not committed)**
 
@@ -191,3 +191,6 @@ git commit -m "fix(gate): structure-preserving squash so a decoy can't alias a d
 **2. Inline Execution** — execute Task 1 in this session using executing-plans, with a checkpoint after Step 4.
 
 **Which approach?**
+
+## Post-execution amendment (whole-branch review)
+The arrow-branch strip was widened from `/\)\s*$/` to `/\)[\s;]*$/` (absorb a trailing whitespace/`;` run, symmetric with `squash`'s `;`-stripping). Reason: real `@playwright/mcp` session.md `code` fields end with `;`, so `/\)\s*$/` missed the wrapper `)` and false-rejected an honest disclosed arrange-mutation. Regression test added (session twin ending in `;` → exit 0). Fix commit: 547d487.
