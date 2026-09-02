@@ -27,6 +27,32 @@ always allowed, on any phase. A mutating evaluate (assignment to `.value`/`.chec
 `.innerHTML`, a call to `.click()`/`.submit()`/`.dispatchEvent(`, a storage/network write)
 found on the **act** path is a workaround and gate-rejected, regardless of intent.
 
+## 1a. Durable act bracket (resumability)
+
+A **mutating** criterion's Act phase is also bracketed in the Run journal, independent of
+the UI-only discipline above — this is what makes a crash mid-act detectable on resume.
+`checkpointing-qa-memory`'s `mutation-flag.sh derive <criterion-json>` (the same
+agent-untrusted classifier §1's gate relies on) decides whether a criterion mutates;
+`journal-emit.sh` brackets its act accordingly:
+
+- **Before** the act (the human-path UI interaction itself): `journal-emit.sh act-intent
+  <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set
+  <json>`. Derive-gated — a non-mutating criterion's call is a no-op (nothing journaled,
+  prints `SKIP non-mutating`, exit 0). When mutating, it journals
+  `act_intent{key:"<runId>:<scenarioId>:<criterionId>",writeSet}`.
+- **Immediately after** the act completes: `journal-emit.sh act-commit <run-id>
+  <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>`, journaling
+  `act_committed{key,outcome}` for the SAME key.
+
+The key is always `runId:scenarioId:criterionId` — never per-attempt, so a retried act
+after resume reconciles against the same tuple rather than opening a new one. An
+`act_intent` with no matching `act_committed` is an **open act**
+(`fold.sh`'s `fold-anomalies.json.openActs`) — the exact signal a crash mid-act leaves
+behind, and what resume reconciliation (write-set re-bake) consumes. This bracket is
+purely an emission concern: it records that a mutating act happened and its outcome, it
+does not weaken or replace the UI-only act-phase gate above — the act itself is still
+performed exclusively via `browser_click`/`type`/`fill_form`/etc. on genuine affordances.
+
 ## 2. UI-impossible decision procedure
 
 To perform action `A` needing affordance-spec `⟨role, label|testid, expected-effect⟩`:

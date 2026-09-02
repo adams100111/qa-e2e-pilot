@@ -80,8 +80,9 @@ if [ "$H" = codex ] && grep -q "'''" "$ROOT/core/persona-body.md"; then
 fi
 render < "$ROOT/harnesses/$H/manifest.tmpl" > "$OUT/agent/qa-e2e-pilot.$EXT"
 # commands
-render < "$ROOT/core/commands/qa-run.md"   > "$OUT/commands/qa-run.md"
-render < "$ROOT/core/commands/qa-roles.md" > "$OUT/commands/qa-roles.md"
+render < "$ROOT/core/commands/qa-run.md"    > "$OUT/commands/qa-run.md"
+render < "$ROOT/core/commands/qa-roles.md"  > "$OUT/commands/qa-roles.md"
+render < "$ROOT/core/commands/qa-resume.md" > "$OUT/commands/qa-resume.md"
 # mcp snippet (created in Tasks 4-6; claude has none — uses the official plugin)
 [ -f "$ROOT/harnesses/$H/mcp.snippet" ] && cp "$ROOT/harnesses/$H/mcp.snippet" "$OUT/mcp.snippet"
 

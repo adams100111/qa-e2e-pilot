@@ -115,6 +115,60 @@ checkpoint_file() {
 }
 
 # ---------------------------------------------------------------------------
+# write_latest <run-id> — atomic-write .qa/runs/latest (a ONE-LINE plain
+# text file, NOT JSON) holding the run-id, so any run's first event (whether
+# emitted here or by journal-emit.sh started/freeze) makes the run
+# discoverable independent of harness session / branch / cwd. temp-in-
+# same-dir + rename is POSIX-atomic w.r.t. concurrent readers; fsync the
+# temp file when python3 is available (same durability posture as
+# journal.sh's atomic_write, minus JSON canonicalization — this file is
+# deliberately plain text). Byte-for-byte the same helper journal-emit.sh
+# carries under its own name — duplicated rather than sourced, matching
+# this codebase's existing convention of small self-contained helpers
+# (die/has_jq/has_py) repeated per script rather than shared via `source`.
+#
+# PATH note: mv/rm need to be reachable even under a deliberately
+# restricted PATH (this script's OWN python3-fallback characterization
+# sub-cases hide everything but date/mkdir/cat/python3 to force the
+# fallback branch in journal.sh/fold.sh subprocess calls — checkpoint.sh
+# was never meant to need mv/rm directly on its own bare PATH before this
+# helper existed). Append (never prepend, so a deliberately-placed fake
+# tool in a test's PATH is never shadowed) the real bash binary's own
+# directory as a fallback for just this function's duration — same
+# technique this script already uses for its journal.sh/fold.sh calls
+# (see cmd_upsert's ext_path).
+# ---------------------------------------------------------------------------
+write_latest() {
+  local run_id="$1"
+  local saved_path="$PATH"
+  PATH="${PATH}:${BASH%/*}"
+  mkdir -p "$QA_BASE"
+  local dest="${QA_BASE}/latest"
+  local tmp="${dest}.tmp.$$"
+  if ! printf '%s\n' "$run_id" > "$tmp"; then
+    rm -f "$tmp"
+    PATH="$saved_path"
+    die "write_latest: failed to write temp file ${tmp}."
+  fi
+  if has_py; then
+    python3 -c '
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+' "$tmp" 2>/dev/null || true
+  fi
+  if ! mv "$tmp" "$dest"; then
+    rm -f "$tmp"
+    PATH="$saved_path"
+    die "write_latest: failed to move ${tmp} -> ${dest} (disk full or permission error?)."
+  fi
+  PATH="$saved_path"
+}
+
+# ---------------------------------------------------------------------------
 # Durable substrate (Task 3): checkpoint.json is no longer mutated in place.
 # cmd_upsert instead APPENDS a `criterion_verdict` event (preceded, as
 # needed, by `run_started`/`phase_entered` events so the fold's run_id/phase
@@ -797,6 +851,7 @@ cmd_upsert() {
     run_started_event="$(build_run_started_event "$run_id")"
     QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$run_started_event" \
       || die "Failed to append the run_started event to the journal for run '${run_id}'."
+    write_latest "$run_id"
   fi
 
   local phase_event
