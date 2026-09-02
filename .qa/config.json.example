@@ -50,6 +50,12 @@
   },
   "passGate": { "enforce": true },
   "humanInteraction": { "enforce": true, "saveSession": false, "maxOptOutRate": 0.2, "sessionLogDir": ".playwright-mcp" },
+  "enforcement": {
+    "_doc": "Layer 1 (record) of the out-of-agent evidence enforcement (ADR-0018/Plan H2). captureHook: whether the PostToolUse capture-hook (scripts/capture-hook.sh) is active; it always no-ops safely when false or when there's no active run, never errors the tool call either way. secretPatterns: POSIX-ERE-compatible regexes (no lookaround/backreferences -- matched via jq's built-in regex or python3 're', never grep -P/perl) tested case-insensitively against every string in a captured Bash call's args; any match is replaced with \"<redacted>\" before the line is written. redactedKeys: literal declared credential VALUES (not regexes) to redact the same way, wherever they appear as a substring. browser_* args are captured in FULL (test data) -- a browser_type into a password field can still capture a typed secret; that's a documented residual, not silently claimed safe.",
+    "captureHook": true,
+    "secretPatterns": ["(?i)(password|token|secret|api[_-]?key)\\s*[=:]\\s*\\S+"],
+    "redactedKeys": []
+  },
   "isolation": { "maxOpenContexts": 1, "mechanism": "isolated" },
   "criteriaBudget": 60
 }
