@@ -81,12 +81,16 @@ The enforcement strength actually achieved on a harness — how tamper-resistant
 _Avoid_: level, mode.
 
 **Journal**:
-The append-only `journal.ndjson` in `.qa/runs/<run-id>/` — one event per line (`criterion_started`, `act_intent`, `criterion_verdict`, …) — and the **single source of truth** for a Run's state. The **Checkpoint**, run-manifest, bug-log, and traceability are *derived projections* of it (see **Fold**); the journal wins on any disagreement. Written append-then-flush; the derived files are written atomically (temp→rename→dir-fsync).
-_Avoid_: log (unqualified — the **Toolstream** is a different append-only file), checkpoint (that is the derived cursor).
+The append-only `journal.ndjson` in `.qa/runs/<run-id>/` — one event per line (`criterion_started`, `act_intent`, `criterion_verdict`, …) — and the **single source of truth** for a Run's resume state. The **Checkpoint** and **Cursor** are *derived projections* of it (see **Fold**); the journal wins on any disagreement. `run-manifest`, `bug-log`, and `traceability` stay separate, agent-authored artifacts — the journal records their triggering events but is never folded into them. Written append-then-flush; the derived files are written atomically (temp→rename→dir-fsync).
+_Avoid_: log (unqualified — the **Toolstream** is a different append-only file), checkpoint (that is one derived projection, not the journal itself).
 
 **Fold**:
-The pure function that replays the **Journal** to compute current Run state — "where am I" = `fold(journal)`, never the agent's memory (context compaction is a silent partial restart, so folded state is the only reliable position). Fold is also the crash-recovery pass: a torn last journal line is discarded on fold.
+The pure function that replays the **Journal** to compute current Run state — "where am I" = `fold(journal)`, never the agent's memory (context compaction is a silent partial restart, so folded state is the only reliable position). Fold is also the crash-recovery pass: a torn last journal line is discarded on fold, and out-of-order or malformed lines are recorded as **fold-anomalies** rather than aborting the replay.
 _Avoid_: reduce, replay (acceptable as a gloss), restore.
+
+**Fold-anomalies**:
+The Run-level record of lines the **Fold** could not apply cleanly while replaying the **Journal** — a torn last line, or an event that breaks the expected sequence. An anomaly is recorded, never a fold abort; replay continues from the last valid line.
+_Avoid_: error log (a structured per-line record, not free-text).
 
 **Scenario**:
 One role's ordered storyline of criteria in a Run — the unit a single persona plays. A Run has one scenario per confirmed role; the **current scenario** always has exactly one current role. Cross-tenant isolation and two-actor races are individual **criteria** inside a role's scenario, not multi-actor scenarios. The atomic resumable unit is the `(scenario, criterion)` tuple.
@@ -109,8 +113,12 @@ The typed schema for a Run's resumable artifacts — run-manifest, checkpoint, b
 _Avoid_: notes, memory (unqualified — it is not the global agent memory).
 
 **Checkpoint**:
-The per-criterion resume cursor — phase, verdict, evidence refs, last action — written after every criterion so a Run survives context compaction and can skip completed criteria on resume.
+The per-criterion resume record — phase, verdict, evidence refs, last action — written after every criterion so a Run survives context compaction and can skip completed criteria on resume.
 _Avoid_: snapshot, save.
+
+**Cursor**:
+The `cursor.json` artifact folded from the **Journal** — the Run-level resume position (current phase, criteria done/total, personas, scenarios, and the current `(scenario, criterion)` tuple). Distinct from **Checkpoint** (the per-criterion record) and from the agent-authored `run-manifest` (identity/status) — Cursor is *where* the Run currently stands, computed by **Fold**, never hand-maintained.
+_Avoid_: checkpoint (that is the per-criterion record; cursor is the run-level position), resume point (acceptable as a gloss).
 
 **Checklist**:
 The set of criteria for a Run, each carrying its expected values/rules (the oracle). Hand-authored in v1; auto-generated from a surface map in v1.1; may also ingest a supplied spec.
