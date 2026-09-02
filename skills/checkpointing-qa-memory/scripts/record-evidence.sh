@@ -271,10 +271,10 @@ PYEOF
 # to key order, which json.dump preserves the same as the jq writer's field
 # order) to the jq path (Fix #27 parity discipline).
 write_py_action_trace() {
-  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}"
-  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}" fp_target="${8:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" "$fp_target" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints = sys.argv[1:9]
+file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints, fp_target = sys.argv[1:10]
 def smart(v):
     try:
         return json.loads(v)
@@ -291,6 +291,8 @@ data = {
 }
 if fingerprints:
     data["fingerprints"] = smart(fingerprints)
+if fp_target:
+    data["fingerprintTarget"] = smart(fp_target)
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
@@ -401,6 +403,7 @@ cmd_action_trace() {
   local steps="" session_calls="[]" action="" have_steps=0
   local session_log="" session_from="0"
   local fp_before="" fp_after="" have_fp=0
+  local fp_target="" have_target=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -410,6 +413,7 @@ cmd_action_trace() {
       --session-from)       session_from="$2";  shift 2 ;;
       --fingerprint-before) fp_before="$2";     have_fp=1; shift 2 ;;
       --fingerprint-after)  fp_after="$2";      have_fp=1; shift 2 ;;
+      --fingerprint-target) fp_target="$2";     have_target=1; shift 2 ;;
       --action)             action="$2";        shift 2 ;;
       *) die "Unknown option for kind 'action-trace': $1" ;;
     esac
@@ -420,6 +424,9 @@ cmd_action_trace() {
   # tool-agnostic net that catches arbitrary non-UI mutators). Built into a
   # {before, after} object stored as `fingerprints`. Values are stored as parsed
   # JSON when they look like JSON, else as raw strings (same idiom as the rest).
+  # --fingerprint-target is threaded separately below as `fingerprintTarget`
+  # (Plan H1 #4) — the criterion's declared assertedState the fingerprint must
+  # cover; stored verbatim (parsed as JSON when it looks like JSON).
   local fingerprints=""
   if [[ "$have_fp" -eq 1 ]]; then
     if has_jq; then
@@ -464,14 +471,22 @@ print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ
   local file
   file="$(evidence_dir "$run_id" "$crit_id" "$persona")/action-trace.json"
 
+  # --fingerprint-target <json> ({entity, readBackPath, expectChange}) is the
+  # criterion's declared asserted state (Plan H1 #4) — the persisted-state key
+  # the before/after fingerprint must COVER, threaded through verbatim as
+  # `fingerprintTarget` for check-action-trace.js's Check 3 to enforce.
+  local extra_fields=()
+  if [[ -n "$fingerprints" ]]; then
+    extra_fields+=(fingerprints "$fingerprints")
+  fi
+  if [[ "$have_target" -eq 1 ]]; then
+    extra_fields+=(fingerprintTarget "$fp_target")
+  fi
+
   if has_jq; then
-    if [[ -n "$fingerprints" ]]; then
-      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" fingerprints "$fingerprints"
-    else
-      write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls"
-    fi
+    write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" "${extra_fields[@]}"
   elif has_py; then
-    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints"
+    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints" "$fp_target"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi

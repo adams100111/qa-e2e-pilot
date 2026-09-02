@@ -36,6 +36,23 @@ const NAV_CARVEOUTS = new Set(['deep-link', 'auth-boundary']);
 function navIsCarvedOut(s) { return s.tool === 'browser_navigate' && NAV_CARVEOUTS.has(s.carveout); }
 function die(msg) { process.stderr.write('HUMAN-ACTION GATE: ' + msg + '\n'); process.exit(1); }
 
+// readBackPath grammar (Plan H1 #4, fingerprint-target): a top-level key
+// (e.g. "count") or a simple dot-path into nested plain objects (e.g.
+// "founder.count"). No array indices, wildcards, or bracket syntax. A path
+// segment missing from an intermediate object (or a path into a non-object)
+// resolves to { found: false } — "not covered" — rather than throwing, so a
+// malformed/mismatched target rejects cleanly instead of crashing the gate.
+function resolvePath(obj, pathStr) {
+  const segs = String(pathStr || '').split('.').filter(Boolean);
+  if (!segs.length) return { found: false, value: undefined };
+  let cur = obj;
+  for (const seg of segs) {
+    if (cur === null || typeof cur !== 'object' || !(seg in cur)) return { found: false, value: undefined };
+    cur = cur[seg];
+  }
+  return { found: true, value: cur };
+}
+
 // Is this self-reported act step a workaround? human-path tools are fine; an
 // evaluate is a workaround only if its bare payload MUTATES (read-only observe
 // evaluate is allowed); anything else on the act path (run_code_unsafe / route /
@@ -146,6 +163,36 @@ function main() {
     const bad = actSteps.find((s) => !HUMAN_PATH_TOOLS.has(s.tool) && !navIsCarvedOut(s));
     if (bad) {
       die('persisted state changed across the act while a non-human-path act step was present ("' + bad.tool + '") — the change is not attributable to a UI action (Check 3)');
+    }
+  }
+
+  // Check 3b (fingerprint-target coverage, Plan H1 #4). The aggregate
+  // whole-blob diff above only proves SOMETHING changed — an agent could
+  // fingerprint an irrelevant field and leave the criterion's actually-
+  // asserted state undetected. When the criterion declares fingerprintTarget
+  // {entity, readBackPath, expectChange}, require the before/after
+  // fingerprint to CONTAIN that target key (coverage, not equality — no
+  // comparison against an external expected value; that is qa-verify's
+  // re-bake, Plan H2) and show a change (or non-change) as the oracle
+  // expects. Absent fingerprintTarget -> this block is a no-op (back-compat;
+  // only the aggregate-changed check above applies).
+  const target = doc.fingerprintTarget;
+  if (target && typeof target === 'object') {
+    const rbp = target.readBackPath;
+    if (typeof rbp !== 'string' || !rbp) {
+      die('fingerprintTarget.readBackPath must be a non-empty string');
+    }
+    const b = resolvePath(fp.before, rbp);
+    const a = resolvePath(fp.after, rbp);
+    if (!b.found || !a.found) {
+      die('fingerprint does not cover the asserted state "' + rbp + '" (Check 3 target)');
+    }
+    const targetChanged = JSON.stringify(b.value) !== JSON.stringify(a.value);
+    if (target.expectChange === true && !targetChanged) {
+      die('asserted state "' + rbp + '" did not change across the act (Check 3 target, expectChange:true)');
+    }
+    if (target.expectChange === false && targetChanged) {
+      die('asserted state "' + rbp + '" changed across the act but the criterion expects no change (Check 3 target, expectChange:false)');
     }
   }
   process.exit(0);

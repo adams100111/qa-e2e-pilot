@@ -298,5 +298,63 @@ cat > "$WORK/nav-arrange.json" <<'J'
 J
 node "$CHECK" "$WORK/nav-arrange.json"; check "check: arrange-phase navigate + human-path act passes" "$?" "0"
 
+# --- #4 fingerprint-target: Check 3 must COVER the criterion's declared
+#     assertedState, not just the whole before/after blob ---------------------
+
+# (a) target covered + changed as expected (expectChange:true) -> pass
+cat > "$WORK/ft-cover-changed.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":0},"after":{"count":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":true}}
+J
+node "$CHECK" "$WORK/ft-cover-changed.json"; check "check: fingerprintTarget covered + changed (expectChange:true) passes" "$?" "0"
+
+# (b) AC-6: target covered but did NOT change while expectChange:true -> reject
+cat > "$WORK/ft-cover-unchanged.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":1},"after":{"count":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":true}}
+J
+node "$CHECK" "$WORK/ft-cover-unchanged.json" 2>/dev/null; check "check: AC-6 asserted target unchanged while expectChange:true rejected" "$?" "1"
+
+# (c) fingerprint OMITS the target key entirely -> reject (not covered)
+cat > "$WORK/ft-not-covered.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"other":1},"after":{"other":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":true}}
+J
+node "$CHECK" "$WORK/ft-not-covered.json" 2>/dev/null; check "check: fingerprint omitting the asserted target key rejected (not covered)" "$?" "1"
+
+# (d) expectChange:false with the target UNCHANGED -> pass
+cat > "$WORK/ft-nochange-ok.json" <<'J'
+{"actionUnderTest":"reject invalid write","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":1},"after":{"count":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":false}}
+J
+node "$CHECK" "$WORK/ft-nochange-ok.json"; check "check: fingerprintTarget expectChange:false with unchanged target passes" "$?" "0"
+
+# (e) expectChange:false but the target DID change -> reject
+cat > "$WORK/ft-nochange-bad.json" <<'J'
+{"actionUnderTest":"reject invalid write","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":1},"after":{"count":2}},"fingerprintTarget":{"entity":"founder","readBackPath":"count","expectChange":false}}
+J
+node "$CHECK" "$WORK/ft-nochange-bad.json" 2>/dev/null; check "check: fingerprintTarget expectChange:false with changed target rejected" "$?" "1"
+
+# (f) dot-path readBackPath ("founder.count") resolves into nested fingerprints
+cat > "$WORK/ft-dotpath.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"founder":{"count":0}},"after":{"founder":{"count":1}}},"fingerprintTarget":{"entity":"founder","readBackPath":"founder.count","expectChange":true}}
+J
+node "$CHECK" "$WORK/ft-dotpath.json"; check "check: fingerprintTarget dot-path resolves and passes when changed" "$?" "0"
+
+# (g) dot-path with a missing intermediate key -> not covered, rejected (not a crash)
+cat > "$WORK/ft-dotpath-missing.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"other":1},"after":{"other":1}},"fingerprintTarget":{"entity":"founder","readBackPath":"founder.count","expectChange":true}}
+J
+node "$CHECK" "$WORK/ft-dotpath-missing.json" 2>/dev/null; check "check: fingerprintTarget dot-path with missing intermediate key rejected, no crash" "$?" "1"
+
+# (h) back-compat: NO fingerprintTarget at all -> today's aggregate-changed
+#     behavior only (a legit UI act with a state change still passes)
+cat > "$WORK/ft-absent.json" <<'J'
+{"actionUnderTest":"add founder","steps":[{"tool":"browser_click","target":"#add","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"click"}],"fingerprints":{"before":{"count":0},"after":{"count":1}}}
+J
+node "$CHECK" "$WORK/ft-absent.json"; check "check: no fingerprintTarget (back-compat) still passes on a legit UI change" "$?" "0"
+
+# --- record-evidence.sh: --fingerprint-target threads into action-trace.json -
+RID6="ht-6"
+( cd "$WORK" && bash "$REC" "$RID6" C9 action-trace --steps '[{"tool":"browser_click","target":"#add","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"click"}]' --fingerprint-before '{"count":0}' --fingerprint-after '{"count":1}' --fingerprint-target '{"entity":"founder","readBackPath":"count","expectChange":true}' --action "add founder" >/dev/null )
+check "record: fingerprintTarget threaded into action-trace.json" "$(get "$WORK/.qa/runs/$RID6/evidence/C9/action-trace.json" '.fingerprintTarget.readBackPath')" "count"
+( cd "$WORK" && bash "$CKPT" "$RID6" C9 pass --kinds human-action --evidence-refs evidence/C9/action-trace.json >/dev/null 2>&1 ); check "checkpoint: pass with covered+changed fingerprintTarget accepted" "$?" "0"
+
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
