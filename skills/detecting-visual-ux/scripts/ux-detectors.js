@@ -122,13 +122,16 @@ function scriptMismatchSignal(text, expectedLocale) {
   // lowercase ONLY (^[A-Za-z][a-z]+$) — a brand/acronym/CamelCase token ("GitHub", "PDF",
   // "iPhone") or a bare digit token never matches. A phrase reads as prose once it has >=2
   // such tokens ("Save changes", "Save Changes", "Sign In", "Sohranit izmeneniya" all do);
-  // a lone Title-Case/lowercase word stays exempt as a possible proper noun.
+  // a lone Title-Case word stays exempt as a possible proper noun/brand ("Dashboard", "GitHub"),
+  // but a lone ALL-LOWERCASE word still reads as prose ("loading", "search", "changes") — a
+  // human wouldn't mistake it for a brand — so it still fires on its own.
   // URLs/emails/code punctuation are exempt outright.
   if (/:\/\/|[@<>{}=;\\]|www\./.test(trimmed)) return null;  // URL / email / code
   const wordTokens = trimmed.split(/\s+/).filter(function (tok) {
     return /^[A-Za-z][a-z]+$/.test(tok);                     // Title-case/lowercase word => reads as prose
   });
-  if (wordTokens.length < 2) return null;                    // <2 prose words -> brand/acronym/proper-noun, not a bug
+  const loneLowerProse = wordTokens.length === 1 && /^[a-z]/.test(wordTokens[0]);
+  if (wordTokens.length < 2 && !loneLowerProse) return null; // <2 prose words -> brand/acronym/proper-noun, not a bug (unless a lone lowercase word)
   const re = new RegExp('\\p{Script=' + script + '}', 'u');
   let inScript = 0;
   for (let i = 0; i < letters.length; i++) if (re.test(letters[i])) inScript++;

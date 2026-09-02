@@ -119,5 +119,21 @@ check "i18n: a@b.com -> still null"          "$(call rawTranslationKeySignal '["
 check "i18n: www.example.com -> still null"  "$(call rawTranslationKeySignal '["www.example.com"]')"           "null"
 check "i18n: 3.14 -> still null"             "$(call rawTranslationKeySignal '["3.14"]')"                      "null"
 
+# --- Fix: lone-lowercase untranslated word must still fire; lone Title-Case/brand stays exempt ---
+# Prior fix's `wordTokens.length < 2` guard exempted lone Title-Case brands ("Dashboard","GitHub")
+# but over-exempted lone LOWERCASE prose words too. A lone all-lowercase word still reads as
+# translatable prose to a human ("loading", "search", "changes") and must fire on locale ar.
+check "i18n: ar + lone lowercase 'loading' -> fires" "$(field scriptMismatchSignal '["loading","ar"]' expectedScript)" "Arabic"
+check "i18n: ar + lone lowercase 'search' -> fires"  "$(field scriptMismatchSignal '["search","ar"]' expectedScript)"  "Arabic"
+check "i18n: ar + lone lowercase 'changes' -> fires" "$(field scriptMismatchSignal '["changes","ar"]' expectedScript)" "Arabic"
+# lone Title-Case / brand / acronym stays exempt (prior fix's intent preserved)
+check "i18n: ar + lone Title-Case 'Dashboard' -> still null" "$(call scriptMismatchSignal '["Dashboard","ar"]')" "null"
+check "i18n: ar + lone brand 'GitHub' -> still null"          "$(call scriptMismatchSignal '["GitHub","ar"]')"    "null"
+check "i18n: ar + lone acronym 'PDF' -> still null"           "$(call scriptMismatchSignal '["PDF","ar"]')"       "null"
+check "i18n: ar + lone acronym 'OK' -> still null"            "$(call scriptMismatchSignal '["OK","ar"]')"        "null"
+# Title-Case multi-word phrases from the prior fix still fire (no regression)
+check "i18n: ar + Title-Case 'Save Changes' -> still fires" "$(field scriptMismatchSignal '["Save Changes","ar"]' expectedScript)" "Arabic"
+check "i18n: ar + Title-Case 'Sign In' -> still fires"       "$(field scriptMismatchSignal '["Sign In","ar"]' expectedScript)"       "Arabic"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
