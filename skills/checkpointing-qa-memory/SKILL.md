@@ -146,7 +146,7 @@ grep over `run-manifest.json` files — the run resolves via `.qa/runs/latest`.
 `fold(journal)` (the same fold `/qa-resume` runs) rather than trusting its own recollection —
 this is what makes an *induced* compaction (no explicit `/qa-resume` call) land on the same
 cursor a manual resume would. `harness-profiles.json` has no hooks field today: there is no
-Claude/Codex/Pi SessionStart hook wired up, and opencode has no session-hook mechanism at all —
+Claude/Codex/Pi SessionStart hook wired up for resume, and opencode has no session-hook mechanism at all —
 a future harness-specific hook is a possible accelerant on top of this protocol step, never a
 substitute for it. `/qa-resume` + the rehydrate-at-phase-entry protocol is the guaranteed floor
 on every harness today.

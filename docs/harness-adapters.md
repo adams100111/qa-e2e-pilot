@@ -38,7 +38,7 @@ verify first, start there. Codex and opencode follow the identical procedure bel
   Codex, Pi, and opencode. Auto-rehydrate mid-run (landing on the same cursor after an *induced*
   context compaction, with no explicit `/qa-resume` call) is a **protocol step**, not a hook: the
   agent's own prose re-reads `fold(journal)` at every phase entry. `harness-profiles.json` has no
-  hooks field today — there is no Claude/Codex/Pi SessionStart hook wired up, and opencode has no
+  hooks field today — there is no Claude/Codex/Pi SessionStart hook wired up for resume, and opencode has no
   session-hook mechanism at all to wire one into. A harness-specific hook is a possible future
   accelerant on top of the protocol step; it is not built, and no harness should be assumed to have
   one.
