@@ -47,5 +47,55 @@ QA_REPOS="$FIX/laravel" bash "$ENGINE" --no-runtime --base-url "http://localhost
 check "local env"        "$(get "$OUT5" '.environment')"        "disposable"
 check "local guardrails" "$(get "$OUT5" '.guardrails')"         "null"
 
+# Case 6: Laravel i18n mechanism map — php per-locale dirs + flat lang/<locale>.json; non-locale json ignored
+OUT6="$(mktemp)"
+QA_REPOS="$FIX/laravel" bash "$ENGINE" --no-runtime --out "$OUT6" >/dev/null 2>&1
+check "i18n present"      "$(get "$OUT6" '.components[0].i18n.present')"                                        "true"
+check "i18n mechanism"    "$(get "$OUT6" '.components[0].i18n.mechanisms | index("laravel-lang") != null')"    "true"
+check "i18n signal"       "$(get "$OUT6" '.components[0].i18n.signal')"                                         "strong"
+check "i18n locale ar"    "$(get "$OUT6" '.components[0].i18n.locales | index("ar") != null')"                 "true"
+check "i18n locale en"    "$(get "$OUT6" '.components[0].i18n.locales | index("en") != null')"                 "true"
+check "i18n has php"      "$(get "$OUT6" '[.components[0].i18n.catalogs[].format] | index("php") != null')"    "true"
+check "i18n has json"     "$(get "$OUT6" '[.components[0].i18n.catalogs[].format] | index("json") != null')"   "true"
+check "i18n file path"    "$(get "$OUT6" '[.components[0].i18n.catalogs[] | select(.format=="php") | .path] | index("lang/ar/messages.php") != null')" "true"
+check "i18n namespace"    "$(get "$OUT6" '[.components[0].i18n.catalogs[] | select(.format=="php") | .namespace] | index("messages") != null')" "true"
+check "i18n gate config"  "$(get "$OUT6" '.components[0].i18n.locales | index("config") == null')"             "true"
+
+# Case 7: unknown repo → fallback component's i18n degrades to present:false / signal:weak (never fails)
+OUT7="$(mktemp)"
+QA_REPOS="$FIX/unknown" bash "$ENGINE" --no-runtime --out "$OUT7" >/dev/null 2>&1
+check "i18n absent present" "$(get "$OUT7" '.components[0].i18n.present')" "false"
+check "i18n absent signal"  "$(get "$OUT7" '.components[0].i18n.signal')"  "weak"
+
+# Case 8: runtime-only component (no repo to scan) still carries a weak i18n map
+OUT8="$(mktemp)"
+bash "$ENGINE" --no-code --headers-file "$FIX/server/laravel-headers.txt" --out "$OUT8" >/dev/null 2>&1
+check "i18n runtime present" "$(get "$OUT8" '.components[0].i18n.present')" "false"
+check "i18n runtime signal"  "$(get "$OUT8" '.components[0].i18n.signal')"  "weak"
+
+# Case 9: JS i18n catalog — per-locale JSON subdirs + library read from package.json
+OUT9="$(mktemp)"
+QA_REPOS="$FIX/react-intl" bash "$ENGINE" --no-runtime --out "$OUT9" >/dev/null 2>&1
+check "js i18n present"   "$(get "$OUT9" '.components[0].i18n.present')"                                     "true"
+check "js i18n mechanism" "$(get "$OUT9" '.components[0].i18n.mechanisms | index("js-catalog") != null')"   "true"
+check "js i18n library"   "$(get "$OUT9" '.components[0].i18n.libraries | index("react-intl") != null')"    "true"
+check "js i18n signal"    "$(get "$OUT9" '.components[0].i18n.signal')"                                      "strong"
+check "js i18n locale ar" "$(get "$OUT9" '.components[0].i18n.locales | index("ar") != null')"              "true"
+check "js i18n json fmt"  "$(get "$OUT9" '[.components[0].i18n.catalogs[].format] | index("json") != null')" "true"
+check "js i18n ns"        "$(get "$OUT9" '[.components[0].i18n.catalogs[].namespace] | index("messages") != null')" "true"
+
+# Case 10: fullstack repo (Laravel php + JS json) → BOTH mechanisms, JS library present
+OUT10="$(mktemp)"
+QA_REPOS="$FIX/fullstack" bash "$ENGINE" --no-runtime --out "$OUT10" >/dev/null 2>&1
+check "both mech laravel"  "$(get "$OUT10" '.components[0].i18n.mechanisms | index("laravel-lang") != null')" "true"
+check "both mech js"       "$(get "$OUT10" '.components[0].i18n.mechanisms | index("js-catalog") != null')"   "true"
+check "both lib react-intl" "$(get "$OUT10" '.components[0].i18n.libraries | index("react-intl") != null')"   "true"
+
+# Case 11: negative control — non-locale json under a scanned root → present:false, "directory present" reason
+OUT11="$(mktemp)"
+QA_REPOS="$FIX/nolocale" bash "$ENGINE" --no-runtime --out "$OUT11" >/dev/null 2>&1
+check "negctrl present"  "$(get "$OUT11" '.components[0].i18n.present')"                                        "false"
+check "negctrl reason"   "$(get "$OUT11" '.components[0].i18n.evidence | join(" ") | contains("directory present")')" "true"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -173,13 +173,28 @@ skills/detecting-stack-profile/
       "playbook": "laravel",
       "signal": "strong | weak",
       "evidence": ["runtime: Set-Cookie laravel_session", "code: composer.json laravel/framework ^12"],
-      "drift": []
+      "drift": [],
+      "i18n": {
+        "present": true,
+        "libraries": ["react-intl"],
+        "mechanisms": ["laravel-lang", "js-catalog"],
+        "catalogs": [
+          { "root": "lang", "locale": "ar", "format": "php", "mechanism": "laravel-lang", "path": "lang/ar/messages.php", "namespace": "messages" }
+        ],
+        "locales": ["ar", "en"],
+        "signal": "strong",
+        "evidence": ["code: lang/ar/messages.php"]
+      }
     }
   ],
   "primary": { "backend": 0, "frontend": 0 },
   "notes": []
 }
 ```
+
+For a component with no detected translations, `i18n` degrades to
+`present: false, libraries: [], mechanisms: [], catalogs: [], locales: [],
+signal: "weak", evidence: ["no i18n catalog directory found"]`.
 
 ### Route enumeration ladder (runtime-truth first)
 

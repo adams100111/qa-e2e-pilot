@@ -68,6 +68,17 @@ It reads `.qa/config.json` for `baseUrl` and `repos[]`. Flags: `--no-runtime`
       `drift[]` is a flag, not a failure.
 - [ ] `primary.backend` / `primary.frontend` point at the components the target
       actually serves (config `repos[]` role hint → origin match → ask).
+- [ ] Each `components[].i18n` map locates where translations live: `mechanisms[]`
+      (`laravel-lang` | `js-catalog` | `rails-yml` | `gettext-po` | `none`; an array
+      because a fullstack repo can carry more than one), `catalogs[]` (each
+      `{root, locale, format: php|json, mechanism, path, namespace}` — `path` points at the
+      actual file so keys are resolvable), `locales[]`, and `libraries[]`.
+      `present: false` with `signal: weak` means no catalog was found — the `evidence`
+      distinguishes "no catalog directory found" from "directory present but no
+      supported php/json catalog" (Rails yml / Django po). The map only **locates**
+      the catalog (a key-*presence* oracle for a later phase); it never judges whether
+      a value is correctly translated. A `weak` i18n signal degrades a dependent
+      localization criterion's verdict `confidence` to `low` (never the reverse).
 
 ### Step 3 — Hand the profile to later phases
 
@@ -76,6 +87,11 @@ It reads `.qa/config.json` for `baseUrl` and `repos[]`. Flags: `--no-runtime`
 - **verifying-backend-persistence** reads `orm.modelsPath` / `orm.migrationsPath`.
 - **probing-apis-through-browser** reads `auth.scheme` / `auth.csrf`.
 - **writing-qa-reports** surfaces the playbook tier, `signal`, and `drift`.
+- **detecting-visual-ux** (localization family) reads each `components[].i18n`
+  map to resolve a rendered string → key → catalog entry (opening the file at
+  `catalogs[].path`). The map locates the catalog; the localization
+  **adjudication** (deliberate-vs-bug) is a separate, later step, out of scope
+  for detection.
 
 Open the chosen **playbook** (`references/playbooks/<components[].playbook>.md`)
 and follow its fallback ladders.
@@ -127,3 +143,13 @@ data.
    *Catch* runtime fingerprint (`laravel_session`/`XSRF-TOKEN`) still yields
    `framework: laravel`, `mode: black-box`, `environment: production` →
    guardrails engage, the run proceeds at `signal: weak` instead of aborting.
+
+5. **i18n catalog located for key resolution.** *Given* a Laravel+React app with
+   `lang/ar/messages.php` + `lang/en.json` AND a JS `locales/ar/messages.json`.
+   *Catch* the profile emits `i18n.mechanisms: [laravel-lang, js-catalog]` with
+   per-file `catalogs[].path`/`namespace` and `locales: [ar, en]`, and
+   `libraries` includes `react-intl` — so the localization family can resolve a
+   rendered `deliverables.title` → the `ar` catalog file and flag a **missing**
+   key (presence oracle) — degrading instead to `i18n.signal: weak` with an
+   honest "no catalog directory found" reason when a black-box target ships no
+   catalog, never failing the Run.

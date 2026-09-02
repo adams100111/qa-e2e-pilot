@@ -1,0 +1,1 @@
+{ "name": "app-web", "private": true, "dependencies": { "react-router-dom": "^6.22.0", "react-intl": "^6.6.0" } }
