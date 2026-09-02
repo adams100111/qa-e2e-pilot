@@ -52,7 +52,7 @@ is valid — a Run with no criteria generated yet.
     "requiredKinds": ["bake", "human-action"],
     "assertedState": {
       "entity": "Founder",
-      "readBackPath": "GET /api/founders?project_id=X -> count",
+      "readBackPath": "count",
       "expectChange": true
     },
     "humanAction": true

@@ -129,6 +129,13 @@ verb / `kinds` / `httpMethod` shape alone. Closing the tag-honesty hole needs an
 independent read of what the criterion actually does, not what it claims to be — that
 is `qa-verify`'s job, not this gate's.
 
+**Fourth residual — row omission.** Because there is no hard `checklist.json`
+dependency (a criterion with no matching row falls through to the un-gated back-compat
+note), an adversary can simply never emit a `checklist.json` row for a criterion to
+un-gate #2 for it entirely. This is the same family as lie-about-`kind`/`tags`: it is
+closed only by `qa-verify` re-deriving from the captured toolstream independent of
+`checklist.json`, never by this in-script gate.
+
 **The authoritative tier is `qa-verify`** (out-of-agent, Plan H2, ADR-0018) — a
 standalone verifier in a trust domain the agent does not control, re-deriving from the
 captured toolstream and re-baking mutating passes rather than trusting anything the
