@@ -1,0 +1,29 @@
+# ADR-0020 — Durable Run state: append-only journal as source of truth, idempotent acts, portable resume
+
+## Status
+
+Proposed (2026-09-02). Implements `docs/specs/2026-09-02-durable-run-state-machine-design.md` (the **durability core**). Refactors the memory-spec (ADR-0002) and `checkpointing-qa-memory`. Reuses ADR-0018's re-bake. **Scope note (grilling Q12):** this ADR covers only durability — journal/fold/idempotency/resume. The *hard-enforcement statechart* (guarded transition API + phase-surface block-hook) is split into a **deferred** design (`2026-09-02-run-fsm-enforcement-design.md`) and a future **ADR-0021**, because it depends on Spec 1's unbuilt hook and must reconcile with Spec 1 §5.2 (phase-dependent live-blocking → record-only + `qa-verify`, not a hard bound). This core ships without that dependency.
+
+## Context
+
+A QA **Run** is long and spans LLM context compaction and possible crashes, but its state is *implicit*: a mutable `checkpoint.json` that can tear on a crash mid-write; **compaction is a silent partial restart** that makes any agent-memory sense of position drift; and a crash mid-`human-action`-create then a naïve re-drive **double-creates**. Durable-execution practice (Temporal/DBOS/Azure DF/LangGraph) converges on: an append-only event history is the truth, current state is *computed* by replay, and side-effects are idempotent. The plugin already commits to file-based state (ADR-0002); this ADR makes it correct *by construction* rather than by policy.
+
+## Decision
+
+1. **The journal is the single source of truth.** `.qa/runs/<id>/journal.ndjson` is append-only; `checkpoint.json`/manifest/bug-log/traceability are **derived projections** of `fold(journal)`. Fold is **total over every malformed-event class** (torn tail, orphan verdict, duplicate `plan_frozen`, `act_committed` without `act_intent`), each handled by an explicit rule with a `fold-anomalies` note — never a silent mis-parse. Derived files are written atomically (temp→fsync→rename→dir-fsync) with **one canonical serializer** (sorted keys, timestamps from journal events); fold-equivalence is judged **semantically**, not byte-for-byte (grilling Q7). "Where am I" = `fold(journal)`, never agent memory.
+
+2. **Concurrency-safe under fan-out (grilling Q6).** The opt-in parallel path (ADR-0003) writes per-child sub-journals merged by the parent under an advisory `flock` with a monotonic sequence number (fold detects gaps) — avoiding `O_APPEND` interleave on NFS/container-bind mounts.
+
+3. **State cursor, ADR-0012-reconciled (grilling Q3).** `scenarioId == persona_id`; a scenario is one role's ordered criteria; **shared criteria (run once, most-privileged, ADR-0012) live under a synthetic `__shared__` scenario** so the `(scenario, criterion)` atomic unit covers the whole Run; the fold maps ADR-0012's `persona=""` records to `__shared__`.
+
+4. **Idempotent acts (grilling Q4/Q10/Q11).** Whether a criterion mutates is **derived from its action shape** (like ADR-0018's `requiredKinds`), never an agent-supplied boolean, cross-checked by the capture-hook. A mutating criterion declares its **full write-set** (all entity+key pairs). `act_intent{key,writeSet}` is journaled before the act, `act_committed` after; key = `runId:scenarioId:criterionId`. On resume, an open `act_intent` is reconciled by re-baking the **full write-set**: all landed → done; none → retry once; **partial → `blocked` naming the missing key (never silent done)**; no read path → `deferred`. The `act_committed` landed/not decision is **corroborated by the independent re-bake**, which overrides the agent-authored journal on that question.
+
+5. **Portable resume (grilling Q5/Q9).** `/qa-resume` + `.qa/runs/latest` make the run discoverable independent of harness session/branch/cwd. `plan_frozen` fires at the **Generate→Verify boundary** (the plan doesn't exist earlier); Verify replays the frozen plan; a **pre-freeze** crash resumes by re-running the setup phases (whose discovery is legitimately a re-observation there). Two mechanisms are separated: **explicit `/qa-resume`** (portable, hook-free, guaranteed everywhere) and **automatic mid-run rehydrate** (a per-phase fold re-read; hook-triggered on Claude/Codex/Pi, a **documented protocol step on opencode**, which has no such hook). Assume only `.qa/runs/<id>/` survived; write through synchronously.
+
+## Consequences
+
+- A Run survives crashes, kills, and compaction, resuming at the exact `(scenario, criterion)` tuple with no double-create and no silent partial — on all four harnesses (each ships a resume test incl. induced-compaction-without-explicit-resume).
+- **Refactor cost:** `checkpoint.sh` now writes state by appending events + folding; its existing 3-arg CLI is preserved (backward-compat), so downstream readers keep working — durability changes underneath.
+- **Honest split:** hard action-surface enforcement is *not* in this ADR (it's deferred, and its phase-surface piece resolves to record-only → `qa-verify`, not a cage — matching Spec 1 and the "test like a human, not inside a sandbox" goal).
+- Verdict/confidence/layer vocabulary unchanged; no new verdict.
+- **Reversibility:** journal + fold + idempotency + resume are additive underneath preserved file shapes; reverting means treating `checkpoint.json` as truth again. The hard-to-reverse call is making the journal authoritative — hence this ADR.

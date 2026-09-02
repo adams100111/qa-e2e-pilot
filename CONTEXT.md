@@ -80,6 +80,30 @@ _Avoid_: gate (the in-run `checkpoint.sh` is the gate; `qa-verify` is the out-of
 The enforcement strength actually achieved on a harness — how tamper-resistant the live gate is (Codex managed-config = agent-proof; Claude plugin-bundled / opencode root-managed; Pi cooperative). Printed in the report; the universal floor is **qa-verify**. A best-effort tier prints an honest banner rather than claiming a guarantee.
 _Avoid_: level, mode.
 
+**Journal**:
+The append-only `journal.ndjson` in `.qa/runs/<run-id>/` — one event per line (`criterion_started`, `act_intent`, `criterion_verdict`, …) — and the **single source of truth** for a Run's state. The **Checkpoint**, run-manifest, bug-log, and traceability are *derived projections* of it (see **Fold**); the journal wins on any disagreement. Written append-then-flush; the derived files are written atomically (temp→rename→dir-fsync).
+_Avoid_: log (unqualified — the **Toolstream** is a different append-only file), checkpoint (that is the derived cursor).
+
+**Fold**:
+The pure function that replays the **Journal** to compute current Run state — "where am I" = `fold(journal)`, never the agent's memory (context compaction is a silent partial restart, so folded state is the only reliable position). Fold is also the crash-recovery pass: a torn last journal line is discarded on fold.
+_Avoid_: reduce, replay (acceptable as a gloss), restore.
+
+**Scenario**:
+One role's ordered storyline of criteria in a Run — the unit a single persona plays. A Run has one scenario per confirmed role; the **current scenario** always has exactly one current role. Cross-tenant isolation and two-actor races are individual **criteria** inside a role's scenario, not multi-actor scenarios. The atomic resumable unit is the `(scenario, criterion)` tuple.
+_Avoid_: journey (a criterion may be a multi-step flow), test suite, multi-actor scenario (not modeled).
+
+**Idempotency probe**:
+A read-only check a **mutating** criterion declares — entity + natural key — used on resume to decide whether its act already landed, so a crash mid-act never double-creates. Paired with a deterministic key `runId:scenarioId:criterionId` and the `act_intent`/`act_committed` journal events; an unresolved probe on resume yields `blocked`, never a blind retry. Reuses the bake read-back.
+_Avoid_: idempotency key (that is the identifier; the probe is the check), dedup.
+
+**Transition guard**:
+A predicate on a state-machine edge that must pass before `checkpoint.sh` (the transition API) will commit the transition to the **Journal** — e.g. `→ verdict:pass` requires the honesty gate, `acting → baking` requires an `act_committed`. Guards make the invariants (five verdicts, evidence gate, bounded surface) mechanical rather than prose. An illegal or unguarded transition is rejected with a remediation message.
+_Avoid_: gate (reserve for the pass/honesty enforcement), check.
+
+**Frozen plan**:
+The criterion set + order (+ personas/scenarios) recorded once at Run start (`plan_frozen`) and replayed on resume — never re-derived from the running app, which may have drifted. A criterion added mid-Run is an explicit `plan_amended` event, never a silent re-derivation.
+_Avoid_: checklist (the frozen plan is the checklist *pinned at a moment*), replan.
+
 **Memory-spec**:
 The typed schema for a Run's resumable artifacts — run-manifest, checkpoint, bug-log, traceability. These are *run artifacts* belonging to the run, not durable facts in the agent's personal memory system.
 _Avoid_: notes, memory (unqualified — it is not the global agent memory).
