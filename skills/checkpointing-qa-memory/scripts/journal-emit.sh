@@ -32,17 +32,42 @@
 #       event directly. <mutates> must be the literal string "true" or
 #       "false".
 #
-# `.qa/runs/latest`: whichever of the three subcommands above turns out to
-# be the FIRST event of a run (the journal did not exist/was empty before
-# this call) also (a) journals a `run_started{runId}` event BEFORE its own
+#   journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>
+#       DERIVE-GATED (durable-resume Plan B, Task 2): runs
+#       `mutation-flag.sh derive <criterion-json>` (Plan A's deterministic,
+#       agent-untrusted mutation classifier — see mutation-flag.sh). Only
+#       when it prints "true" does this journal
+#       `act_intent{key:"<run-id>:<scenarioId>:<criterionId>",writeSet:<json>}`
+#       — the composite key is ALWAYS `runId:scenarioId:criterionId` (never
+#       per-attempt), matching the SAME key `act-commit` below must use for
+#       this tuple. When derive prints "false" this is a NO-OP: nothing is
+#       journaled, exit 0, and "SKIP non-mutating: ..." is printed (so a
+#       non-mutating criterion's act phase never becomes an open act for
+#       Task 4's resume reconciliation to trip over). Call this immediately
+#       BEFORE the criterion's act (the human-path UI interaction).
+#
+#   journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>
+#       Journals `act_committed{key:"<run-id>:<scenarioId>:<criterionId>",outcome}`
+#       unconditionally — NO derive gate here: the caller only ever calls
+#       act-commit for a tuple whose act-intent it already emitted (derive
+#       already gated at intent time), so a matching commit must always be
+#       emittable. Call this immediately AFTER the act completes. A crash
+#       between act-intent and act-commit leaves the intent's key in
+#       fold.sh's `openActs` (an intent with no matching commit) — that is
+#       precisely the durable resume signal Task 4's reconciliation
+#       consumes.
+#
+# `.qa/runs/latest`: whichever of the subcommands above turns out to be the
+# FIRST event of a run (the journal did not exist/was empty before this
+# call) also (a) journals a `run_started{runId}` event BEFORE its own
 # event, and (b) atomic-writes `.qa/runs/latest` — a one-line file holding
 # the run-id — via the write_latest helper below. checkpoint.sh's own
 # run_started branch does both identically, so checkpoint.json/cursor.json's
 # `run_id` and `.qa/runs/latest` are both set correctly regardless of
 # whether a run starts verdict-first (checkpoint.sh) or emit-first
-# (journal-emit.sh freeze/started/amend — the common live-run case, since
-# `freeze` runs at the Generate->Verify boundary, well before any
-# criterion's first checkpoint.sh call).
+# (journal-emit.sh freeze/started/amend/act-intent/act-commit — the common
+# live-run case, since `freeze` runs at the Generate->Verify boundary, well
+# before any criterion's first checkpoint.sh call).
 #
 # DEPENDENCIES: bash, coreutils (mkdir, mv, cat), and EITHER jq OR python3
 # for safe JSON handling (jq preferred; python3 used as fallback). No node.
@@ -98,6 +123,7 @@ validate_token() {
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 JOURNAL_SH="${SCRIPT_DIR}/journal.sh"
+MUTATION_FLAG_SH="${SCRIPT_DIR}/mutation-flag.sh"
 
 # Resolve the engine ONCE, from checkpoint.sh's/journal.sh's own has_jq
 # (which already honors QA_ENGINE) — then pass it explicitly to every
@@ -223,6 +249,66 @@ print(json.dumps({"event": "plan_amended", "criterionId": sys.argv[1], "scenario
 ' "$crit" "$scenario" "$persona" "$mutates" || die "Failed to build the plan_amended event via python3."
   else
     die "journal-emit.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
+build_act_intent_event() {
+  local key="$1" write_set="$2"
+  if has_jq; then
+    jq -cn --arg key "$key" --argjson writeSet "$write_set" \
+      '{event: "act_intent", key: $key, writeSet: $writeSet}' \
+      || die "Failed to build the act_intent event via jq."
+  elif has_py; then
+    python3 -c '
+import json, sys
+write_set = json.loads(sys.argv[2])
+print(json.dumps({"event": "act_intent", "key": sys.argv[1], "writeSet": write_set}))
+' "$key" "$write_set" || die "Failed to build the act_intent event via python3."
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
+build_act_committed_event() {
+  local key="$1" outcome="$2"
+  if has_jq; then
+    jq -cn --arg key "$key" --arg outcome "$outcome" \
+      '{event: "act_committed", key: $key, outcome: $outcome}' \
+      || die "Failed to build the act_committed event via jq."
+  elif has_py; then
+    python3 -c '
+import json, sys
+print(json.dumps({"event": "act_committed", "key": sys.argv[1], "outcome": sys.argv[2]}))
+' "$key" "$outcome" || die "Failed to build the act_committed event via python3."
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# validate_write_set_json <json> — dies (nothing appended) unless <json>
+# parses as valid JSON. Same "fail before any write" discipline as
+# validate_plan_json. Deliberately permissive on shape beyond "valid JSON"
+# (the documented shape is an array of {entity,key,...} objects, but this
+# script's job is passthrough, not schema enforcement of the write-set
+# contents — rebake.sh, Task 3, is where write-set member shape matters).
+# ---------------------------------------------------------------------------
+validate_write_set_json() {
+  local write_set="$1"
+  if has_jq; then
+    jq -e '.' >/dev/null 2>&1 <<< "$write_set" \
+      || die "act-intent: --write-set must be valid JSON: ${write_set}"
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    sys.exit(1)
+' "$write_set" \
+      || die "act-intent: --write-set must be valid JSON: ${write_set}"
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to validate --write-set."
   fi
 }
 
@@ -492,18 +578,120 @@ cmd_amend() {
   echo "Journaled: plan_amended run=${run_id} criterion=${criterion_id} scenario=${scenario_id} persona=${persona_id} mutates=${mutates_bool}"
 }
 
+cmd_act_intent() {
+  local criterion_json="" write_set_json=""
+  local -a positional=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --criterion)
+        [[ $# -lt 2 ]] && die "act-intent: --criterion requires a value."
+        criterion_json="$2"; shift 2 ;;
+      --write-set)
+        [[ $# -lt 2 ]] && die "act-intent: --write-set requires a value."
+        write_set_json="$2"; shift 2 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  [[ "${#positional[@]}" -eq 4 ]] \
+    || die "act-intent requires: <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>"
+  local run_id="${positional[0]}" scenario_id="${positional[1]}" criterion_id="${positional[2]}" persona_id="${positional[3]}"
+  validate_token "$run_id" "run-id"
+  [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
+  [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
+  [[ -n "$criterion_json" ]] || die "act-intent requires --criterion <criterion-json>."
+  [[ -n "$write_set_json" ]] || die "act-intent requires --write-set <json>."
+  validate_write_set_json "$write_set_json"
+
+  # DERIVE-GATED: the mutation flag is decided ONLY by mutation-flag.sh
+  # derive's rules (action shape — kinds/httpMethod/verb match), never an
+  # agent-supplied boolean. persona_id is unused by derive but kept in the
+  # signature for symmetry with started/act-commit and future call sites.
+  local mutates
+  mutates="$(bash "$MUTATION_FLAG_SH" derive "$criterion_json")" \
+    || die "act-intent: mutation-flag.sh derive failed on the supplied --criterion: ${criterion_json}"
+
+  if [[ "$mutates" != "true" ]]; then
+    echo "SKIP non-mutating: run=${run_id} scenario=${scenario_id} criterion=${criterion_id} persona=${persona_id}"
+    return 0
+  fi
+
+  local key="${run_id}:${scenario_id}:${criterion_id}"
+
+  local journal_path creating=0
+  journal_path="$(journal_path_for "$run_id")"
+  [[ -s "$journal_path" ]] || creating=1
+
+  # act-intent can in principle be the first thing to touch a fresh run's
+  # journal (e.g. a resumed/scripted caller), so it follows the same
+  # run_started-first convention as started/freeze/amend above.
+  [[ "$creating" -eq 1 ]] && append_event "$run_id" "$(build_run_started_event "$run_id")"
+
+  local event_json
+  event_json="$(build_act_intent_event "$key" "$write_set_json")"
+  append_event "$run_id" "$event_json"
+
+  [[ "$creating" -eq 1 ]] && write_latest "$run_id"
+
+  echo "Journaled: act_intent run=${run_id} key=${key}"
+}
+
+cmd_act_commit() {
+  local outcome=""
+  local -a positional=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --outcome)
+        [[ $# -lt 2 ]] && die "act-commit: --outcome requires a value."
+        outcome="$2"; shift 2 ;;
+      *) positional+=("$1"); shift ;;
+    esac
+  done
+  [[ "${#positional[@]}" -eq 4 ]] \
+    || die "act-commit requires: <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>"
+  local run_id="${positional[0]}" scenario_id="${positional[1]}" criterion_id="${positional[2]}" persona_id="${positional[3]}"
+  validate_token "$run_id" "run-id"
+  [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
+  [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
+  case "$outcome" in
+    landed|failed|unknown) ;;
+    *) die "act-commit: --outcome must be one of landed|failed|unknown (got '${outcome}')." ;;
+  esac
+
+  local key="${run_id}:${scenario_id}:${criterion_id}"
+
+  local journal_path creating=0
+  journal_path="$(journal_path_for "$run_id")"
+  [[ -s "$journal_path" ]] || creating=1
+
+  # No derive gate here (see the header doc-comment): act-commit is called
+  # only for a tuple whose act-intent already ran, but it stays defensively
+  # self-contained (own run_started-first handling) rather than assuming
+  # the journal is non-empty.
+  [[ "$creating" -eq 1 ]] && append_event "$run_id" "$(build_run_started_event "$run_id")"
+
+  local event_json
+  event_json="$(build_act_committed_event "$key" "$outcome")"
+  append_event "$run_id" "$event_json"
+
+  [[ "$creating" -eq 1 ]] && write_latest "$run_id"
+
+  echo "Journaled: act_committed run=${run_id} key=${key} outcome=${outcome} persona=${persona_id}"
+}
+
 # ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>"
+  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>\n       journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>\n       journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>"
   local cmd="$1"; shift
   case "$cmd" in
-    started) cmd_started "$@" ;;
-    freeze)  cmd_freeze "$@" ;;
-    amend)   cmd_amend "$@" ;;
-    *) die "Unknown subcommand '${cmd}' (expected: started|freeze|amend)." ;;
+    started)    cmd_started "$@" ;;
+    freeze)     cmd_freeze "$@" ;;
+    amend)      cmd_amend "$@" ;;
+    act-intent) cmd_act_intent "$@" ;;
+    act-commit) cmd_act_commit "$@" ;;
+    *) die "Unknown subcommand '${cmd}' (expected: started|freeze|amend|act-intent|act-commit)." ;;
   esac
 }
 

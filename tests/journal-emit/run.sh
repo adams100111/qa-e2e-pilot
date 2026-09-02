@@ -278,4 +278,126 @@ else
   echo "SKIP - poisoned-jq sub-case: python3 not present on this host"
 fi
 
+# ---------------------------------------------------------------------------
+# Case: act-intent / act-commit — the mutation-bracketed act emission (Task
+# 2). A mutating criterion (kinds:["human-action"]) gets both an act_intent
+# and (once the caller emits it) an act_committed for the SAME composite key
+# `run:scenario:criterion`; fold's openActs is empty once both exist, and
+# NON-empty when only the intent was emitted (simulated crash mid-act). A
+# non-mutating criterion's act-intent is a derive-gated no-op: nothing is
+# journaled at all.
+# ---------------------------------------------------------------------------
+MUT_CRIT='{"criterionId":"AC1","kinds":["human-action"],"action":"Create a founder","title":"Create founder"}'
+READ_CRIT='{"criterionId":"AC2","kinds":["bake"],"action":"View founder list","title":"View founders"}'
+WRITE_SET='[{"entity":"founder","key":"founder-123"}]'
+
+# -- non-mutating: no-op, prints SKIP, nothing journaled (run r7 never touched) --
+NONMUT_OUT="$( cd "$WORK" && bash "$EMIT" act-intent r7 admin AC2 admin --criterion "$READ_CRIT" --write-set "$WRITE_SET" )"
+NONMUT_RC=$?
+check "act-intent non-mutating: exit 0" "$NONMUT_RC" "0"
+check "act-intent non-mutating: prints SKIP" "$([[ "$NONMUT_OUT" == SKIP* ]] && echo yes || echo no)" "yes"
+check "act-intent non-mutating: no journal file created at all" \
+  "$([[ -e "$WORK/.qa/runs/r7/journal.ndjson" ]] && echo exists || echo none)" "none"
+
+# -- mutating: act-intent then act-commit -> openActs empty after both --
+( cd "$WORK" && bash "$EMIT" act-intent r8 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
+JF8="$WORK/.qa/runs/r8/journal.ndjson"
+check "act-intent mutating: act_intent line present" \
+  "$(jq -s -r '[.[] | select(.event=="act_intent")] | length' "$JF8")" "1"
+check "act-intent mutating: key == run:scenario:criterion" \
+  "$(jq -s -r '[.[] | select(.event=="act_intent")][0].key' "$JF8")" "r8:admin:AC1"
+check "act-intent mutating: writeSet passed through" \
+  "$(jq -s -c '[.[] | select(.event=="act_intent")][0].writeSet' "$JF8")" '[{"entity":"founder","key":"founder-123"}]'
+
+( cd "$WORK" && bash "$EMIT" act-commit r8 admin AC1 admin --outcome landed >/dev/null )
+check "act-commit: act_committed line present" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")] | length' "$JF8")" "1"
+check "act-commit: key matches the intent's key" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")][0].key' "$JF8")" "r8:admin:AC1"
+check "act-commit: outcome == landed" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")][0].outcome' "$JF8")" "landed"
+
+( cd "$WORK" && bash "$FOLD" r8 >/dev/null )
+ANOM8="$WORK/.qa/runs/r8/fold-anomalies.json"
+check "act-intent+act-commit: openActs EMPTY after both" \
+  "$(get "$ANOM8" '.openActs | length')" "0"
+
+# -- crash mid-act: ONLY act-intent emitted (no act-commit) -> openActs non-empty --
+( cd "$WORK" && bash "$EMIT" act-intent r9 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
+( cd "$WORK" && bash "$FOLD" r9 >/dev/null )
+ANOM9="$WORK/.qa/runs/r9/fold-anomalies.json"
+check "act-intent only (simulated crash): openActs has exactly the one key" \
+  "$(get "$ANOM9" '.openActs | length')" "1"
+check "act-intent only (simulated crash): openActs[0] == run:scenario:criterion key" \
+  "$(get "$ANOM9" '.openActs[0]')" "r9:admin:AC1"
+
+# -- act-intent is the FIRST event of a run too: run_started + .qa/runs/latest --
+JF10_RUN="r10"
+( cd "$WORK" && bash "$EMIT" act-intent "$JF10_RUN" admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
+JF10="$WORK/.qa/runs/r10/journal.ndjson"
+check "act-intent as first event: run_started precedes act_intent" \
+  "$(sed -n 1p "$JF10" | jq -r '.event')" "run_started"
+check "act-intent as first event: .qa/runs/latest == r10" \
+  "$(cat "$WORK/.qa/runs/latest" 2>/dev/null)" "r10"
+
+# -- act-commit rejects an invalid --outcome; nothing written --
+( cd "$WORK" && bash "$EMIT" act-commit r8 admin AC1 admin --outcome bogus >/dev/null 2>&1 ); rc_bad_outcome=$?
+check "act-commit: invalid --outcome rejected (nonzero)" "$([[ $rc_bad_outcome -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "act-commit: invalid --outcome writes nothing (line count unchanged)" \
+  "$(jq -s 'length' "$JF8")" "3"
+
+# -- act-intent requires --write-set; rejects when missing --
+( cd "$WORK" && bash "$EMIT" act-intent r11 admin AC1 admin --criterion "$MUT_CRIT" >/dev/null 2>&1 ); rc_no_ws=$?
+check "act-intent: missing --write-set rejected (nonzero)" "$([[ $rc_no_ws -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "act-intent: missing --write-set writes nothing" \
+  "$([[ -e "$WORK/.qa/runs/r11/journal.ndjson" ]] && echo exists || echo none)" "none"
+
+# ---------------------------------------------------------------------------
+# dual-engine equivalence: act-intent + act-commit under jq vs. python3
+# (jq masked from PATH), same run-id in two separate work dirs, canonically
+# compared (t stripped).
+# ---------------------------------------------------------------------------
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="$(command -v bash)"
+  FAKEBIN_AC="$WORK/fakebin-actbracket"
+  mkdir -p "$FAKEBIN_AC"
+  for tool in date mkdir mv rm cat dirname sed wc grep mktemp python3 bash; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN_AC/$tool"
+  done
+
+  WORK_AC_JQ="$WORK/dual-ac-jq"; WORK_AC_PY="$WORK/dual-ac-py"
+  mkdir -p "$WORK_AC_JQ" "$WORK_AC_PY"
+
+  run_act_scenario() {
+    local dir="$1"; shift
+    local run_bash=(bash); local run_path=""
+    if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN_AC"; shift; fi
+    ( cd "$dir" \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-act admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-commit dual-act admin AC1 admin --outcome landed >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$FOLD" dual-act >/dev/null )
+  }
+
+  run_act_scenario "$WORK_AC_JQ"
+  run_act_scenario "$WORK_AC_PY" --py
+
+  jq_ac_journal="$(jq -c 'del(.t)' "$WORK_AC_JQ/.qa/runs/dual-act/journal.ndjson" | while read -r l; do echo "$l" | bash "$JOURNAL" canonical; done)"
+  py_ac_journal="$(jq -c 'del(.t)' "$WORK_AC_PY/.qa/runs/dual-act/journal.ndjson" | while read -r l; do echo "$l" | bash "$JOURNAL" canonical; done)"
+  check "dual-equiv (act bracket): journal.ndjson canonically equal across engines (t stripped)" "$jq_ac_journal" "$py_ac_journal"
+
+  canon_jq_ac_anom="$(bash "$JOURNAL" canonical < "$WORK_AC_JQ/.qa/runs/dual-act/fold-anomalies.json")"
+  canon_py_ac_anom="$(bash "$JOURNAL" canonical < "$WORK_AC_PY/.qa/runs/dual-act/fold-anomalies.json")"
+  check "dual-equiv (act bracket): fold-anomalies.json canonically equal across engines" "$canon_jq_ac_anom" "$canon_py_ac_anom"
+
+  check "dual-equiv (act bracket): jq-side openActs empty" \
+    "$(jq '.openActs | length' "$WORK_AC_JQ/.qa/runs/dual-act/fold-anomalies.json")" "0"
+  check "dual-equiv (act bracket): py-side openActs empty" \
+    "$(jq '.openActs | length' "$WORK_AC_PY/.qa/runs/dual-act/fold-anomalies.json")" "0"
+
+  echo "note - dual-engine act-bracket sub-case: RAN (jq masked from PATH via a restricted fakebin)"
+else
+  echo "SKIP - dual-engine act-bracket sub-case: jq or python3 not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
