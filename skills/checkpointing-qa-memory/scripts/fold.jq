@@ -128,6 +128,46 @@ def tuple_key($e):
 # first-seen order. ---------------------------------------------------------
 | ([ $intent_order[] | select(. as $k | ($committed_set | has($k)) | not) ]) as $open_acts
 
+# ---- seq-gap (Task 6, durable-substrate fan-out merge): the ascending
+# DISTINCT global `seq` values across every valid event in this journal must
+# be contiguous (1,2,3,...); a hole (e.g. 1,2,4 — 3 missing) means a
+# journal-merge.sh append was skipped/lost/never landed. One anomaly per
+# hole, `after` = the last contiguous seq value seen before the gap. Does
+# NOT abort the fold — the rest of the checkpoint still reflects whatever
+# events ARE present. -------------------------------------------------------
+| ([ $ev[].seq ] | map(select(. != null)) | unique) as $seqs
+| (reduce $seqs[] as $cur ({prev: null, out: []};
+      if .prev == null then .prev = $cur
+      elif ($cur - .prev) > 1 then
+        (.out += [{rule: "seq-gap", after: .prev}]) | .prev = $cur
+      else
+        .prev = $cur
+      end
+    )) as $seqgap_state
+| ($seqgap_state.out) as $seqgap_anoms
+
+# ---- cross-child-duplicate (Task 6): a single (scenarioId,criterionId,
+# personaId) tuple must not carry criterion_verdict events from TWO
+# DIFFERENT fan-out childIds — that means two parallel children raced to
+# verdict the SAME tuple, which is a real anomaly to surface (as opposed to
+# one child verdicting the same tuple twice, which is normal last-wins and
+# must NOT fire this rule — only events that themselves carry a `childId`
+# are considered, and only when 2+ DISTINCT childId values appear for the
+# same tuple). ---------------------------------------------------------------
+| (reduce $ev[] as $e ({};
+    if $e.event == "criterion_verdict" and ($e.childId != null) then
+      (tuple_key($e)) as $k
+      | .[$k] = {
+          scenarioId: ($e.scenarioId // ""),
+          criterionId: ($e.criterionId // ""),
+          personaId: ($e.personaId // ""),
+          childIds: (((.[$k].childIds) // []) + [$e.childId] | unique)
+        }
+    else . end
+  )) as $tuple_childids
+| ([ $tuple_childids | to_entries[] | select((.value.childIds | length) > 1)
+     | {rule: "cross-child-duplicate", tuple: (.value.scenarioId + "/" + .value.criterionId + "/" + .value.personaId)} ]) as $cross_child_anoms
+
 # ---- pass 3 (Task 4): resumable cursor projection — independent of pass 2's
 # checkpoint groups. Tracks tuples touched by criterion_started, plan_frozen's
 # criteria[] entries (a "planned" tuple counts the same as "started" for
@@ -213,7 +253,7 @@ def tuple_key($e):
       updated_at: $state.last_t,
       criteria: $finalized.criteria
     },
-    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws),
+    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $seqgap_anoms + $cross_child_anoms),
     openActs: $open_acts,
     cursor: $cursor_doc
   }

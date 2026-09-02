@@ -10,6 +10,16 @@
 #       append exactly one compact, newline-terminated line to the journal.
 #       Non-zero + message on malformed input; nothing is written.
 #
+#   journal.sh append --child <name> <run-id> <event-json>
+#       Fan-out mode (ADR-0003 opt-in parallel path, Task 6 durable-substrate
+#       plan). Same validation as above, but appends to
+#       .qa/runs/<run-id>/journal.<name>.ndjson instead of the shared
+#       journal.ndjson, stamping `childId:"<name>"` + a PER-CHILD `childSeq`
+#       (that file's own counter) alongside `t` — NOT the global `seq`,
+#       which is assigned once, later, by journal-merge.sh. See
+#       journal-merge.sh for how sub-journals are folded back into the main
+#       journal under a lock.
+#
 #   journal.sh atomic_write <dest-path>
 #       Read JSON from stdin, write it atomically to <dest-path> (temp file
 #       in the same directory, then rename over the destination). See the
@@ -123,15 +133,35 @@ journal_file() {
 }
 
 # ---------------------------------------------------------------------------
-# next_seq <journal-file> → stdout int
+# child_journal_file <run-id> <child-name> → stdout path
 #
-# Max existing `.seq` across all lines in the file (skipping any line that
-# fails to parse — e.g. a torn last line — rather than dying on it), plus 1;
-# 0 (-> next is 1) if the file is absent/empty or has no parseable seq.
+# Task 6 (fan-out sub-journals): each fan-out child writes to its OWN
+# journal.<name>.ndjson instead of the shared journal.ndjson, so parallel
+# children never interleave writes into the same file. <child-name> is
+# restricted to [A-Za-z0-9_-]+ (no '/', no '..') so it can't escape the run
+# directory or collide with the main journal.ndjson / lock files.
 # ---------------------------------------------------------------------------
 
-next_seq() {
-  local file="$1"
+child_journal_file() {
+  local run_id="$1" child="$2"
+  [[ "$child" =~ ^[A-Za-z0-9_-]+$ ]] || die "child_journal_file: invalid --child name '${child}' (expected [A-Za-z0-9_-]+)."
+  echo "${QA_BASE}/${run_id}/journal.${child}.ndjson"
+}
+
+# ---------------------------------------------------------------------------
+# next_seq_generic <file> <field-name> → stdout int
+#
+# Max existing `.<field-name>` (integer) across all lines in the file
+# (skipping any line that fails to parse — e.g. a torn last line — rather
+# than dying on it), plus 1; 0 (-> next is 1) if the file is absent/empty or
+# has no parseable value for that field. Shared implementation behind
+# next_seq (field "seq", the main journal's global sequence) and
+# next_child_seq (field "childSeq", a fan-out child's own per-child
+# sequence) — Task 6.
+# ---------------------------------------------------------------------------
+
+next_seq_generic() {
+  local file="$1" field="$2"
   if [[ ! -s "$file" ]]; then
     echo 1
     return 0
@@ -140,19 +170,21 @@ next_seq() {
   if has_jq; then
     # Read line-by-line in pure bash (no grep/sort/tail — those aren't in
     # this script's documented dependency list) and take the max parseable
-    # `.seq`, skipping any line that fails to parse (e.g. a torn last line).
-    local line seq
+    # value for $field, skipping any line that fails to parse (e.g. a torn
+    # last line).
+    local line val
     while IFS= read -r line || [[ -n "$line" ]]; do
       [[ -z "$line" ]] && continue
-      seq="$(jq -e '.seq' <<< "$line" 2>/dev/null)" || continue
-      if [[ "$seq" =~ ^[0-9]+$ ]] && (( seq > max )); then
-        max=$seq
+      val="$(jq -e --arg f "$field" '.[$f]' <<< "$line" 2>/dev/null)" || continue
+      if [[ "$val" =~ ^[0-9]+$ ]] && (( val > max )); then
+        max=$val
       fi
     done < "$file"
   elif has_py; then
-    max="$(python3 - "$file" <<'PYEOF'
+    max="$(python3 - "$file" "$field" <<'PYEOF'
 import json, sys
-max_seq = 0
+max_val = 0
+field = sys.argv[2]
 with open(sys.argv[1]) as f:
     for line in f:
         line = line.strip()
@@ -162,10 +194,10 @@ with open(sys.argv[1]) as f:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        seq = obj.get("seq")
-        if isinstance(seq, int) and seq > max_seq:
-            max_seq = seq
-print(max_seq)
+        val = obj.get(field)
+        if isinstance(val, int) and val > max_val:
+            max_val = val
+print(max_val)
 PYEOF
 )"
   else
@@ -175,19 +207,49 @@ PYEOF
   echo $((max + 1))
 }
 
+# next_seq <journal-file> → stdout int -- the main journal's global `seq`.
+next_seq() {
+  next_seq_generic "$1" "seq"
+}
+
+# next_child_seq <child-journal-file> → stdout int -- a fan-out child's own
+# `childSeq` (Task 6). Independent counter per child file; the global `seq`
+# is assigned later, at journal-merge.sh merge time.
+next_child_seq() {
+  next_seq_generic "$1" "childSeq"
+}
+
 # ---------------------------------------------------------------------------
-# journal_append <run-id> <event-json>
+# journal_append <run-id> <event-json> [child-name]
 #
 # Validates <event-json> is a single JSON object with a non-empty string
-# `event` field, stamps seq + t (the ONLY place `date` is called in this
-# system), and appends exactly one compact, newline-terminated line via `>>`.
-# Dies (non-zero + message, nothing written) on malformed input.
+# `event` field, stamps t (the ONLY place `date` is called in this system),
+# and appends exactly one compact, newline-terminated line via `>>`. Dies
+# (non-zero + message, nothing written) on malformed input.
+#
+# Default (no [child-name], the byte-identical Task 1 behaviour): appends to
+# the main journal.ndjson, stamping the global monotonic `seq` (this
+# journal's own next_seq) alongside `t`. The event carries NEITHER `childId`
+# NOR `childSeq`.
+#
+# Fan-out mode (Task 6, [child-name] given — see child_journal_file): appends
+# to journal.<child-name>.ndjson instead, stamping `childId:"<child-name>"`
+# and a PER-CHILD `childSeq` (that child file's own next_child_seq) alongside
+# `t`. It does NOT stamp a global `seq` — the global seq is assigned later,
+# once, at journal-merge.sh merge time (so two children writing concurrently
+# never race over the SAME counter). `childId`/`childSeq` are what
+# journal-merge.sh dedups on (idempotent re-merge) and what fold's
+# cross-child-duplicate rule keys on.
 # ---------------------------------------------------------------------------
 
 journal_append() {
-  local run_id="$1" event_json="$2"
+  local run_id="$1" event_json="$2" child="${3:-}"
   local file
-  file="$(journal_file "$run_id")"
+  if [[ -n "$child" ]]; then
+    file="$(child_journal_file "$run_id" "$child")"
+  else
+    file="$(journal_file "$run_id")"
+  fi
   local dir
   dir="$(dirname "$file")"
 
@@ -229,22 +291,43 @@ if not isinstance(ev, str) or len(ev) == 0:
 
   mkdir -p "$dir"
 
-  local seq now
-  seq="$(next_seq "$file")"
+  local now
   now="$(ts)"
 
-  if has_jq; then
-    line="$(jq -c --argjson seq "$seq" --arg t "$now" '. + {seq: $seq, t: $t}' <<< "$event_json")" \
-      || die "journal_append: jq failed to stamp seq/t onto the event."
-  elif has_py; then
-    line="$(python3 -c '
+  if [[ -n "$child" ]]; then
+    local child_seq
+    child_seq="$(next_child_seq "$file")"
+    if has_jq; then
+      line="$(jq -c --arg t "$now" --arg cid "$child" --argjson cseq "$child_seq" \
+                '. + {t: $t, childId: $cid, childSeq: $cseq}' <<< "$event_json")" \
+        || die "journal_append: jq failed to stamp t/childId/childSeq onto the event."
+    elif has_py; then
+      line="$(python3 -c '
+import json, sys
+obj = json.loads(sys.stdin.read())
+obj["t"] = sys.argv[1]
+obj["childId"] = sys.argv[2]
+obj["childSeq"] = int(sys.argv[3])
+print(json.dumps(obj, separators=(",", ":")))
+' "$now" "$child" "$child_seq" <<< "$event_json")" \
+        || die "journal_append: python3 failed to stamp t/childId/childSeq onto the event."
+    fi
+  else
+    local seq
+    seq="$(next_seq "$file")"
+    if has_jq; then
+      line="$(jq -c --argjson seq "$seq" --arg t "$now" '. + {seq: $seq, t: $t}' <<< "$event_json")" \
+        || die "journal_append: jq failed to stamp seq/t onto the event."
+    elif has_py; then
+      line="$(python3 -c '
 import json, sys
 obj = json.loads(sys.stdin.read())
 obj["seq"] = int(sys.argv[1])
 obj["t"] = sys.argv[2]
 print(json.dumps(obj, separators=(",", ":")))
 ' "$seq" "$now" <<< "$event_json")" \
-      || die "journal_append: python3 failed to stamp seq/t onto the event."
+        || die "journal_append: python3 failed to stamp seq/t onto the event."
+    fi
   fi
 
   echo "$line" >> "$file"
@@ -379,12 +462,19 @@ print(json.dumps(obj, sort_keys=True, separators=(",", ":")))
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -lt 1 ]] && die "Usage: journal.sh append <run-id> <event-json>\n       journal.sh atomic_write <dest-path>\n       journal.sh canonical"
+  [[ $# -lt 1 ]] && die "Usage: journal.sh append [--child <name>] <run-id> <event-json>\n       journal.sh atomic_write <dest-path>\n       journal.sh canonical"
 
   case "$1" in
     append)
-      [[ $# -lt 3 ]] && die "append requires: <run-id> <event-json>"
-      journal_append "$2" "$3"
+      shift
+      local child=""
+      if [[ "${1:-}" == "--child" ]]; then
+        [[ $# -lt 2 ]] && die "append --child requires a name"
+        child="$2"
+        shift 2
+      fi
+      [[ $# -lt 2 ]] && die "append requires: [--child <name>] <run-id> <event-json>"
+      journal_append "$1" "$2" "$child"
       ;;
     atomic_write)
       [[ $# -lt 2 ]] && die "atomic_write requires: <dest-path>"

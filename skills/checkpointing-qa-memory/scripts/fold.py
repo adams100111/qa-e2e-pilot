@@ -191,6 +191,50 @@ def main():
 
     open_acts = [k for k in intent_order if k not in committed_set]
 
+    # ---- seq-gap (Task 6, durable-substrate fan-out merge): the ascending
+    # DISTINCT global `seq` values across every valid event in this journal
+    # must be contiguous (1,2,3,...); a hole (e.g. 1,2,4 -- 3 missing) means
+    # a journal-merge.sh append was skipped/lost/never landed. One anomaly
+    # per hole, `after` = the last contiguous seq value seen before the gap.
+    # Does NOT abort the fold. Mirrors fold.jq's $seqgap_anoms exactly.
+    seqs = sorted({e.get("seq") for e in events if isinstance(e.get("seq"), int)})
+    seq_gap_anoms = []
+    prev = None
+    for cur in seqs:
+        if prev is not None and cur - prev > 1:
+            seq_gap_anoms.append({"rule": "seq-gap", "after": prev})
+        prev = cur
+
+    # ---- cross-child-duplicate (Task 6): a single (scenarioId,criterionId,
+    # personaId) tuple must not carry criterion_verdict events from TWO
+    # DIFFERENT fan-out childIds -- that means two parallel children raced
+    # to verdict the SAME tuple. One child verdicting the same tuple twice
+    # is normal last-wins and must NOT fire this rule -- only events that
+    # themselves carry a `childId` are considered, and only when 2+ DISTINCT
+    # childId values appear for the same tuple. Mirrors fold.jq's
+    # $cross_child_anoms exactly (same insertion-order-preserving dict walk
+    # as jq's to_entries, so both engines emit anomalies in the same order).
+    tuple_childids = {}
+    for e in events:
+        if e.get("event") == "criterion_verdict" and e.get("childId") is not None:
+            k = tuple_key(e)
+            entry = tuple_childids.setdefault(k, {
+                "scenarioId": s(e, "scenarioId"),
+                "criterionId": s(e, "criterionId"),
+                "personaId": s(e, "personaId"),
+                "childIds": [],
+            })
+            if e["childId"] not in entry["childIds"]:
+                entry["childIds"].append(e["childId"])
+
+    cross_child_anoms = []
+    for v in tuple_childids.values():
+        if len(v["childIds"]) > 1:
+            cross_child_anoms.append({
+                "rule": "cross-child-duplicate",
+                "tuple": "{}/{}/{}".format(v["scenarioId"], v["criterionId"], v["personaId"]),
+            })
+
     # ---- pass 3 (Task 4): resumable cursor projection -- independent of
     # pass 2's checkpoint groups. Tracks tuples touched by criterion_started,
     # plan_frozen's criteria[] entries (a "planned" tuple counts the same as
@@ -278,7 +322,7 @@ def main():
             "updated_at": last_t,
             "criteria": criteria,
         },
-        "anomalies": wrapper_skipped + anomalies + vws,
+        "anomalies": wrapper_skipped + anomalies + vws + seq_gap_anoms + cross_child_anoms,
         "openActs": open_acts,
         "cursor": cursor_doc,
     }
