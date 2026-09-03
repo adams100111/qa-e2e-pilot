@@ -143,6 +143,8 @@ check "date: en-CA mm/dd/yyyy -> null"   "$(call localeDateSignal '["03/09/2026"
 check "date: ISO date -> null"           "$(call localeDateSignal '["2026-09-03","ar"]')"                      "null"
 check "date: version string -> null"     "$(call localeDateSignal '["v1.2.3","ar"]')"                          "null"
 check "date: not whole-string date -> null" "$(call localeDateSignal '["The 3/9 split","ar"]')"                "null"
+check "date: bare en (ambiguous) -> null"    "$(call localeDateSignal '["12/31/2024","en"]')"                     "null"
+check "date: empty locale (ambiguous) -> null" "$(call localeDateSignal '["12/31/2024",""]')"                     "null"
 
 # --- Task 4: assets + invisible-text -------------------------------------------
 check "asset: failed image -> true"     "$(call isBrokenImage '[{"naturalWidth":0,"complete":true}]')"          "true"

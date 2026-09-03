@@ -149,10 +149,13 @@ function localeDateSignal(text, expectedLocale) {
   const t = String(text == null ? '' : text).trim();
   if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return null;      // only whole-string slash dates
   const full = String(expectedLocale || '').toLowerCase().trim();
-  // Empty/absent locale: NOT month-first (a locale-less page still shouldn't render a bare
-  // mm/dd/yyyy date — treat as flaggable, matching the held-out fixture's ar case in spirit:
-  // absence of an explicit month-first locale is never a reason to suppress the signal).
-  if (MONTH_FIRST_LOCALES.indexOf(full) !== -1) return null;  // native month-first convention
+  if (MONTH_FIRST_LOCALES.indexOf(full) !== -1) return null;  // en-us/en-ca native month-first
+  // AMBIGUOUS locales carry no reliable date-order oracle, so firing a signal on them would be a
+  // false positive (precision over recall — the adjudication principle): an unregioned `en`
+  // could be US (month-first) or GB (day-first), and a locale-less page gives no signal at all.
+  // A US site commonly renders `<html lang="en">` with legitimate mm/dd/yyyy dates — never flag
+  // those. Only an EXPLICIT non-month-first locale (en-gb, ar, fr, …) grounds the signal.
+  if (full === '' || full === 'en') return null;
   return { rawSignal: t };
 }
 
