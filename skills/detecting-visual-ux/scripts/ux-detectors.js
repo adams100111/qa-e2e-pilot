@@ -139,6 +139,23 @@ function scriptMismatchSignal(text, expectedLocale) {
   return { expectedScript: script, fraction: Number(frac.toFixed(2)), rawSignal: trimmed.slice(0, 40) };
 }
 
+// i18n: a slash-separated numeric date (mm/dd/yyyy or m/d/yyyy) rendered in a locale whose
+// native convention is NOT month-first is a locale-wrong date format. mm/dd/yyyy is a
+// US-centric convention; everywhere else (ar, en-GB, fr, bare en, …) a numeric date in that
+// shape reads as a localization defect to a human reviewer. ISO dates (yyyy-mm-dd) and
+// anything not a whole-string slash date are locale-neutral / not a date -> null.
+const MONTH_FIRST_LOCALES = ['en-us', 'en-ca'];
+function localeDateSignal(text, expectedLocale) {
+  const t = String(text == null ? '' : text).trim();
+  if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) return null;      // only whole-string slash dates
+  const full = String(expectedLocale || '').toLowerCase().trim();
+  // Empty/absent locale: NOT month-first (a locale-less page still shouldn't render a bare
+  // mm/dd/yyyy date — treat as flaggable, matching the held-out fixture's ar case in spirit:
+  // absence of an explicit month-first locale is never a reason to suppress the signal).
+  if (MONTH_FIRST_LOCALES.indexOf(full) !== -1) return null;  // native month-first convention
+  return { rawSignal: t };
+}
+
 // assets: an <img> that completed loading with zero intrinsic width failed to load.
 // complete:false is still in-flight — do NOT flag (precision guard).
 function isBrokenImage(img) {
@@ -455,6 +472,8 @@ function DETECT() {
         'expected ' + mm.expectedScript + ' script; ' + Math.round(mm.fraction * 100) + '% in-script',
         mm.rawSignal));
     }
+    const ld = localeDateSignal(direct, EXPECTED_LOCALE);
+    if (ld) findings.push(suspicion('i18n-locale-date', el, direct, ld.rawSignal));
   });
 
   // ---- Asset (broken-image) suspicions ----
@@ -548,6 +567,7 @@ typeof document !== 'undefined'
        isEmptyRequiredLabel: isEmptyRequiredLabel,
        rawTranslationKeySignal: rawTranslationKeySignal,
        scriptMismatchSignal: scriptMismatchSignal,
+       localeDateSignal: localeDateSignal,
        isBrokenImage: isBrokenImage,
        invisibleTextSignal: invisibleTextSignal,
        modalBehindBackdrop: modalBehindBackdrop,

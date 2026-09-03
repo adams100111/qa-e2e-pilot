@@ -26,6 +26,7 @@ check "grade invisible-text"       "$(grade invisible-text)"       "definite-dom
 check "grade modal-behind-backdrop" "$(grade modal-behind-backdrop)" "definite-dom"
 check "grade content-raw-iso"      "$(grade content-raw-iso)"      "definite-dom"
 check "grade i18n-script-mismatch" "$(grade i18n-script-mismatch)" "definite-catalog"
+check "grade i18n-locale-date"     "$(grade i18n-locale-date)"     "definite-catalog"
 check "grade overlap"              "$(grade overlap)"              "heuristic"
 check "grade unknown->heuristic"   "$(grade something-new)"        "heuristic"
 
