@@ -1,6 +1,6 @@
 # CLAUDE.md — working in qa-e2e-pilot
 
-This repo is a **Claude Code plugin**, not an app. It ships an agent, a command, and nine skills that perform full-stack browser QA. There is no build step and no runtime test suite; "tests" here means static validation + functional smoke-tests of the bundled scripts.
+This repo is a **Claude Code plugin**, not an app. It ships an agent, a command, and ten skills that perform full-stack browser QA. There is no build step and no runtime test suite; "tests" here means static validation + functional smoke-tests of the bundled scripts.
 
 ## Read these first
 
@@ -50,7 +50,7 @@ accuracy-run procedure.
 - Bundle **scripts** (executed) and **templates** (copied) — don't inline large artifacts into the body.
 - Include **≥3 mini-evals** drawn from the 14 real session bugs (see the plan / the existing skills for the bug list).
 
-There are **16 skills**: the 9 core verification skills + `fanning-out-criteria` + spec-kit `ingesting-spec-kit` + role discovery (`discovering-user-roles`, `confirming-discovered-roles`) + `detecting-stack-profile` + `detecting-visual-ux` + `bootstrapping-qa-config`. Top-level `scripts/` (not skills): `report-to-junit.sh` (CI export), `qa-ci.sh` (turnkey CI: preflight→agent→junit, pluggable via `QA_AGENT_CMD`/`QA_PREFLIGHT_CMD`), `memory-sync.sh` (gated Mem0/vector write-through of durable artifacts only). Drivers map to tools via `skills/driving-browser-qa/references/driver-capabilities.md`. Docs `running-in-ci.md` and `extending-drivers.md` cover later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
+There are **17 skills**: the 10 core verification skills + `fanning-out-criteria` + spec-kit `ingesting-spec-kit` + role discovery (`discovering-user-roles`, `confirming-discovered-roles`) + `detecting-stack-profile` + `detecting-visual-ux` + `detecting-interaction-ux` + `bootstrapping-qa-config`. Top-level `scripts/` (not skills): `report-to-junit.sh` (CI export), `qa-ci.sh` (turnkey CI: preflight→agent→junit, pluggable via `QA_AGENT_CMD`/`QA_PREFLIGHT_CMD`), `memory-sync.sh` (gated Mem0/vector write-through of durable artifacts only). Drivers map to tools via `skills/driving-browser-qa/references/driver-capabilities.md`. Docs `running-in-ci.md` and `extending-drivers.md` cover later-phase capabilities. `install.sh` globs `skills/*/`, so new skills are picked up automatically.
 
 **Human-interaction discipline (ADR-0015).** State-mutating criteria are tagged `human-action`; their `pass` is gated by `checkpoint.sh` via an act-phase workaround lint + mandatory before/after state fingerprints (`check-action-trace.js`), and — when the Playwright MCP is run with `--save-session` (opt-in; not the default managed instance) — an additional reconciliation of the recorded act against that independent log (`parse-session-log.js`), which closes the self-report hole. Without `--save-session` the gate runs the lint+fingerprint checks and flags that independent verification was unavailable. The act phase is UI-only; a UI-impossible action is `fail@FE` (confidence high), not a workaround; a genuine tool limitation is a logged low-confidence `--nonui-reason` opt-out. See `skills/driving-browser-qa/references/interaction-discipline.md`.
 
