@@ -99,6 +99,7 @@ guards this file declares:
 |---|---|---|
 | `arranging → acting` | `mutates` | Only a criterion whose frozen-plan entry (`plan_frozen`'s per-criterion `mutates` field) is `true` may open an act window. |
 | `arranging → baking` | `not-mutates` | The mirror guard: the skip-acting edge is only legal for a criterion whose `mutates` is `false`. |
+| `arranging → verdict` | `not-mutates` | The pure-observe edge (a criterion with no bake at all): only legal for a `mutates:false` criterion. This closes the gap where a **mutating** criterion that skipped its act entirely would otherwise take the same unguarded `arranging → verdict` path as a legitimate observe-only criterion — with this guard, the fold flags a `mutates:true` tuple reaching `verdict` without an `acting` window as an illegal edge. |
 | `acting → baking` | `act_committed` | Entering `baking` from `acting` requires an observed `act_committed` event for that criterion's key (closing the act the criterion opened). |
 | `* → verdict` | `honesty-gate` | Any transition into `verdict`, regardless of source sub-state, is gated by the existing pass-gate machinery (`checkpoint.sh` + `required-kinds.sh`) — a `pass` must carry the evidence the gate independently re-derives. |
 

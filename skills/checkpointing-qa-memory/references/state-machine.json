@@ -1,35 +1,130 @@
 {
   "phases": [
-    {"id": "Pre-flight", "order": 0},
-    {"id": "Analyze", "order": 1},
-    {"id": "Generate", "order": 2},
-    {"id": "Verify", "order": 3},
-    {"id": "Report", "order": 4},
-    {"id": "Remember", "order": 5}
+    {
+      "id": "Pre-flight",
+      "order": 0
+    },
+    {
+      "id": "Analyze",
+      "order": 1
+    },
+    {
+      "id": "Generate",
+      "order": 2
+    },
+    {
+      "id": "Verify",
+      "order": 3
+    },
+    {
+      "id": "Report",
+      "order": 4
+    },
+    {
+      "id": "Remember",
+      "order": 5
+    }
   ],
-  "subStates": ["pending", "arranging", "acting", "baking", "reconciling", "verdict"],
+  "subStates": [
+    "pending",
+    "arranging",
+    "acting",
+    "baking",
+    "reconciling",
+    "verdict"
+  ],
   "legalPhaseEdges": [
-    ["Pre-flight", "Analyze"],
-    ["Analyze", "Generate"],
-    ["Generate", "Verify"],
-    ["Verify", "Report"],
-    ["Report", "Remember"]
+    [
+      "Pre-flight",
+      "Analyze"
+    ],
+    [
+      "Analyze",
+      "Generate"
+    ],
+    [
+      "Generate",
+      "Verify"
+    ],
+    [
+      "Verify",
+      "Report"
+    ],
+    [
+      "Report",
+      "Remember"
+    ]
   ],
   "legalSubStateEdges": [
-    ["pending", "arranging"],
-    ["arranging", "acting"],
-    ["arranging", "baking"],
-    ["arranging", "verdict"],
-    ["acting", "baking"],
-    ["baking", "reconciling"],
-    ["reconciling", "verdict"],
-    ["baking", "verdict"]
+    [
+      "pending",
+      "arranging"
+    ],
+    [
+      "arranging",
+      "acting"
+    ],
+    [
+      "arranging",
+      "baking"
+    ],
+    [
+      "arranging",
+      "verdict"
+    ],
+    [
+      "acting",
+      "baking"
+    ],
+    [
+      "baking",
+      "reconciling"
+    ],
+    [
+      "reconciling",
+      "verdict"
+    ],
+    [
+      "baking",
+      "verdict"
+    ]
   ],
   "guards": [
-    {"edge": ["arranging", "acting"], "requires": "mutates"},
-    {"edge": ["arranging", "baking"], "requires": "not-mutates"},
-    {"edge": ["acting", "baking"], "requires": "act_committed"},
-    {"edge": ["*", "verdict"], "requires": "honesty-gate"}
+    {
+      "edge": [
+        "arranging",
+        "acting"
+      ],
+      "requires": "mutates"
+    },
+    {
+      "edge": [
+        "arranging",
+        "baking"
+      ],
+      "requires": "not-mutates"
+    },
+    {
+      "edge": [
+        "acting",
+        "baking"
+      ],
+      "requires": "act_committed"
+    },
+    {
+      "edge": [
+        "*",
+        "verdict"
+      ],
+      "requires": "honesty-gate"
+    },
+    {
+      "edge": [
+        "arranging",
+        "verdict"
+      ],
+      "requires": "not-mutates"
+    }
   ],
   "toolClasses": [
     "browser-navigate",
@@ -43,28 +138,66 @@
   ],
   "phaseToolSurface": {
     "Pre-flight": {
-      "allowedToolClasses": ["browser-navigate", "browser-snapshot", "browser-evaluate-readonly", "bash"],
-      "forbiddenToolClasses": ["browser-mutation"]
+      "allowedToolClasses": [
+        "browser-navigate",
+        "browser-snapshot",
+        "browser-evaluate-readonly",
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-mutation"
+      ]
     },
     "Analyze": {
-      "allowedToolClasses": ["browser-navigate", "browser-snapshot", "browser-evaluate-readonly", "bash"],
-      "forbiddenToolClasses": ["browser-mutation"]
+      "allowedToolClasses": [
+        "browser-navigate",
+        "browser-snapshot",
+        "browser-evaluate-readonly",
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-mutation"
+      ]
     },
     "Generate": {
-      "allowedToolClasses": ["bash"],
-      "forbiddenToolClasses": ["browser-mutation", "browser-navigate"]
+      "allowedToolClasses": [
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-mutation",
+        "browser-navigate"
+      ]
     },
     "Verify": {
-      "allowedToolClasses": ["browser-interaction", "browser-evaluate-readonly", "browser-navigate", "browser-snapshot", "probe", "bash"],
-      "forbiddenToolClasses": ["browser-evaluate-mutating"]
+      "allowedToolClasses": [
+        "browser-interaction",
+        "browser-evaluate-readonly",
+        "browser-navigate",
+        "browser-snapshot",
+        "probe",
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-evaluate-mutating"
+      ]
     },
     "Report": {
-      "allowedToolClasses": ["bash"],
-      "forbiddenToolClasses": ["browser-mutation", "browser-navigate"]
+      "allowedToolClasses": [
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-mutation",
+        "browser-navigate"
+      ]
     },
     "Remember": {
-      "allowedToolClasses": ["bash"],
-      "forbiddenToolClasses": ["browser-mutation", "browser-navigate"]
+      "allowedToolClasses": [
+        "bash"
+      ],
+      "forbiddenToolClasses": [
+        "browser-mutation",
+        "browser-navigate"
+      ]
     }
   }
 }
