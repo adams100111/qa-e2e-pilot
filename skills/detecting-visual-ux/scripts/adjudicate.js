@@ -22,6 +22,9 @@
     // standards threshold (WCAG): a real verdict but confidence low (no spec oracle).
     ['contrast', 'standards'],
     ['target-size', 'standards'],
+    // behavioral invariant violation, observed directly (overlay-stack, Task 1): a real
+    // verdict, not advisory — confidence low until the shared state cause is code-localized.
+    ['interaction-', 'behavioral-observed'],
     // everything else (generic overlap, layout heuristics): advisory unless corroborated.
     ['overlap', 'heuristic']
   ];
@@ -114,6 +117,14 @@
         return adjudicateI18n(oracleInputs.catalogResult, oracleInputs.catalogCompleteness);
       case 'standards':
         return failLow('standards', 'standards-threshold oracle (WCAG): ' + suspicion.detector);
+      case 'behavioral-observed':
+        // An observed overlay-stack invariant violation IS a fail (the destruction is
+        // objectively observed), but confidence is low until the shared open/route state
+        // both overlays bind to is localized in code (spec §7). Distinct from 'heuristic'
+        // (a mere suspicion → advisory): this is a real observed defect.
+        return oracleInputs.corroborated
+          ? failHigh('interaction', 'observed overlay-stack invariant violation, shared-state cause localized in code: ' + suspicion.detector)
+          : failLow('interaction', 'observed overlay-stack invariant violation (' + suspicion.detector + ') — confidence low until the shared open/route state is localized in code');
       case 'heuristic':
       default:
         // Heuristic-only: advisory UNLESS a definite oracle corroborated it (spec §2).

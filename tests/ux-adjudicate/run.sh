@@ -63,5 +63,12 @@ check "present Latin == en prose -> eq-en" "$(dcr '{"presentInTarget":true,"targ
 check "present Arabic (differs from en, non-latin) -> translated" "$(dcr '{"presentInTarget":true,"targetValue":"حفظ","enValue":"Save","isTechnical":false}')" "present-translated"
 check "present Latin != en (localized to another latin lang) -> translated" "$(dcr '{"presentInTarget":true,"targetValue":"Enregistrer","enValue":"Save","isTechnical":false}')" "present-translated"
 
+# --- behavioral-observed grade (interaction family, sub-plan B) ---
+check "grade interaction-overlay-destroyed" "$("$NODE" -e 'process.stdout.write(require(process.argv[1]).oracleGradeFor("interaction-overlay-destroyed"))' "$MOD")" "behavioral-observed"
+check "behavioral observed-only -> fail low"  "$(field adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x->destroyed"},{}]' 'confidence')" "low"
+check "behavioral observed-only -> fail verdict" "$(field adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x"},{}]' 'verdict')" "fail"
+check "behavioral corroborated -> fail high" "$(field adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x"},{"corroborated":true}]' 'confidence')" "high"
+check "behavioral known-deliberate -> null" "$(call adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x"},{"knownDeliberate":[{"detector":"interaction-overlay-destroyed","rawSignal":"x"}]}]')" "null"
+
 echo; echo "ux-adjudicate: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
