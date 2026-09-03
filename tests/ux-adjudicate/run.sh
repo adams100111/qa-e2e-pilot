@@ -7,6 +7,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MOD="$HERE/../../skills/detecting-visual-ux/scripts/adjudicate.js"
+NODE="${NODE:-node}"
 PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 
@@ -51,6 +52,16 @@ check "i18n no-catalog (black-box) -> advisory" "$(field adjudicate '[{"detector
 KD='[{"detector":"content-raw-iso","rawSignal":"2026-09-02T00:00:00Z"}]'
 check "known-deliberate -> null" "$(call adjudicate "[{\"detector\":\"content-raw-iso\",\"rawSignal\":\"2026-09-02T00:00:00Z\"},{\"knownDeliberate\":$KD}]")" "null"
 check "deliberateKey shape" "$(node -e 'process.stdout.write(require(process.argv[1]).deliberateKey({detector:"content-nan",rawSignal:"NaN"}))' "$MOD" 2>/dev/null)" $'content-nan␟NaN'
+
+# --- deriveCatalogResult: the catalog record -> canonical result string ---
+dcr() { "$NODE" -e 'process.stdout.write(String(require(process.argv[1]).deriveCatalogResult(JSON.parse(process.argv[2]))))' "$MOD" "$1"; }
+check "no catalog record -> no-catalog" "$(dcr 'null')" "no-catalog"
+check "absent key -> missing"        "$(dcr '{"presentInTarget":false}')" "missing"
+check "present empty -> empty"       "$(dcr '{"presentInTarget":true,"targetValue":""}')" "empty"
+check "present technical Latin -> legit" "$(dcr '{"presentInTarget":true,"targetValue":"GitHub","enValue":"GitHub","isTechnical":true}')" "present-latin-legit"
+check "present Latin == en prose -> eq-en" "$(dcr '{"presentInTarget":true,"targetValue":"Save","enValue":"Save","isTechnical":false}')" "present-latin-eq-en"
+check "present Arabic (differs from en, non-latin) -> translated" "$(dcr '{"presentInTarget":true,"targetValue":"حفظ","enValue":"Save","isTechnical":false}')" "present-translated"
+check "present Latin != en (localized to another latin lang) -> translated" "$(dcr '{"presentInTarget":true,"targetValue":"Enregistrer","enValue":"Save","isTechnical":false}')" "present-translated"
 
 echo; echo "ux-adjudicate: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

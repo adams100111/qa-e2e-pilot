@@ -78,6 +78,27 @@
     }
   }
 
+  // A Latin-script test that mirrors ux-detectors.js's script reflex: true when the
+  // string contains at least one A–Z/a–z run and no non-Latin letter script.
+  function isLatinProse(s) {
+    if (!s) return false;
+    if (!/[A-Za-z]/.test(s)) return false;
+    // any letter from a major non-Latin script -> not "Latin prose"
+    return !/[؀-ۿЀ-ӿ一-鿿぀-ヿ가-힯]/.test(s);
+  }
+
+  function deriveCatalogResult(entry) {
+    if (!entry) return 'no-catalog';
+    if (!entry.presentInTarget) return 'missing';
+    var tv = entry.targetValue;
+    if (tv == null || String(tv).trim() === '') return 'empty';
+    if (entry.isTechnical) return 'present-latin-legit';
+    // Latin value equal to en, reading as prose -> suspected untranslated fallback.
+    if (isLatinProse(tv) && entry.enValue != null && String(tv).trim() === String(entry.enValue).trim()) return 'present-latin-eq-en';
+    // Latin but a legitimately different value (localized to another Latin language), or non-Latin script -> translated.
+    return 'present-translated';
+  }
+
   // The classifier. Returns a verdict object, an advisory object, or null (dropped:
   // known-deliberate, or a catalog-confirmed deliberate/correct value).
   function adjudicate(suspicion, oracleInputs) {
@@ -101,7 +122,7 @@
     }
   }
 
-  var api = { ORACLE_GRADES: ORACLE_GRADES, oracleGradeFor: oracleGradeFor, deliberateKey: deliberateKey, isKnownDeliberate: isKnownDeliberate, adjudicateI18n: adjudicateI18n, adjudicate: adjudicate };
+  var api = { ORACLE_GRADES: ORACLE_GRADES, oracleGradeFor: oracleGradeFor, deliberateKey: deliberateKey, isKnownDeliberate: isKnownDeliberate, adjudicateI18n: adjudicateI18n, adjudicate: adjudicate, isLatinProse: isLatinProse, deriveCatalogResult: deriveCatalogResult };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   else if (typeof window !== 'undefined') { window.__adjudicate = api; }
 })();
