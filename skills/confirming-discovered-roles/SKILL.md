@@ -204,6 +204,22 @@ exports:
       revision, not this forward pass; see Engine above.) A dropped Round-1
       role has no Round-2 entry to begin with — its `cred:<name>` node's
       `prereqs` were never satisfied (Step 2).
+- [ ] **Persona-identity capture (gap #6, downstream of this round).** A
+      confirmed persona's `auth` here is only a login CONVENTION — it does
+      not, by itself, prove which identity a later Verify-phase session is
+      actually acting as. When Verify logs in as this persona (this skill
+      does not do that itself), it must probe a read-only `whoami`/profile
+      endpoint — or decode the subject out of the `storageState` the login
+      produced — and record it via `record-evidence.sh identity --persona
+      <id> --subject <captured-subject> --method <whoami|storageState>`; if
+      the app exposes no such probe, `--method none` instead of skipping the
+      call. `qa-verify` then binds that capture to every persona-scoped
+      `human-action`/`cross-tenant`/`cross-role-fk-chain` `pass` for this
+      persona: a captured subject that doesn't match `id` (or a configured
+      `personas[].expectedSubject`) overrides that pass to fail; an
+      absent/unverifiable identity degrades confidence to `low` rather than
+      blocking (spec §5.5). Note this expectation nowhere in the written
+      artifacts — it is Verify-phase doctrine, not a Round 1–3 decision.
 
 ### Step 4 — Round 3: Scope
 

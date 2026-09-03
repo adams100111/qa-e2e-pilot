@@ -8,6 +8,7 @@
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
 #   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false> [--source-ref <selector>]
 #   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>] [--source-ref <selector>]
+#   record-evidence.sh <run-id> <criterion-id> identity --persona <id> --subject <captured-subject> --method <whoami|storageState|none>
 #     --session-log + --session-from  DERIVE sessionCalls from the REAL session.md
 #       (independent ground truth) by running parse-session-log.js and slicing from
 #       N. This OVERRIDES --session-calls and is the tamper-evident path; prefer it.
@@ -21,12 +22,31 @@
 #       forgery signal), it is NOT taken on faith. BACK-COMPAT: omitting
 #       --source-ref produces EXACTLY today's artifact shape (no `provenance` key
 #       at all) — scripts/provenance.sh then falls back to containment instead.
+#     kind 'identity' (Plan H3 Task 1, gap #6) — REQUIRES --persona (identity is
+#       a property of the acting persona for this run, not of one criterion).
+#       Records what identity the browser session was ACTUALLY observed to be
+#       acting as (a read-only whoami/profile probe result, or the subject
+#       decoded from a captured storageState) alongside the persona id it was
+#       supposed to be. `--method none` means the app exposes no probeable
+#       identity at all — record it anyway so qa-verify can distinguish "checked,
+#       unverifiable" from "never checked". Written to
+#       evidence/<persona>/identity.json (persona-scoped, NOT nested under
+#       <criterion-id> like the other four kinds — one identity capture covers
+#       every criterion run as that persona in this run). qa-verify.sh reads it
+#       back for every persona-scoped high-stakes (human-action /
+#       cross-tenant / cross-role-fk-chain) `pass`: a captured subject that
+#       confidently mismatches the persona overrides the pass to fail (acting
+#       as the wrong user); an absent/unverifiable identity degrades
+#       confidence to low instead (spec §5.5 — never blocks).
 #
 # kind -> artifact:
 #   bake     -> bake-read-back.json   { readBack, multiplicity, [provenance], ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
 #   probe    -> network-response.json { status, shape, ok, [provenance], ... }
 #   action-trace -> action-trace.json { actionUnderTest, steps, sessionCalls, [provenance] }
+#   identity -> identity.json         { persona, capturedSubject, method, recorded_at }
+#     (written to evidence/<persona>/identity.json — see the identity note above;
+#     this is the ONE kind whose artifact path is NOT evidence/<persona>/<criterion-id>/...)
 #
 # `--ok` on kind 'probe' is the agent's own judgment that the probe CONFIRMED
 # its expectation — it is NOT a raw status-code check. A cross-role ABSENCE
@@ -166,7 +186,8 @@ artifact_for_kind() {
     computed) echo "recompute.json" ;;
     probe)    echo "network-response.json" ;;
     action-trace) echo "action-trace.json" ;;
-    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace" ;;
+    identity) echo "identity.json" ;;
+    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace | identity" ;;
   esac
 }
 
@@ -567,6 +588,72 @@ print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ
   echo "$(evidence_dir_rel "$crit_id" "$persona")/action-trace.json"
 }
 
+# cmd_identity — Plan H3 Task 1 (gap #6). Records what identity a browser
+# session was OBSERVED to be acting as while running as persona <persona>,
+# so qa-verify.sh can later bind it: a captured subject that mismatches the
+# persona overrides a persona-scoped high-stakes pass to fail; an
+# absent/unverifiable identity degrades confidence instead of blocking
+# (spec §5.5). $3 (persona) is REQUIRED here — unlike the other four kinds,
+# identity has no no-persona back-compat path, because an identity capture
+# is meaningless without saying WHICH persona it was captured for.
+#
+# Deliberately written to evidence/<persona>/identity.json — NOT
+# evidence/<persona>/<crit_id>/identity.json like the other kinds — because
+# one identity capture (typically taken once, at that persona's login)
+# covers every criterion this run executes as that persona; $crit_id is
+# still accepted positionally (main()'s dispatch is uniform across all
+# kinds) but is not part of the written path.
+cmd_identity() {
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
+  # shellcheck disable=SC2034 -- crit_id/run_id accepted for a uniform call
+  # shape across kinds; not part of the written path (see comment above).
+  local subject="" method="" have_subject=0 have_method=0
+
+  [[ -n "$persona" ]] || die "kind 'identity' requires --persona <id> (identity is recorded per-persona, not per-criterion — see the header comment)"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --subject) subject="$2"; have_subject=1; shift 2 ;;
+      --method)  method="$2";  have_method=1;  shift 2 ;;
+      *) die "Unknown option for kind 'identity': $1" ;;
+    esac
+  done
+  [[ "$have_subject" -eq 1 ]] || die "kind 'identity' requires --subject <captured-subject>"
+  [[ "$have_method" -eq 1 ]]  || die "kind 'identity' requires --method <whoami|storageState|none>"
+  case "$method" in
+    whoami|storageState|none) ;;
+    *) die "kind 'identity' --method must be one of: whoami | storageState | none (got '${method}')" ;;
+  esac
+
+  local dir file
+  dir="$(run_dir "$run_id")/evidence/${persona}"
+  mkdir -p "$dir"
+  file="${dir}/identity.json"
+
+  if has_jq; then
+    jq -n \
+       --arg persona "$persona" \
+       --arg capturedSubject "$subject" \
+       --arg method "$method" \
+       --arg recorded_at "$(ts)" \
+       '{persona: $persona, capturedSubject: $capturedSubject, method: $method, recorded_at: $recorded_at}' \
+       > "$file"
+  elif has_py; then
+    python3 - "$persona" "$subject" "$method" "$(ts)" "$file" <<'PYEOF'
+import json, sys
+persona, subject, method, now, file_path = sys.argv[1:6]
+data = {"persona": persona, "capturedSubject": subject, "method": method, "recorded_at": now}
+with open(file_path, "w") as f:
+    json.dump(data, f, indent=2)
+PYEOF
+  else
+    die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
+  fi
+
+  echo "evidence/${persona}/identity.json"
+}
+
 # Scan the remaining args ($@, after run-id/criterion-id/kind) for an
 # optional `--persona <id>` pair anywhere in the list, removing it and
 # leaving the rest untouched (order-preserving) for the per-kind parsers.
@@ -599,7 +686,7 @@ strip_persona() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace"
+  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace | identity"
 
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
@@ -625,6 +712,7 @@ main() {
     computed) cmd_computed "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     probe)    cmd_probe "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     action-trace) cmd_action_trace "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    identity) cmd_identity "$run_id" "$crit_id" "$PERSONA" "$@" ;;
   esac
 }
 
