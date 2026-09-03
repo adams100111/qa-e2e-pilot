@@ -163,7 +163,6 @@ this section only carries the procedure.
      const record = { presentInTarget: false };            // from Step 5.2 localize (catalog lookup)
      const knownDeliberate = JSON.parse(process.argv[1]);   // from ux-conventions.sh read, above
      const result = adjudicate(suspicion, {
-       hasSource: true,
        catalogResult: deriveCatalogResult(record),
        catalogCompleteness: 0.93,
        knownDeliberate,
@@ -207,8 +206,8 @@ Confidence tracks how strong the backing oracle is, not a vibe call:
 - **`high`** — a definite oracle: content fault (`content-*` — `NaN`/`undefined`/`[object Object]`),
   a raw i18n key printed on the page, a resolved catalog gap (`missing`/`empty`) or an
   otherwise-complete-catalog convention violation, invisible text (fg≈bg), a modal painted behind
-  its own backdrop, or a heuristic corroborated by one of those. The DOM/screenshot itself is
-  sufficient proof.
+  its own backdrop, a broken image, or a heuristic corroborated by one of those. The DOM/screenshot
+  itself is sufficient proof.
 - **`low`** — a standards threshold, not this app's own spec/domain rule: WCAG contrast /
   target-size (`standards` grade, retained from ADR-0007's original objective-detector verdicts).
 
@@ -217,9 +216,10 @@ This is one unified `confidence:low` meaning across the whole skill (see
 a general standard or backend-derived value rather than this feature's own oracle, whether the
 finding came from Step 3's four detectors or Step 5's adjudication.
 
-**Black-box degrade.** A `definite-dom` finding needs no source access to stay confidence `high` —
-the rendered DOM/screenshot already is the evidence (`adjudicate(..., {hasSource:false})` still
-returns `high` for `i18n-raw-key`, `content-*`, etc.). Only `definite-catalog`-grade findings
+**Black-box degrade.** A `definite-dom` finding returns `fail high` unconditionally, even on a
+black-box target with no repo/source access — the rendered DOM/screenshot itself IS the evidence
+(`i18n-raw-key`, `content-*`, `broken-image`, etc. are graded from the finding alone, with no
+source-availability input to the classifier at all). Only `definite-catalog`-grade findings
 (i18n script-mismatch resolved via the catalog) and any adjudication that depends on reading source
 degrade to `advisory` when the source/catalog cannot be located (`catalogResult: 'no-catalog'`) —
 never silently promoted to a `fail` without the oracle that backs it.
@@ -318,8 +318,11 @@ instead of translated text — the i18n lookup missed and the raw key leaked int
 selector:"[data-testid=deliverables-title]", rawSignal:"deliverables.title"}`. Step 5.2 localizes
 it (a dotted-key-shaped string is definite-DOM evidence on its own — no catalog lookup is even
 required to know a raw key rendered). Step 5.3 calls `adjudicate()`; `oracleGradeFor("i18n-raw-key")`
-is `definite-dom`, so it returns `fail high` unconditionally — even `hasSource:false` (black-box)
-per the degrade rule. Step 5.4 routes it to a real `fail @ FE, confidence:high` visual-UX finding,
+is `definite-dom`, so it returns `fail high` unconditionally — even on a black-box target with no
+repo/source, because the rendered DOM/screenshot IS the evidence (the black-box degrade for
+catalog/code-adjudication findings instead flows through `catalogResult:'no-catalog'` → advisory —
+there is no separate black-box-detection input to the classifier). Step 5.4 routes it to a real
+`fail @ FE, confidence:high` visual-UX finding,
 reason = "definite DOM oracle: i18n-raw-key (deliverables.title)", screenshot attached.
 
 ### Eval 6 — U-adj-2: intentionally-Latin catalog value -> no finding (spec §11)

@@ -60,6 +60,10 @@ _Avoid_: finding (reserve for an adjudicated result), bug (not yet confirmed).
 The deliberate-vs-bug determination: localize a **suspicion** to its source (component, style rule, i18n key, data field) and judge it against the **Oracle**. Confirms a real defect *or* clears an intentional design (e.g. an Arabic-catalog value intentionally in Latin script). Reading the code only *localizes and adjudicates* — it is never itself the oracle.
 _Avoid_: verification (reserve for the layer-agreement of a criterion), review.
 
+**Oracle grade**:
+The strength of the expectation source backing a **suspicion**, one of `definite-dom | definite-catalog | standards | heuristic` (strongest to weakest). `definite-dom`/`definite-catalog` findings are backed by a definite **Oracle** and may become a `fail` verdict at **Confidence** `high`; `standards` may become a `fail` at `low`; `heuristic` never grounds a verdict on its own — it stays advisory unless a definite-grade finding corroborates it. An internal classification input the adjudicator computes per finding — never itself a **Verdict**, and never the same field as **Confidence** (grade decides verdict-vs-advisory and feeds the high/low split; it is not the attribute reported on the finding).
+_Avoid_: confidence (a verdict attribute the grade merely informs), verdict (grade is an input to one, never a value of one).
+
 **Capture-hook / Toolstream**:
 The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies; `Bash` args/response secret-redacted, `browser_*` recorded in full — a documented residual) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-check, not the file.
 _Avoid_: log (unqualified), trace (reserve "action-trace" for the agent's self-report), hash-chain (cut).
