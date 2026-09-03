@@ -2,6 +2,8 @@
 
 **Status:** reference (2026-09-02) · Grounds both `2026-09-02-qa-honesty-hardening-design.md` (ADR-0018) and `2026-09-02-human-eye-ux-detection-design.md` (ADR-0019). Informs (does **not** override) the already-merged `harness-profiles.json`. Sourced from live API research (Claude Code docs; openai/codex source + docs; anomalyco/opencode source + docs; `@earendil-works/pi-coding-agent` local install + docs). **Model ids churn quarterly — pin at implementation against each harness's live model catalog; the load-bearing facts are the capability flags.**
 
+**Update (2026-09-03, Plan H2):** the Claude **Capture** row's `PostToolUse` and **Block** row's `PreToolUse` primitives listed below are no longer speculative — `scripts/capture-hook.sh`/`scripts/block-hook.sh` are landed, wired inline in `.claude-plugin/plugin.json`, plus the out-of-agent deterministic `qa-verify` (`scripts/qa-verify.sh`) authority they feed. See ADR-0018's Status section and `docs/harness-adapters.md#the-claude-assurance-tier` for what shipped vs. what remains Plan H3 (Codex/opencode/Pi hook adapters, the independent LLM re-drive).
+
 ## The matrix
 
 | Axis | **Claude Code** | **Codex** | **opencode** | **Pi** |

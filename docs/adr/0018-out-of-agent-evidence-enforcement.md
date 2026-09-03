@@ -2,7 +2,32 @@
 
 ## Status
 
-Proposed (2026-09-02). Implements `docs/specs/2026-09-02-qa-honesty-hardening-design.md`. Amends ADR-0015 (narrows residual R4). Builds on ADR-0017 (merged) and ADR-0010 (evidence gate).
+Partially landed (2026-09-03, Plan H2 — "WS-3 sound core", Claude-first). Implements
+`docs/specs/2026-09-02-qa-honesty-hardening-design.md`. Amends ADR-0015 (narrows residual R4).
+Builds on ADR-0017 (merged) and ADR-0010 (evidence gate).
+
+**What's landed (Plan H2, Claude only):** the **capture-hook** (`scripts/capture-hook.sh`,
+`PostToolUse`) appending redacted `Bash`/`browser_*` calls to append-only
+`.qa/runs/<run-id>/toolstream.jsonl`; the **block-hook** (`scripts/block-hook.sh`, `PreToolUse`)
+denying a mutating `browser_evaluate` and `browser_run_code_unsafe` (fail-open); **provenance
+binding** (`scripts/provenance.sh check`, a containment check against the toolstream, returning
+`bound`/`unbound`/`no-toolstream`); and `qa-verify`'s **deterministic core**
+(`scripts/qa-verify.sh` — independent required-kinds re-derivation, evidence re-validation,
+provenance binding, `verification.json`, wired into `scripts/qa-ci.sh` +
+`scripts/report-to-junit.sh`'s honest assurance-tier reporting). See
+`skills/checkpointing-qa-memory/SKILL.md`'s "Out-of-Agent Enforcement" section for the full
+mechanics and honest residuals, and `docs/harness-adapters.md#the-claude-assurance-tier` /
+`docs/running-in-ci.md#qa-verify-the-out-of-agent-authority` for the operational writeup.
+
+**What's still fast-follow (Plan H3), not built by this ADR's "landed" claim:** the block-hook does
+**not** deny `browser_route` (item 2 below describes the original full design intent; the shipped
+hook is narrower — only the mutating-`browser_evaluate` + `browser_run_code_unsafe` pair). Also
+deferred: **persona-identity binding** (item 6), the **independent LLM re-drive/re-bake** of
+high-stakes criteria (`qa-verify`'s `QA_VERIFY_REDRIVE_CMD` is a pluggable, documented stub whose
+result is logged but not wired into the verdict — item 3's "hybrid" second half), and the
+**Codex/opencode/Pi hook adapters** (capture/block hooks exist on Claude only today; the other
+three harnesses fall back to `qa-verify`'s deterministic checks with no toolstream to corroborate
+against, degrading high-stakes passes to `confidence: low` by default).
 
 ## Context
 
@@ -43,12 +68,12 @@ Move enforcement out of the agent, in three layers, plus provenance binding, acr
 - **#2 (required-kinds binding).** `generating-qa-checklist` emits `checklist.json` (the agent's *proposal*: per-criterion `kind`/`tags`/`action`/`requiredKinds`/`assertedState`). `checkpoint.sh`'s pass-gate reads a criterion's row and re-derives its required evidence kinds itself via `required-kinds.sh derive` — from the row's structural `kind`/`tags`/action shape only, reusing `mutation-flag.sh`'s mutation classifier — and rejects a `pass` unless the recorded `--kinds` is a superset. The row's own `requiredKinds` field is never read for enforcement.
 - **#4 (fingerprint-target).** A criterion's `assertedState {entity, readBackPath, expectChange}` is threaded into `action-trace.json.fingerprintTarget`; `check-action-trace.js` Check 3 requires the before/after state fingerprint to cover `readBackPath` and, per `expectChange`, show it changed or unchanged.
 
-**This is explicitly the best-effort tier, not item 5's sound form.** Both checks re-derive from the criterion's *declared* shape (`checklist.json`'s `kind`/`tags`/`assertedState`) — they catch "drop a required kind at checkpoint time" and "fingerprint an irrelevant field," not "the declared shape itself was dishonest" or "the fingerprint's values were fabricated." The **sound** tier this ADR describes — independent re-derivation from the captured **toolstream** (Layer 1) plus re-bake (Layer 3), in a trust domain the agent does not control — remains `qa-verify`, unbuilt, Plan H2. A run whose passes depend on #2/#4 alone should carry `confidence: low` with an "authoritative verdict pending `qa-verify`" framing, per this ADR's Layer 3 description above. WS-1's #3 (semantic mutation classifier) and A (nav fail-closed) shipped earlier in PR#31; #8 (squash) in PR#32; #2/#4 close the remainder of WS-1 that PR#31/#32 left open. See `skills/checkpointing-qa-memory/SKILL.md`'s "Evidence-Kind Gate (#2) and Fingerprint-Target (#4)" section for the full mechanics and the honest-tier note, including the `read-only`/probe-tag residual left to `qa-verify`.
+**This is explicitly the best-effort tier, not item 5's sound form.** Both checks re-derive from the criterion's *declared* shape (`checklist.json`'s `kind`/`tags`/`assertedState`) — they catch "drop a required kind at checkpoint time" and "fingerprint an irrelevant field," not "the declared shape itself was dishonest" or "the fingerprint's values were fabricated." The **sound** tier this ADR describes — independent re-derivation from the captured **toolstream** (Layer 1) plus provenance binding, in a trust domain the agent does not control — is `qa-verify`'s **deterministic core**, now landed (Plan H2, see the Status section above); the re-bake/re-drive half of Layer 3 (an independent fresh-agent session) remains a pluggable, un-wired stub. A run whose passes depend on #2/#4 alone, with no `qa-verify` run against it yet, should carry `confidence: low` with an "authoritative verdict pending `qa-verify`" framing, per this ADR's Layer 3 description above — that framing no longer applies once `qa-verify.sh` has actually run and the pass survived. WS-1's #3 (semantic mutation classifier) and A (nav fail-closed) shipped earlier in PR#31; #8 (squash) in PR#32; #2/#4 close the remainder of WS-1 that PR#31/#32 left open. See `skills/checkpointing-qa-memory/SKILL.md`'s "Evidence-Kind Gate (#2) and Fingerprint-Target (#4)" section for the full mechanics and the honest-tier note, including the `read-only`/probe-tag residual left to `qa-verify`.
 
 ## Consequences
 
 - The gate stops grading the agent's homework: forged evidence, classifier evasions, dropped kinds, unlabeled act-navigates, and mispersona'd isolation probes are caught at a layer the agent doesn't control (or, where capture isn't hardened, corroborated by independent re-drive).
 - **Cost rises** (capture on every call; sampled re-drive). Bounded by the run-level cost ceiling with a logged drop-order; functional/honesty/cross-tenant checks are never dropped.
-- **Honest residual (not hidden):** without OS-sandbox/managed-config hardening, in-run capture is tamper-*evident*, not tamper-*proof* — plugin-bundling stops the hook *config* being disabled, but the hook's *script files* are user-writable on a normal install, so a determined agent's `Bash` could neuter them. The guarantee is therefore `qa-verify`'s independent re-drive/re-bake of high-stakes criteria + the `confidence: low` banner on un-reverified passes — not the live hook. Fully agent-proof only under Codex-managed / hardened setups.
+- **Honest residual (not hidden):** without OS-sandbox/managed-config hardening, in-run capture is tamper-*evident*, not tamper-*proof* — plugin-bundling stops the hook *config* being disabled, but the hook's *script files* are user-writable on a normal install, so a determined agent's `Bash` could neuter them. The guarantee is therefore `qa-verify`'s deterministic re-check (required-kinds + evidence + provenance, landed) plus the `confidence: low` banner on un-reverified high-stakes passes — not the live hook, and not yet the independent re-drive/re-bake either (still a pluggable, un-wired stub). Fully agent-proof only under Codex-managed / hardened setups.
 - Vocabulary unchanged: no sixth verdict; `human-action` stays an evidence kind; layer stays `FE|route|service|migration|DB`.
 - **Reversibility:** the capture hook + `qa-verify` are additive; removing them reverts to the ADR-0015 in-agent gate. The hard-to-reverse call is making an out-of-agent verifier authoritative over the in-run report — hence this ADR.
