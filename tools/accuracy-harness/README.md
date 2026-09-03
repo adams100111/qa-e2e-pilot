@@ -26,6 +26,69 @@ node scorer/convert-buglog.js <run>/bug-log.json > findings/measured-<run>.json
 node scorer/score.js findings/measured-<run>.json --gate   # exit 1 if the acceptance gate fails
 ```
 
+## UI/UX taxonomy fixture (`fixture-ux/`) — the ADR-0019 measured gate
+
+A second, separate fixture backs ADR-0019 decision 7's "95% is a measured gate, honestly scoped."
+Note the "18 planted bugs" table above describes the *original* `fixture/` (functional/journey/UX
+Phase-1-4 work) — `fixture-ux/` is a distinct fixture for the UX detection engine (ADR-0019) and is
+scored by its own runner and seed file, not `run-baseline.sh`/`seeds.json`.
+
+```
+fixture-ux/index.html     self-contained UI/UX taxonomy fixture: planted definite-oracle UX bugs
+                           (content-rendering, i18n, image, invisible-text, modal-stacking,
+                           interaction/behavioral) across the ADR-0019 detector families, plus the
+                           two held-out real bugs found in the innovate-lab app (the sheet-stack
+                           behavioral bug and the mm/dd/yyyy locale-date bug)
+fixture-ux/snapshot.json  the committed DOM ground-truth: the detector-relevant element records
+                           extracted from the fixture (one record per seed, `{seed, family, kind,
+                           input}`) — headless, no browser needed to reproduce a run
+scorer/ux-measure.js      the headless measured runner: dispatches the REAL shipped detector cores
+                           (skills/detecting-visual-ux/scripts/ux-detectors.js,
+                           skills/detecting-interaction-ux/scripts/overlay-stack.js) and the REAL
+                           skills/detecting-visual-ux/scripts/adjudicate.js over snapshot.json's
+                           records -> a findings file, scored by scorer/score.js against
+                           seeds-ux.json. Dependency-free, deterministic, no browser — a record
+                           whose core returns no signal, or whose adjudication comes back
+                           known-deliberate/catalog-clean, contributes NO finding (never fabricated)
+seeds-ux.json              ground truth for fixture-ux/ + the gate thresholds (recall/precision/
+                           heldOutRecallMin), mirroring seeds.json's schema
+run-ux-measure.sh          the one-command gate: runs ux-measure.js then score.js --gate
+```
+
+Run it:
+
+```bash
+bash tools/accuracy-harness/run-ux-measure.sh   # -> per-axis recall + held-out + precision + GATE: PASS/FAIL
+```
+
+**Gate thresholds (`seeds-ux.json`'s `gate` block):** ≥95% `ux-objective`/`overall` recall, ≥90%
+precision, 100% held-out recall. **Currently measured — green — at 100% recall (12/12 gated
+definite-oracle seeds), 100% precision, and 100% held-out recall (2/2)**: the two held-out seeds are
+the sheet-stack behavioral bug (`SS1`, caught by `checkStackIntegrity` in `overlay-stack.js`) and the
+`mm/dd/yyyy` locale-date bug (`D1`, caught by the `localeDateSignal` i18n detector added in this
+effort). The generic overlap-rect heuristic (`O2`, `rect-collision`) is deliberately excluded from the
+gated recall denominator — it lands in the advisory stream (`stream:"advisory"`), consistent with the
+oracle-vs-heuristic split (ADR-0019 decision 1): a heuristic-only suspicion never becomes a verdict on
+its own.
+
+**Honest-measurement + `knownGap` discipline.** Findings are always PRODUCED by `ux-measure.js` running
+the real cores over `snapshot.json` — never hand-edited into a findings file. If a shipped detector
+can't yet catch a planted definite-oracle bug, the honest move is to mark that seed `knownGap: true` in
+`seeds-ux.json` (excluding it from the gated set) rather than fake a pass; **there are none today** —
+every planted definite-oracle bug in `fixture-ux/` is caught by a shipped detector. Heuristic-only
+suspicions (`stream: "advisory"` seeds) are likewise excluded from the gated recall count, whether or
+not the heuristic happens to fire on them.
+
+**Scope of the 100%, honestly stated.** This measures recall/precision on the *seeded* taxonomy —
+layers 1–2 of ADR-0019 (definite-oracle + code-adjudicated findings) — reproduced deterministically
+from a committed snapshot. It is **not** a guarantee about unknown, in-the-wild bugs; ADR-0019 §11's
+generative-critic layer 3 (sub-plan C2) remains estimated, not measured, for exactly that reason — you
+cannot measure recall on unseeded bugs.
+
+**CI-wiring follow-up.** The gate is manual/local today: `run-ux-measure.sh` is run by hand (or by an
+agent) on demand. Wiring it into `.github/workflows` so it runs automatically on every PR is a
+follow-up, not yet done.
+
 ## The 18 planted bugs (axes)
 
 | id | axis | bug |
