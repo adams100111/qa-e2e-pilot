@@ -116,3 +116,29 @@ deliberately-adversarial agent. Under that model:
 **Net:** the three residuals are reviewed and accepted as the explicit, scoped tamper-evidence
 boundary. The gate remains machine-tamper-evident for concealment (Check 0, when enabled) and
 act-phase non-UI mutation (Check 1/2/3); phase-framing honesty is the reviewer-spot-check residual.
+
+## Amendment (2026-09-03, Plan H3 — WS-2 C): named exceptions are first-class; R4 narrowed, not closed
+
+Plan H3 promotes the two original, ad hoc carve-outs (`deep-link`, `auth-boundary`) into a
+first-class, five-member named-exception set enforced by a fail-closed enum in
+`check-action-trace.js`: `deep-link`, `auth-boundary`, `persona-switch`, `out-of-band` (all four
+require an explicit `carveout:"<name>"` tag, checked by Set membership — an unrecognized or
+missing value stays a rejected workaround) plus the structurally-exempt arrange-phase entry
+navigate. The `phase` field is validated the same way: an unrecognized value (a typo, or the
+field absent) is treated as `act` — checked, never silently exempted. Both directions read
+"when in doubt, enforce." Full table + rationale:
+`skills/driving-browser-qa/references/interaction-discipline.md` §1b/§1c.
+
+**This narrows R4; it does not close it.** R4 (a real mutation disclosed as an `arrange` step,
+paired with a human-path decoy `act`) is a *phase-mislabeling* attack — the agent asserts
+`phase:"arrange"` on a step that is, in truth, the action-under-test. The fail-closed phase enum
+above only catches an *unrecognized* phase value; a step honestly (or dishonestly) labeled
+`arrange` — a legal value — sails through unchanged, exactly as R4 originally described. Closing
+R4 for real needs act-boundary fingerprints: state captured immediately before AND after the act
+phase, so a criterion whose `arrange` step produced the persisted change while its `act` phase
+produced none is caught as a mislabel/decoy. That remains **out of scope for this in-run gate**
+(`checkpoint.sh`/`check-action-trace.js` read only what the agent itself already wrote) and is now
+recorded, honestly, as **still open — `qa-verify` territory**: an out-of-agent re-derivation from
+the captured toolstream is the layer that can eventually tell a genuinely-early `arrange` navigate
+from a disguised `act`, not a check running inside the same trust domain as the agent it is meant
+to police. See `docs/adr/0018-out-of-agent-evidence-enforcement.md`.

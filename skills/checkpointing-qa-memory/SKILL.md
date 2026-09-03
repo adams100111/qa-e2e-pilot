@@ -53,6 +53,9 @@ The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the
         screenshot-after.png
         bake-read-back.json
         network-response.json
+      <persona>/identity.json    ← record-evidence.sh identity (Plan H3 #6); persona-scoped,
+                                     NOT nested under <criterion-id> — one capture (typically
+                                     at that persona's login) covers every criterion it runs
 ```
 
 ## ADR-0002 Boundary (read this first)
@@ -188,6 +191,20 @@ it. **(4)** regex-classifier obfuscation — `mutates()` pattern-matches source 
 indirect construction that never literally spells `method:'POST'`/`.setItem(` evades both
 the block-hook and `check-action-trace.js`'s reuse of it — `qa-verify` re-runs it
 unchanged, inheriting the gap.
+
+---
+
+## Plan H3 Fast-Follows (persona-identity, clock advisory, named exceptions, save-session, autonomousSetup)
+
+Four honesty fast-follows ride on top of the Plan H2 core above. All logic lives in `scripts/`/`skills/`, copied verbatim into every `dist/<h>/` tree by `build-adapter.sh` — no per-harness hook work.
+
+**Persona-identity binding (#6).** `record-evidence.sh <run-id> <crit-id> identity --persona <id> --subject <captured-subject> --method <whoami|storageState|none>` writes `evidence/<persona>/identity.json {persona, capturedSubject, method, recorded_at}` (persona-scoped — see the Run Directory Layout above). `qa-verify` binds it to every persona-scoped, high-stakes `pass` (recorded kinds include `human-action`, or the checklist row is tagged `cross-tenant`/`cross-role-fk-chain`; `__shared__`/read-only is exempt): absent, or present with `method:none`, results in `confidence: low` ("persona identity unverified") — **never** blocked. When present and `.qa/config.json`'s `personas[].expectedSubject` **is** configured for that persona (operator-supplied ground truth): match verifies; mismatch triggers an **override to fail** ("acting identity != expected identity" — acting as the wrong user is a real defect). **This is the only override path.** Without a configured `expectedSubject` there is no override: a bare `capturedSubject`-vs-persona-`id` comparison can't distinguish genuine impersonation from a legitimate opaque account id (a numeric id, a short hash, a JWT `sub`), so it falls back to a case-insensitive substring match (`capturedSubject` contains the persona `id`) which verifies; any non-match instead **degrades to `confidence: low`**, never a hard fail. The honest consequence: impersonation degrades without ground truth — an operator who wants it to hard-fail, not degrade, must set `expectedSubject` themselves.
+
+**Clock advisory (#7).** `capture-hook.sh` pattern-scans every captured call for known time-control signals (`setTestNow`, `sinon.useFakeTimers`/`jest.useFakeTimers`, a `Date.now =` override, a clock-control route like `/__clock`/`?now=`) and stamps `advisory:"clock-control"` on the matching toolstream event. **Advisory only** — it never blocks, never changes a verdict or exit code (the hook still always exits 0), and is a suspect signal for review, not proof of a violation (a legitimate in-app "set server time" admin tool can trip the same pattern). Doctrine ban + full signal list: `skills/driving-browser-qa/references/interaction-discipline.md` §5.
+
+**WS-2 named exceptions.** `check-action-trace.js`'s `NAV_CARVEOUTS` now names all four tag-required act-phase `browser_navigate` carve-outs — `deep-link`, `auth-boundary`, `persona-switch`, `out-of-band` — plus the structurally-exempt arrange-phase entry navigate (never act-phase to begin with): five named exceptions in total. Both enums are fail-closed on the unrecognized side: an unknown `carveout` value is treated as NOT carved out (the step stays a rejected workaround), and an unrecognized `phase` value is treated as `act` (checked, never silently skipped) — "when in doubt, enforce." Full table + rationale: `interaction-discipline.md` §1b/§1c.
+
+**`saveSession` default + `autonomousSetup`.** `humanInteraction.saveSession` now defaults `true` (`.qa/config.json.example`, `init-config.sh`), enabling Check 0 (independent `session.md` reconciliation) whenever a session log is present — Check 0 already degrades gracefully when it's absent, so the flip is safe on a harness that isn't logging yet. **Honest caveat:** the flag alone does not make Claude capture a log — Claude has no bundled `mcp.snippet`, so the operator must still add `--save-session` to their own Playwright MCP server. `humanInteraction.autonomousSetup` (default `false`) is a separate, operator-declared headless-mode flag `confirming-discovered-roles` reads: when `true` it proactively auto-accepts that skill's pre-run setup rounds (each tagged `assumption:true`) for headless/CI/`/loop` runs with no human present. **Setup-only** — it never touches the Verify loop, which already never interrupts a criterion once verification starts.
 
 ---
 
@@ -497,3 +514,4 @@ honest-tier note above ("Evidence-Kind Gate (#2) and Fingerprint-Target (#4)").
 | `scripts/toolstream.sh append\|read\|redact <run-id> ...` | Append-only `toolstream.jsonl` writer/reader + the secret-redaction pass `capture-hook.sh` calls |
 | `scripts/provenance.sh check <run-id> <artifact>` | Containment check: does an evidence artifact correspond to a captured `toolstream.jsonl` call? → `bound`\|`unbound`\|`no-toolstream` |
 | `scripts/qa-verify.sh <run-id>` | The out-of-agent authority: re-derives required-kinds, re-validates evidence, binds provenance for every recorded `pass`; writes `verification.json`, exits non-zero on any override |
+| `scripts/record-evidence.sh <run-id> <crit-id> identity --persona <id> --subject <captured-subject> --method <whoami\|storageState\|none>` | Plan H3 #6: record a persona's observed identity → `evidence/<persona>/identity.json`; consumed by `qa-verify`'s persona-identity binding (override needs `personas[].expectedSubject`, else best-effort degrade) |

@@ -80,6 +80,22 @@ _Avoid_: gate (the in-run `checkpoint.sh` is the gate; `qa-verify` is the out-of
 The enforcement strength actually achieved on a harness — how tamper-resistant the live gate is (Codex managed-config = agent-proof; Claude plugin-bundled / opencode root-managed; Pi cooperative). Printed in the report; the universal floor is **qa-verify**. A best-effort tier prints an honest banner rather than claiming a guarantee.
 _Avoid_: level, mode.
 
+**Persona identity**:
+The session's actually-observed identity for a **persona**, captured via `record-evidence.sh identity` (`evidence/<persona>/identity.json {persona, capturedSubject, method}`) and bound by **qa-verify** to every persona-scoped, high-stakes pass (recorded kinds include `human-action`, or the criterion is tagged `cross-tenant`/`cross-role-fk-chain`). A mismatch overrides the verdict to `fail` only when `.qa/config.json`'s `personas[].expectedSubject` supplies operator-configured ground truth for that persona; without it, an unverifiable or non-matching captured identity degrades **Confidence** to `low` instead of a false override — a persona id is a scoping label the agent supplies, never by itself proof of who acted.
+_Avoid_: whoami (the probe technique, not the artifact/check), persona (the confirmed role being played — identity is what the session actually turned out to be, checked against it).
+
+**Clock advisory**:
+A best-effort, non-gating flag (`advisory:"clock-control"`) the **Capture-hook** stamps on a toolstream event whose args match a known time-control signal (`setTestNow`, fake-timers, a `Date.now` override, a clock-control route like `/__clock`). Paired with a doctrine ban on mocking the clock to force a time-dependent assertion to pass. Never blocks, never changes a verdict, and never affects the hook's exit code — a suspect signal worth a second look during review, not proof of a violation on its own.
+_Avoid_: gate (it never gates anything), block (see **Block-hook**, a distinct, actually-blocking mechanism).
+
+**Named exception**:
+One of the five tag-required carve-outs that loosen the act-phase `browser_navigate` fail-closed default: `deep-link`, `auth-boundary`, `persona-switch`, `out-of-band` (each requires an explicit `carveout:"<name>"` tag on the step, checked by Set membership) plus the structurally-exempt arrange-phase entry navigate. An unrecognized `carveout` value is never treated as a named exception — the step stays a rejected workaround (fail-closed).
+_Avoid_: carve-out (acceptable as a gloss for one member; this term is the canonical name for the full five-member set), workaround (the opposite outcome: an untagged or unrecognized-tag navigate).
+
+**autonomousSetup**:
+A `.qa/config.json` `humanInteraction.autonomousSetup` flag (default `false`) letting an operator declare a headless/CI/`/loop` run: when `true`, `confirming-discovered-roles` proactively auto-accepts its pre-run setup rounds (tagging each accepted item `assumption:true`) instead of prompting a human. Setup-only, by design — it never touches the Verify loop, which already never interrupts a criterion once verification starts.
+_Avoid_: autonomous (unqualified — this flag scopes only the pre-run setup rounds, never Verify).
+
 **Required-kinds**:
 The gate's own independently re-derived required evidence-kind set for a criterion — computed by `required-kinds.sh derive` from the criterion's declared `kind`/`tags`/action shape (a subset of `bake | computed | probe | human-action`), reusing the mutation classifier for the mutates→human-action rule. Read off a **Checklist**'s `checklist.json` row but never trusted from that row's own `requiredKinds` field; `checkpoint.sh`'s pass-gate rejects a `pass` unless the recorded `--kinds` is a superset. In-script, best-effort: catches a *dropped* kind, not a dishonestly-declared `kind`/`tags` shape — the sound form of this check is **qa-verify**.
 _Avoid_: requiredKinds (the agent's advisory field on a `checklist.json` row — not the gate's own derivation, which this term names).
