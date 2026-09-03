@@ -65,6 +65,11 @@
       "category": "verify"
     },
     {
+      "name": "detecting-interaction-ux",
+      "path": "skills/detecting-interaction-ux/SKILL.md",
+      "category": "verify"
+    },
+    {
       "name": "fanning-out-criteria",
       "path": "skills/fanning-out-criteria/SKILL.md",
       "category": "verify"
