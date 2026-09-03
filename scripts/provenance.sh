@@ -55,6 +55,27 @@
 # decision #2 (no hash-chain / no false assurance from an overly-clever
 # check that itself becomes a thing to game).
 #
+# RESIDUALS (the honest tier boundary — accepted, not bugs; qa-verify's
+# independent re-bake is the backstop for both):
+#   (a) truncation-boundary false-unbound — capture-hook.sh caps a captured
+#       event's `responseBody` at ~4KB (see capture-hook.sh's own comment on
+#       that cap). A GENUINE read-back value that only appears past that
+#       truncation boundary in the real response will not be found by
+#       containment and resolves `unbound` even though the underlying call
+#       really happened and really returned that value. This is inherited
+#       directly from the capture-hook's cap, not something provenance.sh
+#       can fix on its own — deliberately accepted rather than raising the
+#       cap (which would grow every toolstream file and its own exposure
+#       surface) or attempting a smarter partial match.
+#   (b) short-scalar containment collision — a very short or generic
+#       readBack scalar (e.g. "id", "ok", "1") can coincidentally appear as
+#       a substring inside unrelated captured JSON structural text (a key
+#       name, a brace, a common short value from a wholly different call),
+#       producing a `bound` verdict that isn't really evidence of
+#       correspondence. This is the same permissiveness tradeoff documented
+#       above for CONTAINMENT, NOT EQUALITY, called out again here
+#       explicitly as a residual.
+#
 # CANDIDATE EXTRACTION per kind:
 #   bake     — the `readBack` value. If it's a scalar, the candidate is its
 #              string form. If it's an object or array, candidates are every
@@ -80,18 +101,61 @@
 #              filtered to `phase == "act"`. An empty resulting call list ->
 #              unbound immediately (nothing to bind — no captured browser_*
 #              call could possibly correspond to zero acts). Otherwise: bound
-#              iff ANY call corresponds to ANY captured browser_* toolstream
-#              event of a matching class — a sessionCall with class
-#              "human-path" matches a captured click/type/fill/press/select/
-#              hover/drag/upload tool; class "evaluate" matches a captured
-#              browser_evaluate; class "route" matches a captured
-#              browser_route; anything else matches any captured browser_*
-#              call at all. A bare `steps` entry matches by its own `.tool`
+#              iff ANY call corresponds to a REAL captured toolstream event of
+#              a matching, class-appropriate kind — NOT merely "any browser_*
+#              call was captured at all" (that catch-all was itself a
+#              forgery path — see Fix 2 below):
+#                - class "human-path" requires a captured HUMAN-PATH
+#                  INTERACTION tool — its name must END WITH one of
+#                  human_interaction_tools: browser_click, browser_type,
+#                  browser_fill_form, browser_select_option,
+#                  browser_press_key, browser_hover, browser_file_upload,
+#                  browser_drag, browser_drop, browser_handle_dialog.
+#                  browser_navigate / browser_snapshot /
+#                  browser_take_screenshot do NOT count — those are
+#                  navigation/observation, not interaction, and must not
+#                  launder a fabricated "the user clicked/typed something"
+#                  claim.
+#                - class "evaluate" requires a captured browser_evaluate.
+#                - class "route" requires a captured browser_navigate (or a
+#                  browser_route tool, if one is ever emitted).
+#                - anything else (e.g. class "other", the value
+#                  parse-session-log.js emits for navigate/wait calls) does
+#                  NOT bind by itself — there is no catch-all "any browser_*
+#                  call in the toolstream" fallback. A forged sessionCall
+#                  whose class matches none of the above never binds no
+#                  matter what else was captured.
+#              A bare `steps` entry (only reached when `sessionCalls` is
+#              entirely absent from the artifact) matches by its own `.tool`
 #              name appearing as a substring of a captured tool name (the
 #              toolstream's `.tool` is the full MCP tool name, e.g.
 #              "mcp__plugin_playwright_playwright__browser_click" — a
 #              substring match against the short "browser_click" is
 #              intentional, not a bug).
+#
+# FIX HISTORY (forgery paths closed — see tests/provenance/run.sh for the
+# regression coverage):
+#   Fix 1 (Critical) — jq's `call_matches` human-path branch used to write
+#     `any(human_tools[]; $t | contains(.))`. jq's `|` rebinds `.` before
+#     `contains(.)` runs, so that expression evaluates to "$t contains $t" —
+#     ALWAYS true — regardless of which element of human_tools was being
+#     checked. Net effect: on the jq engine, ANY captured browser_* call
+#     (even a bare browser_navigate) made a forged `class:"human-path"`
+#     sessionCall bind, vacuously. Fixed by binding the human-tools element
+#     to its own variable before the containment check:
+#     `any(human_interaction_tools[]; . as $h | $t | endswith($h))`. The
+#     python3 fallback never had this bug (Python's `in` doesn't rebind
+#     anything) — the two engines must always agree; that agreement is
+#     asserted directly in the regression tests.
+#   Fix 2 (Important) — the `class` catch-all used to be
+#     `($toolNames | length) > 0`, i.e. "bound if ANY browser_* call was
+#     captured, regardless of class". That let a forged sessionCall using
+#     `class:"other"` (the real value parse-session-log.js emits for
+#     navigate/wait) bind on a run that only ever navigated. Fixed by
+#     removing the catch-all entirely and requiring each class to match a
+#     captured call of its OWN corresponding kind (see the human-path /
+#     evaluate / route rules above); a class matching none of them never
+#     binds on its own.
 #
 # EXPLICIT provenance.sourceRef (optional, written by record-evidence.sh's
 # --source-ref): when the artifact carries `.provenance.sourceRef`, THAT is
@@ -194,20 +258,38 @@ check_jq() {
         else
           false
         end;
-    def human_tools: ["browser_click","browser_type","browser_fill_form","browser_press_key","browser_select_option","browser_hover","browser_drag","browser_file_upload"];
+    # human_interaction_tools: the shared constant of REAL human-path
+    # interaction tools (Fix 2) — navigation/observation tools
+    # (browser_navigate, browser_snapshot, browser_take_screenshot) are
+    # deliberately excluded; only these count as evidence a human-path act
+    # actually happened.
+    def human_interaction_tools: ["browser_click","browser_type","browser_fill_form","browser_select_option","browser_press_key","browser_hover","browser_file_upload","browser_drag","browser_drop","browser_handle_dialog"];
     def captured_tool_names($events):
       [ $events[] | (.tool // empty) | select(type == "string" and contains("browser_")) ];
+    def has_captured_interaction($toolNames):
+      # Fix 1: the human-tools element MUST be bound to its own variable
+      # ($h) before the containment check. The previous
+      # `$t | contains(.)` rebound `.` to $t itself before contains() ran,
+      # making the check "$t contains $t" -- vacuously always true.
+      any($toolNames[]; . as $t | any(human_interaction_tools[]; . as $h | $t | endswith($h)));
+    def has_captured_evaluate($toolNames):
+      any($toolNames[]; contains("browser_evaluate"));
+    def has_captured_route($toolNames):
+      any($toolNames[]; contains("browser_navigate") or contains("browser_route"));
     def call_matches($call; $toolNames):
       if (($call | type) == "object" and ($call | has("class"))) then
         ( $call.class ) as $cls
         | if $cls == "human-path" then
-            any($toolNames[]; . as $t | any(human_tools[]; $t | contains(.)))
+            has_captured_interaction($toolNames)
           elif $cls == "evaluate" then
-            any($toolNames[]; contains("browser_evaluate"))
+            has_captured_evaluate($toolNames)
           elif $cls == "route" then
-            any($toolNames[]; contains("browser_route"))
+            has_captured_route($toolNames)
           else
-            ($toolNames | length) > 0
+            # Fix 2: no catch-all. A class matching none of the above
+            # (e.g. "other") does NOT bind merely because SOME browser_*
+            # call was captured -- that was the second forgery path.
+            false
           end
       else
         ( (($call | type) == "object") and ($call.tool // "" | length > 0) ) as $hasTool
@@ -304,8 +386,14 @@ def resolve_source_ref(ref, events):
     n = int(num)
     return any(isinstance(e, dict) and e.get("seq") == n for e in events)
 
-HUMAN_TOOLS = ["browser_click", "browser_type", "browser_fill_form", "browser_press_key",
-               "browser_select_option", "browser_hover", "browser_drag", "browser_file_upload"]
+# human_interaction_tools: the shared constant of REAL human-path
+# interaction tools (Fix 2) -- navigation/observation tools
+# (browser_navigate, browser_snapshot, browser_take_screenshot) are
+# deliberately excluded; only these count as evidence a human-path act
+# actually happened. Mirrors the jq human_interaction_tools def exactly.
+HUMAN_INTERACTION_TOOLS = ["browser_click", "browser_type", "browser_fill_form", "browser_select_option",
+                           "browser_press_key", "browser_hover", "browser_file_upload", "browser_drag",
+                           "browser_drop", "browser_handle_dialog"]
 
 def captured_tool_names(events):
     out = []
@@ -317,18 +405,30 @@ def captured_tool_names(events):
             out.append(t)
     return out
 
+def has_captured_interaction(tool_names):
+    return any(any(t.endswith(h) for h in HUMAN_INTERACTION_TOOLS) for t in tool_names)
+
+def has_captured_evaluate(tool_names):
+    return any("browser_evaluate" in t for t in tool_names)
+
+def has_captured_route(tool_names):
+    return any(("browser_navigate" in t) or ("browser_route" in t) for t in tool_names)
+
 def call_matches(call, tool_names):
     if not isinstance(call, dict):
         return False
     if "class" in call:
         cls = call.get("class")
         if cls == "human-path":
-            return any(any(h in t for h in HUMAN_TOOLS) for t in tool_names)
+            return has_captured_interaction(tool_names)
         if cls == "evaluate":
-            return any("browser_evaluate" in t for t in tool_names)
+            return has_captured_evaluate(tool_names)
         if cls == "route":
-            return any("browser_route" in t for t in tool_names)
-        return len(tool_names) > 0
+            return has_captured_route(tool_names)
+        # Fix 2: no catch-all. A class matching none of the above (e.g.
+        # "other") does NOT bind merely because SOME browser_* call was
+        # captured -- that was the second forgery path.
+        return False
     tool = call.get("tool") or ""
     if not tool:
         return False

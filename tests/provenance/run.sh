@@ -159,4 +159,47 @@ else
   echo "SKIP - py-fallback sub-case: jq or python3 not present on this host"
 fi
 
+# ---------------------------------------------------------------------------
+# Fix: action-trace forgery paths.
+#   Fix 1 (Critical) — jq's call_matches human-path branch used to rebind
+#     `.` before contains(), making "$t contains $t" -- vacuously always
+#     true on ANY captured browser_* call, even a bare navigate.
+#   Fix 2 (Important) — the `class` catch-all used to bind on ANY captured
+#     browser_* call regardless of class, letting a forged
+#     `class:"other"` sessionCall (the real value parse-session-log.js
+#     emits for navigate/wait) bind on a navigate-only run.
+# run r2: toolstream has ONLY navigation/observation captures -- browser_navigate
+# and browser_snapshot -- deliberately NO interaction tool (click/type/...).
+# ---------------------------------------------------------------------------
+( cd "$WORK" && bash "$TOOLSTREAM" append r2 '{"tool":"mcp__plugin_playwright_playwright__browser_navigate","args":{"url":"https://example.test/"},"resultDigest":{"len":0,"sha256":"n"},"responseBody":""}' >/dev/null )
+( cd "$WORK" && bash "$TOOLSTREAM" append r2 '{"tool":"mcp__plugin_playwright_playwright__browser_snapshot","args":{},"resultDigest":{"len":0,"sha256":"s"},"responseBody":""}' >/dev/null )
+
+ACTION_FORGED_HUMANPATH="$( cd "$WORK" && bash "$REC" r2 F1 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"fabricated -- never actually run"}]' )"
+ACTION_FORGED_OTHER="$( cd "$WORK" && bash "$REC" r2 F2 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"other","mutating":false,"code":"fabricated -- never actually run"}]' )"
+
+# run r4: a genuine captured interaction (browser_click) and a genuine
+# captured browser_evaluate, to prove the tightened check does NOT produce
+# false-unbound on real activity.
+( cd "$WORK" && bash "$TOOLSTREAM" append r4 '{"tool":"mcp__plugin_playwright_playwright__browser_click","args":{"element":"Submit","ref":"e1"},"resultDigest":{"len":0,"sha256":"c"},"responseBody":""}' >/dev/null )
+( cd "$WORK" && bash "$TOOLSTREAM" append r4 '{"tool":"mcp__plugin_playwright_playwright__browser_evaluate","args":{"function":"() => document.title"},"resultDigest":{"len":0,"sha256":"e"},"responseBody":""}' >/dev/null )
+
+ACTION_LEGIT_HUMANPATH="$( cd "$WORK" && bash "$REC" r4 F3 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#submit\").click();"}]' )"
+ACTION_LEGIT_EVALUATE="$( cd "$WORK" && bash "$REC" r4 F4 action-trace --steps '[{"tool":"browser_evaluate","phase":"act"}]' --session-calls '[{"class":"evaluate","mutating":false,"code":"await page.evaluate(() => document.title);"}]' )"
+
+for ENGINE in "" python3; do
+  LABEL="${ENGINE:-jq(default)}"
+
+  check "[$LABEL] Fix 1: forged class:human-path sessionCall + navigate-only toolstream (no interaction) -> unbound" \
+    "$(run_check "$ENGINE" "r2" "$ACTION_FORGED_HUMANPATH")" "unbound"
+
+  check "[$LABEL] Fix 2: forged class:other sessionCall + navigate-only toolstream -> unbound (no catch-all)" \
+    "$(run_check "$ENGINE" "r2" "$ACTION_FORGED_OTHER")" "unbound"
+
+  check "[$LABEL] legit class:human-path sessionCall + captured browser_click -> bound (no false-unbound)" \
+    "$(run_check "$ENGINE" "r4" "$ACTION_LEGIT_HUMANPATH")" "bound"
+
+  check "[$LABEL] legit class:evaluate sessionCall + captured browser_evaluate -> bound" \
+    "$(run_check "$ENGINE" "r4" "$ACTION_LEGIT_EVALUATE")" "bound"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
