@@ -1,6 +1,6 @@
 ---
 name: detecting-visual-ux
-description: Use when a checklist criterion is tagged visual-UX (one is emitted per surface by analyzing-feature-ui) or when driving-browser-qa reaches a UX criterion — runs dependency-free objective detectors (contrast, overflow/clipping, touch-target size, missing accessible name / console error on click) that yield a real fail@FE/confidence:low verdict, and a separate multimodal screenshot read for subjective aesthetics (visual hierarchy, spacing, garishness) that is reported ONLY as advisory, never a verdict. Also adjudicates the detectors' content/i18n/asset ux-suspicion findings (detect→localize→adjudicate→classify) into fail@FE (confidence by oracle strength), advisory, or dropped. Implements ADR-0007's split so UX recall rises without adding a sixth verdict.
+description: Use when a checklist criterion is tagged visual-UX (one is emitted per surface by analyzing-feature-ui) or when driving-browser-qa reaches a UX criterion — runs dependency-free objective detectors (contrast, overflow/clipping, touch-target size, missing accessible name / console error on click) that yield a real fail@FE/confidence:low verdict, and a vision-gated multimodal generative critic (screenshot + interaction trace + persona/locale) that reads the long tail — layout, flow, locale fit, aesthetics — as advisory suspicions only, never a verdict directly. Also adjudicates the detectors' and critic's content/i18n/asset/critic ux-suspicion findings (detect→localize→adjudicate→classify) into fail@FE (confidence by oracle strength), advisory, or dropped. Implements ADR-0007/ADR-0019's split so UX recall rises without adding a sixth verdict.
 ---
 
 # Detecting Visual UX
@@ -9,19 +9,25 @@ description: Use when a checklist criterion is tagged visual-UX (one is emitted 
 
 "UX" conflates two different things. **Objective** defects — contrast, clipping, undersized touch
 targets, missing accessible names, elements that throw on click — have a citable, machine-checkable
-oracle (WCAG 2.2 / axe conventions). **Subjective** defects — garish colors, erratic spacing, poor
-visual hierarchy — have no objective oracle; they are a trained eye's opinion, however well-founded.
+oracle (WCAG 2.2 / axe conventions). **Subjective/long-tail** defects — garish colors, erratic
+spacing, poor visual hierarchy, confusing flow, wrong-for-locale layout — have no single machine-
+checkable oracle; they're what a trained eye (or a multimodal read of one) catches, however
+well-founded.
 
-Per ADR-0007 ([docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md](../../docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md)),
+Per ADR-0007 ([docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md](../../docs/adr/0007-ux-detection-objective-verdict-subjective-advisory.md))
+and ADR-0019 ([docs/adr/0019-human-eye-ux-detection-engine.md](../../docs/adr/0019-human-eye-ux-detection-engine.md)),
 this skill keeps that split load-bearing:
 
 - **Objective -> a real verdict.** A confirmed objective defect is `verdict: fail`, `suspectedLayer:
   FE`, `confidence: low` — low because the threshold is a standard, not a spec-reconciled numeric
   oracle, but it is still an honest fail, not a downgraded observation.
-- **Subjective -> the advisory stream, never a verdict.** No `warn`/`aesthetic`/sixth verdict is
-  ever introduced (CLAUDE.md invariant). Subjective findings go into the report's
-  `## Advisory (aesthetics)` section, anchored to a selector/region so they're checkable, and are
-  excluded from every pass/fail tally.
+- **Subjective/long-tail -> the advisory stream, never a verdict directly.** No `warn`/`aesthetic`/
+  sixth verdict is ever introduced (CLAUDE.md invariant). This covers both the DOM-detector
+  `ux-suspicion` families (Step 1) and the generative critic's `critic-*` suspicions (Step 4) — both
+  are adjudicated by Step 5, which routes each into the report's `## Advisory (ux-suspicions)`
+  section (anchored to a selector/region so they're checkable) *unless* a definite oracle
+  corroborates one, in which case it promotes to a real `fail`. Either way, nothing in this stream
+  is ever counted in a pass/fail tally on its own say-so.
 
 ## When to Use
 
@@ -102,38 +108,142 @@ Each confirmed Step 1 or Step 2 finding becomes (or fails) the surface's visual-
 If Step 1 and Step 2 produce zero findings, the criterion is `pass` — do not infer a fail from the
 subjective read in Step 4; that stream never sets a verdict.
 
-### Step 4 — Subjective advisory read (multimodal, separate stream)
+### Step 4 — The generative critic (layer 3, multimodal, advisory-only)
 
-Take a `browser_take_screenshot` of the full surface. Read it directly (multimodal) for:
+Generalizes what was originally an aesthetics-only screenshot read (ADR-0007) into the full
+**generative critic** (ADR-0019 §5) — a multimodal read of the whole surface that reaches for the
+long tail Steps 1–3's invariants don't enumerate. It keeps the same advisory-only guarantee the
+original read had: **it never emits a verdict.** Every observation becomes a `critic-<slug>`
+suspicion that is adjudicated by **Step 5**, exactly like a Step 1 `ux-suspicion`.
 
-- **Visual hierarchy** — is the primary action visually the most prominent element, or does a
-  secondary control compete/win?
-- **Alignment** — do related columns/labels share an axis, or do they visually misread as unrelated?
-- **Spacing rhythm** — is spacing consistent, or erratic/cramped/uneven within one region?
-- **Garishness / brand consistency** — do colors clash with the rest of the app's palette?
-- **Affordance clarity** — does an interactive-looking element actually look clickable (and vice versa)?
+#### 4.1 — Cost ceiling: when the critic runs
 
-Each observation goes into the report's `## Advisory (aesthetics)` section as:
+Steps 1–3 run on every visual-UX criterion; layer 3 is gated (ADR-0019 §10) — running it on every
+surface isn't the goal, honest sampling is. Run the critic on a surface **iff**:
 
+- the surface just carried an **interaction-heavy** sequence — a driven multi-step/overlay flow ran
+  (`walking-multistep-flows` / `driving-browser-qa`'s per-step loop drove more than a single static
+  load), OR
+- Steps 1–3 (or a prior Step 5 adjudication) already produced **≥1 finding or suspicion** on this
+  surface,
+
+bounded by the run's `criteriaBudget`. Log every disposition via `critic-coverage.sh` (built in
+Task 3 of this effort — the sampled-vs-skipped logging mechanism referenced here):
+
+```bash
+bash skills/detecting-visual-ux/scripts/critic-coverage.sh log <run-id> <surface> ran
+bash skills/detecting-visual-ux/scripts/critic-coverage.sh log <run-id> <surface> skipped <reason>
 ```
-- [selector/region] <observation>. (advisory — not a verdict, not localized to a layer)
+
+A capped run is **not** "the critic ran everywhere" — `critic-coverage.json` is the honest record
+of what was actually sampled vs. skipped. State that plainly in the report; never imply full
+coverage.
+
+#### 4.2 — The vision contract (portable, disk-file only) + never-split rule
+
+Resolve the harness's read binding before taking the screenshot:
+
+```bash
+bash skills/detecting-visual-ux/scripts/vision-binding.sh resolve
 ```
 
-Never assign `suspectedLayer` or `verdict` to an advisory item. Never let it affect the criterion's
-pass/fail tally, even if the objective detectors also found nothing on that surface — a surface can
-legitimately be `pass` (objective) with a garish-but-functional advisory note attached.
+- `Read` (Claude, opencode) / `localImage` (Codex) / `adapter` (Pi) — consume the screenshot via
+  **that** disk-file mechanism, **never** the raw MCP image content-block (forwarding differs across
+  harnesses; ADR-0019 §5).
+- `absent` → **skip the critic entirely.** Run layers 1–2 only (Steps 1–3), and emit the honest
+  degrade banner into the report:
+  ```bash
+  bash skills/detecting-visual-ux/scripts/vision-binding.sh banner
+  ```
+  This is an honest degrade, never a silent omission — the report must say layer 3 didn't run, and
+  why.
+
+**Never-split rule.** The screenshot **take** (`browser_take_screenshot` to a `--output-dir` PNG)
+and the screenshot **judge** (the multimodal read) MUST happen in the same agent context/turn —
+never split across a subagent `task` boundary. opencode drops image parts across `task`, so a
+subagent handed only the PNG path cannot see the image; only the agent that just took the
+screenshot can read it back.
+
+#### 4.3 — Inputs
+
+When vision resolves (not `absent`, 4.2) and the cost-ceiling gate (4.1) says run:
+
+1. Take one full-surface `browser_take_screenshot` to a `--output-dir` PNG (reuse Step 3's evidence
+   screenshot when the surface already has an objective finding — don't double-shoot).
+2. Read it via the resolved binding (4.2).
+3. Gather the **interaction trace** — the driven step sequence that produced this surface (from
+   `walking-multistep-flows`/`driving-browser-qa`'s snapshot-act-wait log: what was clicked/typed/
+   submitted, in order).
+4. Gather the **persona/locale** the criterion is running as (checklist row / `discovering-user-
+   roles` / the i18n `expectedLocale`).
+
+#### 4.4 — The prompt (full rubric in references/)
+
+Ask, of the screenshot + trace + persona/locale together: **"what looks broken, wrong, confusing,
+or off for this persona/locale?"** — the long tail Steps 1–3 don't enumerate: missing/overlapping/
+mis-aligned/illegible/unexpected content, a confusing flow (given the trace), anything
+wrong-for-locale, plus the original hierarchy/spacing/garishness aesthetic read (now one category
+among several). The full prompt text and per-category rubric lives in
+[references/generative-critic.md](references/generative-critic.md) — read it before running the
+critic; this section carries only the procedure.
+
+#### 4.5 — Output: `critic-<slug>` suspicions, routed through Step 5, never a verdict
+
+Every observation becomes a suspicion, same shape as a Step 1 `ux-suspicion`:
+
+```json
+{ "detector": "critic-layout-off", "axis": "ux-suspicion",
+  "selector": "[data-testid=finalize-panel]",
+  "evidence": "screenshot region + interaction trace step 3",
+  "rawSignal": "primary CTA visually subordinate to a secondary ghost button" }
+```
+
+`detector` is `critic-<slug>` — a short kebab-case label for the *kind* of thing observed
+(`critic-layout-off`, `critic-flow-confusing`, `critic-illegible`, `critic-locale-mismatch`, ...).
+Feed every one into **Step 5** exactly like a Step 1 suspicion (Step 5.1's Detect bullet covers both
+sources). `adjudicate.js`'s `ORACLE_GRADES` table already grades any `critic-`-prefixed detector
+`heuristic`, so Step 5.3/5.4 routes it:
+
+- No corroborating definite oracle → `{advisory:true, ...}` → the `## Advisory (ux-suspicions)`
+  stream. No verdict, no `suspectedLayer`, no `confidence`, never counted in the pass/fail tally —
+  the same guarantee ADR-0007 established for the original aesthetics-only read.
+- A definite oracle on the same element (a `content-*`/`i18n-*`/`broken-image`/`invisible-text`
+  finding, or a `behavioral-observed` interaction-family finding) corroborates it →
+  `adjudicate()`'s heuristic-corroborated path promotes it to `fail @ FE, confidence: high`.
+
+**The critic never emits a verdict directly, under any circumstance** — even an observation that
+looks unambiguously broken to the model's eye is a suspicion, not a fail, until Step 5 adjudicates
+it. This is what keeps a wider net from eroding precision.
+
+#### 4.6 — Read-only discipline
+
+The critic's look is **read-only Arrange/observe** (ADR-0019 §5/§7's cross-spec integration) — it
+may inspect whatever is already on screen (including hovering/scrolling to see more of a scrollable
+region), but it never clicks/types/submits "to test a theory." Any mutation the critic wants to try
+becomes a proper checklist criterion, tagged `human-action` and run through the normal gated
+act-phase (ADR-0015) — never ad-hoc clicking from inside this step.
+
+#### 4.7 — Estimated, not measured
+
+The critic's long-tail coverage is **estimated, never measured** (ADR-0019 §11) — recall can't be
+computed against bugs that were never seeded. Its advisory items are excluded from the C1
+accuracy-harness's measured recall gate (`tools/accuracy-harness/`), which scores only layers 1–2's
+definite-oracle + code-adjudicated findings. Report the critic's contribution as "additional
+advisory observations," never as a recall percentage.
 
 ### Step 5 — Adjudicate ux-suspicions (detect → localize → adjudicate → classify)
 
-`axis:"ux-suspicion"` entries from Step 1 (content/i18n/asset/invisible-text/overlap families) are
-not verdicts on their own — they are unresolved leads. This step runs the full pipeline
-(design §1) that resolves each one to a real finding, an advisory, or nothing. The oracle-grade
-table and the classifier live in `scripts/adjudicate.js`; the doctrine behind the table is
-`references/adjudication.md` (ADR-0019) — read that reference for the full grade/table rationale,
-this section only carries the procedure.
+`axis:"ux-suspicion"` entries — from Step 1 (content/i18n/asset/invisible-text/overlap families) OR
+from Step 4's generative critic (`critic-*`) — are not verdicts on their own; they are unresolved
+leads. This step runs the full pipeline (design §1) that resolves each one to a real finding, an
+advisory, or nothing. The oracle-grade table and the classifier live in `scripts/adjudicate.js`; the
+doctrine behind the table is `references/adjudication.md` (ADR-0019) — read that reference for the
+full grade/table rationale, this section only carries the procedure.
 
-1. **Detect** — already done: the `ux-suspicion` entries came out of Step 1's `ux-detectors.js`
-   injection, unchanged. Each is `{detector, axis:'ux-suspicion', selector, evidence, rawSignal}`.
+1. **Detect** — already done: the `ux-suspicion` entries came either out of Step 1's
+   `ux-detectors.js` injection, unchanged, or out of Step 4's generative critic. Each is
+   `{detector, axis:'ux-suspicion', selector, evidence, rawSignal}` regardless of source — Step 5
+   treats a `critic-*` suspicion identically to a `content-*`/`i18n-*`/`overlap` one from here on.
 
 2. **Localize** — for each suspicion, map its `selector` to a source: component, style rule,
    i18n key, or data field. Use `analyzing-feature-ui`'s surface→endpoint map, extended the same
@@ -176,7 +286,7 @@ this section only carries the procedure.
    from Step 5.2's localized record; for non-i18n suspicions omit `catalogResult`/
    `catalogCompleteness`. `corroborated: true` only when a second, independent definite-oracle
    signal (e.g. a `definite-dom` finding on the same element) backs a `heuristic`-grade suspicion
-   like `overlap`.
+   like `overlap` or `critic-*`.
 
 4. **Classify/route** — `adjudicate()` returns exactly one of three shapes; route accordingly:
    - **A verdict object** `{verdict:'fail', suspectedLayer:'FE', confidence, family, reason}` → a
@@ -184,9 +294,9 @@ this section only carries the procedure.
      never re-derive or downgrade it — and use `reason` as the finding's message. Attach a
      `browser_take_screenshot` of the flagged region as evidence, same as Step 3.
    - **An advisory object** `{advisory:true, reason}` → append to the `## Advisory
-     (ux-suspicions)` stream (a sibling of Step 4's `## Advisory (aesthetics)`, kept separate since
-     one stream is subjective-read and the other is adjudicated-but-unresolved). Never a verdict,
-     never gated, never counted in the pass/fail tally.
+     (ux-suspicions)` stream — the single destination for every unresolved-but-not-dropped
+     suspicion, whether it came from Step 1's DOM detectors or Step 4's generative critic. Never a
+     verdict, never gated, never counted in the pass/fail tally.
    - **`null`** → drop it. This means the classifier judged it deliberate or correct (known-
      deliberate match, `present-latin-legit`, `present-translated`) — no finding, nothing reported.
 
@@ -246,10 +356,18 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 - [ ] Every confirmed objective finding -> `fail @ FE, confidence:low`, evidence = selector + message + screenshot.
 - [ ] Zero objective findings -> criterion `pass` (subjective read never overrides this).
 - [ ] Take one screenshot; read it multimodally for hierarchy/alignment/spacing/garishness/affordance.
-- [ ] Subjective findings -> `## Advisory (aesthetics)` only — no verdict, no suspected layer, never gated.
+- [ ] Gate the critic: run only on an interaction-heavy surface OR one where layers 1-2 already
+      found ≥1 finding/suspicion, within `criteriaBudget`; log ran/skipped via `critic-coverage.sh`.
+- [ ] Resolve vision via `vision-binding.sh resolve` first; `absent` -> skip the critic, run layers
+      1-2 only, emit `vision-binding.sh banner` into the report.
+- [ ] Take the screenshot and read it in the SAME agent context — never split take/judge across a
+      subagent `task` boundary.
+- [ ] Every critic observation -> a `critic-<slug>` suspicion, fed into Step 5 — never a verdict
+      directly, no matter how obvious it looks.
 - [ ] Spot-check at least one objective finding's arithmetic before trusting the batch.
 - [ ] Confirm no finding fired on a known-clean/negative-control element.
-- [ ] For every `ux-suspicion` entry: localize its selector to component/style/i18n-key/data-field.
+- [ ] For every `ux-suspicion` entry (Step 1 DOM detector OR Step 4 critic): localize its selector
+      to component/style/i18n-key/data-field.
 - [ ] Read the known-deliberate list once per run (`ux-conventions.sh read`).
 - [ ] Call `adjudicate()` per suspicion; route the result: verdict object -> `fail @ FE` (confidence
       verbatim), `{advisory:true}` -> `## Advisory (ux-suspicions)`, `null` -> drop, no finding.
@@ -263,6 +381,8 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 | `scripts/ux-detectors.js` | Dependency-free, read-only in-page objective UX detectors (contrast/overflow/target-size/accessible-name), plus read-only ux-suspicion families (content/data-rendering, i18n script-mismatch + raw-key, broken-image, invisible-text, overlap/z-index) — inject via `browser_evaluate` |
 | `scripts/adjudicate.js` | Pure, DOM-free classifier (Step 5): `adjudicate(suspicion, oracleInputs)` -> a verdict object, `{advisory:true}`, or `null`; `deriveCatalogResult(record)` turns a localized i18n record into the catalog-result enum. See `references/adjudication.md` |
 | `scripts/ux-conventions.sh` | `read`/`add` helper for `.qa/ux-conventions.json`'s `knownDeliberate` list — feeds `adjudicate()`'s known-deliberate short-circuit (Step 5.4) |
+| `scripts/vision-binding.sh` | `resolve [<harness>]` prints the per-harness screenshot read binding (`Read`/`localImage`/`adapter`/`absent`); `banner` prints the fixed honest-degrade line — Step 4.2 |
+| `scripts/critic-coverage.sh` | `log <run-id> <surface> ran\|skipped <reason>` — the sampled-vs-skipped record for the cost-ceiling gate (Step 4.1). *Not yet bundled as of this change — ships in a follow-up task; referenced here so Step 4.1's procedure is written against its final interface.* |
 
 ## Mini-Evals
 
@@ -288,16 +408,23 @@ appears. Record a U4-class finding: `fail @ FE, confidence:low`, message include
 error + "thrown on click (WCAG SC 4.1.2 / axe button-name analog)". Without the click-probe step,
 this control looks fine (it has a label) and the bug is missed entirely.
 
-### Eval 3 — Subjective advisory example (never a verdict)
+### Eval 3 — Generative critic advisory example (never a verdict)
 
 **Situation:** A "Finalize" panel uses garish orange/magenta accents and letter-spaced, erratic
 heading spacing inconsistent with the rest of the app. The objective detectors find nothing on this
-panel (colors pass contrast; nothing is clipped; targets are full-size).
+panel (colors pass contrast; nothing is clipped; targets are full-size). Layer 1-2 already found one
+`overflow` finding elsewhere on the same surface, so the cost-ceiling gate (Step 4.1) says run the
+critic here.
 **The skill should:** Report the panel's visual-UX criterion as `pass` (objective — zero findings).
-Separately, Step 4's screenshot read produces an advisory entry: `[#finalize] Garish orange/magenta
-accent palette and erratic heading letter-spacing, inconsistent with the rest of the app's neutral
-palette. (advisory — not a verdict, not localized to a layer)`. This entry never flips the
-criterion's `pass`, is never counted in the pass/fail tally, and never gets a `suspectedLayer`.
+Vision resolves `Read` for this harness, so Step 4 takes and reads the screenshot in the same
+context. It emits a suspicion: `{detector:"critic-hierarchy-off", axis:"ux-suspicion",
+selector:"#finalize", rawSignal:"garish orange/magenta accent palette and erratic heading
+letter-spacing, inconsistent with the rest of the app's neutral palette"}`. Step 5 grades
+`critic-hierarchy-off` as `heuristic` (the `critic-` prefix), finds no corroborating definite oracle
+on `#finalize`, and returns `{advisory:true, reason:"heuristic-only suspicion (critic-hierarchy-off)
+— advisory unless a definite oracle corroborates"}`. Step 5.4 routes it into `## Advisory
+(ux-suspicions)`. This entry never flips the criterion's `pass`, is never counted in the pass/fail
+tally, and never gets a `suspectedLayer` or `confidence`.
 
 ### Eval 4 — Negative control NOT flagged (precision discipline)
 
@@ -361,4 +488,4 @@ with `corroborated: false` (no other `definite-*` finding landed on either eleme
 grades as `heuristic`, and with no corroboration `adjudicate()` returns `{advisory:true, reason:
 "heuristic-only suspicion (overlap) — advisory unless a definite oracle corroborates"}`. Step 5.4
 routes it into `## Advisory (ux-suspicions)` — never a verdict, never gated, never counted in the
-pass/fail tally, exactly like a Step 4 aesthetic observation.
+pass/fail tally, exactly like a Step 4 critic observation (Eval 3).

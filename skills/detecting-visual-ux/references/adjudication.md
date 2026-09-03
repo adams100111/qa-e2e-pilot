@@ -41,7 +41,18 @@ suggestive finding is represented as `advisory`, not smuggled in as a low-confid
 | `definite-catalog` | The oracle is a translation catalog, not the DOM alone — a script mismatch might be a legitimate brand/URL/proper noun in Latin script, so the catalog result decides. | Routed to `adjudicateI18n()` (§3) — `fail high`, `advisory`, or dropped (`null`), depending on `catalogResult`. |
 | `standards` | A real, external oracle (WCAG 2.2 SC), but not a project-specific spec/domain rule — `contrast`, `target-size`. | `fail @ FE`, confidence **low** — a real verdict, just not backed by *this app's* domain oracle. |
 | `behavioral-observed` | An `interaction-*` overlay-stack invariant was directly observed to break (e.g. one overlay's close destroying a sibling it shouldn't) — the violation itself is the oracle, no further corroboration needed to know *something* is wrong. Unlike `heuristic`, this is **always a verdict, never advisory**. | `fail @ FE`, confidence **low** until the shared open/route state the overlays bind to is localized in code, then **high** once `oracleInputs.corroborated` is `true`. |
-| `heuristic` | No independent oracle at all — pattern-matched suspicion only (generic `overlap`, and the default for any unrecognized detector id). | `advisory`, unless `oracleInputs.corroborated` is `true`, in which case a definite oracle elsewhere has confirmed it and it promotes to `fail @ FE` confidence **high**. |
+| `heuristic` | No independent oracle at all — pattern-matched suspicion only (generic `overlap`, every `critic-*` suspicion from the layer-3 generative critic, and the default for any unrecognized detector id). | `advisory`, unless `oracleInputs.corroborated` is `true`, in which case a definite oracle elsewhere has confirmed it and it promotes to `fail @ FE` confidence **high**. |
+
+Every `critic-*` detector id (the layer-3 generative critic — `skills/detecting-visual-ux/SKILL.md`
+Step 4, ADR-0019 §5) carries the `heuristic` grade unconditionally, via the bare `critic-` prefix
+entry in `ORACLE_GRADES` — the critic's own read, however confident it sounds, is never itself an
+oracle. This is the load-bearing soundness guarantee for layer 3: a wider net (an LLM reading a
+screenshot for "anything that looks off") could otherwise flood the report with false fails; routing
+every one of its observations through this same `heuristic` grade means the critic can only ever
+*raise a suspicion*, promoted to a verdict solely by a `definite-dom`/`definite-catalog`/
+`behavioral-observed` finding corroborating it on the same element — exactly the same corroboration
+path a generic `overlap` suspicion goes through. See
+[generative-critic.md](generative-critic.md) for the critic's full prompt/rubric and suspicion shape.
 
 All `interaction-*` detectors (the overlay-stack invariant checkers) carry the
 `behavioral-observed` grade via the `interaction-` prefix entry in `ORACLE_GRADES`.
@@ -129,7 +140,18 @@ when both the detector AND the raw signal are identical; a different raw signal 
 same detector (a different broken image, a different overlapping pair) is judged
 independently.
 
-## 7. Executable form
+## 7. The critic's coverage is estimated, not measured (ADR-0019 §11)
+
+Layers 1-2 (the DOM detectors + this adjudication pipeline) are the C1 accuracy-harness's measured
+gate (`tools/accuracy-harness/`) — recall/precision against a seeded taxonomy fixture, a number that
+can be computed because the ground truth is known. Layer 3 (the generative critic) cannot be scored
+the same way: you cannot measure recall against bugs that were never seeded, and a heuristic-graded
+`critic-*` suspicion is by construction excluded from that gate's denominator whether or not it gets
+corroborated into a verdict later. Treat the critic's contribution as *estimated* long-tail
+coverage, never as an addition to the measured recall percentage — this is stated plainly in the
+report, not implied by a bigger number.
+
+## 8. Executable form
 
 `skills/detecting-visual-ux/scripts/adjudicate.js` is the single source of truth for
 the grade table (`ORACLE_GRADES`) and the classifier (`adjudicate`,
