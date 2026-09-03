@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deliverables UX Mini</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#555; --line:#e2e2e2; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; color: var(--fg); margin: 0; padding: 24px; max-width: 900px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  section { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 20px; position: relative; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 0 0 8px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 6px 8px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .swatch { padding: 12px; border-radius: 6px; }
+  button { background: var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  .dialog { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; }
+  .overlap-demo { height: 180px; }
+  .overlap-demo .backdrop { position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,.45); border-radius: 8px; }
+  .overlap-demo .modal { position: absolute; z-index: 10; top: 30px; left: 30px; width: 260px; background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 14px; }
+</style>
+</head>
+<body>
+  <h1>Deliverables UX Mini</h1>
+  <div class="sub">Self-contained no-build fixture: one planted defect per UI/UX detector family, each tagged
+    <code>data-seed</code> for traceability against <code>snapshot.json</code>. No backend writes here — every
+    bug is a static/DOM-rendering defect (content, i18n, asset, contrast, overlap, interaction), not a
+    persistence bug, so there is no localStorage "backend" to bake against (contrast the functional fixture
+    at <code>../fixture/index.html</code>).</div>
+
+  <!-- ================= Content rendering ================= -->
+  <section id="content" data-testid="content-section">
+    <h2>Content rendering</h2>
+    <table data-testid="content-table">
+      <thead><tr><th>Field</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Amount</td><td data-seed="C1" data-testid="c1-nan">NaN</td></tr>
+        <tr><td>Owner</td><td data-seed="C2" data-testid="c2-undefined">undefined</td></tr>
+        <tr><td>Metadata</td><td data-seed="C3" data-testid="c3-object">[object Object]</td></tr>
+        <tr><td>Summary</td><td data-seed="C4" data-testid="c4-interp">Total: {{amount}}</td></tr>
+        <tr><td>Updated</td><td data-seed="C5" data-testid="c5-iso">2026-09-03T00:00:00Z</td></tr>
+        <tr><td>Balance (clean, negative control)</td><td data-seed="NC1" data-testid="nc1-clean">1,250.00</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ================= i18n ================= -->
+  <section id="i18n" data-testid="i18n-section">
+    <h2>i18n</h2>
+    <h3 data-seed="K1" data-testid="k1-raw-key">deliverables.title</h3>
+
+    <div dir="rtl" lang="ar" data-testid="m1-arabic-panel" style="margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:6px;">
+      <p class="sub">Untranslated action label on an Arabic RTL surface:</p>
+      <button data-seed="M1" data-testid="m1-save-btn">Save Changes</button>
+    </div>
+
+    <div dir="rtl" lang="ar" data-testid="nc2-arabic-panel" style="margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:6px;">
+      <p class="sub">Legitimately-Latin brand name on the same Arabic surface (negative control):</p>
+      <a href="#" data-seed="NC2" data-testid="nc2-github-link">GitHub</a>
+    </div>
+
+    <div dir="rtl" lang="ar" data-testid="d1-arabic-form" style="margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:6px;">
+      <p class="sub">Held-out family (Task 2's <code>localeDateSignal</code> lands later): mm/dd/yyyy date
+        rendered untranslated inside an Arabic RTL form.</p>
+      <label for="d1-date">&#1578;&#1575;&#1585;&#1610;&#1582; &#1575;&#1604;&#1578;&#1587;&#1604;&#1610;&#1605;</label>
+      <input id="d1-date" data-testid="d1-date-input" type="text" value="03/09/2026" readonly>
+      <div class="sub" data-seed="D1" data-testid="d1-date-echo">03/09/2026</div>
+    </div>
+  </section>
+
+  <!-- ================= Assets ================= -->
+  <section id="assets" data-testid="assets-section">
+    <h2>Assets</h2>
+    <div class="grid2">
+      <div>
+        <p class="sub">Broken image (404s, naturalWidth 0):</p>
+        <img data-seed="A1" data-testid="a1-broken-image" src="./missing-deliverable-icon-404.png" alt="Deliverable icon" width="64" height="64">
+      </div>
+      <div>
+        <p class="sub">Loaded image (negative control):</p>
+        <img data-seed="NC3" data-testid="nc3-loaded-image" width="320" height="80" alt="Loaded deliverable banner"
+             src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='80'><rect width='320' height='80' fill='%232563eb'/></svg>">
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= Invisible text ================= -->
+  <section id="invisible" data-testid="invisible-section">
+    <h2>Invisible text</h2>
+    <div class="grid2">
+      <div class="swatch" data-testid="v1-container" style="background:#fefefe;">
+        <p data-seed="V1" data-testid="v1-invisible-text" style="color:#ffffff;margin:0;">This confirmation message is invisible against its background.</p>
+      </div>
+      <div class="swatch" data-testid="nc4-container" style="background:#ffffff;">
+        <p data-seed="NC4" data-testid="nc4-visible-text" style="color:#111111;margin:0;">This confirmation message is clearly legible (negative control).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= Overlap ================= -->
+  <section id="overlap" data-testid="overlap-section">
+    <h2>Overlap (modal behind backdrop)</h2>
+    <div class="overlap-demo" data-testid="o1-overlap-demo">
+      <div class="backdrop" data-testid="o1-backdrop"></div>
+      <div class="modal" data-seed="O1" role="dialog" aria-modal="true" data-testid="o1-modal">
+        <p>This modal is painted UNDER its own backdrop (z-index 10 &lt; 20 backdrop) — permanently hidden behind it.</p>
+      </div>
+    </div>
+
+    <h2 style="margin-top:16px;">Overlap (two colliding text elements)</h2>
+    <div style="position:relative;height:90px;" data-testid="o2-overlap-demo">
+      <span data-seed="O2" data-testid="o2-text-a"
+            style="position:absolute;left:20px;top:20px;width:140px;height:30px;background:#e0f2ff;padding:4px;font-size:12px;">Deliverable summary label A</span>
+      <span data-testid="o2-text-b"
+            style="position:absolute;left:100px;top:30px;width:140px;height:30px;background:#ffe0e0;padding:4px;font-size:12px;">Deliverable summary label B</span>
+    </div>
+  </section>
+
+  <!-- ================= Interaction (held-out sheet-stack) ================= -->
+  <section id="interaction" data-testid="interaction-section">
+    <h2>Interaction: deliverables sheet stacking</h2>
+    <div class="grid2">
+      <div>
+        <p class="sub">Held-out family: "Add" REPLACES the list sheet instead of stacking on top of it.</p>
+        <div id="ss1-parent" class="dialog" role="dialog" aria-modal="true" aria-label="Deliverables" data-testid="ss1-parent-dialog" style="position:relative;z-index:100;">
+          <h3>Deliverables</h3>
+          <ul><li>Design review</li><li>Ship notes</li></ul>
+          <button id="ss1-add-btn" data-seed="SS1" data-testid="ss1-add-btn">+ Add deliverable</button>
+        </div>
+      </div>
+      <div>
+        <p class="sub">Negative control: "Add" correctly stacks a child on top of the list sheet.</p>
+        <div id="nc5-parent" class="dialog" role="dialog" aria-modal="true" aria-label="Deliverables" data-testid="nc5-parent-dialog" style="position:relative;z-index:100;">
+          <h3>Deliverables</h3>
+          <ul><li>Design review</li><li>Ship notes</li></ul>
+          <button id="nc5-add-btn" data-seed="NC5" data-testid="nc5-add-btn">+ Add deliverable</button>
+        </div>
+        <div id="nc5-child-slot" data-testid="nc5-child-slot"></div>
+      </div>
+    </div>
+  </section>
+
+<script>
+  // SS1 (positive, held-out): clicking "+ Add deliverable" REPLACES the whole parent dialog node
+  // (outerHTML swap) with a "New Deliverable" dialog — the list sheet is destroyed, not stacked on.
+  document.getElementById('ss1-add-btn').addEventListener('click', function () {
+    var parent = document.getElementById('ss1-parent');
+    parent.outerHTML =
+      '<div id="ss1-child" class="dialog" role="dialog" aria-modal="true" aria-label="New Deliverable" ' +
+      'data-testid="ss1-child-dialog" style="position:relative;z-index:100;">' +
+      '<h3>New Deliverable</h3><label for="ss1-title">Title</label><input id="ss1-title">' +
+      '<div style="margin-top:8px"><button data-testid="ss1-child-close">Cancel</button></div></div>';
+  });
+
+  // NC5 (negative control): clicking "+ Add deliverable" APPENDS a child dialog into a separate slot,
+  // leaving the parent "Deliverables" dialog present and untouched — correct stacking.
+  document.getElementById('nc5-add-btn').addEventListener('click', function () {
+    document.getElementById('nc5-child-slot').innerHTML =
+      '<div id="nc5-child" class="dialog" role="dialog" aria-modal="true" aria-label="Child" ' +
+      'data-testid="nc5-child-dialog" style="position:relative;z-index:100;margin-top:10px;">' +
+      '<h3>New Deliverable</h3><label for="nc5-title">Title</label><input id="nc5-title">' +
+      '<div style="margin-top:8px"><button data-testid="nc5-child-close">Cancel</button></div></div>';
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+{
+  "source": "ux-measure.js: real detector cores (ux-detectors.js, overlay-stack.js) + real adjudicate.js over fixture-ux/snapshot.json",
+  "findings": [
+    {
+      "judgedSeedId": "C1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: content-nan (NaN)"
+    },
+    {
+      "judgedSeedId": "C2",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: content-undefined (undefined)"
+    },
+    {
+      "judgedSeedId": "C3",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: content-object-object ([object Object])"
+    },
+    {
+      "judgedSeedId": "C4",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: content-raw-interp ({{amount}})"
+    },
+    {
+      "judgedSeedId": "C5",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: content-raw-iso (2026-09-03T00:00:00Z)"
+    },
+    {
+      "judgedSeedId": "K1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: i18n-raw-key (deliverables.title)"
+    },
+    {
+      "judgedSeedId": "M1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "i18n key missing in the target locale catalog (definite gap)"
+    },
+    {
+      "judgedSeedId": "D1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "i18n key missing in the target locale catalog (definite gap)"
+    },
+    {
+      "judgedSeedId": "A1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: broken-image (0)"
+    },
+    {
+      "judgedSeedId": "V1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: invisible-text (1.01)"
+    },
+    {
+      "judgedSeedId": "O1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "definite DOM oracle: modal-behind-backdrop (10)"
+    },
+    {
+      "judgedSeedId": "O2",
+      "stream": "advisory",
+      "text": "heuristic-only suspicion (overlap) — advisory unless a definite oracle corroborates"
+    },
+    {
+      "judgedSeedId": "SS1",
+      "axis": "ux-objective",
+      "verdict": "fail",
+      "confidence": "high",
+      "text": "observed overlay-stack invariant violation, shared-state cause localized in code: interaction-overlay-destroyed"
+    }
+  ]
+}

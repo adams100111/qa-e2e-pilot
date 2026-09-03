@@ -135,6 +135,17 @@ check "i18n: ar + lone acronym 'OK' -> still null"            "$(call scriptMism
 check "i18n: ar + Title-Case 'Save Changes' -> still fires" "$(field scriptMismatchSignal '["Save Changes","ar"]' expectedScript)" "Arabic"
 check "i18n: ar + Title-Case 'Sign In' -> still fires"       "$(field scriptMismatchSignal '["Sign In","ar"]' expectedScript)"       "Arabic"
 
+# --- Task: i18n locale-date (mm/dd/yyyy in a non-month-first locale) -----------
+check "date: ar mm/dd/yyyy fires"        "$(field localeDateSignal '["03/09/2026","ar"]' rawSignal)"          "03/09/2026"
+check "date: en-GB mm/dd/yyyy fires"     "$(field localeDateSignal '["3/9/2026","en-GB"]' rawSignal)"          "3/9/2026"
+check "date: en-US mm/dd/yyyy -> null"   "$(call localeDateSignal '["03/09/2026","en-US"]')"                   "null"
+check "date: en-CA mm/dd/yyyy -> null"   "$(call localeDateSignal '["03/09/2026","en-CA"]')"                   "null"
+check "date: ISO date -> null"           "$(call localeDateSignal '["2026-09-03","ar"]')"                      "null"
+check "date: version string -> null"     "$(call localeDateSignal '["v1.2.3","ar"]')"                          "null"
+check "date: not whole-string date -> null" "$(call localeDateSignal '["The 3/9 split","ar"]')"                "null"
+check "date: bare en (ambiguous) -> null"    "$(call localeDateSignal '["12/31/2024","en"]')"                     "null"
+check "date: empty locale (ambiguous) -> null" "$(call localeDateSignal '["12/31/2024",""]')"                     "null"
+
 # --- Task 4: assets + invisible-text -------------------------------------------
 check "asset: failed image -> true"     "$(call isBrokenImage '[{"naturalWidth":0,"complete":true}]')"          "true"
 check "asset: loaded image -> false"    "$(call isBrokenImage '[{"naturalWidth":120,"complete":true}]')"        "false"

@@ -56,7 +56,10 @@ function score(findingsDoc, seedsDoc) {
   // which does not exist yet — gate-exclude them from `positive` entirely (Task 0.3b). When the
   // vision pass ships (later phase), ux-perceptual moves into the gated `positive` set.
   const isPerceptual = s => s.axis === 'ux-perceptual';
-  const positive = seeds.filter(s => (s.polarity || 'positive') === 'positive' && s.stream !== 'advisory' && !isPerceptual(s));
+  // knownGap:true marks an honestly-documented shipped-detector gap (mirrors the advisory
+  // exclusion) — excluded from the gated positive set rather than silently failing the gate or
+  // being hand-waved away in findings. None exist today; wired so the exclusion is available.
+  const positive = seeds.filter(s => (s.polarity || 'positive') === 'positive' && s.stream !== 'advisory' && !isPerceptual(s) && !s.knownGap);
   const negative = seeds.filter(s => s.polarity === 'negative');
   const advisorySeeds = seeds.filter(s => s.stream === 'advisory');
   const perceptualSeeds = seeds.filter(isPerceptual);
@@ -84,16 +87,24 @@ function score(findingsDoc, seedsDoc) {
   const advisory = scoreList(advisorySeeds);
   const perceptual = scoreList(perceptualSeeds);
 
+  // held-out subset: a marked-hard positive subset (heldOut:true) that must ALSO be recalled at
+  // 100% — the hard requirement that a real bug held back from detector-tuning is still caught,
+  // not just the seeds the detectors were built against. scoreList([]) yields ratio:1 (see
+  // above), so a seeds file with no held-out seeds at all is never failed by this check.
+  const heldOut = positive.filter(s => s.heldOut === true);
+  const heldOutScore = scoreList(heldOut);
+
   const g = seedsDoc.gate || {};
   const checks = [
     ['functional recall', rollups.functional.ratio, g.functionalRecallMin],
     ['ux-objective recall', (perAxis['ux-objective']||{ratio:1}).ratio, g.uxObjectiveRecallMin],
     ['overall recall', overall.ratio, g.overallVerdictRecallMin],
-    ['precision', precision, g.precisionMin]
+    ['precision', precision, g.precisionMin],
+    ['held-out recall', heldOutScore.ratio, g.heldOutRecallMin]
   ].filter(c => c[2] != null);
   const pass = checks.every(c => c[1] >= c[2] - 1e-9);
 
-  return { perAxis, rollups, overall, precision, advisory, perceptual, gate: { pass, checks } };
+  return { perAxis, rollups, overall, precision, advisory, perceptual, heldOut: heldOutScore, gate: { pass, checks } };
 }
 
 module.exports = { score };
@@ -142,6 +153,10 @@ if (require.main === module) {
   console.log('  ' + 'overall'.padEnd(16) + bar(result.overall.ratio) + ' ' + pct(result.overall.ratio) + '  (' + result.overall.hit + '/' + result.overall.total + ')');
 
   console.log('\nPrecision: ' + pct(result.precision) + ' (false positives lower this)');
+
+  if (result.heldOut.total > 0) {
+    console.log('Held-out recall: ' + pct(result.heldOut.ratio) + '  (' + result.heldOut.hit + '/' + result.heldOut.total + ')');
+  }
 
   // advisory stream (reported, never gated)
   console.log('\nAdvisory stream (aesthetics — reported, NOT a verdict): ' + result.advisory.hit + '/' + result.advisory.total + ' advised');
