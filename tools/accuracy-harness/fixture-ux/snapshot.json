@@ -20,9 +20,12 @@
     { "seed": "A1", "family": "image", "kind": "broken-image",
       "input": { "complete": true, "naturalWidth": 0 } },
     { "seed": "V1", "family": "invisible", "kind": "invisible-text",
-      "input": { "fg": "#ffffff", "bg": "#fefefe" } },
+      "input": { "fg": { "r": 255, "g": 255, "b": 255 }, "bg": { "r": 254, "g": 254, "b": 254 } } },
     { "seed": "O1", "family": "overlap-modal", "kind": "modal-behind-backdrop",
       "input": { "modalZ": 10, "backdropZ": 20 } },
+    { "seed": "O2", "family": "overlap-rect", "kind": "rect-collision", "stream": "advisory",
+      "input": { "rectA": { "left": 20, "top": 20, "right": 160, "bottom": 50 },
+                  "rectB": { "left": 100, "top": 30, "right": 240, "bottom": 60 } } },
     { "seed": "SS1", "family": "interaction", "kind": "interaction-overlay-destroyed", "heldOut": true,
       "input": {
         "before": [
@@ -41,7 +44,7 @@
     { "seed": "NC3", "family": "image", "kind": "loaded", "polarity": "negative",
       "input": { "complete": true, "naturalWidth": 320 } },
     { "seed": "NC4", "family": "invisible", "kind": "high-contrast", "polarity": "negative",
-      "input": { "fg": "#111111", "bg": "#ffffff" } },
+      "input": { "fg": { "r": 17, "g": 17, "b": 17 }, "bg": { "r": 255, "g": 255, "b": 255 } } },
     { "seed": "NC5", "family": "interaction", "kind": "correctly-stacked", "polarity": "negative",
       "input": {
         "before": [
