@@ -28,7 +28,89 @@ verify first, start there. Codex and opencode follow the identical procedure bel
 
 **`qa-verify` is the universal floor.** Unlike the hooks, `scripts/qa-verify.sh` has no harness-specific dependency — it's a plain jq/python3 script that re-derives required evidence, re-validates artifacts, and binds provenance against whatever toolstream exists (or degrades honestly to `confidence: low` when none does). It runs the same way regardless of which harness produced the run. **The authoritative verdict is always `qa-verify`'s, never the live hooks' mere presence** — a run with Tier A hooks enabled is not "trusted" because the hooks ran; it's trusted (to the extent it is) because `qa-verify` independently corroborated the evidence against what those hooks captured.
 
-**Other three adapters — no live hooks yet (Plan H3).** Codex, Pi, and opencode have no `PostToolUse`/`PreToolUse` (or equivalent) capture/block mechanism wired up today — this is explicitly deferred fast-follow work, not an oversight. On those harnesses, `qa-verify`'s deterministic checks (required-kinds, structural validation, provenance-against-toolstream) still run, but with no toolstream to corroborate against, provenance binding reports `no-toolstream` for every criterion — every `human-action`/cross-tenant pass degrades to `confidence: low` by default (or hard-fails under `QA_VERIFY_STRICT`, see `docs/running-in-ci.md`). Don't read "the adapter builds and passes `validate-adapters.sh`" as "this harness has the same assurance tier as Claude" — it doesn't, yet.
+**Other three adapters — no live hooks yet (Plan H3), but they are no longer toolstream-blind
+(Plan H4/T-13).** Codex, Pi, and opencode still have no `PostToolUse`/`PreToolUse` (or equivalent)
+*live* capture/block mechanism wired up by default — that piece is documented, optional hardening,
+covered below. What changed: they're no longer left with **nothing** for `qa-verify` to corroborate
+against either. Don't read "the adapter builds and passes `validate-adapters.sh`" as "this harness
+has the same assurance tier as Claude" — it doesn't — but do read it as "this harness's high-stakes
+passes bind provenance at high confidence by default," which is new.
+
+---
+
+## The automatic enforcement floor (all harnesses)
+
+Every harness profile's `playwright-qa` MCP server runs with `--save-session` (see each
+`mcp.snippet` below). That session log, `.playwright-mcp/session-*/session.md`, was previously only
+consumed by the human-interaction gate's Check 0 (`parse-session-log.js`) inside a single run. Since
+portable-enforcement H4/T-13, it's also the input to a second path:
+
+1. **`skills/driving-browser-qa/scripts/session-to-toolstream.js`** converts the saved session log
+   into the same event shape (`{tool, args, resultDigest, responseBody}`) the Claude capture-hook
+   writes — reusing `parse-session-log.js` as the single source of truth for parsing, so both paths
+   classify calls identically.
+2. **`scripts/session-preflight.sh <run-id>`** runs that converter before `qa-verify` and appends
+   its output to `.qa/runs/<run-id>/toolstream.jsonl` via `toolstream.sh append`. It's
+   **idempotent and non-destructive**: a no-op if a toolstream already exists (it never clobbers a
+   live-hook capture) and a no-op if no session log is resolvable (the honest no-toolstream degrade
+   still applies). It's wired **non-fatally** into `scripts/qa-ci.sh` — a preflight failure logs and
+   the run still proceeds to `qa-verify` as before (`QA_SKIP_SESSION_PREFLIGHT=1` to skip it
+   entirely).
+3. **`qa-verify`** then binds provenance against that toolstream exactly as it would against a
+   live-hook capture — the check doesn't know or care which of the two produced the file.
+
+**Net effect:** this is the **tested, guaranteed tier on every harness** — no per-harness hook
+config, no runtime dependency on Codex/opencode/Pi hook support. A `human-action`/cross-tenant
+`pass` on any of the four harnesses now binds provenance at **high confidence** by default, as long
+as `--save-session` produced a log for `qa-verify` to convert.
+
+**Honest residuals, stated plainly:**
+- The converted toolstream is **`browser_*` only** — `session.md` has no visibility into `Bash`
+  calls. Claude's live capture-hook remains the only source that captures `Bash` into the
+  toolstream; a converted toolstream never corroborates a `Bash`-evidenced artifact.
+- The live **block** (denying a mutating call *before* it runs) is not part of this floor — see
+  "Per-harness tiers" below. Without the optional live-hook recipe, a mutating call on
+  Codex/opencode/Pi is caught by `qa-verify`'s post-hoc override, not prevented up front.
+- The session log is **agent-side** — the same trust level as the capture-hook's toolstream on an
+  unhardened install (tamper-*evident*, not tamper-*proof*; see the Claude tier above). This floor
+  doesn't claim a new, stronger trust tier — it extends the existing one to harnesses that
+  previously had none.
+
+## Per-harness tiers
+
+| Harness | Automatic floor | Live hooks |
+|---|---|---|
+| Claude | `--save-session` → toolstream → `qa-verify` (high confidence) | **Built-in** — capture + block, plugin-bundled (see "The Claude assurance tier" above) |
+| Codex | `--save-session` → toolstream → `qa-verify` (high confidence) | Optional, documented recipe (`harnesses/codex/hooks.md`), verify-on-build |
+| opencode | `--save-session` → toolstream → `qa-verify` (high confidence) | Optional, documented recipe (`harnesses/opencode/hooks.md`), verify-on-build |
+| Pi | `--save-session` → toolstream → `qa-verify` (high confidence) | Optional, documented recipe (`harnesses/pi/hooks.md`), verify-on-build |
+
+The live **block** — denying a mutating `browser_evaluate`/`browser_run_code_unsafe` before it
+executes — stays a Claude-only guarantee unless you wire the optional recipe for your harness;
+`qa-verify`'s post-hoc override (a captured mutating call with no artifact accounting for it fails
+the gate) covers the same case everywhere else, just after the fact rather than before. None of the
+three recipes are runtime-verified in this repo — no live Codex/opencode/Pi runtime is available
+here — each `hooks.md` carries its own honesty banner and asks you to confirm the exact hook syntax
+against your pinned version before relying on it.
+
+## Manual live-hook enforcement run (optional, after wiring a recipe)
+
+If you wire one of the `harnesses/<h>/hooks.md` recipes, confirm it actually works before trusting
+it as more than documentation:
+
+1. Wire the hook config per your harness's `hooks.md` (Codex: `.codex/config.toml` or a managed
+   `requirements.toml`; opencode: its `permission`/hook config; Pi: its cooperative config +
+   optional container).
+2. Drive the adapter's agent on a disposable app (the accuracy-harness fixture from the "Manual
+   accuracy procedure" below works fine for this too).
+3. Attempt a mutating `browser_evaluate` (or ask the agent to attempt one) mid-run and confirm the
+   call is **denied before it executes** — not merely flagged afterward.
+4. Inspect `.qa/runs/<run-id>/toolstream.jsonl` and confirm the attempted call (and the surrounding
+   `browser_*` activity) was **captured in real time**, not only reconstructed later by
+   `session-preflight.sh` from the saved session log.
+
+If either check fails, the recipe didn't wire up on your build — fall back to the automatic floor
+above, which still gives you a high-confidence `qa-verify` run without the live hook.
 
 ---
 
