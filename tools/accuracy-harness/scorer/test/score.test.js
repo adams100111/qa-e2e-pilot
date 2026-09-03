@@ -83,3 +83,70 @@ test('ux-perceptual seeds are excluded from gated measurement and reported separ
   assert.equal(rRecalled.perceptual.hit, 1);
   assert.equal(rRecalled.gate.pass, rMissed.gate.pass); // recalling P1 changes nothing about the gate
 });
+
+// Task 4: held-out gate check — a heldOut:true positive seed must ALSO be recalled at 1.0,
+// independent of (and in addition to) the overall/functional/ux-objective thresholds.
+const heldOutSeeds = {
+  gate: { functionalRecallMin: 0.5, uxObjectiveRecallMin: 0.5, overallVerdictRecallMin: 0.5, precisionMin: 0.8, heldOutRecallMin: 1.0 },
+  seeds: [
+    { id: 'F1', axis: 'functional', polarity: 'positive', match: ['denominator'] },
+    { id: 'H1', axis: 'ux-objective', polarity: 'positive', heldOut: true, match: ['locale-date'] },
+    { id: 'N1', axis: 'functional', polarity: 'negative', match: ['clean'] }
+  ]
+};
+
+test('held-out seed recalled -> held-out check passes and the gate passes', () => {
+  const r = score({ findings: [
+    { seedId: 'F1', verdict: 'fail', text: 'wrong denominator' },
+    { seedId: 'H1', verdict: 'fail', text: 'locale-date mismatch' }
+  ] }, heldOutSeeds);
+  assert.equal(r.heldOut.total, 1);
+  assert.equal(r.heldOut.hit, 1);
+  assert.equal(r.heldOut.ratio, 1);
+  const heldOutCheck = r.gate.checks.find(c => c[0] === 'held-out recall');
+  assert.ok(heldOutCheck, 'expected a held-out recall check in the gate');
+  assert.equal(heldOutCheck[1], 1);
+  assert.equal(r.gate.pass, true);
+});
+
+test('held-out seed NOT recalled -> gate FAILS on the held-out check even if overall is above threshold', () => {
+  const r = score({ findings: [
+    { seedId: 'F1', verdict: 'fail', text: 'wrong denominator' }
+    // H1 (heldOut) missing from findings entirely
+  ] }, heldOutSeeds);
+  // overall recall is 1/2 = 50%, exactly at overallVerdictRecallMin (0.5) -> that check alone
+  // would pass, but the held-out check must independently fail the gate.
+  assert.equal(r.overall.ratio, 0.5);
+  assert.equal(r.heldOut.total, 1);
+  assert.equal(r.heldOut.hit, 0);
+  assert.equal(r.heldOut.ratio, 0);
+  const heldOutCheck = r.gate.checks.find(c => c[0] === 'held-out recall');
+  assert.equal(heldOutCheck[1], 0);
+  assert.equal(r.gate.pass, false);
+});
+
+test('knownGap:true seed is excluded from the positive/overall denominator', () => {
+  const withGap = {
+    gate: { overallVerdictRecallMin: 0.5, precisionMin: 0.8 },
+    seeds: [
+      { id: 'F1', axis: 'functional', polarity: 'positive', match: ['denominator'] },
+      { id: 'G1', axis: 'ux-objective', polarity: 'positive', knownGap: true, gapReason: 'out of scope', match: ['gap'] }
+    ]
+  };
+  const r = score({ findings: [{ seedId: 'F1', verdict: 'fail', text: 'wrong denominator' }] }, withGap);
+  // G1 (knownGap) never enters the denominator — overall is F1-only, fully recalled.
+  assert.equal(r.overall.total, 1);
+  assert.equal(r.overall.hit, 1);
+  assert.equal(r.overall.ratio, 1);
+});
+
+test('a seeds set with no heldOutRecallMin (existing seeds.json shape) gates identically (backward-compat)', () => {
+  const r = score({ findings: [{ seedId: 'F1', verdict: 'fail', text: 'wrong denominator' }] }, seeds);
+  // `seeds` (top of file) has no heldOutRecallMin in its gate block.
+  assert.ok(!seeds.gate.heldOutRecallMin);
+  const heldOutCheck = r.gate.checks.find(c => c[0] === 'held-out recall');
+  assert.equal(heldOutCheck, undefined, 'held-out check must be omitted (null-guarded) when heldOutRecallMin is absent');
+  // heldOut bucket still computed/reported (empty, ratio 1) even though it is not gated.
+  assert.equal(r.heldOut.total, 0);
+  assert.equal(r.heldOut.ratio, 1);
+});
