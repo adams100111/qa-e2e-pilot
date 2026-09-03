@@ -23,6 +23,7 @@
 #                      scripts/qa-verify.sh's header for what strict mode changes
 #   QA_JUNIT_OUT      JUnit XML output path        (default: qa-results.xml)
 #   QA_SKIP_PREFLIGHT set to 1 to skip pre-flight (when CI handles app/auth liveness itself)
+#   QA_SKIP_SESSION_PREFLIGHT set to 1 to skip scripts/session-preflight.sh (see step 4 below)
 #
 # EXIT: non-zero if pre-flight fails, the agent command fails, no run is produced, qa-verify
 #       overrides at least one recorded pass (and was not explicitly skipped), or the run has any
@@ -105,6 +106,18 @@ if [[ "${QA_SKIP_VERIFY:-0}" == "1" ]]; then
 else
   VERIFY_CMD="${QA_VERIFY_CMD:-$REPO_ROOT/scripts/qa-verify.sh}"
   log "qa-verify: independently re-checking run $RUN_ID (QA_VERIFY_STRICT=${QA_VERIFY_STRICT:-<unset>})"
+  # session-preflight: derive .qa/runs/$RUN_ID/toolstream.jsonl from a
+  # --save-session log for harnesses with no live capture-hook (e.g.
+  # non-Claude harnesses), so qa-verify's provenance binding below runs at
+  # high confidence instead of degrading. No-op if a live-hook toolstream
+  # already exists or no session log is resolvable. Non-fatal by design —
+  # a preflight hiccup must never fail the CI run; qa-verify's own honest
+  # no-toolstream degrade still applies either way.
+  if [[ "${QA_SKIP_SESSION_PREFLIGHT:-0}" == "1" ]]; then
+    log "session-preflight skipped (QA_SKIP_SESSION_PREFLIGHT=1)"
+  else
+    bash "$REPO_ROOT/scripts/session-preflight.sh" "$RUN_ID" || log "session-preflight: non-fatal — proceeding to qa-verify"
+  fi
   set +e
   bash "$VERIFY_CMD" "$RUN_ID"
   VERIFY_RC=$?
