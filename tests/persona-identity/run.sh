@@ -10,18 +10,29 @@
 #      one of whoami|storageState|none.
 #   2. `qa-verify.sh` — for a `pass` on a PERSONA-SCOPED HIGH-STAKES
 #      criterion (kinds contains human-action, OR the checklist.json row is
-#      tagged cross-tenant/cross-role-fk-chain), reads that identity.json:
-#        - captured subject CONFIDENTLY mismatches the persona -> OVERRIDE
-#          to fail, exit non-zero, reason names both identities.
-#        - matching subject -> verified, no change.
-#        - absent, or method:none, or an ambiguous (email/UUID-shaped)
-#          subject with no configured expectedSubject -> confidence:low
-#          (DEGRADE, never an override), exit 0.
+#      tagged cross-tenant/cross-role-fk-chain), reads that identity.json.
+#      H3 fast-follow fix (false-override bug): an OVERRIDE requires
+#      operator-provided ground truth. Decision table:
+#        - `personas[].expectedSubject` IS configured for the persona ->
+#          compare capturedSubject to expectedSubject. Match -> verified.
+#          Mismatch -> OVERRIDE to fail, exit non-zero (the ONLY override
+#          path).
+#        - NO expectedSubject configured -> capturedSubject contains the
+#          persona id as a case-insensitive substring -> verified
+#          (best-effort). Otherwise (ANY non-match — a bare numeric id like
+#          "42", a short hash, a UUID, or a genuinely different username,
+#          ALL treated alike) -> confidence:low (DEGRADE), exit 0. NEVER an
+#          override in this branch — this is the bug fix: `admin` vs a
+#          legitimate numeric id `42` used to be treated as a "confident
+#          mismatch" and hard-OVERRIDDEN; it now degrades like any other
+#          unverifiable subject. Honest consequence: a genuine impersonation
+#          (`alice` acting as `bob`) also only degrades without
+#          expectedSubject configured — operators who want impersonation to
+#          HARD-FAIL must set `personas[].expectedSubject`.
+#        - absent identity.json, or method:none -> confidence:low (DEGRADE).
 #        - __shared__/empty-persona/non-high-stakes (read-only) passes ->
 #          identity NOT checked at all, even if a mismatching identity.json
 #          happens to exist.
-#      `.qa/config.json`'s `personas[].expectedSubject` (v1 mapping) is
-#      authoritative over the bare persona-id comparison when configured.
 #
 # Every assertion runs under BOTH jq (default) and QA_ENGINE=python3 —
 # record-evidence.sh auto-detects (has_jq/has_py), so its python3 path is
@@ -136,22 +147,58 @@ build_humanaction_run() { # <run> <persona>
 for ENGINE in "" python3; do
   LABEL="${ENGINE:-jq(default)}"
 
-  # --- mismatch: persona alice, captured subject bob (both simple tokens) --
+  # --- mismatch, NO expectedSubject configured: persona alice, captured
+  # subject bob (both simple tokens). H3 false-override fix: without
+  # operator ground truth, a bare id-vs-subject heuristic mismatch can only
+  # DEGRADE, never OVERRIDE — a hard verdict override requires
+  # personas[].expectedSubject (see the "expectedmismatch" case below for
+  # the reliable override path). This revises what used to be an override
+  # assertion pre-fix. -----------------------------------------------------
   RUN="mismatch_${ENGINE:-jq}"
   build_crosstenant_run "$RUN" alice "MISMATCH-${ENGINE:-jq}-42"
   ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona alice --subject bob --method whoami >/dev/null )
   run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
   RC=$?
-  check "[$LABEL] mismatch: qa-verify exits non-zero" "$([[ "$RC" -ne 0 ]] && echo yes)" "yes"
-  check "[$LABEL] mismatch: CT1 overridden to fail" \
-    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
-  check "[$LABEL] mismatch: confidence forced high on override" \
-    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "high"
-  check_contains "[$LABEL] mismatch: reason names both identities" \
+  check "[$LABEL] mismatch (no expectedSubject): qa-verify still exits 0 (degrade, not override)" "$RC" "0"
+  check "[$LABEL] mismatch (no expectedSubject): CT1 stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] mismatch (no expectedSubject): confidence degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "low"
+  check_contains "[$LABEL] mismatch (no expectedSubject): reason explains the degrade" \
     "$(jq -r '.[] | select(.criterionId=="CT1") | .reasons | join("; ")' "$(vf "$RUN")")" \
-    "acting identity 'bob' != persona 'alice'"
-  check "[$LABEL] mismatch: inRunVerdict is still the original pass" \
+    "persona identity unverified (no expectedSubject configured"
+  check "[$LABEL] mismatch (no expectedSubject): inRunVerdict is still the original pass" \
     "$(jq -r '.[] | select(.criterionId=="CT1") | .inRunVerdict' "$(vf "$RUN")")" "pass"
+
+  # --- THE BUG FIX: persona admin, captured subject "42" (a legitimate
+  # numeric database id from a whoami probe), NO expectedSubject configured.
+  # Pre-fix this was a "confident mismatch" (fails the substring test, not
+  # email/UUID-shaped) and got hard-OVERRIDDEN to fail on every run. Post-fix
+  # it DEGRADES like any other no-ground-truth non-match. --------------------
+  RUN="numericid_${ENGINE:-jq}"
+  build_crosstenant_run "$RUN" admin "NUMERICID-${ENGINE:-jq}-42"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona admin --subject "42" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  RC=$?
+  check "[$LABEL] admin/42, no expectedSubject: qa-verify exits 0 (no false override)" "$RC" "0"
+  check "[$LABEL] admin/42, no expectedSubject: CT1 stays pass (NOT overridden)" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] admin/42, no expectedSubject: confidence degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "low"
+  check_contains "[$LABEL] admin/42, no expectedSubject: reason names the unverified subject" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .reasons | join("; ")' "$(vf "$RUN")")" \
+    "captured subject '42' could not be confidently matched to persona 'admin'"
+
+  # --- substring verified, NO expectedSubject: persona admin, captured
+  # subject "admin@example.com" -> best-effort substring match verifies. ----
+  RUN="substrverify_${ENGINE:-jq}"
+  build_crosstenant_run "$RUN" admin "SUBSTRVERIFY-${ENGINE:-jq}-42"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona admin --subject "admin@example.com" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] admin/admin@example.com substring match: CT1 stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] admin/admin@example.com substring match: confidence stays high" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "high"
 
   # --- match: persona alice, captured subject alice ------------------------
   RUN="match_${ENGINE:-jq}"
@@ -281,15 +328,38 @@ for ENGINE in "" python3; do
   check "[$LABEL] read-only/non-high-stakes: confidence untouched (high)" \
     "$(jq -r '.[] | select(.criterionId=="RO1") | .confidence' "$(vf "$RUN")")" "high"
 
-  # --- human-action-kind high-stakes path (no cross-tenant tag needed) -----
+  # --- human-action-kind high-stakes path (no cross-tenant tag needed),
+  # mismatch WITHOUT expectedSubject: degrades, does NOT override (same H3
+  # fix as the cross-tenant "mismatch" case above — the high-stakes TAG that
+  # gates whether identity is checked at all is orthogonal to whether a
+  # mismatch is confident enough to override; only expectedSubject decides
+  # that). ------------------------------------------------------------------
   RUN="hamismatch_${ENGINE:-jq}"
   build_humanaction_run "$RUN" alice
   ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona alice --subject bob --method whoami >/dev/null )
   run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
   RC=$?
-  check "[$LABEL] human-action kind, mismatch: qa-verify exits non-zero" "$([[ "$RC" -ne 0 ]] && echo yes)" "yes"
-  check "[$LABEL] human-action kind, mismatch: HA1 overridden to fail" \
+  check "[$LABEL] human-action kind, mismatch (no expectedSubject): qa-verify exits 0 (degrade, not override)" "$RC" "0"
+  check "[$LABEL] human-action kind, mismatch (no expectedSubject): HA1 stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="HA1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] human-action kind, mismatch (no expectedSubject): confidence degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="HA1") | .confidence' "$(vf "$RUN")")" "low"
+
+  # --- human-action-kind high-stakes path WITH expectedSubject configured:
+  # this IS the reliable override path -- mismatch against operator ground
+  # truth still hard-fails even off the cross-tenant tag route. ------------
+  RUN="haexpectedmismatch_${ENGINE:-jq}"
+  build_humanaction_run "$RUN" alice
+  mkdir -p "$WORK/.qa"
+  printf '%s' '{"personas":[{"id":"alice","role":"user","plane":"global","auth":"seeded","expectedSubject":"alice@corp.test"}]}' \
+    > "$WORK/.qa/config.json"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona alice --subject bob --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  RC=$?
+  check "[$LABEL] human-action kind, expectedSubject mismatch: qa-verify exits non-zero" "$([[ "$RC" -ne 0 ]] && echo yes)" "yes"
+  check "[$LABEL] human-action kind, expectedSubject mismatch: HA1 overridden to fail" \
     "$(jq -r '.[] | select(.criterionId=="HA1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
+  rm -f "$WORK/.qa/config.json"
 done
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

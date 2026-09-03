@@ -215,11 +215,19 @@ exports:
       the app exposes no such probe, `--method none` instead of skipping the
       call. `qa-verify` then binds that capture to every persona-scoped
       `human-action`/`cross-tenant`/`cross-role-fk-chain` `pass` for this
-      persona: a captured subject that doesn't match `id` (or a configured
-      `personas[].expectedSubject`) overrides that pass to fail; an
-      absent/unverifiable identity degrades confidence to `low` rather than
-      blocking (spec §5.5). Note this expectation nowhere in the written
-      artifacts — it is Verify-phase doctrine, not a Round 1–3 decision.
+      persona. An OVERRIDE to fail requires operator ground truth: only when
+      `personas[].expectedSubject` is configured for that persona AND the
+      captured subject doesn't match it. Without a configured
+      `expectedSubject`, comparing a bare persona `id` to an opaque captured
+      subject (a numeric account id, a short hash, a JWT `sub` claim) is not
+      confident enough to hard-fail on its own — a non-matching subject
+      degrades confidence to `low` instead (best-effort substring match
+      against `id` still verifies). An absent/unverifiable identity
+      (`method:none` or no `identity.json`) also degrades rather than
+      blocking (spec §5.5). Operators who want a genuine impersonation to
+      hard-fail, not just degrade, must configure `expectedSubject` for that
+      persona. Note this expectation nowhere in the written artifacts — it
+      is Verify-phase doctrine, not a Round 1–3 decision.
 
 ### Step 4 — Round 3: Scope
 

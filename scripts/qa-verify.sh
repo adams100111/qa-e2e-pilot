@@ -43,7 +43,8 @@
 #      non-provenance checks; only confidence is downgraded to `low`, once
 #      per criterion. `bound` -> no change.
 #
-#   3.5. PERSONA-IDENTITY BINDING (Plan H3 Task 1, gap #6) — for a
+#   3.5. PERSONA-IDENTITY BINDING (Plan H3 Task 1, gap #6; H3 fast-follow
+#      fix for the false-override on opaque subjects) — for a
 #      PERSONA-SCOPED HIGH-STAKES pass only (persona non-empty and not the
 #      "__shared__" sentinel, AND either the recorded `kinds` contains
 #      `human-action` or the checklist.json row is tagged `cross-tenant` /
@@ -51,20 +52,32 @@
 #      QA_VERIFY_STRICT residual below already uses): read
 #      evidence/<persona>/identity.json (recorded via `record-evidence.sh
 #      identity`, never trusted from any agent-authored checkpoint field).
-#        - Present, method != none, capturedSubject CONFIDENTLY does not
-#          match the persona's expected identity -> OVERRIDE to fail
-#          ("acting identity ... != persona ..." — acting as the wrong
-#          user is a real defect, not ambiguity).
-#        - Absent, OR present with method:none, OR present but the
-#          comparison is not confident (an opaque email/UUID-shaped
-#          subject with no configured expectedSubject) -> confidence: low,
-#          reason recorded. NEVER an override — spec §5.5: identity is
-#          best-effort and DEGRADES when unverifiable, it never blocks/fails
-#          a run on its own.
-#        - Matches -> verified, no change.
-#      Expected identity (v1): `.qa/config.json`'s `personas[].expectedSubject`
-#      for that persona id when configured, else the persona id itself;
-#      compared case-insensitively, substring either direction.
+#        - Absent, OR present with method:none -> confidence: low, reason
+#          recorded. NEVER an override.
+#        - Present, method != none, AND `.qa/config.json`'s
+#          `personas[].expectedSubject` IS configured for this persona ->
+#          compare capturedSubject to expectedSubject (operator-provided
+#          ground truth). Match -> verified. Mismatch -> OVERRIDE to fail
+#          ("acting identity ... != expected identity ..." — the operator
+#          told us who this should be, so a mismatch is a real defect).
+#          THIS IS THE ONLY OVERRIDE PATH.
+#        - Present, method != none, NO expectedSubject configured -> a bare
+#          persona-id-vs-captured-subject comparison is inherently
+#          unreliable (an id like `admin` vs a subject like `42` / a short
+#          hash / a JWT `sub` claim is indistinguishable from a legitimate
+#          numeric account id vs a genuine impersonation without ground
+#          truth). capturedSubject contains the persona id as a
+#          case-insensitive substring -> verified (best-effort). Otherwise
+#          (ANY non-match — a bare numeric id, a short hash, a UUID, or a
+#          genuinely different username, ALL treated alike) -> confidence:
+#          low, reason "persona identity unverified (no expectedSubject
+#          configured; captured subject '<s>' could not be confidently
+#          matched to persona '<id>')". NEVER an override — spec §5.5:
+#          identity is best-effort and DEGRADES when unverifiable; a hard
+#          verdict override requires operator-supplied ground truth.
+#          Operators who want a genuine impersonation to HARD-FAIL rather
+#          than degrade must configure `personas[].expectedSubject` for
+#          that persona in `.qa/config.json`.
 #      __shared__/empty-persona/non-high-stakes (read-only) passes are
 #      exempt — never checked.
 #
@@ -332,24 +345,6 @@ str_contains() {
     *"$2"*) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-# is_complex_subject <str> -> true (exit 0) iff <str> "looks like" an opaque
-# identity subject (an email address, or a UUID) rather than a simple
-# username-shaped token. Plan H3 Task 1's documented residual: a real app's
-# subject is very often an email/UUID unrelated in spelling to the persona
-# id, so a captured subject in that shape that fails the substring
-# comparison must DEGRADE (confidence:low), never OVERRIDE — only a plain
-# alnum/underscore/hyphen token that differs from the persona is a
-# confident-enough signal to override to fail (see the identity-check block
-# in process_criterion for how this is used).
-is_complex_subject() {
-  local s="$1"
-  case "$s" in
-    *@*) return 0 ;;
-  esac
-  [[ "$s" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] && return 0
-  return 1
 }
 
 # json_field <file> <key> -> the string value of <key> in the top-level JSON
@@ -745,32 +740,47 @@ process_criterion() {
         confidence="low"
         reasons+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
       else
-        local expected="" cs_lower expected_lower persona_lower matched=0 ambiguous=0
+        local expected="" cs_lower expected_lower persona_lower matched=0
         expected="$(config_expected_subject_for "$persona")"
         cs_lower="$(to_lower "$id_subject")"
 
         if [[ -n "$expected" ]]; then
+          # Operator-provided ground truth is configured — this is the ONLY
+          # path allowed to OVERRIDE. Comparing a bare persona id to an
+          # opaque captured subject is never confident enough on its own
+          # (see the header comment's H3 fast-follow note); expectedSubject
+          # removes that ambiguity.
           expected_lower="$(to_lower "$expected")"
           if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
             matched=1
           fi
+
+          if [[ "$matched" -eq 1 ]]; then
+            : # verified — captured identity matches the operator-configured expectedSubject.
+          else
+            override=1
+            reasons+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
+          fi
         else
+          # No ground truth configured — a persona-id-vs-captured-subject
+          # comparison is inherently unreliable (a legitimate numeric id, a
+          # short hash, or a JWT `sub` claim is indistinguishable from a
+          # genuine impersonation by this heuristic alone). Substring match
+          # verifies; anything else DEGRADES — it must NEVER override,
+          # because an override here has no operator-confirmed ground truth
+          # behind it (that was the false-override bug: `admin` vs a
+          # legitimate `42` used to hard-fail every such run).
           persona_lower="$(to_lower "$persona")"
           if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
             matched=1
-          elif is_complex_subject "$id_subject"; then
-            ambiguous=1
           fi
-        fi
 
-        if [[ "$matched" -eq 1 ]]; then
-          : # verified — captured identity matches the persona; no change.
-        elif [[ "$ambiguous" -eq 1 ]]; then
-          confidence="low"
-          reasons+=("persona identity unverified: captured subject '${id_subject}' does not confidently compare to persona '${persona}' (opaque email/UUID-shaped subject, no expectedSubject configured in .qa/config.json) — degrading rather than false-overriding a legitimate run")
-        else
-          override=1
-          reasons+=("acting identity '${id_subject}' != persona '${persona}' (${identity_rel}) — this pass was performed as the wrong user")
+          if [[ "$matched" -eq 1 ]]; then
+            : # verified — best-effort substring match against the persona id.
+          else
+            confidence="low"
+            reasons+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
+          fi
         fi
       fi
     fi
