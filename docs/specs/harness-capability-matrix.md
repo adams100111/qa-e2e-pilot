@@ -6,6 +6,22 @@
 
 **Update (2026-09-03, sub-plan C2):** the **Vision** row below is no longer speculative either — the portable disk-file contract shipped as the `vision: {capable, read}` descriptor per harness in `harness-profiles.json` plus `skills/detecting-visual-ux/scripts/vision-binding.sh resolve|banner`, the code path the layer-3 generative critic (ADR-0019) actually calls: screenshot → disk-file PNG → the per-harness read (`Read` on Claude/opencode, `localImage` on Codex, `adapter` on Pi), degrading to an honest banner (layers 1–2 only) when a harness/model resolves `absent`. The per-harness operational caveats in the row and in "Open verification items" below (Pi's `pi-mcp-adapter`-to-`ImageContent` mapping still wants verification; Codex's `#10334` `structuredContent` gotcha) remain true and unchanged — wiring the contract didn't retire them, it's built to route around them via the disk-file fallback.
 
+**Update (2026-09-03, portable-enforcement H4/T-13):** the **Capture** row's asymmetry — Claude has
+`PostToolUse`, the other three are listed as version-dependent/unconfirmed — no longer means those
+three have *nothing* for `qa-verify` to bind against. The **session→toolstream floor shipped**:
+`skills/driving-browser-qa/scripts/session-to-toolstream.js` (converts the `--save-session` log
+every harness already produces, per the `--save-session` row below) + `scripts/session-preflight.sh`
+(derives `.qa/runs/<run>/toolstream.jsonl` from it, idempotent, non-fatal in `qa-ci.sh`) give **all
+four harnesses** high-confidence `qa-verify` provenance binding without depending on the native
+`PostToolUse`/`tool.execute.after`/`tool_result` primitives in the Capture/Block rows firing at all.
+Those native-primitive rows (and this doc's per-harness caveats below — Codex's Bash-only-hooks risk,
+Pi's `pi-mcp-adapter` mapping, opencode's `tool.execute.before` throw) are **unchanged** and now
+describe **documented recipes + verify-on-build hardening** (`harnesses/<h>/hooks.md`), not the
+tested baseline — the session→toolstream floor is the tested baseline. The live **block** (deny
+before running) still stays Claude-only in practice; `qa-verify`'s post-hoc override is what covers
+the deny on the other three. See `docs/adr/0018-out-of-agent-evidence-enforcement.md`'s T-13-addressed
+note and `docs/harness-adapters.md`'s "automatic enforcement floor" section for the full writeup.
+
 ## The matrix
 
 | Axis | **Claude Code** | **Codex** | **opencode** | **Pi** |

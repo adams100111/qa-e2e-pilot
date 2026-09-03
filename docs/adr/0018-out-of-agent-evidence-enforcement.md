@@ -38,13 +38,60 @@ only, it never gates a verdict and the hook still always exits 0. See
 hook is narrower — only the mutating-`browser_evaluate` + `browser_run_code_unsafe` pair). Also
 deferred: the **independent LLM re-drive/re-bake** of high-stakes criteria (`qa-verify`'s
 `QA_VERIFY_REDRIVE_CMD` is a pluggable, documented stub whose result is logged but not wired into
-the verdict — item 3's "hybrid" second half), and the **Codex/opencode/Pi hook adapters (T-13)**
-— capture/block hooks exist on Claude only today; the other three harnesses fall back to
-`qa-verify`'s deterministic checks with no toolstream to corroborate against, degrading
-high-stakes passes to `confidence: low` by default. **T-13 is now the last remaining fast-follow**
-from the original honesty-hardening program: it is a separate documented port (each harness needs
-its own hook wiring plus a manual enforcement run), not a same-day extension like #6/#7 above —
-the `qa-verify` universal floor already runs unchanged on every harness in the meantime.
+the verdict — item 3's "hybrid" second half). **T-13 (the last fast-follow) is now addressed as
+below.**
+
+**T-13 addressed (2026-09-03, portable-enforcement H4).** Before this, the Codex/opencode/Pi
+adapters had no capture mechanism at all — every `human-action`/cross-tenant `pass` on those three
+harnesses degraded to `confidence: low` by default, because `qa-verify`'s provenance binding
+(item 4) had no toolstream to check against. That gap is now closed **without a live hook**:
+
+- `skills/driving-browser-qa/scripts/session-to-toolstream.js` converts the `session.md` that
+  `@playwright/mcp --save-session` already writes on every harness (Codex, opencode, and Pi all
+  ship `--save-session` in their `mcp.snippet`, per `docs/harness-adapters.md`) into the same
+  `{tool, args, resultDigest, responseBody}` event shape the capture-hook produces, reusing
+  `parse-session-log.js` as the single source of truth for session parsing/classification.
+- `scripts/session-preflight.sh <run-id>` runs that converter and pipes its output through
+  `toolstream.sh append` to materialize `.qa/runs/<run-id>/toolstream.jsonl` **before**
+  `qa-verify` runs. It is **idempotent and non-destructive**: a no-op if a toolstream already
+  exists (never overwrites a live-hook capture) and a no-op if no session log is resolvable
+  (the honest no-toolstream degrade still applies — this is not an error path). Wired **non-fatally**
+  into `scripts/qa-ci.sh` (a preflight failure logs and falls through to `qa-verify` as before,
+  skippable via `QA_SKIP_SESSION_PREFLIGHT=1`).
+- Net effect: `qa-verify`'s provenance binding (item 4) now has a toolstream to check on every
+  harness that ran with `--save-session`, so `human-action`/cross-tenant passes on Codex/opencode/Pi
+  bind at **high confidence** the same way Claude's live-hook-captured runs do — not just Claude
+  anymore.
+
+**What T-13 did *not* do — the live capture/block hooks stay Claude's tier.** This task ships a
+converter, not a hook port. The Codex/opencode/Pi live-hook adapters (real-time capture as the run
+happens, and a live pre-run block) now exist as **documented recipes** — `harnesses/<h>/hooks.md`
+for each of the three — describing the mechanism (`PreToolUse`/`PostToolUse`-equivalent wiring
+against the `playwright-qa` MCP server) using `capture-hook.sh`/`block-hook.sh` unchanged, framed
+as **optional hardening on top of the automatic floor above, verify-on-build**: nothing in this repo
+runtime-exercises them (no access to a live Codex/opencode/Pi runtime here), so each recipe carries
+its own honesty banner pointing the operator at their own pinned version's hook docs before relying
+on it.
+
+**Honest residuals of the T-13 fix (stated plainly, not buried):**
+- The converted toolstream is **`browser_*` only.** `session.md` is a Playwright MCP artifact — it
+  has no visibility into `Bash` calls. The live capture-hook on Claude remains the only source that
+  captures `Bash` into the toolstream; a Codex/opencode/Pi run's toolstream will never corroborate a
+  `Bash`-evidenced artifact, converter or not.
+- The live **block** (pre-run deny of a mutating `browser_evaluate`/`browser_run_code_unsafe`)
+  **stays Claude-only** unless an operator wires the optional recipe. On Codex/opencode/Pi without
+  that recipe, a mutating call is never denied *before* it runs — `qa-verify`'s post-hoc override
+  (a captured mutating call with no artifact accounting for it fails the gate after the fact) is the
+  only backstop there, same authority, later in the loop.
+- The saved session log is **agent-side** — written by the same Playwright MCP process the run's
+  own agent drives, not a hardened out-of-agent capture. This is **the same trust level as the
+  capture-hook's toolstream** on an unhardened install (see the Consequences section's
+  tamper-*evident*-not-tamper-*proof* note) — the fix does not claim a new, stronger trust tier, it
+  only extends the existing one to harnesses that had none.
+
+`qa-verify` remains the universal authority throughout — this task adds an input to its existing
+provenance check, it does not change `qa-verify.sh` itself, and a run's authoritative verdict is
+still `qa-verify`'s, never the presence of a toolstream (converted or live-captured) by itself.
 
 ## Context
 
