@@ -43,6 +43,44 @@
 #      non-provenance checks; only confidence is downgraded to `low`, once
 #      per criterion. `bound` -> no change.
 #
+#   3.5. PERSONA-IDENTITY BINDING (Plan H3 Task 1, gap #6; H3 fast-follow
+#      fix for the false-override on opaque subjects) — for a
+#      PERSONA-SCOPED HIGH-STAKES pass only (persona non-empty and not the
+#      "__shared__" sentinel, AND either the recorded `kinds` contains
+#      `human-action` or the checklist.json row is tagged `cross-tenant` /
+#      `cross-role-fk-chain` — the SAME is_high_stakes() definition the
+#      QA_VERIFY_STRICT residual below already uses): read
+#      evidence/<persona>/identity.json (recorded via `record-evidence.sh
+#      identity`, never trusted from any agent-authored checkpoint field).
+#        - Absent, OR present with method:none -> confidence: low, reason
+#          recorded. NEVER an override.
+#        - Present, method != none, AND `.qa/config.json`'s
+#          `personas[].expectedSubject` IS configured for this persona ->
+#          compare capturedSubject to expectedSubject (operator-provided
+#          ground truth). Match -> verified. Mismatch -> OVERRIDE to fail
+#          ("acting identity ... != expected identity ..." — the operator
+#          told us who this should be, so a mismatch is a real defect).
+#          THIS IS THE ONLY OVERRIDE PATH.
+#        - Present, method != none, NO expectedSubject configured -> a bare
+#          persona-id-vs-captured-subject comparison is inherently
+#          unreliable (an id like `admin` vs a subject like `42` / a short
+#          hash / a JWT `sub` claim is indistinguishable from a legitimate
+#          numeric account id vs a genuine impersonation without ground
+#          truth). capturedSubject contains the persona id as a
+#          case-insensitive substring -> verified (best-effort). Otherwise
+#          (ANY non-match — a bare numeric id, a short hash, a UUID, or a
+#          genuinely different username, ALL treated alike) -> confidence:
+#          low, reason "persona identity unverified (no expectedSubject
+#          configured; captured subject '<s>' could not be confidently
+#          matched to persona '<id>')". NEVER an override — spec §5.5:
+#          identity is best-effort and DEGRADES when unverifiable; a hard
+#          verdict override requires operator-supplied ground truth.
+#          Operators who want a genuine impersonation to HARD-FAIL rather
+#          than degrade must configure `personas[].expectedSubject` for
+#          that persona in `.qa/config.json`.
+#      __shared__/empty-persona/non-high-stakes (read-only) passes are
+#      exempt — never checked.
+#
 #   4. WRITE .qa/runs/<run-id>/verification.json — a JSON array, one record
 #      per checked criterion:
 #        {criterionId, persona, inRunVerdict, verifierVerdict, confidence,
@@ -277,6 +315,81 @@ if not isinstance(tags, list):
 tags = [str(t) for t in tags]
 sys.exit(0 if ("cross-tenant" in tags or "cross-role-fk-chain" in tags) else 1)
 ' "$row" >/dev/null 2>&1
+  fi
+}
+
+# is_high_stakes <kinds-csv> <checklist-row-json> — true (exit 0) iff the
+# recorded kinds contain `human-action`, OR the checklist row is tagged
+# `cross-tenant`/`cross-role-fk-chain` (row_has_high_stakes_tag, above).
+# This is the SAME "high-stakes" definition the QA_VERIFY_STRICT
+# no-toolstream residual already used inline (now factored out here) and
+# the gate for the persona-identity check below (Plan H3 Task 1) — a
+# read-only/non-high-stakes criterion is never identity-checked.
+is_high_stakes() {
+  local kinds_csv="$1" row="$2"
+  case ",${kinds_csv}," in
+    *,human-action,*) return 0 ;;
+  esac
+  row_has_high_stakes_tag "$row"
+}
+
+# to_lower <str> -> <str> lowercased (plain coreutils tr, no locale surprises
+# for the ASCII subject/persona ids this codebase deals with).
+to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# str_contains <haystack> <needle> -> true (exit 0) iff <haystack> contains
+# <needle> as a substring. Both args are expected pre-lowercased by the
+# caller — this is a plain shell glob match, not a regex engine.
+str_contains() {
+  case "$1" in
+    *"$2"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# json_field <file> <key> -> the string value of <key> in the top-level JSON
+# object <file>, or "" if the file is missing/unparseable/non-object, or the
+# key is absent/null. Never dies.
+json_field() {
+  local file="$1" key="$2"
+  if has_jq; then
+    jq -r --arg k "$key" 'if type == "object" then ((.[$k] // "") | tostring) else "" end' "$file" 2>/dev/null
+  else
+    python3 -c "import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    v = d.get(sys.argv[2]) if isinstance(d, dict) else None
+    print(v if v is not None else '')
+except Exception:
+    print('')" "$file" "$key" 2>/dev/null
+  fi
+}
+
+# config_expected_subject_for <persona-id> -> `.qa/config.json`'s
+# `personas[].expectedSubject` for that persona id (Plan H3 Task 1's v1
+# expected-identity mapping), or "" if `.qa/config.json` is absent/invalid,
+# the persona isn't listed, or it has no `expectedSubject`. NEVER dies — an
+# absent/malformed config just falls back (caller) to comparing against the
+# persona id itself.
+config_expected_subject_for() {
+  local persona="$1" file=".qa/config.json"
+  [[ -f "$file" ]] || return 0
+  json_is_valid "$file" || return 0
+  if has_jq; then
+    jq -r --arg p "$persona" '(.personas // []) | map(select(type == "object" and .id == $p)) | (.[0].expectedSubject // "")' "$file" 2>/dev/null
+  else
+    python3 -c "import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    for p in (d.get('personas') or []):
+        if isinstance(p, dict) and p.get('id') == sys.argv[2]:
+            v = p.get('expectedSubject')
+            print(v if v else '')
+            break
+    else:
+        print('')
+except Exception:
+    print('')" "$file" "$persona" 2>/dev/null
   fi
 }
 
@@ -604,6 +717,75 @@ process_criterion() {
     fi
   done
 
+  # --- Step 3.5: persona-identity binding (Plan H3 Task 1, gap #6). See the
+  # header comment's numbered walkthrough for the full rationale. Only a
+  # PERSONA-SCOPED (non-empty, not the "__shared__" sentinel) HIGH-STAKES
+  # criterion is checked; __shared__/empty-persona/read-only criteria are
+  # exempt — skipped entirely, no reason recorded, override/confidence
+  # untouched. ------------------------------------------------------------
+  if [[ -n "$persona" ]] && [[ "$persona" != "__shared__" ]] && is_high_stakes "$kinds_csv" "$row"; then
+    local identity_rel identity_full
+    identity_rel="evidence/${persona}/identity.json"
+    identity_full="$(run_dir "$run_id")/${identity_rel}"
+
+    if [[ ! -f "$identity_full" ]] || [[ ! -s "$identity_full" ]] || ! json_is_valid "$identity_full"; then
+      confidence="low"
+      reasons+=("persona identity unverified: no ${identity_rel} recorded for this run — persona-identity binding degrades rather than blocks on an unverifiable identity (spec §5.5)")
+    else
+      local id_method id_subject
+      id_method="$(json_field "$identity_full" "method")"
+      id_subject="$(json_field "$identity_full" "capturedSubject")"
+
+      if [[ -z "$id_method" ]] || [[ "$id_method" == "none" ]]; then
+        confidence="low"
+        reasons+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
+      else
+        local expected="" cs_lower expected_lower persona_lower matched=0
+        expected="$(config_expected_subject_for "$persona")"
+        cs_lower="$(to_lower "$id_subject")"
+
+        if [[ -n "$expected" ]]; then
+          # Operator-provided ground truth is configured — this is the ONLY
+          # path allowed to OVERRIDE. Comparing a bare persona id to an
+          # opaque captured subject is never confident enough on its own
+          # (see the header comment's H3 fast-follow note); expectedSubject
+          # removes that ambiguity.
+          expected_lower="$(to_lower "$expected")"
+          if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
+            matched=1
+          fi
+
+          if [[ "$matched" -eq 1 ]]; then
+            : # verified — captured identity matches the operator-configured expectedSubject.
+          else
+            override=1
+            reasons+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
+          fi
+        else
+          # No ground truth configured — a persona-id-vs-captured-subject
+          # comparison is inherently unreliable (a legitimate numeric id, a
+          # short hash, or a JWT `sub` claim is indistinguishable from a
+          # genuine impersonation by this heuristic alone). Substring match
+          # verifies; anything else DEGRADES — it must NEVER override,
+          # because an override here has no operator-confirmed ground truth
+          # behind it (that was the false-override bug: `admin` vs a
+          # legitimate `42` used to hard-fail every such run).
+          persona_lower="$(to_lower "$persona")"
+          if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
+            matched=1
+          fi
+
+          if [[ "$matched" -eq 1 ]]; then
+            : # verified — best-effort substring match against the persona id.
+          else
+            confidence="low"
+            reasons+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
+          fi
+        fi
+      fi
+    fi
+  fi
+
   # --- Step 4 (part): reconcile verdict/confidence. -------------------------
   local verifier_verdict="pass"
   if [[ "$override" -eq 1 ]]; then
@@ -619,12 +801,7 @@ process_criterion() {
     # non-high-stakes no-toolstream pass (read-only/computed) is never
     # over-punished — it degrades in strict mode exactly as in default mode.
     local high_stakes=0
-    case ",${kinds_csv}," in
-      *,human-action,*) high_stakes=1 ;;
-    esac
-    if [[ "$high_stakes" -eq 0 ]] && row_has_high_stakes_tag "$row"; then
-      high_stakes=1
-    fi
+    is_high_stakes "$kinds_csv" "$row" && high_stakes=1
 
     if [[ -n "${QA_VERIFY_STRICT:-}" && "$high_stakes" -eq 1 ]]; then
       verifier_verdict="fail"

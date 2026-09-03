@@ -2,7 +2,8 @@
 
 ## Status
 
-Partially landed (2026-09-03, Plan H2 — "WS-3 sound core", Claude-first). Implements
+Partially landed (2026-09-03, Plan H2 — "WS-3 sound core", Claude-first; extended 2026-09-03,
+Plan H3 — persona-identity binding (#6) + clock advisory (#7)). Implements
 `docs/specs/2026-09-02-qa-honesty-hardening-design.md`. Amends ADR-0015 (narrows residual R4).
 Builds on ADR-0017 (merged) and ADR-0010 (evidence gate).
 
@@ -19,15 +20,31 @@ provenance binding, `verification.json`, wired into `scripts/qa-ci.sh` +
 mechanics and honest residuals, and `docs/harness-adapters.md#the-claude-assurance-tier` /
 `docs/running-in-ci.md#qa-verify-the-out-of-agent-authority` for the operational writeup.
 
+**What's since landed (Plan H3 fast-follows):** **persona-identity binding (item 6)** —
+`record-evidence.sh identity` records a persona's observed identity to
+`evidence/<persona>/identity.json`; `qa-verify`'s Step 3.5 binds it for every persona-scoped,
+high-stakes `pass`. The override-to-`fail` path requires operator-configured
+`personas[].expectedSubject` ground truth for that persona; without it, an opaque or
+non-matching captured subject **degrades to `confidence: low`** rather than a false override —
+the honest tier spec §5.5 calls for: impersonation degrades, it does not silently hard-fail, when
+there is no ground truth to judge it against. Also landed: the **clock/time-travel advisory
+(item 7, spec §7)** — `capture-hook.sh`'s deterministic pattern scan stamps
+`advisory:"clock-control"` on a toolstream event matching a known time-control signal; advisory
+only, it never gates a verdict and the hook still always exits 0. See
+`skills/checkpointing-qa-memory/SKILL.md`'s "Plan H3 Fast-Follows" section for the full mechanics.
+
 **What's still fast-follow (Plan H3), not built by this ADR's "landed" claim:** the block-hook does
 **not** deny `browser_route` (item 2 below describes the original full design intent; the shipped
 hook is narrower — only the mutating-`browser_evaluate` + `browser_run_code_unsafe` pair). Also
-deferred: **persona-identity binding** (item 6), the **independent LLM re-drive/re-bake** of
-high-stakes criteria (`qa-verify`'s `QA_VERIFY_REDRIVE_CMD` is a pluggable, documented stub whose
-result is logged but not wired into the verdict — item 3's "hybrid" second half), and the
-**Codex/opencode/Pi hook adapters** (capture/block hooks exist on Claude only today; the other
-three harnesses fall back to `qa-verify`'s deterministic checks with no toolstream to corroborate
-against, degrading high-stakes passes to `confidence: low` by default).
+deferred: the **independent LLM re-drive/re-bake** of high-stakes criteria (`qa-verify`'s
+`QA_VERIFY_REDRIVE_CMD` is a pluggable, documented stub whose result is logged but not wired into
+the verdict — item 3's "hybrid" second half), and the **Codex/opencode/Pi hook adapters (T-13)**
+— capture/block hooks exist on Claude only today; the other three harnesses fall back to
+`qa-verify`'s deterministic checks with no toolstream to corroborate against, degrading
+high-stakes passes to `confidence: low` by default. **T-13 is now the last remaining fast-follow**
+from the original honesty-hardening program: it is a separate documented port (each harness needs
+its own hook wiring plus a manual enforcement run), not a same-day extension like #6/#7 above —
+the `qa-verify` universal floor already runs unchanged on every harness in the meantime.
 
 ## Context
 

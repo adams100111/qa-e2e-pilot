@@ -53,6 +53,47 @@ purely an emission concern: it records that a mutating act happened and its outc
 does not weaken or replace the UI-only act-phase gate above — the act itself is still
 performed exclusively via `browser_click`/`type`/`fill_form`/etc. on genuine affordances.
 
+## 1b. Named act-phase navigate carve-outs (WS-2 C)
+
+`browser_navigate` is **not** a human-path act tool (§1's table lists only
+click/type/fill_form/press_key/select_option/hover/drag/file_upload) — following
+a real link is a `browser_click` side effect, so an **act-phase `browser_navigate`
+is an address-bar URL-skip** and is fail-closed by default (`check-action-trace.js`
+Check 1/3). Five named exceptions **LOOSEN** that gate. Each is **tag-required**:
+the step must carry `carveout:"<name>"` naming one of these exact values, checked
+by Set membership — an untagged act-phase navigate, or one tagged with anything
+NOT in this list (a typo, `"bogus"`, an old/retired name), stays fail-closed and
+is rejected as a workaround. There is no blanket allow.
+
+| `carveout` value | Legitimate when | Example |
+|---|---|---|
+| `deep-link` | The action-under-test is opening a URL that arrived through a real out-of-band channel the human would have clicked (an emailed link, a shared link), not a shortcut around a gated UI flow | Following a password-reset link received by email |
+| `auth-boundary` | The criterion is a negative-access/authorization probe: typing a URL directly to check whether a route correctly allows or blocks the current persona | Typing `/admin/settings` as a non-admin persona to confirm it 403s/redirects |
+| `persona-switch` | The action-under-test is re-authenticating as a **different** role mid-criterion via a typed URL (a login/impersonation entrypoint), not skipping a step within the current persona's flow | Typing a login URL to switch from `member` to `admin` partway through a criterion |
+| `out-of-band` | Retrieving evidence from a side channel with no UI affordance in the app itself — a test mailbox, a webhook receiver, an email/SMS provider's own inbox | Fetching a verification email from Mailpit's own web UI/API to read a code |
+
+`deep-link` and `auth-boundary` are original; `persona-switch` and `out-of-band`
+were added by Plan H3 (WS-2 C). A sixth situation — **arrange-phase entry
+navigate** (reaching the feature/precondition before the act begins, e.g.
+navigating to `/feature` in Arrange) — is not a carve-out at all: it is exempt
+because it is not an act-phase step in the first place (§1's phase table; see
+§1c below for how an unrecognized phase is handled).
+
+## 1c. Phase enum is fail-closed on the unrecognized side
+
+A step's `phase` must be one of `arrange` / `act` / `assert`. The gate's
+fail-closed rule is **asymmetric by design**: the two recognized **non-act**
+phases are exactly `arrange` and `assert`; any step whose `phase` is `act`, is
+missing entirely, or is anything else unrecognized (a typo like `"weird"` or
+`"observe"`) is **act-checked** — subject to the same human-path/workaround
+lint as a step correctly labeled `act`. This closes the dodge where a mutation
+could otherwise hide behind a bogus or omitted phase label to skip the act
+filter (`steps.filter(s => s.phase === 'act')` would have silently excluded
+it). Symmetrically, `carveout` is fail-closed the other direction: an unknown
+value on an otherwise-act-checked `browser_navigate` is treated as **NOT**
+carved out — the step remains a workaround — never silently allowed through.
+Both rules mean "when in doubt, enforce," not "when in doubt, permit."
+
 ## 2. UI-impossible decision procedure
 
 To perform action `A` needing affordance-spec `⟨role, label|testid, expected-effect⟩`:
@@ -118,7 +159,24 @@ missing/disabled/broken affordance: screenshot + the enumerated affordances from
   continuous session. Under sequential-by-default (ADR-0003) ≈1 context is open at a
   time; parallel fan-out holds ≤ `maxParallel`, guarded by `maxOpenContexts`.
 
-## 5. See also
+## 5. Clock / time-travel discipline (#7)
+
+The act must run against **real wall-clock time**. A QA run must **never** mock, freeze, or
+fast-forward the clock (`setTestNow`, `sinon.useFakeTimers`/`jest.useFakeTimers`, a
+`Date.now =` override, `__defineGetter__` on `Date`, `mockdate`/`timekeeper`, or navigating
+a clock-control route like `/__clock`/`/test/clock`/`?now=`) to force a time-dependent
+assertion to pass. Forcing the clock manufactures a pass the same way stubbing the
+backend-under-test does (§4) — it proves nothing about the real system, so it is banned by
+doctrine exactly like an evaluate-write on the act path. This is a **doctrine ban, not a
+hard gate**: generic time-travel detection is infeasible, so `capture-hook.sh` runs a
+deterministic, best-effort pattern scan over every captured call and stamps
+`advisory:"clock-control"` on a toolstream event that matches a known signal —
+**advisory only**, it never blocks the call and never changes the hook's exit code. Treat
+an `advisory:"clock-control"` line in the toolstream as a suspect signal worth a second
+look during review, not proof of a violation on its own (a legitimate in-app feature under
+test, e.g. an admin "set server time" tool, can trip the same pattern).
+
+## 6. See also
 
 - `../SKILL.md` — driver selection, the observe-round, the driver launch + delta-slice
   rule, and the React/RTL mechanics these helpers now support in a read-only/resolve-only

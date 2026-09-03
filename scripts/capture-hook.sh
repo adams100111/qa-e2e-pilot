@@ -67,6 +67,98 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 
 warn() { echo "capture-hook: $*" >&2; }
 
+# ---------------------------------------------------------------------------
+# Clock/time-travel advisory scan (Plan H3 Task 2, #7).
+#
+# A QA run must never mock/freeze/fast-forward the clock to force a
+# time-dependent assertion (see interaction-discipline.md's doctrine ban).
+# Generic time-travel detection is infeasible, so this is a DETERMINISTIC,
+# BEST-EFFORT pattern scan over a captured call's args -- ADVISORY ONLY. It
+# NEVER changes the hook's exit code and NEVER blocks the tool call; a match
+# only adds `advisory:"clock-control"` to the emitted toolstream event
+# (absent, never null/false, when nothing matches). Classification reads the
+# UNREDACTED tool_input (read-only, never written) -- the WRITTEN args still
+# go through the normal Bash-only redaction path unaffected (a time-control
+# payload isn't itself a secret, but this scan must not interfere with the
+# secret-redaction contract).
+#
+# Matching uses `grep -Eqi` (POSIX ERE, case-insensitive) -- deliberately
+# NOT `grep -P`/perl (unavailable on some hosts, same portability
+# constraint as toolstream.sh's redact). This is engine-independent: it
+# runs identically whether jq or python3 is the active JSON engine (those
+# only affect how the .function/.code/.url/.command field is extracted).
+#
+# Signals:
+#   browser_evaluate payload (.function and/or .code, joined) containing:
+#     setTestNow, sinon.useFakeTimers, fakeTimers, Date.now\s*=,
+#     __defineGetter__.*Date, jest.useFakeTimers, mockdate, timekeeper
+#   browser_navigate .url OR a Bash .command hitting a known clock route:
+#     /__clock, /test/clock, /_time, ?now=, &now=, x-mock-time
+# ---------------------------------------------------------------------------
+CLOCK_EVAL_PATTERN='setTestNow|sinon\.useFakeTimers|fakeTimers|Date\.now[[:space:]]*=|__defineGetter__.*Date|jest\.useFakeTimers|mockdate|timekeeper'
+CLOCK_ROUTE_PATTERN='/__clock|/test/clock|/_time|\?now=|&now=|x-mock-time'
+
+extract_json_field() {
+  # extract_json_field <json> <field> -> stdout: string value of <field>,
+  # or empty. Best-effort; never dies (2>/dev/null on both engines).
+  local json="$1" field="$2"
+  if has_jq; then
+    jq -r --arg f "$field" '(.[$f] // "") | if type == "string" then . else "" end' <<< "$json" 2>/dev/null
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    v = d.get(sys.argv[1])
+    print(v if isinstance(v, str) else "")
+except Exception:
+    print("")
+' "$field" <<< "$json" 2>/dev/null
+  fi
+}
+
+extract_evaluate_text() {
+  # extract_evaluate_text <json> -> stdout: .function + "\n" + .code
+  # (either/both may be absent), for the clock-eval pattern scan.
+  local json="$1"
+  if has_jq; then
+    jq -r '[(.function // ""), (.code // "")] | map(if type == "string" then . else "" end) | join("\n")' <<< "$json" 2>/dev/null
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    d = {}
+f = d.get("function")
+c = d.get("code")
+print((f if isinstance(f, str) else "") + "\n" + (c if isinstance(c, str) else ""))
+' <<< "$json" 2>/dev/null
+  fi
+}
+
+detect_clock_advisory() {
+  # detect_clock_advisory <tool_name> <tool_input_json> -> stdout
+  # "clock-control" (and success) on a match, prints nothing (and fails) on
+  # no match. Never dies -- callers treat any failure as "no advisory".
+  local tool_name="$1" tool_input="$2" text=""
+  case "$tool_name" in
+    *browser_evaluate)
+      text="$(extract_evaluate_text "$tool_input")"
+      printf '%s' "$text" | grep -Eqi "$CLOCK_EVAL_PATTERN" && { echo "clock-control"; return 0; }
+      ;;
+    *browser_navigate)
+      text="$(extract_json_field "$tool_input" "url")"
+      printf '%s' "$text" | grep -Eqi "$CLOCK_ROUTE_PATTERN" && { echo "clock-control"; return 0; }
+      ;;
+    Bash)
+      text="$(extract_json_field "$tool_input" "command")"
+      printf '%s' "$text" | grep -Eqi "$CLOCK_ROUTE_PATTERN" && { echo "clock-control"; return 0; }
+      ;;
+  esac
+  return 1
+}
+
 main() {
   local input
   input="$(cat 2>/dev/null || true)"
@@ -152,6 +244,13 @@ print("true" if v else "false")
   [[ -z "${tool_name:-}" ]] && { warn "stdin has no tool_name, no-op"; return 0; }
   [[ -z "${tool_input:-}" ]] && tool_input="{}"
   [[ -z "${tool_response:-}" ]] && tool_response="null"
+
+  # --- clock/time-travel advisory scan (Plan H3 Task 2, #7): classifies the
+  # UNREDACTED tool_input, before any redaction below touches the WRITTEN
+  # args. Best-effort/advisory only -- a scan failure is silently "no
+  # advisory", never an error path. ---
+  local advisory=""
+  advisory="$(detect_clock_advisory "$tool_name" "$tool_input" 2>/dev/null)" || advisory=""
 
   # --- redact Bash args only; browser_* (and anything else) recorded in
   # full. A redact failure falls back to the UNREDACTED args rather than
@@ -250,7 +349,9 @@ print("true" if v else "false")
       --argjson len "$resp_len" \
       --arg hash "$resp_hash" \
       --argjson body "$response_body_json" \
-      '{tool: $tool, args: $args, resultDigest: {len: $len, sha256: $hash}, responseBody: $body}' \
+      --arg advisory "$advisory" \
+      '{tool: $tool, args: $args, resultDigest: {len: $len, sha256: $hash}, responseBody: $body}
+       + (if $advisory != "" then {advisory: $advisory} else {} end)' \
       2>/dev/null)"
   elif has_py; then
     event_json="$(python3 -c '
@@ -260,11 +361,12 @@ args = json.loads(sys.argv[2])
 length = int(sys.argv[3])
 h = sys.argv[4]
 body = json.loads(sys.argv[5])
-print(json.dumps(
-    {"tool": tool, "args": args, "resultDigest": {"len": length, "sha256": h}, "responseBody": body},
-    separators=(",", ":"),
-))
-' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" 2>/dev/null)"
+advisory = sys.argv[6] if len(sys.argv) > 6 else ""
+d = {"tool": tool, "args": args, "resultDigest": {"len": length, "sha256": h}, "responseBody": body}
+if advisory:
+    d["advisory"] = advisory
+print(json.dumps(d, separators=(",", ":")))
+' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" "$advisory" 2>/dev/null)"
   fi
   [[ -z "$event_json" ]] && { warn "failed to build event JSON, no-op"; return 0; }
 

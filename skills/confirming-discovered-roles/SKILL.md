@@ -147,6 +147,38 @@ exports:
       recommendation> }` — see [Engine](#engine-frontierjs) above for the
       field-name mapping to hitl-rounds.md's `dependsOn`/`recommendedDefault`.
 
+### Autonomous setup mode (headless/CI) — `humanInteraction.autonomousSetup`
+
+- [ ] Before rendering Round 1, read `.qa/config.json`'s
+      `humanInteraction.autonomousSetup` (default `false`).
+- [ ] `false` (default) → proceed to Step 2 exactly as written below: the
+      full interactive 3-round flow, a human answers each round.
+- [ ] `true` → this is an **operator-declared headless mode**, not a
+      fallback for an unresponsive human — it exists for headless/CI/`/loop`
+      runs where no human is present to answer. It applies to **SETUP
+      PHASES ONLY** (operator-interruption discipline decision #8): this
+      skill's pre-run confirmation. It **never** affects the Verify loop,
+      which already never interrupts a criterion once verification starts.
+      When on, PROACTIVELY walk Rounds 1→2→3 in order without ever
+      rendering a round or waiting for input: for every node in each
+      round's frontier, call `recommendedDefault(tree, id)` and immediately
+      feed it through `applyAnswers` into `settled`, exactly as if a human
+      had confirmed that default (same recompute mechanics as the
+      interactive path — e.g. Round 2's re-derivation of the not-yet-
+      rendered Round 3 default still runs before that node is
+      auto-accepted). Tag every auto-accepted node `"assumption": true`
+      with reason `"autonomousSetup enabled"` in the artifacts Step 5
+      writes, then proceed straight to Step 5 once all three rounds are
+      settled.
+- [ ] This is a distinct path from `budgetExceeded` (Step 4): that one
+      fires *mid-flow* when a host can't finish an already-started
+      interactive round; `autonomousSetup` is checked *first* and, when on,
+      skips the interactive path entirely by deliberate operator config —
+      both land on the same auto-accept-and-tag mechanism, but the reason
+      string differs (`"autonomousSetup enabled"` vs. `"round budget
+      exhausted"`) so a later audit can tell an operator-declared headless
+      run from an interactivity timeout.
+
 ### Step 2 — Round 1: Roles
 
 - [ ] Render the frontier (every `role:<name>` node — no dependencies yet)
@@ -204,6 +236,30 @@ exports:
       revision, not this forward pass; see Engine above.) A dropped Round-1
       role has no Round-2 entry to begin with — its `cred:<name>` node's
       `prereqs` were never satisfied (Step 2).
+- [ ] **Persona-identity capture (gap #6, downstream of this round).** A
+      confirmed persona's `auth` here is only a login CONVENTION — it does
+      not, by itself, prove which identity a later Verify-phase session is
+      actually acting as. When Verify logs in as this persona (this skill
+      does not do that itself), it must probe a read-only `whoami`/profile
+      endpoint — or decode the subject out of the `storageState` the login
+      produced — and record it via `record-evidence.sh identity --persona
+      <id> --subject <captured-subject> --method <whoami|storageState>`; if
+      the app exposes no such probe, `--method none` instead of skipping the
+      call. `qa-verify` then binds that capture to every persona-scoped
+      `human-action`/`cross-tenant`/`cross-role-fk-chain` `pass` for this
+      persona. An OVERRIDE to fail requires operator ground truth: only when
+      `personas[].expectedSubject` is configured for that persona AND the
+      captured subject doesn't match it. Without a configured
+      `expectedSubject`, comparing a bare persona `id` to an opaque captured
+      subject (a numeric account id, a short hash, a JWT `sub` claim) is not
+      confident enough to hard-fail on its own — a non-matching subject
+      degrades confidence to `low` instead (best-effort substring match
+      against `id` still verifies). An absent/unverifiable identity
+      (`method:none` or no `identity.json`) also degrades rather than
+      blocking (spec §5.5). Operators who want a genuine impersonation to
+      hard-fail, not just degrade, must configure `expectedSubject` for that
+      persona. Note this expectation nowhere in the written artifacts — it
+      is Verify-phase doctrine, not a Round 1–3 decision.
 
 ### Step 4 — Round 3: Scope
 
@@ -315,7 +371,9 @@ JSON files, then call the writer script:
 ### Step 6 — Hand off
 
 - [ ] Report the written counts (`N personas`, `M authz-matrix rows`) and
-      note any `"assumption": true` entries from a budget-exhausted round.
+      note any `"assumption": true` entries, whether from
+      `autonomousSetup` (reason `"autonomousSetup enabled"`) or a
+      budget-exhausted round (reason `"round budget exhausted"`).
 - [ ] Point `generating-qa-checklist` at the fresh `.qa/config.json`
       `personas[]` and `.qa/authz-matrix.json` for its cross-role expansion
       and role-sensitive tagging.
@@ -337,7 +395,11 @@ JSON files, then call the writer script:
   validation exists to prevent.
 - **Never block indefinitely.** Past the 3-round budget, log assumptions
   and proceed — an unattended `/loop` run must still produce a usable
-  config.
+  config. **`humanInteraction.autonomousSetup`** is the operator-declared
+  version of this same escape hatch, checked proactively before Round 1
+  ever renders rather than reactively when a round can't complete — see
+  [Autonomous setup mode](#autonomous-setup-mode-headlessci--humaninteractionautonomoussetup)
+  above. Both are setup-phase-only; neither ever touches the Verify loop.
 
 ## Mini-Evals (given → outcome)
 
@@ -403,3 +465,20 @@ writes `confirmed-personas.json`/`confirmed-authz-matrix.json` exactly
 matching the original recommendations, and `write-persona-config.sh`
 succeeds on the first call with no validation failures, since every
 `roleScope` key trivially matches one of the 3 confirmed persona ids.
+
+**Eval 4 — `autonomousSetup: true` (headless/CI run, no human present)**
+*Given* the same 3-role proposal as Eval 3, but `.qa/config.json` has
+`humanInteraction.autonomousSetup: true` (an operator-declared headless
+`/loop` run — no human will answer a round).
+*Outcome:* before Round 1 ever renders, this skill reads the flag and skips
+straight into proactive auto-accept: it walks all three rounds in order,
+calling `recommendedDefault(tree, id)` for each frontier node and applying
+it via `applyAnswers` exactly as Step 2/3/4 describe, with no prompt shown
+and no wait for input. Every accepted node is tagged `"assumption": true`
+with reason `"autonomousSetup enabled"` — distinct from a `budgetExceeded`
+reason, since no round was actually attempted and abandoned. Step 5 writes
+`confirmed-personas.json` (3 entries, all default credentials/scopes,
+`assumption: true`) and a matching `confirmed-authz-matrix.json`; Step 6
+reports the 3 auto-accepted entries plainly as assumptions, not as
+human-confirmed. The Verify loop that follows is completely unaffected —
+this flag never reaches it.

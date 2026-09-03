@@ -31,9 +31,27 @@ const { mutates } = require(path.join(__dirname, '..', '..', 'driving-browser-qa
 const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload']);
 // browser_navigate is NOT a human-path act tool: following a real link is a
 // browser_click side effect, so an act-phase browser_navigate is an address-bar
-// URL-skip (gap A) — fail-closed unless the step is carve-out-tagged.
-const NAV_CARVEOUTS = new Set(['deep-link', 'auth-boundary']);
+// URL-skip (gap A) — fail-closed unless the step is carve-out-tagged. Five
+// named exceptions (WS-2 C, spec §5A): deep-link (open a URL that arrived
+// out-of-band, e.g. an emailed reset link), auth-boundary (typed-URL probe of
+// a route the persona should/shouldn't reach — a negative-access criterion),
+// persona-switch (re-login as another role via a typed URL mid-criterion),
+// out-of-band (fetch a side-channel artifact — Mailpit/email/webhook — that
+// has no UI affordance). `NAV_CARVEOUTS.has()` is a Set-membership check, not
+// a truthy `s.carveout` check: an UNKNOWN/misspelled carveout value is fail-
+// closed to "not carved out" (the step is a workaround), never silently
+// allowed — see interaction-discipline.md §1 for when each is legitimate.
+const NAV_CARVEOUTS = new Set(['deep-link', 'auth-boundary', 'persona-switch', 'out-of-band']);
 function navIsCarvedOut(s) { return s.tool === 'browser_navigate' && NAV_CARVEOUTS.has(s.carveout); }
+// Phase enum (spec §5A/WS-2 C): {arrange, act, assert}. Fail-closed on the
+// unrecognized side: the recognized NON-act phases are exactly {arrange,
+// assert} — any step whose phase is 'act' OR is not one of those two
+// (unknown label, typo, or omitted entirely) is act-checked. This closes the
+// dodge where a mutation labeled with a bogus/missing phase (e.g.
+// phase:"weird", or no phase at all) would otherwise skip the act-phase
+// workaround check by never matching `phase === 'act'`.
+const NON_ACT_PHASES = new Set(['arrange', 'assert']);
+function isActPhase(s) { return !!s && (s.phase === 'act' || !NON_ACT_PHASES.has(s.phase)); }
 function die(msg) { process.stderr.write('HUMAN-ACTION GATE: ' + msg + '\n'); process.exit(1); }
 
 // readBackPath grammar (Plan H1 #4, fingerprint-target): a top-level key
@@ -73,7 +91,7 @@ function main() {
   catch (e) { die('action-trace.json is missing or not valid JSON'); }
   const steps = Array.isArray(doc.steps) ? doc.steps : null;
   if (!steps) die('action-trace.json has no steps[] array');
-  const actSteps = steps.filter(function (s) { return s && s.phase === 'act'; });
+  const actSteps = steps.filter(isActPhase);
   if (actSteps.length === 0) die('action-trace has no act-phase step — the action-under-test was never performed');
 
   if (allowNonUi) process.exit(0); // logged tool-limitation opt-out (confidence low upstream)

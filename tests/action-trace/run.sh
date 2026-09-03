@@ -298,6 +298,47 @@ cat > "$WORK/nav-arrange.json" <<'J'
 J
 node "$CHECK" "$WORK/nav-arrange.json"; check "check: arrange-phase navigate + human-path act passes" "$?" "0"
 
+# --- WS-2 C: the 5 named carve-outs — persona-switch + out-of-band newly added
+cat > "$WORK/nav-personaswitch.json" <<'J'
+{"actionUnderTest":"switch to admin persona","steps":[{"tool":"browser_navigate","target":"/login?as=admin","phase":"act","carveout":"persona-switch"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-personaswitch.json"; check "check: persona-switch-tagged act navigate allowed" "$?" "0"
+
+cat > "$WORK/nav-outofband.json" <<'J'
+{"actionUnderTest":"fetch reset link from Mailpit","steps":[{"tool":"browser_navigate","target":"http://mailpit.local/api/v1/messages","phase":"act","carveout":"out-of-band"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-outofband.json"; check "check: out-of-band-tagged act navigate allowed" "$?" "0"
+
+# an UNKNOWN carve-out (typo/bogus) on an act navigate must still fail-closed
+# even now that the set has grown to 4 members — pins Set-membership, not a
+# truthy-tag check that would accept any non-empty string
+cat > "$WORK/nav-bogus2.json" <<'J'
+{"actionUnderTest":"bogus tag v2","steps":[{"tool":"browser_navigate","target":"/x","phase":"act","carveout":"persona-swich"}],"sessionCalls":[],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/nav-bogus2.json" 2>/dev/null; check "check: unknown carve-out (typo of persona-switch) still fail-closed" "$?" "1"
+
+# --- WS-2 C: unknown/missing `phase` is treated as `act` (fail-closed) so a
+#     mutation can't dodge the act-workaround check behind a bogus phase label
+cat > "$WORK/phase-weird-mutation.json" <<'J'
+{"actionUnderTest":"sneak a mutation past the phase filter","steps":[{"tool":"browser_evaluate","target":"post","phase":"weird","payload":"fetch('/api/items',{method:'POST',body:'{}'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}))"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/phase-weird-mutation.json" 2>/dev/null; check "check: mutation labeled with an unknown phase (\"weird\") is still act-checked and rejected" "$?" "1"
+
+# a step with NO phase key at all (missing, not just unknown) is likewise
+# treated as act — same fail-closed rule applies to omission as to a typo
+cat > "$WORK/phase-missing-mutation.json" <<'J'
+{"actionUnderTest":"sneak a mutation with no phase at all","steps":[{"tool":"browser_evaluate","target":"post","payload":"fetch('/api/items',{method:'POST',body:'{}'})"}],"sessionCalls":[{"class":"evaluate","mutating":true,"code":"await page.evaluate(() => fetch('/api/items',{method:'POST',body:'{}'}))"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/phase-missing-mutation.json" 2>/dev/null; check "check: mutation with a MISSING phase key is still act-checked and rejected" "$?" "1"
+
+# positive control: an unknown-phase step that is NOT a workaround (e.g. a
+# genuine human-path click) still passes — the enum fail-closed rule must not
+# over-tighten and reject legitimate human-path steps just for a bogus phase
+cat > "$WORK/phase-weird-clean.json" <<'J'
+{"actionUnderTest":"click labeled with an unknown phase","steps":[{"tool":"browser_click","target":"#add","phase":"weird"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#add').click();"}],"fingerprints":{"before":0,"after":0}}
+J
+node "$CHECK" "$WORK/phase-weird-clean.json"; check "check: human-path step with an unknown phase (still act-checked) passes clean (no over-tighten)" "$?" "0"
+
 # --- #4 fingerprint-target: Check 3 must COVER the criterion's declared
 #     assertedState, not just the whole before/after blob ---------------------
 
