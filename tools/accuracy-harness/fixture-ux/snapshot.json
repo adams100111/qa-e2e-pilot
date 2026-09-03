@@ -1,0 +1,57 @@
+{
+  "_doc": "Ground-truth for the UI/UX taxonomy fixture (fixture-ux/index.html). Extracted from the fixture via a one-time browser_evaluate pass: the HTML is the source of truth, this file is its detector-relevant projection. Each record's `input` is the EXACT argument shape the corresponding real shipped detector core consumes (Task 3's headless runner calls the core directly with `input`, it does not re-derive it from the DOM). `seed` matches the `data-seed` attribute in index.html 1:1 (every seed here has a matching data-seed in the HTML and vice-versa). `heldOut:true` marks seeds whose core does not exist yet (D1 needs Task 2's localeDateSignal) or is not yet wired into this fixture's detection path (SS1's checkStackIntegrity already exists from sub-plan B); all other records omit heldOut. `polarity:\"negative\"` marks seeds that MUST NOT fire (negative controls); positive seeds omit polarity.",
+  "records": [
+    { "seed": "C1", "family": "content", "kind": "nan",
+      "input": { "text": "NaN" } },
+    { "seed": "C2", "family": "content", "kind": "undefined",
+      "input": { "text": "undefined" } },
+    { "seed": "C3", "family": "content", "kind": "object-object",
+      "input": { "text": "[object Object]" } },
+    { "seed": "C4", "family": "content", "kind": "raw-interp",
+      "input": { "text": "Total: {{amount}}" } },
+    { "seed": "C5", "family": "content", "kind": "raw-iso",
+      "input": { "text": "2026-09-03T00:00:00Z" } },
+    { "seed": "K1", "family": "i18n-raw-key", "kind": "raw-key",
+      "input": { "text": "deliverables.title" } },
+    { "seed": "M1", "family": "i18n-script", "kind": "script-mismatch",
+      "input": { "text": "Save Changes", "expectedLocale": "ar" } },
+    { "seed": "D1", "family": "i18n-locale-date", "kind": "locale-date", "heldOut": true,
+      "input": { "text": "03/09/2026", "expectedLocale": "ar" } },
+    { "seed": "A1", "family": "image", "kind": "broken-image",
+      "input": { "complete": true, "naturalWidth": 0 } },
+    { "seed": "V1", "family": "invisible", "kind": "invisible-text",
+      "input": { "fg": "#ffffff", "bg": "#fefefe" } },
+    { "seed": "O1", "family": "overlap-modal", "kind": "modal-behind-backdrop",
+      "input": { "modalZ": 10, "backdropZ": 20 } },
+    { "seed": "SS1", "family": "interaction", "kind": "interaction-overlay-destroyed", "heldOut": true,
+      "input": {
+        "before": [
+          { "id": "dialog:Deliverables", "role": "dialog", "ariaModal": true, "zIndex": 100, "position": "fixed", "focusTrapped": true, "parentId": null, "present": true }
+        ],
+        "afterOpenChild": [
+          { "id": "dialog:New Deliverable", "role": "dialog", "ariaModal": true, "zIndex": 100, "position": "fixed", "focusTrapped": true, "parentId": null, "present": true }
+        ],
+        "childId": "dialog:New Deliverable"
+      } },
+
+    { "seed": "NC1", "family": "content", "kind": "clean", "polarity": "negative",
+      "input": { "text": "1,250.00" } },
+    { "seed": "NC2", "family": "i18n-script", "kind": "brand-exempt", "polarity": "negative",
+      "input": { "text": "GitHub", "expectedLocale": "ar" } },
+    { "seed": "NC3", "family": "image", "kind": "loaded", "polarity": "negative",
+      "input": { "complete": true, "naturalWidth": 320 } },
+    { "seed": "NC4", "family": "invisible", "kind": "high-contrast", "polarity": "negative",
+      "input": { "fg": "#111111", "bg": "#ffffff" } },
+    { "seed": "NC5", "family": "interaction", "kind": "correctly-stacked", "polarity": "negative",
+      "input": {
+        "before": [
+          { "id": "dialog:Deliverables", "role": "dialog", "ariaModal": true, "zIndex": 100, "position": "fixed", "focusTrapped": true, "parentId": null, "present": true }
+        ],
+        "afterOpenChild": [
+          { "id": "dialog:Deliverables", "role": "dialog", "ariaModal": true, "zIndex": 100, "position": "fixed", "focusTrapped": true, "parentId": null, "present": true },
+          { "id": "dialog:Child", "role": "dialog", "ariaModal": true, "zIndex": 100, "position": "fixed", "focusTrapped": true, "parentId": "dialog:Deliverables", "present": true }
+        ],
+        "childId": "dialog:Child"
+      } }
+  ]
+}
