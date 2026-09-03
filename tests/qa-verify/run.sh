@@ -134,10 +134,28 @@ write_checklist forged '[
 
 # ---------------------------------------------------------------------------
 # RUN "notoolstream": a genuine pass, NO toolstream.jsonl ever written for it.
+# Also carries a HUMAN-ACTION pass (C_NT_HA) with no toolstream, alongside
+# the non-high-stakes bake pass (C_NT) — the QA_VERIFY_STRICT fixture: both
+# have identical no-toolstream provenance, but only C_NT_HA is high-stakes.
 # ---------------------------------------------------------------------------
 NT_REF="$( cd "$WORK" && bash "$REC" notoolstream C_NT bake --read-back '{"anything":"1"}' --multiplicity 1 )"
 ( cd "$WORK" && bash "$CKPT" notoolstream C_NT pass --kinds bake --evidence-refs "$NT_REF" >/dev/null )
-write_checklist notoolstream '[{"id":"C_NT","surface":"/x","kind":"happy-path","tags":[],"action":"View reports"}]'
+
+# C_NT_HA: a human-action pass — default sessionCalls ([]), real fingerprints
+# (equal, so check-action-trace.js's structural gate passes fine, same idiom
+# as the "forged" run's F_AC1) — but for THIS run there is no toolstream.jsonl
+# at all, so provenance.sh returns "no-toolstream" (a degrade), never
+# "unbound" (a forgery override). Exercises the QA_VERIFY_STRICT high-stakes
+# path, not the AC-1 forgery path.
+NT_HA_REF="$( cd "$WORK" && bash "$REC" notoolstream C_NT_HA action-trace \
+  --steps '[{"tool":"browser_click","phase":"act"}]' \
+  --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
+( cd "$WORK" && bash "$CKPT" notoolstream C_NT_HA pass --kinds human-action --evidence-refs "$NT_HA_REF" >/dev/null )
+
+write_checklist notoolstream '[
+  {"id":"C_NT","surface":"/x","kind":"happy-path","tags":[],"action":"View reports"},
+  {"id":"C_NT_HA","surface":"/x","kind":"error-state","tags":[],"action":"Add a duplicate founder to trigger a validation error"}
+]'
 
 # ---------------------------------------------------------------------------
 # RUN "personarun": a persona-scoped pass (Watch item d) — evidence lives
@@ -223,6 +241,37 @@ for ENGINE in "" python3; do
   check_contains "[$LABEL] no-toolstream: reason explains the degrade" \
     "$(jq -r '.[] | select(.criterionId=="C_NT") | .reasons | join("; ")' "$(vf notoolstream)")" "toolstream"
 
+  # --- QA_VERIFY_STRICT regression (1): default (unset) — human-action pass
+  #     with no toolstream degrades exactly like a non-high-stakes pass would,
+  #     confidence:low, exit 0. Unchanged behavior. ----------------------------
+  check "[$LABEL] default (no QA_VERIFY_STRICT): human-action no-toolstream pass stays verifierVerdict pass" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT_HA") | .verifierVerdict' "$(vf notoolstream)")" "pass"
+  check "[$LABEL] default (no QA_VERIFY_STRICT): human-action no-toolstream pass confidence degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT_HA") | .confidence' "$(vf notoolstream)")" "low"
+  check "[$LABEL] default (no QA_VERIFY_STRICT): notoolstream run still exits 0" "$RC_NT" "0"
+
+  # --- QA_VERIFY_STRICT regression (2)+(3): strict mode overrides ONLY the
+  #     high-stakes (human-action) no-toolstream pass to fail; the read-only/
+  #     bake pass (C_NT, non-high-stakes) still just degrades. ----------------
+  if [[ -n "$ENGINE" ]]; then
+    ( cd "$WORK" && QA_ENGINE="$ENGINE" QA_VERIFY_STRICT=1 bash "$QAVERIFY" notoolstream >/dev/null 2>&1 )
+  else
+    ( cd "$WORK" && QA_VERIFY_STRICT=1 bash "$QAVERIFY" notoolstream >/dev/null 2>&1 )
+  fi
+  RC_STRICT=$?
+  check "[$LABEL] QA_VERIFY_STRICT=1: qa-verify exits non-zero (high-stakes override present)" \
+    "$([[ "$RC_STRICT" -ne 0 ]] && echo yes)" "yes"
+  check "[$LABEL] QA_VERIFY_STRICT=1: human-action no-toolstream pass overridden to fail" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT_HA") | .verifierVerdict' "$(vf notoolstream)")" "fail"
+  check "[$LABEL] QA_VERIFY_STRICT=1: overridden confidence is high" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT_HA") | .confidence' "$(vf notoolstream)")" "high"
+  check_contains "[$LABEL] QA_VERIFY_STRICT=1: reason names strict mode + suppression risk" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT_HA") | .reasons | join("; ")' "$(vf notoolstream)")" "strict mode"
+  check "[$LABEL] QA_VERIFY_STRICT=1: non-high-stakes bake pass (C_NT) verifierVerdict still pass (not over-punished)" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT") | .verifierVerdict' "$(vf notoolstream)")" "pass"
+  check "[$LABEL] QA_VERIFY_STRICT=1: non-high-stakes bake pass (C_NT) confidence still just degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="C_NT") | .confidence' "$(vf notoolstream)")" "low"
+
   # --- persona-scoped evidence (Watch item d) --------------------------------
   run_qv "$ENGINE" personarun >/dev/null 2>&1
   RC_PERSONA=$?
@@ -268,5 +317,23 @@ check "redrive: NOT invoked for a non-high-stakes (computed) criterion" \
 RC_MISSING=$?
 check "missing run: qa-verify exits non-zero" "$([[ "$RC_MISSING" -ne 0 ]] && echo yes)" "yes"
 check "missing run: no verification.json written" "$([[ -f "$(vf no-such-run)" ]] && echo yes || echo no)" "no"
+
+# ---------------------------------------------------------------------------
+# Fix 1 regression: `results_tmp` was `local` to main() while the `trap 'rm
+# -f "$results_tmp"' EXIT` fires AFTER main returns (global scope) — under
+# `set -uo pipefail` this used to print "results_tmp: unbound variable" to
+# stderr on EVERY invocation, and skipped the `rm -f`, leaking the mktemp
+# file every run. Assert both symptoms are gone on a plain invocation.
+# ---------------------------------------------------------------------------
+TMP_BASE="${TMPDIR:-/tmp}"
+LEAK_BEFORE="$(find "$TMP_BASE" -maxdepth 1 -name 'tmp.*' 2>/dev/null | sort)"
+STDERR_OUT="$( ( cd "$WORK" && bash "$QAVERIFY" genuine ) 2>&1 1>/dev/null )"
+LEAK_AFTER="$(find "$TMP_BASE" -maxdepth 1 -name 'tmp.*' 2>/dev/null | sort)"
+check "no leaked results_tmp: qa-verify exits 0 on a plain invocation" \
+  "$( ( cd "$WORK" && bash "$QAVERIFY" genuine >/dev/null 2>&1 ); echo $? )" "0"
+check "no unbound-variable stderr on a plain qa-verify invocation" \
+  "$(grep -ci 'unbound variable' <<< "$STDERR_OUT")" "0"
+check "no leaked mktemp results_tmp file after qa-verify exits" \
+  "$([[ "$LEAK_BEFORE" == "$LEAK_AFTER" ]] && echo same || echo diff)" "same"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

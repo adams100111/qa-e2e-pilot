@@ -96,6 +96,31 @@
 #
 # NOTE: all paths are relative to the current working directory (project
 # root), matching checkpoint.sh/provenance.sh's convention.
+#
+# QA_VERIFY_STRICT (opt-in, default UNSET): TOOLSTREAM-SUPPRESSION RESIDUAL.
+# Today, a human-action `pass` with NO toolstream.jsonl for the run degrades
+# to confidence:low + exit 0 (see the no-toolstream branch above) rather
+# than failing outright, because capture-hook is opt-in-off on most runs and
+# hard-failing every no-toolstream run would break real usage. But that
+# means an adversary who fabricates action-trace.json can ALSO
+# `rm .qa/runs/<run>/toolstream.jsonl` to land on the exact same
+# pass/confidence:low/exit-0 outcome as a genuinely-captured run — the
+# degrade path is exit-code-indistinguishable from real verification.
+# Setting QA_VERIFY_STRICT to any non-empty value (e.g. `=1`/`=true`) closes
+# that hole for the HIGH-STAKES subset: a `pass` whose criterion requires
+# `human-action`, OR whose checklist.json row is tagged `cross-tenant` /
+# `cross-role-fk-chain`, AND has no-toolstream provenance is OVERRIDDEN to
+# verifierVerdict:fail (confidence:high), and qa-verify's exit code goes
+# non-zero. Non-high-stakes passes (read-only/computed evidence) with
+# no-toolstream STILL degrade to confidence:low even under strict mode —
+# they are not over-punished for a kind of evidence provenance.sh never
+# checks anyway. HONEST RESIDUAL: strict mode still cannot distinguish "no
+# capture-hook configured" from "capture-hook configured but its output was
+# deleted" — both look like a missing toolstream.jsonl file to this script.
+# It closes the exit-code ambiguity for CI/hardened callers who opt in, at
+# the cost of also failing legitimate no-capture human-action runs in that
+# mode. The fully-sound answer is the hardened tier (a managed/sandboxed
+# capture path the run's own agent cannot `rm`) — out of scope here.
 
 set -uo pipefail
 
@@ -104,6 +129,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQUIRED_KINDS_SH="$HERE/../skills/checkpointing-qa-memory/scripts/required-kinds.sh"
 CHECK_ACTION_TRACE_JS="$HERE/../skills/checkpointing-qa-memory/scripts/check-action-trace.js"
 PROVENANCE_SH="$HERE/provenance.sh"
+
+# Script-global (NOT `local` to main) so the EXIT trap registered in main —
+# which fires AFTER main returns, i.e. back at global scope — can still see
+# it. A `local results_tmp` here would go out of scope the instant main()
+# returns, making the EXIT trap's "$results_tmp" reference an unbound
+# variable under `set -u` (silently skipping the `rm -f` and leaking the
+# mktemp file every single invocation). Initialized empty; main() assigns
+# the real mktemp path before registering the trap.
+results_tmp=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -211,6 +245,38 @@ print(d.get('multiplicity', ''))" "$file" 2>/dev/null)"
     python3 -c "import json,sys
 d = json.load(open(sys.argv[1]))
 sys.exit(0 if d.get('readBack') is not None else 1)" "$file" >/dev/null 2>&1
+  fi
+}
+
+# true (exit 0) iff checklist row JSON $1 carries a `cross-tenant` or
+# `cross-role-fk-chain` tag — the high-stakes tags QA_VERIFY_STRICT also
+# treats as requiring corroborated provenance, alongside human-action.
+# Mirrors required-kinds.sh's own tag-membership check (rule 4) for
+# `cross-tenant`/`cross-role-fk-chain`, but NOT `probe-needed` — a bare
+# probe-needed criterion isn't itself the mutating/cross-tenant risk this
+# residual targets. Never dies — an absent/malformed row means "no tag".
+row_has_high_stakes_tag() {
+  local row="$1"
+  [[ -z "$row" ]] && return 1
+  if has_jq; then
+    jq -e '
+      (.tags // []) as $t
+      | ($t | type) == "array"
+      and (($t | map(tostring)) as $ts | ($ts | index("cross-tenant")) != null or ($ts | index("cross-role-fk-chain")) != null)
+    ' <<< "$row" >/dev/null 2>&1
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+tags = d.get("tags") if isinstance(d, dict) else None
+if not isinstance(tags, list):
+    sys.exit(1)
+tags = [str(t) for t in tags]
+sys.exit(0 if ("cross-tenant" in tags or "cross-role-fk-chain" in tags) else 1)
+' "$row" >/dev/null 2>&1
   fi
 }
 
@@ -544,8 +610,30 @@ process_criterion() {
     verifier_verdict="fail"
     confidence="high"
   elif [[ "$no_toolstream_seen" -eq 1 ]]; then
-    confidence="low"
-    reasons+=("no toolstream captured for this run (.qa/runs/${run_id}/toolstream.jsonl absent) — capture-hook is opt-in; provenance could not be independently verified, so confidence is degraded (this is NOT an override — the run's other checks still verified)")
+    # QA_VERIFY_STRICT (opt-in, default unset — see header comment): a
+    # high-stakes pass (requires human-action, or the checklist row is
+    # tagged cross-tenant/cross-role-fk-chain) with no-toolstream provenance
+    # is a toolstream-suppression risk (fabricate action-trace.json + rm the
+    # toolstream -> lands on this exact degrade path). Under strict mode
+    # that risk is OVERRIDDEN to fail instead of silently degraded. A
+    # non-high-stakes no-toolstream pass (read-only/computed) is never
+    # over-punished — it degrades in strict mode exactly as in default mode.
+    local high_stakes=0
+    case ",${kinds_csv}," in
+      *,human-action,*) high_stakes=1 ;;
+    esac
+    if [[ "$high_stakes" -eq 0 ]] && row_has_high_stakes_tag "$row"; then
+      high_stakes=1
+    fi
+
+    if [[ -n "${QA_VERIFY_STRICT:-}" && "$high_stakes" -eq 1 ]]; then
+      verifier_verdict="fail"
+      confidence="high"
+      reasons+=("strict mode: a human-action/cross-tenant pass with no captured toolstream cannot be corroborated (toolstream suppression risk) — QA_VERIFY_STRICT overriding to fail (.qa/runs/${run_id}/toolstream.jsonl absent)")
+    else
+      confidence="low"
+      reasons+=("no toolstream captured for this run (.qa/runs/${run_id}/toolstream.jsonl absent) — capture-hook is opt-in; provenance could not be independently verified, so confidence is degraded (this is NOT an override — the run's other checks still verified)")
+    fi
   fi
 
   # The pluggable re-drive stub — deliberately after reconciliation so it can
@@ -600,7 +688,6 @@ main() {
   [[ -f "$ckpt" ]] || die "No checkpoint found for run '${run_id}': ${ckpt}"
   json_is_valid "$ckpt" || die "checkpoint.json for run '${run_id}' is not valid JSON: ${ckpt}"
 
-  local results_tmp
   results_tmp="$(mktemp)"
   trap 'rm -f "$results_tmp"' EXIT
 
