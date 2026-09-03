@@ -127,11 +127,12 @@ surface isn't the goal, honest sampling is. Run the critic on a surface **iff**:
 - Steps 1–3 (or a prior Step 5 adjudication) already produced **≥1 finding or suspicion** on this
   surface,
 
-bounded by the run's `criteriaBudget`. Log every disposition via `critic-coverage.sh` (built in
-Task 3 of this effort — the sampled-vs-skipped logging mechanism referenced here):
+bounded by the run's `criteriaBudget`. Log every disposition via `critic-coverage.sh` (the
+sampled-vs-skipped logging mechanism). Both `ran` and `skipped` take a `<reason>` (all four
+arguments are required):
 
 ```bash
-bash skills/detecting-visual-ux/scripts/critic-coverage.sh log <run-id> <surface> ran
+bash skills/detecting-visual-ux/scripts/critic-coverage.sh log <run-id> <surface> ran <why-it-ran>
 bash skills/detecting-visual-ux/scripts/critic-coverage.sh log <run-id> <surface> skipped <reason>
 ```
 
