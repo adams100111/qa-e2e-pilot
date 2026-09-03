@@ -29,9 +29,9 @@ This split is what keeps the QA pipeline's invariant intact: verdicts are exactl
 suggestive finding is represented as `advisory`, not smuggled in as a low-confidence
 `fail`.
 
-## 2. The four oracle grades
+## 2. The five oracle grades
 
-`oracleGradeFor(detector)` classifies a detector id into one of four grades via
+`oracleGradeFor(detector)` classifies a detector id into one of five grades via
 **longest-prefix-wins** matching against `ORACLE_GRADES` (a specific detector id, e.g.
 `i18n-raw-key`, overrides its family's default, e.g. the bare `i18n-` prefix).
 
@@ -40,7 +40,15 @@ suggestive finding is represented as `advisory`, not smuggled in as a low-confid
 | `definite-dom` | The rendered DOM/screenshot itself IS the oracle — `NaN`, `undefined`, `[object Object]`, a broken image, invisible (fg≈bg) text, a raw i18n key, a modal painted behind its own backdrop. No external source is needed to know these are wrong. | `fail @ FE`, confidence **high** — unconditionally, even black-box (§4 below). |
 | `definite-catalog` | The oracle is a translation catalog, not the DOM alone — a script mismatch might be a legitimate brand/URL/proper noun in Latin script, so the catalog result decides. | Routed to `adjudicateI18n()` (§3) — `fail high`, `advisory`, or dropped (`null`), depending on `catalogResult`. |
 | `standards` | A real, external oracle (WCAG 2.2 SC), but not a project-specific spec/domain rule — `contrast`, `target-size`. | `fail @ FE`, confidence **low** — a real verdict, just not backed by *this app's* domain oracle. |
+| `behavioral-observed` | An `interaction-*` overlay-stack invariant was directly observed to break (e.g. one overlay's close destroying a sibling it shouldn't) — the violation itself is the oracle, no further corroboration needed to know *something* is wrong. Unlike `heuristic`, this is **always a verdict, never advisory**. | `fail @ FE`, confidence **low** until the shared open/route state the overlays bind to is localized in code, then **high** once `oracleInputs.corroborated` is `true`. |
 | `heuristic` | No independent oracle at all — pattern-matched suspicion only (generic `overlap`, and the default for any unrecognized detector id). | `advisory`, unless `oracleInputs.corroborated` is `true`, in which case a definite oracle elsewhere has confirmed it and it promotes to `fail @ FE` confidence **high**. |
+
+All `interaction-*` detectors (the overlay-stack invariant checkers) carry the
+`behavioral-observed` grade via the `interaction-` prefix entry in `ORACLE_GRADES`.
+The key distinction from `heuristic` is that `behavioral-observed` is **never**
+advisory: the invariant violation was directly observed, so it is a real defect the
+moment it's seen — only the confidence (not the verdict) depends on whether the cause
+has been localized in code.
 
 ## 3. Confidence-by-oracle-strength (spec §3)
 
@@ -49,12 +57,17 @@ Confidence is not a vibe — it tracks how strong the backing oracle is:
 - **high** — the oracle is unambiguous: the DOM itself (`definite-dom`), a resolved
   catalog gap or an otherwise-complete-catalog convention violation
   (`definite-catalog` → `missing`/`empty`/completeness-derived `present-latin-eq-en`),
-  or heuristic corroboration by a definite oracle.
+  heuristic corroboration by a definite oracle, or a `behavioral-observed` violation
+  once the shared open/route state cause has been localized in code
+  (`oracleInputs.corroborated`).
 - **low** — the oracle is a general standards threshold (WCAG), not this app's own
-  spec/domain rule (`standards` grade). This mirrors the project-wide rule that
-  confidence is low whenever the expected value could only come from backend/spec code
-  the detector didn't independently verify — here, the "expected value" is a
-  cross-app accessibility standard rather than this feature's own oracle.
+  spec/domain rule (`standards` grade); or a `behavioral-observed` violation on
+  observation alone, before the shared-state cause is localized in code. This mirrors
+  the project-wide rule that confidence is low whenever the expected value could only
+  come from backend/spec code the detector didn't independently verify — for
+  `standards`, the "expected value" is a cross-app accessibility standard rather than
+  this feature's own oracle; for `behavioral-observed`, the violation is real but its
+  root cause in the shared state model is not yet localized.
 
 There is no `medium` — this module never emits it, matching the two-value
 `confidence: high | low` invariant.
