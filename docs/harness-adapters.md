@@ -15,6 +15,23 @@ verify first, start there. Codex and opencode follow the identical procedure bel
 
 ---
 
+## The Claude assurance tier
+
+`qa-e2e-pilot`'s evidence gate (`checkpoint.sh` + `check-action-trace.js`) is a **post-hoc, uniform check** every harness runs — it inspects what the run's own agent claims to have done, after the fact. Plan H2 (WS-3, "sound core") adds a second, independent layer on Claude Code specifically: live hooks that record and, for the narrowest cases, block — plus `qa-verify`, the deterministic out-of-agent re-check that is the actual authority (`scripts/qa-verify.sh`, see [`docs/running-in-ci.md`](./running-in-ci.md#qa-verify-the-out-of-agent-authority)).
+
+**Tier A — Claude Code (live, best-effort):**
+
+- **`PostToolUse` capture-hook** (`scripts/capture-hook.sh`) appends every `Bash` and `browser_*` tool call to `.qa/runs/<run-id>/toolstream.jsonl`, secret-redacted, resolved via `.qa/runs/latest`. It's wired inline in `.claude-plugin/plugin.json`'s bundled `hooks` object — no per-project config step, it ships with the plugin.
+- **`PreToolUse` block-hook** (`scripts/block-hook.sh`) denies the narrow, phase-independent absolutes: a mutating `browser_evaluate` (via the same `mutates()` classifier `parse-session-log.js` uses) and `browser_run_code_unsafe`. It does **not** attempt to block anything nuanced (provenance, persona-identity, required-kinds) — those stay record-only, checked later by `qa-verify`, because live-blocking a false positive is worse than a late catch.
+- **The caveat, stated plainly:** both hooks are **best-effort and tamper-*evident*, not tamper-proof**. An agent with `Bash` access can, in principle, edit the hook scripts themselves or the `toolstream.jsonl` file on an unhardened install — there is no hash-chain (deliberately cut; a hash an agent can recompute is false assurance, not real protection) and no sandboxing at this tier. Real tamper-*resistance* needs a hardened tier (a managed/sandboxed execution environment the run's own agent process cannot write into) — documented as a future direction, not built here.
+- **Script-integrity is the open residual.** Nothing in Tier A proves `capture-hook.sh`/`block-hook.sh` themselves haven't been modified before a run starts. This is exactly why `qa-verify` — run out-of-agent, by the operator or CI, never by the run's own process — is the piece actually trusted for a "verified" claim, not the live hooks.
+
+**`qa-verify` is the universal floor.** Unlike the hooks, `scripts/qa-verify.sh` has no harness-specific dependency — it's a plain jq/python3 script that re-derives required evidence, re-validates artifacts, and binds provenance against whatever toolstream exists (or degrades honestly to `confidence: low` when none does). It runs the same way regardless of which harness produced the run. **The authoritative verdict is always `qa-verify`'s, never the live hooks' mere presence** — a run with Tier A hooks enabled is not "trusted" because the hooks ran; it's trusted (to the extent it is) because `qa-verify` independently corroborated the evidence against what those hooks captured.
+
+**Other three adapters — no live hooks yet (Plan H3).** Codex, Pi, and opencode have no `PostToolUse`/`PreToolUse` (or equivalent) capture/block mechanism wired up today — this is explicitly deferred fast-follow work, not an oversight. On those harnesses, `qa-verify`'s deterministic checks (required-kinds, structural validation, provenance-against-toolstream) still run, but with no toolstream to corroborate against, provenance binding reports `no-toolstream` for every criterion — every `human-action`/cross-tenant pass degrades to `confidence: low` by default (or hard-fails under `QA_VERIFY_STRICT`, see `docs/running-in-ci.md`). Don't read "the adapter builds and passes `validate-adapters.sh`" as "this harness has the same assurance tier as Claude" — it doesn't, yet.
+
+---
+
 ## Common ground across all three non-Claude harnesses
 
 - **Project-local only.** No installer writes to a harness's global config (`~/.codex`, `~/.pi`, the

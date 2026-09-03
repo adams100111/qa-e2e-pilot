@@ -42,6 +42,10 @@ The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the
                                      act_committed — the resume-time reconciliation work-list)
     bug-log.json
     traceability.json          ← only when spec-kit artifacts are present
+    toolstream.jsonl            ← append-only; capture-hook.sh's sole writer (Plan H2 below);
+                                     absent when capture is disabled or unsupported on this harness
+    verification.json          ← qa-verify.sh's output (one record per re-checked `pass`);
+                                     absent until `qa-verify.sh <run-id>` is run
     report.md                  ← writing-qa-reports skill
     report.html                ← writing-qa-reports skill
     evidence/
@@ -136,12 +140,54 @@ un-gate #2 for it entirely. This is the same family as lie-about-`kind`/`tags`: 
 closed only by `qa-verify` re-deriving from the captured toolstream independent of
 `checklist.json`, never by this in-script gate.
 
-**The authoritative tier is `qa-verify`** (out-of-agent, Plan H2, ADR-0018) — a
-standalone verifier in a trust domain the agent does not control, re-deriving from the
-captured toolstream and re-baking mutating passes rather than trusting anything the
-agent wrote. `qa-verify` does not exist yet. Until it does, a run whose passes rely on
-#2/#4 alone should be reported `confidence: low`, framed as *"authoritative verdict
-pending qa-verify"* — never presented as a sound, adversary-proof result.
+**The authoritative tier is `qa-verify`** (out-of-agent, Plan H2, ADR-0018 — see
+"Out-of-Agent Enforcement" below). **Its deterministic core now exists**: required-kinds
+re-derivation, evidence re-validation, and provenance binding, overriding a forged `pass`.
+Still missing: the **independent LLM re-drive/re-bake** of high-stakes criteria (a fresh,
+out-of-band agent session) — a **pluggable, not-yet-wired-in** operator/CI step
+(`QA_VERIFY_REDRIVE_CMD`). A run relying on #2/#4 alone, with no `qa-verify` run yet, is
+still `confidence: low` ("verdict pending `qa-verify`"); once `qa-verify.sh <run-id>` has
+run and every pass survived, that framing no longer applies (see `verification.json`).
+
+---
+
+## Out-of-Agent Enforcement (Plan H2 / ADR-0018)
+
+Everything above runs **inside** the agent's own process on evidence it wrote itself. Plan H2 adds a layer that runs **outside** that trust domain — Claude Code today; Codex/Pi/opencode hook adapters are Plan H3.
+
+- **Capture-hook** (`scripts/capture-hook.sh`, `PostToolUse`, in `plugin.json`) appends
+  every `Bash`/`browser_*` call to append-only `toolstream.jsonl` (`scripts/toolstream.sh`),
+  run resolved from `.qa/runs/latest`. `Bash` args **and** `tool_response` are redacted
+  (stdout leaks as easily as args) via `enforcement.secretPatterns`, or a built-in
+  default when absent (never a silent no-redact fallback); `[]` opts out deliberately.
+  `browser_*` args are recorded in full — a `browser_type` into a password field can
+  still capture a typed secret (documented residual). Fail-open always.
+- **Block-hook** (`scripts/block-hook.sh`, `PreToolUse`) denies, pre-run, only the
+  phase-independent absolutes: a **mutating** `browser_evaluate` (via the `mutates()`
+  classifier `parse-session-log.js` uses) and `browser_run_code_unsafe` — exit 2 + deny
+  JSON. `browser_navigate` and all else is never live-blocked (record-only → `qa-verify`); fail-open on any internal error.
+- **Provenance** (`scripts/provenance.sh check <run-id> <artifact>`) is **containment, not
+  equality**: the read-back value must appear in a captured `responseBody` → `bound` /
+  `unbound` (AC-1 forgery signal) / `no-toolstream` (best-effort degrade).
+- **`qa-verify`** (`scripts/qa-verify.sh <run-id>`) — deterministic, no LLM. Per recorded
+  `pass`: re-derives required-kinds, re-validates evidence, binds provenance; any miss →
+  `verifierVerdict: fail` in `verification.json`, exit non-zero. Bare `no-toolstream`
+  degrades confidence to `low` once, unless `QA_VERIFY_STRICT` — a high-stakes
+  no-toolstream pass (`human-action`/`cross-tenant`) then hard-fails, closing the "forge +
+  `rm toolstream.jsonl`" residual for opted-in callers. Wired into `qa-ci.sh`
+  (`QA_VERIFY_CMD`/`QA_SKIP_VERIFY`) + `report-to-junit.sh` (override → JUnit `<failure>`;
+  tier in `<properties>`) — see `docs/harness-adapters.md` / `docs/running-in-ci.md`.
+
+**Honest residuals:** **(1)** live hooks are best-effort, not sound — bundled *config*
+can't be silently disabled, but *script files* are user-writable unhardened (no
+hash-chain — agent-recomputable is false assurance); `qa-verify`, not hook presence, is
+trusted. **(2)** lie-about-`kind`/`tags` + row-omission close only via `qa-verify`. **(3)**
+toolstream-suppression (`rm toolstream.jsonl` alongside forged evidence) lands on the
+genuine-no-capture path; `QA_VERIFY_STRICT`/hardened-tier mitigates, doesn't fully close
+it. **(4)** regex-classifier obfuscation — `mutates()` pattern-matches source text; an
+indirect construction that never literally spells `method:'POST'`/`.setItem(` evades both
+the block-hook and `check-action-trace.js`'s reuse of it — `qa-verify` re-runs it
+unchanged, inheriting the gap.
 
 ---
 
@@ -446,3 +492,8 @@ honest-tier note above ("Evidence-Kind Gate (#2) and Fingerprint-Target (#4)").
 | `scripts/qa-reconcile.sh plan <run-id>` | Fold the run and list every open act (`act_intent` with no matching `act_committed`) as the resume-time reconciliation work-list |
 | `scripts/qa-reconcile.sh apply <run-id> <key> --readbacks <json>` | Reconcile one open act via `rebake.sh reconcile`; returns `done`/`retry`/`blocked`/`deferred` (a second consecutive `retry` for the same key auto-escalates to `blocked`) |
 | `scripts/qa-resume.sh [run-id]` | Resolve a run (arg, else `.qa/runs/latest`), fold it, and print the resume briefing `{run_id, phase, cursor, openActs, skip}` — the primitive behind `/qa-resume` |
+| `scripts/capture-hook.sh` | `PostToolUse` hook (stdin = hook JSON): append a redacted `Bash`/`browser_*` event to `toolstream.jsonl` via `toolstream.sh`; no-op + exit 0 on no active run or any error (Plan H2) |
+| `scripts/block-hook.sh` | `PreToolUse` hook (stdin = hook JSON): exit 2 + deny JSON for a mutating `browser_evaluate` or `browser_run_code_unsafe`; fail-open (exit 0) otherwise (Plan H2) |
+| `scripts/toolstream.sh append\|read\|redact <run-id> ...` | Append-only `toolstream.jsonl` writer/reader + the secret-redaction pass `capture-hook.sh` calls |
+| `scripts/provenance.sh check <run-id> <artifact>` | Containment check: does an evidence artifact correspond to a captured `toolstream.jsonl` call? → `bound`\|`unbound`\|`no-toolstream` |
+| `scripts/qa-verify.sh <run-id>` | The out-of-agent authority: re-derives required-kinds, re-validates evidence, binds provenance for every recorded `pass`; writes `verification.json`, exits non-zero on any override |

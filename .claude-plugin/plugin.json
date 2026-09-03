@@ -22,6 +22,12 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-prereqs.sh" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash|mcp__plugin_playwright_playwright__browser_.*", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/capture-hook.sh" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "mcp__plugin_playwright_playwright__browser_(evaluate|run_code_unsafe)", "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/block-hook.sh" } ] }
     ]
   }
 }

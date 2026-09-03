@@ -4,19 +4,29 @@
 # be CONTENT-aware (not filename-theater).
 #
 # USAGE:
-#   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N>
+#   record-evidence.sh <run-id> <criterion-id> bake     [--persona <id>] --read-back <json-or-text> --multiplicity <0|1|N> [--source-ref <selector>]
 #   record-evidence.sh <run-id> <criterion-id> computed [--persona <id>] --oracle <val> --observed <val> --match <true|false>
-#   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
-#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>]
+#   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false> [--source-ref <selector>]
+#   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>] [--source-ref <selector>]
 #     --session-log + --session-from  DERIVE sessionCalls from the REAL session.md
 #       (independent ground truth) by running parse-session-log.js and slicing from
 #       N. This OVERRIDES --session-calls and is the tamper-evident path; prefer it.
+#     --source-ref <selector>  (bake/probe/action-trace ONLY, Plan H2 Task 3, spec
+#       §5.4) — OPTIONAL. The agent's claim of WHICH captured toolstream call
+#       (scripts/toolstream.sh's .qa/runs/<run>/toolstream.jsonl) produced this
+#       evidence, e.g. "seq:7" (or bare "7") referencing that event's `seq`.
+#       Recorded verbatim as `provenance: {sourceRef, boundAt}` (boundAt stamped
+#       here). scripts/provenance.sh's `check` resolves it against the real
+#       toolstream — a dangling/fabricated sourceRef resolves to "unbound" (a
+#       forgery signal), it is NOT taken on faith. BACK-COMPAT: omitting
+#       --source-ref produces EXACTLY today's artifact shape (no `provenance` key
+#       at all) — scripts/provenance.sh then falls back to containment instead.
 #
 # kind -> artifact:
-#   bake     -> bake-read-back.json   { readBack, multiplicity, ... }
+#   bake     -> bake-read-back.json   { readBack, multiplicity, [provenance], ... }
 #   computed -> recompute.json        { oracle, observed, match, ... }
-#   probe    -> network-response.json { status, shape, ok, ... }
-#   action-trace -> action-trace.json { actionUnderTest, steps, sessionCalls }
+#   probe    -> network-response.json { status, shape, ok, [provenance], ... }
+#   action-trace -> action-trace.json { actionUnderTest, steps, sessionCalls, [provenance] }
 #
 # `--ok` on kind 'probe' is the agent's own judgment that the probe CONFIRMED
 # its expectation — it is NOT a raw status-code check. A cross-role ABSENCE
@@ -63,6 +73,23 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 has_jq() { command -v jq >/dev/null 2>&1; }
 
 has_py() { command -v python3 >/dev/null 2>&1; }
+
+# build_provenance_json <source-ref> -> {"sourceRef": "<source-ref>", "boundAt": "<ts>"}
+# Only called when --source-ref was given (Plan H2 Task 3) — the caller
+# embeds this JSON object verbatim as the artifact's `provenance` field via
+# write_jq's generic fromjson-embedding (or a dedicated python3 smart()
+# parse), never as a raw string. Absent --source-ref -> this is never
+# called -> no `provenance` key is ever added -> today's shape, byte-for-byte.
+build_provenance_json() {
+  local source_ref="$1"
+  if has_jq; then
+    jq -cn --arg sourceRef "$source_ref" --arg boundAt "$(ts)" '{sourceRef: $sourceRef, boundAt: $boundAt}'
+  elif has_py; then
+    python3 -c 'import json,sys; print(json.dumps({"sourceRef": sys.argv[1], "boundAt": sys.argv[2]}))' "$source_ref" "$(ts)"
+  else
+    die "record-evidence.sh needs either 'jq' or 'python3' to build --source-ref provenance."
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Fix 28 — reject any run-id / criterion-id / persona value that could
@@ -175,19 +202,39 @@ write_jq() {
 
 # multiplicity is always stored as a plain string (it's an enum 0|1|N, not a
 # value to type-infer), so it gets its own jq/python writer path.
+# $6 (source_ref, OPTIONAL, Plan H2 Task 3) — empty/omitted -> today's shape,
+# byte-identical (no `provenance` key at all). Non-empty -> a `provenance`
+# object is added.
 write_jq_bake() {
-  local file="$1" run_id="$2" crit_id="$3" read_back="$4" multiplicity="$5"
-  jq -n \
-     --arg criterion_id "$crit_id" \
-     --arg run_id "$run_id" \
-     --arg kind "bake" \
-     --arg recorded_at "$(ts)" \
-     --arg read_back_raw "$read_back" \
-     --arg multiplicity "$multiplicity" \
-     '{criterion_id: $criterion_id, run_id: $run_id, kind: $kind, recorded_at: $recorded_at,
-       readBack: ($read_back_raw | try fromjson catch $read_back_raw),
-       multiplicity: $multiplicity}' \
-     > "$file"
+  local file="$1" run_id="$2" crit_id="$3" read_back="$4" multiplicity="$5" source_ref="${6:-}"
+  if [[ -n "$source_ref" ]]; then
+    jq -n \
+       --arg criterion_id "$crit_id" \
+       --arg run_id "$run_id" \
+       --arg kind "bake" \
+       --arg recorded_at "$(ts)" \
+       --arg read_back_raw "$read_back" \
+       --arg multiplicity "$multiplicity" \
+       --arg source_ref "$source_ref" \
+       --arg bound_at "$(ts)" \
+       '{criterion_id: $criterion_id, run_id: $run_id, kind: $kind, recorded_at: $recorded_at,
+         readBack: ($read_back_raw | try fromjson catch $read_back_raw),
+         multiplicity: $multiplicity,
+         provenance: {sourceRef: $source_ref, boundAt: $bound_at}}' \
+       > "$file"
+  else
+    jq -n \
+       --arg criterion_id "$crit_id" \
+       --arg run_id "$run_id" \
+       --arg kind "bake" \
+       --arg recorded_at "$(ts)" \
+       --arg read_back_raw "$read_back" \
+       --arg multiplicity "$multiplicity" \
+       '{criterion_id: $criterion_id, run_id: $run_id, kind: $kind, recorded_at: $recorded_at,
+         readBack: ($read_back_raw | try fromjson catch $read_back_raw),
+         multiplicity: $multiplicity}' \
+       > "$file"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -195,10 +242,10 @@ write_jq_bake() {
 # ---------------------------------------------------------------------------
 
 write_py_bake() {
-  local file="$1" run_id="$2" crit_id="$3" read_back="$4" multiplicity="$5"
-  python3 - "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity" "$(ts)" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" read_back="$4" multiplicity="$5" provenance_json="${6:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity" "$(ts)" "$provenance_json" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, read_back, multiplicity, now = sys.argv[1:7]
+file_path, run_id, crit_id, read_back, multiplicity, now, provenance_json = sys.argv[1:8]
 def smart(v):
     try:
         return json.loads(v)
@@ -212,6 +259,8 @@ data = {
     "readBack": smart(read_back),
     "multiplicity": multiplicity,
 }
+if provenance_json:
+    data["provenance"] = smart(provenance_json)
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
@@ -242,10 +291,10 @@ PYEOF
 }
 
 write_py_probe() {
-  local file="$1" run_id="$2" crit_id="$3" status="$4" shape="$5" ok="$6"
-  python3 - "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok" "$(ts)" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" status="$4" shape="$5" ok="$6" provenance_json="${7:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok" "$(ts)" "$provenance_json" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, status, shape, ok, now = sys.argv[1:8]
+file_path, run_id, crit_id, status, shape, ok, now, provenance_json = sys.argv[1:9]
 def smart(v):
     try:
         return json.loads(v)
@@ -260,6 +309,8 @@ data = {
     "shape": smart(shape),
     "ok": smart(ok),
 }
+if provenance_json:
+    data["provenance"] = smart(provenance_json)
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
@@ -271,10 +322,10 @@ PYEOF
 # to key order, which json.dump preserves the same as the jq writer's field
 # order) to the jq path (Fix #27 parity discipline).
 write_py_action_trace() {
-  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}" fp_target="${8:-}"
-  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" "$fp_target" <<'PYEOF'
+  local file="$1" run_id="$2" crit_id="$3" action="$4" steps="$5" session_calls="$6" fingerprints="${7:-}" fp_target="${8:-}" provenance_json="${9:-}"
+  python3 - "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$(ts)" "$fingerprints" "$fp_target" "$provenance_json" <<'PYEOF'
 import json, sys
-file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints, fp_target = sys.argv[1:10]
+file_path, run_id, crit_id, action, steps, session_calls, now, fingerprints, fp_target, provenance_json = sys.argv[1:11]
 def smart(v):
     try:
         return json.loads(v)
@@ -293,6 +344,8 @@ if fingerprints:
     data["fingerprints"] = smart(fingerprints)
 if fp_target:
     data["fingerprintTarget"] = smart(fp_target)
+if provenance_json:
+    data["provenance"] = smart(provenance_json)
 with open(file_path, "w") as f:
     json.dump(data, f, indent=2)
 PYEOF
@@ -306,11 +359,13 @@ cmd_bake() {
   local run_id="$1" crit_id="$2" persona="$3"
   shift 3
   local read_back="" multiplicity="" have_read_back=0 have_multiplicity=0
+  local source_ref=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --read-back)    read_back="$2";    have_read_back=1;    shift 2 ;;
       --multiplicity) multiplicity="$2"; have_multiplicity=1; shift 2 ;;
+      --source-ref)   source_ref="$2";   shift 2 ;;
       *) die "Unknown option for kind 'bake': $1" ;;
     esac
   done
@@ -322,9 +377,11 @@ cmd_bake() {
   file="$(evidence_dir "$run_id" "$crit_id" "$persona")/bake-read-back.json"
 
   if has_jq; then
-    write_jq_bake "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity"
+    write_jq_bake "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity" "$source_ref"
   elif has_py; then
-    write_py_bake "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity"
+    local provenance_json=""
+    [[ -n "$source_ref" ]] && provenance_json="$(build_provenance_json "$source_ref")"
+    write_py_bake "$file" "$run_id" "$crit_id" "$read_back" "$multiplicity" "$provenance_json"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi
@@ -369,12 +426,14 @@ cmd_probe() {
   local run_id="$1" crit_id="$2" persona="$3"
   shift 3
   local status="" shape="" ok="" have_status=0 have_shape=0 have_ok=0
+  local source_ref=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --status) status="$2"; have_status=1; shift 2 ;;
       --shape)  shape="$2";  have_shape=1;  shift 2 ;;
       --ok)     ok="$2";     have_ok=1;     shift 2 ;;
+      --source-ref) source_ref="$2"; shift 2 ;;
       *) die "Unknown option for kind 'probe': $1" ;;
     esac
   done
@@ -386,10 +445,17 @@ cmd_probe() {
   local file
   file="$(evidence_dir "$run_id" "$crit_id" "$persona")/network-response.json"
 
+  local provenance_json=""
+  [[ -n "$source_ref" ]] && provenance_json="$(build_provenance_json "$source_ref")"
+
   if has_jq; then
-    write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape" ok "$ok"
+    if [[ -n "$provenance_json" ]]; then
+      write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape" ok "$ok" provenance "$provenance_json"
+    else
+      write_jq "$file" "$run_id" "$crit_id" "probe" status "$status" shape "$shape" ok "$ok"
+    fi
   elif has_py; then
-    write_py_probe "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok"
+    write_py_probe "$file" "$run_id" "$crit_id" "$status" "$shape" "$ok" "$provenance_json"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi
@@ -404,6 +470,7 @@ cmd_action_trace() {
   local session_log="" session_from="0"
   local fp_before="" fp_after="" have_fp=0
   local fp_target="" have_target=0
+  local source_ref=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -415,6 +482,7 @@ cmd_action_trace() {
       --fingerprint-after)  fp_after="$2";      have_fp=1; shift 2 ;;
       --fingerprint-target) fp_target="$2";     have_target=1; shift 2 ;;
       --action)             action="$2";        shift 2 ;;
+      --source-ref)         source_ref="$2";    shift 2 ;;
       *) die "Unknown option for kind 'action-trace': $1" ;;
     esac
   done
@@ -482,11 +550,16 @@ print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ
   if [[ "$have_target" -eq 1 ]]; then
     extra_fields+=(fingerprintTarget "$fp_target")
   fi
+  local provenance_json=""
+  if [[ -n "$source_ref" ]]; then
+    provenance_json="$(build_provenance_json "$source_ref")"
+    extra_fields+=(provenance "$provenance_json")
+  fi
 
   if has_jq; then
     write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" "${extra_fields[@]}"
   elif has_py; then
-    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints" "$fp_target"
+    write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints" "$fp_target" "$provenance_json"
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
   fi

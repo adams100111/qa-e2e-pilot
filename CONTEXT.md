@@ -61,19 +61,19 @@ The deliberate-vs-bug determination: localize a **suspicion** to its source (com
 _Avoid_: verification (reserve for the layer-agreement of a criterion), review.
 
 **Capture-hook / Toolstream**:
-The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies, secrets redacted) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-drive, not the file.
+The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies; `Bash` args/response secret-redacted, `browser_*` recorded in full — a documented residual) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-check, not the file.
 _Avoid_: log (unqualified), trace (reserve "action-trace" for the agent's self-report), hash-chain (cut).
 
 **Block-hook**:
-A plugin-bundled `PreToolUse` hook that **denies before running** the *phase-independent absolutes* — a mutating `browser_evaluate`, `browser_run_code_unsafe`, `browser_route` on the tested origin. It sees tool calls, not the agent-supplied phase, so it never gates phase-dependent cases (a `browser_navigate` URL-skip is record-only → **qa-verify**). Distinct from the in-run **checkpoint** gate and from **qa-verify**.
+A plugin-bundled `PreToolUse` hook that **denies before running** the *phase-independent absolutes* it can classify from the call alone — a mutating `browser_evaluate` and `browser_run_code_unsafe` (shipped, Plan H2). It sees tool calls, not the agent-supplied phase, so it never gates phase-dependent cases (a `browser_navigate` URL-skip is record-only → **qa-verify**); it also does not block `browser_route` — an originally-scoped absolute (ADR-0018) not carried into the shipped hook, left to **qa-verify**/the in-run gate. Fail-open on any internal error. Distinct from the in-run **checkpoint** gate and from **qa-verify**.
 _Avoid_: gate (reserve for the checkpoint enforcement), block (unqualified).
 
 **Provenance binding**:
-The rule that every evidence artifact must reference the **Capture** call that produced it — a bake read-back to the captured backend read (XHR, navigation response, or Bash read); an act step to the captured tool call. Evidence with no corresponding captured call is rejected.
+The rule that every evidence artifact must correspond to a **Capture**-hook call that produced it — a bake read-back to a captured backend read (a **containment** check: the value/key found inside some captured response body, or an explicit `--source-ref`); an act step to a captured tool call of the matching class. Evidence with no corresponding captured call is `unbound` — the AC-1 forgery signal — never silently accepted.
 _Avoid_: signature, checksum.
 
 **qa-verify**:
-The **out-of-agent** authoritative verifier — a standalone process (local or CI) whose core is deterministic code. It re-checks a Run's evidence + **Toolstream** and independently corroborates high-stakes criteria: a fresh operator-invoked agent **re-drives** read-only isolation probes, while **mutating** human-action passes are **re-baked** (persisted state read again, never the mutation re-performed). Its verdict overrides the in-run report; a Run is "verified" only when every pass survives it.
+The **out-of-agent** authoritative verifier — a standalone process (local or CI), `scripts/qa-verify.sh`, whose core is deterministic code (no LLM): it re-derives required-kinds, re-validates evidence, and binds provenance against a Run's **Toolstream**, overriding a forged `pass`. Its verdict overrides the in-run report; a Run is "verified" only when every pass survives it. The **independent LLM re-drive/re-bake** of high-stakes criteria (a fresh operator-invoked agent re-driving a read-only probe, or re-baking a mutating human-action pass) is a **pluggable, documented stub** (`QA_VERIFY_REDRIVE_CMD`) — invoked but its result is logged only, not yet wired into the verdict (Plan H3).
 _Avoid_: gate (the in-run `checkpoint.sh` is the gate; `qa-verify` is the out-of-agent re-verification), CI.
 
 **Assurance tier**:
