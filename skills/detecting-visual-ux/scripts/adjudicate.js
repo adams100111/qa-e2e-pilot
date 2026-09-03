@@ -25,6 +25,10 @@
     // behavioral invariant violation, observed directly (overlay-stack, Task 1): a real
     // verdict, not advisory — confidence low until the shared state cause is code-localized.
     ['interaction-', 'behavioral-observed'],
+    // the generative critic (layer 3) is advisory-only — its suspicions never ground a
+    // verdict on their own (ADR-0019 §5); a definite oracle corroborating one promotes
+    // it via the heuristic-corroborated path.
+    ['critic-', 'heuristic'],
     // everything else (generic overlap, layout heuristics): advisory unless corroborated.
     ['overlap', 'heuristic']
   ];

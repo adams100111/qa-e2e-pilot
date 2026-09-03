@@ -71,5 +71,11 @@ check "behavioral observed-only -> fail verdict" "$(field adjudicate '[{"detecto
 check "behavioral corroborated -> fail high" "$(field adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x"},{"corroborated":true}]' 'confidence')" "high"
 check "behavioral known-deliberate -> null" "$(call adjudicate '[{"detector":"interaction-overlay-destroyed","rawSignal":"x"},{"knownDeliberate":[{"detector":"interaction-overlay-destroyed","rawSignal":"x"}]}]')" "null"
 
+
+# --- explicit critic-* grade (layer-3 generative critic, advisory-only guarantee) ---
+check "grade critic-layout-off" "$(grade critic-layout-off)" "heuristic"
+check "critic suspicion advisory" "$(field adjudicate '[{"detector":"critic-layout-off","rawSignal":"x"},{}]' 'advisory')" "true"
+check "critic suspicion corroborated -> fail high" "$(field adjudicate '[{"detector":"critic-layout-off","rawSignal":"x"},{"corroborated":true}]' 'confidence')" "high"
+
 echo; echo "ux-adjudicate: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

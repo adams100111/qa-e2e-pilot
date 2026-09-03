@@ -16,7 +16,8 @@
       "tierHeavy": "Opus",
       "dispatch": "via the Agent/Task tool, `subagent_type: qa-e2e-pilot`",
       "globalRolesDir": "~/.claude/qa-e2e-pilot/roles",
-      "agentCmd": "claude -p \"/qa-run \\\"$QA_TARGET\\\" $QA_CHECKLIST\""
+      "agentCmd": "claude -p \"/qa-run \\\"$QA_TARGET\\\" $QA_CHECKLIST\"",
+      "vision": {"capable": true, "read": "Read"}
     },
     "codex": {
       "toolPrefix": "playwright-qa__",
@@ -27,7 +28,8 @@
       "tierHeavy": "the most-capable",
       "dispatch": "with `$qa-run` (skill) or the `/qa-run` prompt",
       "globalRolesDir": "~/.codex/qa-e2e-pilot/roles",
-      "agentCmd": "codex exec \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+      "agentCmd": "codex exec \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
+      "vision": {"capable": true, "read": "localImage"}
     },
     "pi": {
       "toolPrefix": "mcp:playwright-qa/",
@@ -38,7 +40,8 @@
       "tierHeavy": "the most-capable",
       "dispatch": "with the `/qa-run` prompt-template",
       "globalRolesDir": "~/.pi/qa-e2e-pilot/roles",
-      "agentCmd": "pi -p \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+      "agentCmd": "pi -p \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
+      "vision": {"capable": true, "read": "adapter"}
     },
     "opencode": {
       "toolPrefix": "playwright-qa_",
@@ -49,7 +52,8 @@
       "tierHeavy": "the most-capable",
       "dispatch": "via the `/qa-run` command (`agent: qa-e2e-pilot`)",
       "globalRolesDir": "~/.config/opencode/qa-e2e-pilot/roles",
-      "agentCmd": "opencode run \"/qa-run $QA_TARGET $QA_CHECKLIST\""
+      "agentCmd": "opencode run \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
+      "vision": {"capable": true, "read": "Read"}
     }
   }
 }
