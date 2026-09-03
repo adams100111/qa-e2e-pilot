@@ -383,7 +383,7 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 | `scripts/adjudicate.js` | Pure, DOM-free classifier (Step 5): `adjudicate(suspicion, oracleInputs)` -> a verdict object, `{advisory:true}`, or `null`; `deriveCatalogResult(record)` turns a localized i18n record into the catalog-result enum. See `references/adjudication.md` |
 | `scripts/ux-conventions.sh` | `read`/`add` helper for `.qa/ux-conventions.json`'s `knownDeliberate` list — feeds `adjudicate()`'s known-deliberate short-circuit (Step 5.4) |
 | `scripts/vision-binding.sh` | `resolve [<harness>]` prints the per-harness screenshot read binding (`Read`/`localImage`/`adapter`/`absent`); `banner` prints the fixed honest-degrade line — Step 4.2 |
-| `scripts/critic-coverage.sh` | `log <run-id> <surface> ran\|skipped <reason>` — the sampled-vs-skipped record for the cost-ceiling gate (Step 4.1). *Not yet bundled as of this change — ships in a follow-up task; referenced here so Step 4.1's procedure is written against its final interface.* |
+| `scripts/critic-coverage.sh` | `log <run-id> <surface> ran\|skipped <reason>` (all four args required) / `read <run-id>` — the sampled-vs-skipped record for the cost-ceiling gate (Step 4.1), so a capped run is never silently "critic ran everywhere" |
 
 ## Mini-Evals
 
