@@ -124,9 +124,25 @@ _Avoid_: journey (a criterion may be a multi-step flow), test suite, multi-actor
 A read-only check a **mutating** criterion declares — entity + natural key — used on resume to decide whether its act already landed, so a crash mid-act never double-creates. Paired with a deterministic key `runId:scenarioId:criterionId` and the `act_intent`/`act_committed` journal events; an unresolved probe on resume yields `blocked`, never a blind retry. Reuses the bake read-back.
 _Avoid_: idempotency key (that is the identifier; the probe is the check), dedup.
 
+**Statechart**:
+The Run's phase and per-criterion sub-state machine, declared as **data** in `state-machine.json` (`skills/checkpointing-qa-memory/references/`) — phases, **sub-states**, legal edges, guards, and the per-phase tool surface (**phase surface**). **Fold**, **qa-verify**, and the **transition guard** all read this one file and hold only the generic edge-check procedure; editing it changes behavior in all three with no code change (ADR-0021).
+_Avoid_: state machine (acceptable as a gloss), enforcement engine (the statechart is the contract; fold/qa-verify/the guard are the engines that read it).
+
+**Sub-state**:
+One of a criterion's six internal machine states — `pending, arranging, acting, baking, reconciling, verdict` — inferred by **Fold** from journal events already emitted (`plan_frozen`/`criterion_started`/`act_intent`/`act_committed`/`criterion_verdict`), never agent-emitted through any CLI. Exposed as `cursor.json`'s `subState` field. Internal machine state, never a **Verdict**.
+_Avoid_: verdict (a sub-state is machine-internal, not an outcome), phase (a **phase** is a stage of the whole Run; a sub-state is per-criterion, inside Verify).
+
 **Transition guard**:
-A predicate on a state-machine edge that must pass before `checkpoint.sh` (the transition API) will commit the transition to the **Journal** — e.g. `→ verdict:pass` requires the honesty gate, `acting → baking` requires an `act_committed`. Guards make the invariants (five verdicts, evidence gate, bounded surface) mechanical rather than prose. An illegal or unguarded transition is rejected with a remediation message.
-_Avoid_: gate (reserve for the pass/honesty enforcement), check.
+A cooperative, best-effort precondition on a sub-state edge that `journal-emit.sh` checks before appending an `act_intent`/`act_committed` event — e.g. `acting → baking` requires an observed `act_committed`; `arranging → acting` requires `mutates`. An illegal edge is **declined** (nothing appended, non-zero exit; `--force` bypasses it, logged). This guards what gets *recorded*, not what the agent can do with other tools — it is not itself the authority (that's **qa-verify**, via **phase surface**); absent `state-machine.json`, the guard skips rather than blocking.
+_Avoid_: gate (reserve for the pass/honesty enforcement), cage (this is explicitly not one).
+
+**Phase surface**:
+The set of tool classes sanctioned during a given Run phase (`state-machine.json`'s `phaseToolSurface`), enforced **record-only** by **qa-verify**: it temporally correlates **Toolstream** calls against the journal's phase timeline and criteria's acting windows, flagging a call outside its sanctioned surface as a `confidence:low` finding — never a hard override of a verdict, never a live block.
+_Avoid_: sandbox, block (see **Block-hook**, a distinct, actually-blocking but phase-independent mechanism).
+
+**Illegal-edge**:
+A **fold-anomaly** (`{rule:"illegal-edge", tuple, from, to, guard}`) recorded when a criterion's observed **sub-state** transition is not a member of `state-machine.json`'s `legalSubStateEdges` — e.g. an `act_committed` with no prior `act_intent`. Recorded in `fold-anomalies.json`; never a fold abort.
+_Avoid_: error (a structured per-tuple record, not free text).
 
 **Frozen plan**:
 The criterion set + order (+ personas/scenarios) recorded once at Run start (`plan_frozen`) and replayed on resume — never re-derived from the running app, which may have drifted. A criterion added mid-Run is an explicit `plan_amended` event, never a silent re-derivation.

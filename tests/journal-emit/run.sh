@@ -9,6 +9,7 @@ EMIT="$HERE/../../skills/checkpointing-qa-memory/scripts/journal-emit.sh"
 FOLD="$HERE/../../skills/checkpointing-qa-memory/scripts/fold.sh"
 CKPT="$HERE/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"
 JOURNAL="$HERE/../../skills/checkpointing-qa-memory/scripts/journal.sh"
+SM="$HERE/../../skills/checkpointing-qa-memory/references/state-machine.json"
 PASS=0; FAIL=0
 
 get() { jq -r "$2" "$1" 2>/dev/null; }
@@ -300,6 +301,11 @@ check "act-intent non-mutating: no journal file created at all" \
   "$([[ -e "$WORK/.qa/runs/r7/journal.ndjson" ]] && echo exists || echo none)" "none"
 
 # -- mutating: act-intent then act-commit -> openActs empty after both --
+# (Run FSM Enforcement Task 4: act-intent's cooperative transition guard now
+# requires a prior criterion_started for this tuple -- see the "Task 4:
+# cooperative transition guard" section below -- so r8 needs one before its
+# act-intent call, which it didn't before that guard existed.)
+( cd "$WORK" && bash "$EMIT" started r8 admin AC1 admin >/dev/null )
 ( cd "$WORK" && bash "$EMIT" act-intent r8 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
 JF8="$WORK/.qa/runs/r8/journal.ndjson"
 check "act-intent mutating: act_intent line present" \
@@ -323,6 +329,8 @@ check "act-intent+act-commit: openActs EMPTY after both" \
   "$(get "$ANOM8" '.openActs | length')" "0"
 
 # -- crash mid-act: ONLY act-intent emitted (no act-commit) -> openActs non-empty --
+# (needs a prior criterion_started too -- Task 4's guard, see above.)
+( cd "$WORK" && bash "$EMIT" started r9 admin AC1 admin >/dev/null )
 ( cd "$WORK" && bash "$EMIT" act-intent r9 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
 ( cd "$WORK" && bash "$FOLD" r9 >/dev/null )
 ANOM9="$WORK/.qa/runs/r9/fold-anomalies.json"
@@ -332,19 +340,25 @@ check "act-intent only (simulated crash): openActs[0] == run:scenario:criterion 
   "$(get "$ANOM9" '.openActs[0]')" "r9:admin:AC1"
 
 # -- act-intent is the FIRST event of a run too: run_started + .qa/runs/latest --
+# (Task 4: with NO prior criterion_started, r10's tuple is inferred "pending"
+# -- not a legal predecessor of "acting" -- so this now needs --force to
+# reach the "first event of a run" code path this case exists to exercise;
+# the NOTE is expected on stderr, hence '2>&1' below rather than discarding it.)
 JF10_RUN="r10"
-( cd "$WORK" && bash "$EMIT" act-intent "$JF10_RUN" admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
+FORCE_OUT="$( cd "$WORK" && bash "$EMIT" act-intent "$JF10_RUN" admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" --force 2>&1 )"
 JF10="$WORK/.qa/runs/r10/journal.ndjson"
-check "act-intent as first event: run_started precedes act_intent" \
+check "act-intent as first event (--force): run_started precedes act_intent" \
   "$(sed -n 1p "$JF10" | jq -r '.event')" "run_started"
-check "act-intent as first event: .qa/runs/latest == r10" \
+check "act-intent as first event (--force): .qa/runs/latest == r10" \
   "$(cat "$WORK/.qa/runs/latest" 2>/dev/null)" "r10"
+check "act-intent as first event (--force): NOTE logged to stderr" \
+  "$([[ "$FORCE_OUT" == *"NOTE: --force: bypassing cooperative transition guard for r10:admin:AC1 (pending->act_intent)"* ]] && echo yes || echo no)" "yes"
 
 # -- act-commit rejects an invalid --outcome; nothing written --
 ( cd "$WORK" && bash "$EMIT" act-commit r8 admin AC1 admin --outcome bogus >/dev/null 2>&1 ); rc_bad_outcome=$?
 check "act-commit: invalid --outcome rejected (nonzero)" "$([[ $rc_bad_outcome -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 check "act-commit: invalid --outcome writes nothing (line count unchanged)" \
-  "$(jq -s 'length' "$JF8")" "3"
+  "$(jq -s 'length' "$JF8")" "4"
 
 # -- act-intent requires --write-set; rejects when missing --
 ( cd "$WORK" && bash "$EMIT" act-intent r11 admin AC1 admin --criterion "$MUT_CRIT" >/dev/null 2>&1 ); rc_no_ws=$?
@@ -374,6 +388,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN_AC"; shift; fi
     ( cd "$dir" \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-act admin AC1 admin >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-act admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-commit dual-act admin AC1 admin --outcome landed >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$FOLD" dual-act >/dev/null )
@@ -399,5 +414,98 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
 else
   echo "SKIP - dual-engine act-bracket sub-case: jq or python3 not present on this host"
 fi
+
+# ---------------------------------------------------------------------------
+# Run FSM Enforcement Task 4: cooperative transition guard (best-effort --
+# qa-verify's phase-surface pass, Task 3, remains the real authority). This
+# only makes journal-emit DECLINE TO APPEND an obviously-illegal sub-state
+# edge before act-intent/act-commit -- reading legalSubStateEdges/guards from
+# state-machine.json, never a hard-coded edge table (proven by sub-case (f)
+# below, which edits a TEMP copy of state-machine.json and observes the
+# guard's answer change accordingly -- the real shipped file is never
+# touched).
+# ---------------------------------------------------------------------------
+
+# -- (c) act-intent with NO prior criterion_started -> declined: nonzero,
+# the exact mandated message, and NOTHING appended (not even run_started). --
+ACTI_NOSTART_OUT="$( cd "$WORK" && bash "$EMIT" act-intent r20 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" 2>&1 )"; rc_acti_nostart=$?
+check "Task4(c): act-intent with no criterion_started -> nonzero" \
+  "$([[ $rc_acti_nostart -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "Task4(c): act-intent with no criterion_started -> exact decline message" \
+  "$([[ "$ACTI_NOSTART_OUT" == *"illegal edge: act_intent requires a prior criterion_started (tuple is 'pending')"* ]] && echo yes || echo no)" "yes"
+check "Task4(c): act-intent with no criterion_started -> nothing appended" \
+  "$([[ -e "$WORK/.qa/runs/r20/journal.ndjson" ]] && echo exists || echo none)" "none"
+
+# -- (a) act-commit with NO prior act_intent (tuple IS started, so it's
+# "arranging" not "acting") -> declined: nonzero, the exact mandated
+# message, and the journal is UNCHANGED (only run_started+criterion_started
+# from the preceding `started` call -- no act_committed line added). --
+( cd "$WORK" && bash "$EMIT" started r21 admin AC1 admin >/dev/null )
+JF21="$WORK/.qa/runs/r21/journal.ndjson"
+LINES_BEFORE_21="$(wc -l < "$JF21" | tr -d ' ')"
+ACTC_NOINTENT_OUT="$( cd "$WORK" && bash "$EMIT" act-commit r21 admin AC1 admin --outcome landed 2>&1 )"; rc_actc_nointent=$?
+check "Task4(a): act-commit with no prior act_intent -> nonzero" \
+  "$([[ $rc_actc_nointent -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "Task4(a): act-commit with no prior act_intent -> exact decline message" \
+  "$([[ "$ACTC_NOINTENT_OUT" == *"illegal edge: act_committed requires a prior act_intent"* ]] && echo yes || echo no)" "yes"
+check "Task4(a): act-commit with no prior act_intent -> journal line count unchanged" \
+  "$(wc -l < "$JF21" | tr -d ' ')" "$LINES_BEFORE_21"
+
+# -- (b) the SAME illegal act-commit, with --force -> appended, with a
+# logged NOTE on stderr identifying the key and the (from->event) pair. --
+ACTC_FORCE_OUT="$( cd "$WORK" && bash "$EMIT" act-commit r21 admin AC1 admin --outcome landed --force 2>&1 )"; rc_actc_force=$?
+check "Task4(b): --force bypass -> exit 0" "$rc_actc_force" "0"
+check "Task4(b): --force bypass -> act_committed actually appended" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")] | length' "$JF21")" "1"
+check "Task4(b): --force bypass -> NOTE logged to stderr" \
+  "$([[ "$ACTC_FORCE_OUT" == *"NOTE: --force: bypassing cooperative transition guard for r21:admin:AC1 (arranging->act_committed)"* ]] && echo yes || echo no)" "yes"
+
+# -- (d) a legal criterion_started -> act-intent -> act-commit sequence
+# appends normally at every step (no decline, no --force needed). --
+( cd "$WORK" && bash "$EMIT" started r22 admin AC1 admin >/dev/null ); rc_d1=$?
+( cd "$WORK" && bash "$EMIT" act-intent r22 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null ); rc_d2=$?
+( cd "$WORK" && bash "$EMIT" act-commit r22 admin AC1 admin --outcome landed >/dev/null ); rc_d3=$?
+JF22="$WORK/.qa/runs/r22/journal.ndjson"
+check "Task4(d): legal sequence -- started exits 0" "$rc_d1" "0"
+check "Task4(d): legal sequence -- act-intent exits 0" "$rc_d2" "0"
+check "Task4(d): legal sequence -- act-commit exits 0" "$rc_d3" "0"
+check "Task4(d): legal sequence -- journal has all 4 events in order" \
+  "$(jq -s -r '[.[].event] | join(",")' "$JF22")" "run_started,criterion_started,act_intent,act_committed"
+
+# -- (e) state-machine.json absent/unreadable -> the guard is SKIPPED
+# entirely (append succeeds exactly as it would with no guard at all),
+# proving a missing reference file never breaks journal-emit's core job. --
+NOSM_OUT="$( cd "$WORK" && STATE_MACHINE_JSON="$WORK/does-not-exist.json" bash "$EMIT" act-intent r23 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" 2>&1 )"; rc_nosm=$?
+check "Task4(e): absent state-machine.json -> act-intent still succeeds (guard skipped)" "$rc_nosm" "0"
+check "Task4(e): absent state-machine.json -> act_intent actually appended" \
+  "$(jq -s -r '[.[] | select(.event=="act_intent")] | length' "$WORK/.qa/runs/r23/journal.ndjson")" "1"
+
+# -- (f) DATA-DRIVEN proof: a TEMP copy of state-machine.json with
+# legalSubStateEdges' [arranging,acting] entry removed makes an OTHERWISE-
+# LEGAL act-intent from "arranging" now decline -- proving the guard reads
+# the edge list rather than hard-coding "arranging"/"acting". The real
+# shipped state-machine.json is never touched (STATE_MACHINE_JSON override
+# only, per journal-emit.sh's own documented test hook). A follow-up call
+# using the REAL file for the SAME tuple then succeeds, confirming the
+# decline above was caused by the edited edge list, not some other defect. --
+EDITED_SM="$WORK/state-machine-no-arranging-acting.json"
+python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    sm = json.load(f)
+sm["legalSubStateEdges"] = [e for e in sm["legalSubStateEdges"] if e != ["arranging", "acting"]]
+with open(sys.argv[2], "w") as f:
+    json.dump(sm, f)
+' "$SM" "$EDITED_SM"
+
+( cd "$WORK" && bash "$EMIT" started r24 admin AC1 admin >/dev/null )
+( cd "$WORK" && STATE_MACHINE_JSON="$EDITED_SM" bash "$EMIT" act-intent r24 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null 2>&1 ); rc_edited=$?
+check "Task4(f): data-driven -- edited legalSubStateEdges (no [arranging,acting]) declines an otherwise-legal act-intent" \
+  "$([[ $rc_edited -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "Task4(f): data-driven -- nothing appended by the declined call" \
+  "$(jq -s -r '[.[] | select(.event=="act_intent")] | length' "$WORK/.qa/runs/r24/journal.ndjson")" "0"
+
+( cd "$WORK" && bash "$EMIT" act-intent r24 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null ); rc_real_sm=$?
+check "Task4(f): sanity -- the REAL (unedited) state-machine.json allows the SAME call" "$rc_real_sm" "0"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

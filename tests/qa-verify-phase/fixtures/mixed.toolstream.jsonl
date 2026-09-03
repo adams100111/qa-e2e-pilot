@@ -1,0 +1,2 @@
+{"seq":1,"ts":"2026-01-01T00:00:05Z","tool":"browser_click","args":{"element":"Add"},"resultDigest":{"len":0,"sha256":"a"}}
+{"seq":2,"ts":"2026-01-01T00:00:08Z","tool":"browser_evaluate","args":{"function":"() => { document.title = \"x\"; }"},"resultDigest":{"len":0,"sha256":"b"}}

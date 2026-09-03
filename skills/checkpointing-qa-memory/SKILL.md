@@ -19,6 +19,8 @@ Every Run produces four memory-spec artifacts in `.qa/runs/<run-id>/`:
 
 The sibling skill `writing-qa-reports` owns `report.md` and `report.html` in the same run dir. This skill owns everything above.
 
+**FSM enforcement (ADR-0021):** the statechart-as-data (`references/state-machine.json`, schema in `references/state-machine-schema.md`), fold's sub-state inference + `illegal-edge` anomaly, `qa-verify`'s record-only phase-surface pass, and the cooperative transition guard are documented in [`references/fsm-enforcement.md`](references/fsm-enforcement.md) — not a hard cage; `qa-verify` is the universal authority.
+
 ## Run Directory Layout
 
 ```
@@ -512,3 +514,4 @@ honest-tier note above ("Evidence-Kind Gate (#2) and Fingerprint-Target (#4)").
 | `scripts/provenance.sh check <run-id> <artifact>` | Containment check: does an evidence artifact correspond to a captured `toolstream.jsonl` call? → `bound`\|`unbound`\|`no-toolstream` |
 | `scripts/qa-verify.sh <run-id>` | The out-of-agent authority: re-derives required-kinds, re-validates evidence, binds provenance for every recorded `pass`; writes `verification.json`, exits non-zero on any override |
 | `scripts/record-evidence.sh <run-id> <crit-id> identity --persona <id> --subject <captured-subject> --method <whoami\|storageState\|none>` | Plan H3 #6: record a persona's observed identity → `evidence/<persona>/identity.json`; consumed by `qa-verify`'s persona-identity binding (override needs `personas[].expectedSubject`, else best-effort degrade) |
+| `scripts/validate-state-machine.sh <path-to-state-machine.json>` | ADR-0021: structural validator for the FSM statechart — every legal edge/guard/phaseToolSurface entry cross-references a declared phase/sub-state/tool class; see `references/fsm-enforcement.md` |

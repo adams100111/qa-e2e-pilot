@@ -32,7 +32,7 @@
 #       event directly. <mutates> must be the literal string "true" or
 #       "false".
 #
-#   journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>
+#   journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json> [--force]
 #       DERIVE-GATED (durable-resume Plan B, Task 2): runs
 #       `mutation-flag.sh derive <criterion-json>` (Plan A's deterministic,
 #       agent-untrusted mutation classifier — see mutation-flag.sh). Only
@@ -45,8 +45,14 @@
 #       non-mutating criterion's act phase never becomes an open act for
 #       Task 4's resume reconciliation to trip over). Call this immediately
 #       BEFORE the criterion's act (the human-path UI interaction).
+#       Run FSM Enforcement Task 4: a cooperative, best-effort transition
+#       guard (see guard_transition below) declines this call (nothing
+#       appended, non-zero exit) unless a `criterion_started` already exists
+#       for this exact scenario/criterion/persona tuple; pass --force to
+#       bypass (logged NOTE on stderr). Not a hard cage — qa-verify's
+#       phase-surface pass (Task 3) is the real authority.
 #
-#   journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>
+#   journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown> [--force]
 #       Journals `act_committed{key:"<run-id>:<scenarioId>:<criterionId>",outcome}`
 #       unconditionally — NO derive gate here: the caller only ever calls
 #       act-commit for a tuple whose act-intent it already emitted (derive
@@ -56,6 +62,10 @@
 #       fold.sh's `openActs` (an intent with no matching commit) — that is
 #       precisely the durable resume signal Task 4's reconciliation
 #       consumes.
+#       Run FSM Enforcement Task 4: the same cooperative guard declines this
+#       call (nothing appended, non-zero exit) unless a matching `act_intent`
+#       already exists for this tuple's `runId:scenarioId:criterionId` key;
+#       pass --force to bypass (logged NOTE on stderr). Best-effort only.
 #
 # `.qa/runs/latest`: whichever of the subcommands above turns out to be the
 # FIRST event of a run (the journal did not exist/was empty before this
@@ -124,6 +134,17 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 JOURNAL_SH="${SCRIPT_DIR}/journal.sh"
 MUTATION_FLAG_SH="${SCRIPT_DIR}/mutation-flag.sh"
+# Run FSM Enforcement Task 4: state-machine.json (Task 1's statechart-as-
+# data), resolved relative to THIS script like JOURNAL_SH/MUTATION_FLAG_SH
+# above — but, unlike fold.sh's identical-looking constant, OVERRIDABLE via
+# the STATE_MACHINE_JSON env var (tests use this to point at a temp copy
+# with an edited legalSubStateEdges, proving the guard below is genuinely
+# data-driven, and to simulate "file absent" without touching the real
+# shipped reference file). See guard_transition's header comment for the
+# absent-file posture (skip, never die — deliberately DIFFERENT from
+# fold.sh's die-on-missing, because this guard is best-effort, not the
+# authority).
+STATE_MACHINE_JSON="${STATE_MACHINE_JSON:-${SCRIPT_DIR}/../references/state-machine.json}"
 
 # Resolve the engine ONCE, from checkpoint.sh's/journal.sh's own has_jq
 # (which already honors QA_ENGINE) — then pass it explicitly to every
@@ -481,6 +502,211 @@ for c in (plan.get("criteria") or []):
 }
 
 # ---------------------------------------------------------------------------
+# Run FSM Enforcement Task 4: cooperative transition guard (best-effort — the
+# real authority is qa-verify's phase-surface pass, Task 3; this only makes
+# journal-emit DECLINE TO APPEND an obviously-illegal sub-state edge before
+# act-intent/act-commit). Never a hard cage, never a hard-coded edge table —
+# every check below reads legalSubStateEdges/guards from STATE_MACHINE_JSON.
+#
+# infer_tuple_substate <run-id> <scenarioId> <criterionId> <personaId> --
+# mirrors fold.sh/fold.jq/fold.py's OWN sub-state inference exactly (see
+# their "cursor subState" / illegal-edge blocks): a tuple with a
+# criterion_verdict event anywhere is "verdict"; else, if it has a
+# criterion_started event (matched on the full scenarioId+criterionId+
+# personaId triple, same match fold's tuple_key uses), its state is "baking"
+# when an act_committed exists for the persona-blind act key
+# "runId:scenarioId:criterionId", else "acting" when an act_intent exists for
+# that key, else "arranging"; a tuple with NEITHER a criterion_started NOR a
+# criterion_verdict event is "pending" (fold's cursor computes the identical
+# default for "not present in groups"). All four existence checks are
+# order-insensitive full-journal scans (a key/tuple "seen anywhere" counts,
+# exactly like fold's intent_set/committed_set, never merely "seen so far")
+# and, like plan_frozen_exists/known_plan_tuples above, read the journal
+# line-by-line so one torn/malformed line can't abort the scan. A run with no
+# journal file at all is "pending" (no scan needed).
+# ---------------------------------------------------------------------------
+infer_tuple_substate() {
+  local run_id="$1" scenario_id="$2" criterion_id="$3" persona_id="$4"
+  local journal_path; journal_path="$(journal_path_for "$run_id")"
+  local ak="${run_id}:${scenario_id}:${criterion_id}"
+
+  if [[ ! -s "$journal_path" ]]; then
+    echo "pending"
+    return 0
+  fi
+
+  local has_started=0 has_verdict=0 has_intent=0 has_committed=0 line flag
+  if has_jq; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" ]] && continue
+      flag="$(jq -r --arg sid "$scenario_id" --arg cid "$criterion_id" --arg pid "$persona_id" --arg ak "$ak" '
+        if type != "object" then "skip"
+        elif .event == "criterion_started" and (.scenarioId // "") == $sid and (.criterionId // "") == $cid and (.personaId // "") == $pid then "started"
+        elif .event == "criterion_verdict" and (.scenarioId // "") == $sid and (.criterionId // "") == $cid and (.personaId // "") == $pid then "verdict"
+        elif .event == "act_intent" and (.key // "") == $ak then "intent"
+        elif .event == "act_committed" and (.key // "") == $ak then "committed"
+        else "skip" end
+      ' <<< "$line" 2>/dev/null)" || flag="skip"
+      case "$flag" in
+        started) has_started=1 ;;
+        verdict) has_verdict=1 ;;
+        intent) has_intent=1 ;;
+        committed) has_committed=1 ;;
+      esac
+    done < "$journal_path"
+  elif has_py; then
+    local py_out
+    py_out="$(python3 -c '
+import json, sys
+path, sid, cid, pid, ak = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+has_started = has_verdict = has_intent = has_committed = 0
+with open(path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        ev = obj.get("event")
+        if ev == "criterion_started" and obj.get("scenarioId", "") == sid and obj.get("criterionId", "") == cid and obj.get("personaId", "") == pid:
+            has_started = 1
+        elif ev == "criterion_verdict" and obj.get("scenarioId", "") == sid and obj.get("criterionId", "") == cid and obj.get("personaId", "") == pid:
+            has_verdict = 1
+        elif ev == "act_intent" and obj.get("key", "") == ak:
+            has_intent = 1
+        elif ev == "act_committed" and obj.get("key", "") == ak:
+            has_committed = 1
+print(has_started, has_verdict, has_intent, has_committed)
+' "$journal_path" "$scenario_id" "$criterion_id" "$persona_id" "$ak")" || py_out="0 0 0 0"
+    read -r has_started has_verdict has_intent has_committed <<< "$py_out"
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to infer sub-state for the transition guard."
+  fi
+
+  if [[ "$has_verdict" -eq 1 ]]; then
+    echo "verdict"
+  elif [[ "$has_started" -eq 1 ]]; then
+    if [[ "$has_committed" -eq 1 ]]; then
+      echo "baking"
+    elif [[ "$has_intent" -eq 1 ]]; then
+      echo "acting"
+    else
+      echo "arranging"
+    fi
+  else
+    echo "pending"
+  fi
+}
+
+# legal_predecessors_for <to-substate> <guard-requires-label> -- prints, one
+# per line, every `from` sub-state that is BOTH (a) a member of
+# STATE_MACHINE_JSON's legalSubStateEdges as [from,<to-substate>], AND (b)
+# the `edge` of a `guards` entry whose `requires` equals <guard-requires-
+# label>. Intersecting on the guard label (not just "any edge to
+# <to-substate>") matters because legalSubStateEdges can legally reach the
+# SAME <to-substate> via more than one guarded edge for different reasons —
+# e.g. "baking" is reachable both via [arranging,baking] (guard: not-mutates
+# — the non-mutating criterion's read-back path, which never journals
+# act_intent/act_committed at all) and [acting,baking] (guard: act_committed
+# — the mutating path this file's cmd_act_commit implements). Filtering by
+# guard label is what correctly excludes "arranging" as a legal predecessor
+# for an act_committed event while still reading the edge list from JSON
+# (never a hard-coded "arranging"/"acting" literal divorced from it) —
+# editing legalSubStateEdges to drop an edge changes this function's output.
+# Returns rc 1 (empty output) when STATE_MACHINE_JSON is missing/unreadable/
+# invalid JSON — the caller (guard_transition) treats that as "cannot judge,
+# skip the guard entirely", never as "no predecessor is legal".
+legal_predecessors_for() {
+  local to_state="$1" guard_label="$2"
+  [[ -r "$STATE_MACHINE_JSON" ]] || return 1
+  if has_jq; then
+    jq -e -r --arg to "$to_state" --arg label "$guard_label" '
+      [(.legalSubStateEdges // [])[] | select(type=="array" and length==2 and .[1]==$to) | .[0]] as $edge_froms
+      | [(.guards // [])[] | select(type=="object" and (.edge|type=="array") and (.edge|length)==2 and .edge[1]==$to and .requires==$label) | .edge[0]] as $guard_froms
+      | $edge_froms[] | select(. as $x | $guard_froms | index($x) != null)
+    ' "$STATE_MACHINE_JSON" 2>/dev/null
+    local rc=$?
+    # jq -e's documented exit codes: 0 = last output truthy, 1 = last output
+    # false/null, 4 = NO output was ever produced (jq(1): "--exit-status ...
+    # or 4 if no valid result was ever produced") — that last one is exactly
+    # the LEGITIMATE "no legal predecessor" answer (e.g. test (f)'s edited
+    # legalSubStateEdges), NOT a failure. 2/3 (usage error / compile error —
+    # e.g. malformed JSON input) are genuine "cannot judge" failures. So
+    # 0, 1, and 4 all mean "judged successfully" (with or without output);
+    # anything else means the guard cannot judge and must be skipped.
+    case "$rc" in
+      0|1|4) return 0 ;;
+      *) return 1 ;;
+    esac
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        sm = json.load(f)
+except (OSError, json.JSONDecodeError):
+    sys.exit(1)
+to_state, label = sys.argv[2], sys.argv[3]
+edges = sm.get("legalSubStateEdges") or []
+guards = sm.get("guards") or []
+edge_froms = {e[0] for e in edges if isinstance(e, list) and len(e) == 2 and e[1] == to_state}
+guard_froms = {
+    g["edge"][0] for g in guards
+    if isinstance(g, dict) and isinstance(g.get("edge"), list) and len(g["edge"]) == 2
+    and g["edge"][1] == to_state and g.get("requires") == label
+}
+for f in (edge_froms & guard_froms):
+    print(f)
+' "$STATE_MACHINE_JSON" "$to_state" "$guard_label" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# guard_transition <run-id> <scenarioId> <criterionId> <personaId>
+#   <to-substate> <guard-requires-label> <event-label> <force-flag> <decline-msg>
+# Best-effort pre-append guard (Task 4). <decline-msg> may contain the
+# literal placeholder "{current}", substituted with the tuple's inferred
+# current sub-state. On a legal edge this is a silent no-op (return 0) — the
+# caller's append proceeds exactly as before this task. On an illegal edge:
+# with --force (force-flag == 1), prints a NOTE to stderr and returns 0
+# (bypass, logged); otherwise calls `die` with <decline-msg> — matching this
+# file's existing "fail before any write" convention, so nothing is ever
+# appended on a decline (not even run_started). When STATE_MACHINE_JSON is
+# missing/unreadable (legal_predecessors_for returns rc 1), the guard CANNOT
+# judge and is skipped entirely — journal-emit keeps appending exactly as it
+# did before this task in that environment (a fold-anomaly path or any other
+# context without the reference file present is unaffected).
+# ---------------------------------------------------------------------------
+guard_transition() {
+  local run_id="$1" scenario_id="$2" criterion_id="$3" persona_id="$4"
+  local to_state="$5" guard_label="$6" event_label="$7" force="$8" decline_msg="$9"
+  local key="${run_id}:${scenario_id}:${criterion_id}"
+
+  local predecessors
+  predecessors="$(legal_predecessors_for "$to_state" "$guard_label")" || return 0
+
+  local current; current="$(infer_tuple_substate "$run_id" "$scenario_id" "$criterion_id" "$persona_id")"
+
+  local from_line
+  while IFS= read -r from_line; do
+    [[ -z "$from_line" ]] && continue
+    [[ "$from_line" == "$current" ]] && return 0
+  done <<< "$predecessors"
+
+  if [[ "$force" -eq 1 ]]; then
+    echo "NOTE: --force: bypassing cooperative transition guard for ${key} (${current}->${event_label})" >&2
+    return 0
+  fi
+
+  die "${decline_msg//\{current\}/$current}"
+}
+
+# ---------------------------------------------------------------------------
 # subcommands
 # ---------------------------------------------------------------------------
 
@@ -579,7 +805,7 @@ cmd_amend() {
 }
 
 cmd_act_intent() {
-  local criterion_json="" write_set_json=""
+  local criterion_json="" write_set_json="" force=0
   local -a positional=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -589,11 +815,12 @@ cmd_act_intent() {
       --write-set)
         [[ $# -lt 2 ]] && die "act-intent: --write-set requires a value."
         write_set_json="$2"; shift 2 ;;
+      --force) force=1; shift ;;
       *) positional+=("$1"); shift ;;
     esac
   done
   [[ "${#positional[@]}" -eq 4 ]] \
-    || die "act-intent requires: <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>"
+    || die "act-intent requires: <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json> [--force]"
   local run_id="${positional[0]}" scenario_id="${positional[1]}" criterion_id="${positional[2]}" persona_id="${positional[3]}"
   validate_token "$run_id" "run-id"
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
@@ -617,6 +844,19 @@ cmd_act_intent() {
 
   local key="${run_id}:${scenario_id}:${criterion_id}"
 
+  # Run FSM Enforcement Task 4: cooperative transition guard — declines to
+  # append act_intent (nothing appended, not even run_started) unless this
+  # tuple's inferred sub-state is a legal, [*, "acting"]-guarded ("mutates")
+  # predecessor per STATE_MACHINE_JSON's legalSubStateEdges (today, that's
+  # only "arranging" — i.e. a prior criterion_started for this exact
+  # scenario/criterion/persona). --force bypasses with a logged NOTE. A
+  # missing/unreadable STATE_MACHINE_JSON skips this guard entirely (see
+  # guard_transition's header comment) — best-effort, never a hard cage; the
+  # real authority is qa-verify's phase-surface pass (Task 3).
+  guard_transition "$run_id" "$scenario_id" "$criterion_id" "$persona_id" \
+    "acting" "mutates" "act_intent" "$force" \
+    "illegal edge: act_intent requires a prior criterion_started (tuple is '{current}')"
+
   local journal_path creating=0
   journal_path="$(journal_path_for "$run_id")"
   [[ -s "$journal_path" ]] || creating=1
@@ -636,18 +876,19 @@ cmd_act_intent() {
 }
 
 cmd_act_commit() {
-  local outcome=""
+  local outcome="" force=0
   local -a positional=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --outcome)
         [[ $# -lt 2 ]] && die "act-commit: --outcome requires a value."
         outcome="$2"; shift 2 ;;
+      --force) force=1; shift ;;
       *) positional+=("$1"); shift ;;
     esac
   done
   [[ "${#positional[@]}" -eq 4 ]] \
-    || die "act-commit requires: <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>"
+    || die "act-commit requires: <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown> [--force]"
   local run_id="${positional[0]}" scenario_id="${positional[1]}" criterion_id="${positional[2]}" persona_id="${positional[3]}"
   validate_token "$run_id" "run-id"
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
@@ -658,6 +899,25 @@ cmd_act_commit() {
   esac
 
   local key="${run_id}:${scenario_id}:${criterion_id}"
+
+  # Run FSM Enforcement Task 4: cooperative transition guard — declines to
+  # append act_committed (nothing appended, not even run_started) unless
+  # this tuple's inferred sub-state is a legal, [*, "baking"]-guarded
+  # ("act_committed") predecessor per STATE_MACHINE_JSON's
+  # legalSubStateEdges (today, that's only "acting" — i.e. a prior
+  # act_intent for this SAME run:scenario:criterion key). Note this
+  # deliberately excludes "arranging" even though [arranging,baking] is
+  # ALSO in legalSubStateEdges — that edge is guarded "not-mutates" (the
+  # non-mutating read-back path that never journals act_intent/act_committed
+  # at all), a different edge from the "act_committed"-guarded
+  # [acting,baking] this subcommand implements; legal_predecessors_for's
+  # guard-label filter is what tells them apart (see its header comment).
+  # --force bypasses with a logged NOTE. A missing/unreadable
+  # STATE_MACHINE_JSON skips this guard entirely — best-effort, never a hard
+  # cage; the real authority is qa-verify's phase-surface pass (Task 3).
+  guard_transition "$run_id" "$scenario_id" "$criterion_id" "$persona_id" \
+    "baking" "act_committed" "act_committed" "$force" \
+    "illegal edge: act_committed requires a prior act_intent"
 
   local journal_path creating=0
   journal_path="$(journal_path_for "$run_id")"
@@ -683,7 +943,7 @@ cmd_act_commit() {
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>\n       journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json>\n       journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown>"
+  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>\n       journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json> [--force]\n       journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown> [--force]"
   local cmd="$1"; shift
   case "$cmd" in
     started)    cmd_started "$@" ;;

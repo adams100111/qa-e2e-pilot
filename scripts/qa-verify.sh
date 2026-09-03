@@ -159,6 +159,62 @@
 # the cost of also failing legitimate no-capture human-action runs in that
 # mode. The fully-sound answer is the hardened tier (a managed/sandboxed
 # capture path the run's own agent cannot `rm`) — out of scope here.
+#
+# PHASE-SURFACE PASS (Run FSM Enforcement Task 3, plan
+# docs/superpowers/plans/2026-09-03-run-fsm-enforcement.md): a SEPARATE,
+# ADDITIONAL pass — independent of the per-criterion pass-record loop above
+# — that makes qa-verify the phase-surface AUTHORITY: it temporally
+# correlates every toolstream.jsonl (H2) call to the phase/acting-window
+# active at that moment (from journal.ndjson's `phase_entered`/`act_intent`/
+# `act_committed` timeline, Plan A/B) and flags a tool used outside its
+# sanctioned surface (`state-machine.json`'s `phaseToolSurface`, Task 1).
+# Toolstream events carry NO phase tag, so correlation is by wall-clock `ts`
+# (journal `t` / toolstream `ts`, both ISO-8601 UTC seconds — lexical string
+# comparison is chronological comparison for this format, no date parsing
+# needed): the ACTIVE PHASE at a call's `ts` is the last `phase_entered`
+# whose `t` <= that `ts`; a criterion's ACTING WINDOW is [act_intent.t,
+# act_committed.t] for the same `key` (an unmatched act_intent's window is
+# treated as open-ended, i.e. never flags a false positive for a still-open
+# act — fold's own `illegal-edge` anomaly already covers that case).
+#
+# A violation is either (a) a MUTATING browser tool (per parse-session-
+# log.js's `mutates()`, reused via node — the toolClass `browser-mutation`
+# for human-path acts, or `browser-evaluate-mutating` for a mutating
+# `browser_evaluate`) whose `ts` falls OUTSIDE every acting window, or (b) a
+# tool whose class is in the ACTIVE PHASE's `phaseToolSurface.
+# forbiddenToolClasses` (e.g. `browser-navigate` during `Report`).
+#
+# RECORD-ONLY -> AUTHORITY (never a live block, spec resolution): every
+# phase-surface finding is written to verification.json as confidence:"low"
+# with a reason naming the phase/tool/ts, on a SYNTHETIC run-level record
+# (criterionId "__phase-surface__" — a stray tool call cannot be pinned to
+# one specific criterion) — it NEVER sets verifierVerdict to "fail" and
+# NEVER flips qa-verify's exit code. This is a deliberate, documented
+# residual: the spec allows "a hard override ONLY for an unambiguous
+# mutating-act-outside-Verify", but this codebase has no reliable way to
+# distinguish "unambiguous" from "merely undeterminable" using only
+# second-resolution wall-clock timestamps and a best-effort tool-class
+# classifier, and the binding constraint ("ambiguous/undeterminable ->
+# confidence:low, NEVER a false override") dominates whenever that's in
+# doubt — so EVERY finding here degrades rather than overrides. An
+# undeterminable phase window (the call's `ts` precedes every `phase_entered`
+# in the journal, or the journal has no timeline at all) degrades the SAME
+# way (confidence:low, reason says so), never a false override.
+#
+# DEGRADE, NEVER FAIL: this pass runs ONLY when BOTH toolstream.jsonl AND a
+# non-empty, parseable journal.ndjson exist for the run; either missing ->
+# the pass is SKIPPED ENTIRELY (no record added, no effect on exit code) —
+# same "opt-in capture, no punishment for its absence" posture as the
+# no-toolstream provenance degrade above. This also preserves every EXISTING
+# qa-verify fixture (none of which write journal.ndjson) byte-for-byte.
+#
+# DATA-DRIVEN: the phase -> allowed/forbidden toolClass map is read from
+# `state-machine.json`'s `phaseToolSurface` (Task 1) at run time — never
+# hardcoded here. Only the TOOL-NAME -> toolClass mapping itself is a fixed
+# case statement (classify_tool, below) — there is no data file mapping
+# concrete MCP tool identifiers to the abstract classes state-machine.json
+# declares, matching this script's existing convention of small
+# self-contained classifiers (e.g. capture-hook.sh's clock-advisory scan).
 
 set -uo pipefail
 
@@ -167,6 +223,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQUIRED_KINDS_SH="$HERE/../skills/checkpointing-qa-memory/scripts/required-kinds.sh"
 CHECK_ACTION_TRACE_JS="$HERE/../skills/checkpointing-qa-memory/scripts/check-action-trace.js"
 PROVENANCE_SH="$HERE/provenance.sh"
+TOOLSTREAM_SH="$HERE/toolstream.sh"
+STATE_MACHINE_JSON="$HERE/../skills/checkpointing-qa-memory/references/state-machine.json"
+PARSE_SESSION_LOG_JS="$HERE/../skills/driving-browser-qa/scripts/parse-session-log.js"
 
 # Script-global (NOT `local` to main) so the EXIT trap registered in main —
 # which fires AFTER main returns, i.e. back at global scope — can still see
@@ -192,6 +251,9 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 [[ -f "$REQUIRED_KINDS_SH" ]] || die "qa-verify.sh: cannot find required-kinds.sh at ${REQUIRED_KINDS_SH}."
 [[ -f "$CHECK_ACTION_TRACE_JS" ]] || die "qa-verify.sh: cannot find check-action-trace.js at ${CHECK_ACTION_TRACE_JS}."
 [[ -f "$PROVENANCE_SH" ]] || die "qa-verify.sh: cannot find provenance.sh at ${PROVENANCE_SH}."
+[[ -f "$TOOLSTREAM_SH" ]] || die "qa-verify.sh: cannot find toolstream.sh at ${TOOLSTREAM_SH}."
+[[ -f "$STATE_MACHINE_JSON" ]] || die "qa-verify.sh: cannot find state-machine.json at ${STATE_MACHINE_JSON}."
+[[ -f "$PARSE_SESSION_LOG_JS" ]] || die "qa-verify.sh: cannot find parse-session-log.js at ${PARSE_SESSION_LOG_JS}."
 
 # ---------------------------------------------------------------------------
 # validate_run_id — mirrors provenance.sh/checkpoint.sh's Fix 28 path-
@@ -494,6 +556,375 @@ json_array_from_args() {
 import json, sys
 print(json.dumps(sys.argv[1:]))
 ' "$@"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# PHASE-SURFACE PASS helpers (Run FSM Enforcement Task 3). See the header
+# comment's "PHASE-SURFACE PASS" section for the full design rationale.
+# ---------------------------------------------------------------------------
+
+journal_file() { echo "$(run_dir "$1")/journal.ndjson"; }
+toolstream_file_for() { echo "$(run_dir "$1")/toolstream.jsonl"; }
+
+# has_toolstream <run-id> — exit 0 iff a non-empty toolstream.jsonl exists.
+has_toolstream() { [[ -s "$(toolstream_file_for "$1")" ]]; }
+
+# has_journal_timeline <run-id> — exit 0 iff journal.ndjson exists, is
+# non-empty, and contains at least one line that parses as a JSON object
+# (a torn last line alone does not count). This is the pass's SKIP guard:
+# absent -> the phase-surface pass never runs for this run (degrade, no
+# finding, no effect on exit code) — see the header comment.
+has_journal_timeline() {
+  local f line
+  f="$(journal_file "$1")"
+  [[ -s "$f" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    if has_jq; then
+      jq -e 'type == "object"' >/dev/null 2>&1 <<< "$line" && return 0
+    else
+      python3 -c "import json,sys
+json.loads(sys.argv[1])" "$line" >/dev/null 2>&1 && return 0
+    fi
+  done < "$f"
+  return 1
+}
+
+# json_line_field <json-line> <key> -> the string value of <key>, or "" if
+# absent/non-string/unparseable. Never dies.
+json_line_field() {
+  local line="$1" key="$2"
+  if has_jq; then
+    jq -r --arg k "$key" '(.[$k] // "") | if type == "string" then . else "" end' <<< "$line" 2>/dev/null
+  else
+    python3 -c "import json,sys
+try:
+    d = json.loads(sys.argv[1])
+    v = d.get(sys.argv[2])
+    print(v if isinstance(v, str) else '')
+except Exception:
+    print('')" "$line" "$key" 2>/dev/null
+  fi
+}
+
+# json_line_args <json-line> -> compact JSON of .args (or {} if absent/
+# unparseable). Never dies.
+json_line_args() {
+  local line="$1"
+  if has_jq; then
+    jq -c '(.args // {})' <<< "$line" 2>/dev/null || echo "{}"
+  else
+    python3 -c "import json,sys
+try:
+    d = json.loads(sys.argv[1])
+    print(json.dumps(d.get('args') or {}, separators=(',', ':')))
+except Exception:
+    print('{}')" "$line" 2>/dev/null || echo "{}"
+  fi
+}
+
+# classify_tool <tool-name> -> a state-machine.json `toolClasses` value, the
+# sentinel "__evaluate__" (a browser_evaluate call — resolved to
+# browser-evaluate-{mutating,readonly} by the caller via evaluate_mutates,
+# below), or "" for an unrecognized tool (never flagged — conservative:
+# an unknown tool is never treated as a phase-surface signal either way).
+# Matches on a TRAILING pattern (`*browser_click` etc.) so both a bare tool
+# name and an MCP-prefixed one (e.g.
+# "mcp__plugin_playwright_playwright__browser_click") classify identically.
+classify_tool() {
+  case "$1" in
+    *browser_navigate_back) echo "browser-navigate" ;;
+    *browser_navigate) echo "browser-navigate" ;;
+    *browser_snapshot) echo "browser-snapshot" ;;
+    *browser_click|*browser_type|*browser_fill_form|*browser_press_key|*browser_select_option|*browser_drag|*browser_drop|*browser_file_upload|*browser_handle_dialog)
+      echo "browser-mutation" ;;
+    *browser_hover|*browser_wait_for|*browser_tabs|*browser_resize|*browser_console_messages|*browser_take_screenshot|*browser_close)
+      echo "browser-interaction" ;;
+    *browser_evaluate|*browser_run_code_unsafe) echo "__evaluate__" ;;
+    *browser_network_request|*browser_network_requests) echo "probe" ;;
+    Bash) echo "bash" ;;
+    *) echo "" ;;
+  esac
+}
+
+# evaluate_mutates <args-json> -> "true"|"false" — classifies a
+# browser_evaluate call's payload (.function and/or .code) via
+# parse-session-log.js's `mutates()`, REUSED VERBATIM (the same single
+# source of truth check-action-trace.js's Check 2 and capture-hook.sh's
+# session-log parsing already rely on) — never reimplemented here. Uses
+# `node` (an existing dependency of this script via check-action-trace.js,
+# not a new one). Never dies: a node failure (missing binary, malformed
+# args) degrades to "false" (not-mutating) rather than aborting qa-verify —
+# the phase-surface pass is a best-effort record-only pass, never a hard
+# dependency.
+evaluate_mutates() {
+  local args="$1"
+  node -e '
+const { mutates } = require(process.argv[2]);
+let args = {};
+try { args = JSON.parse(process.argv[1] || "{}"); } catch (e) { args = {}; }
+const fn = typeof args.function === "string" ? args.function : "";
+const code = typeof args.code === "string" ? args.code : "";
+process.stdout.write(mutates(fn + "\n" + code) ? "true" : "false");
+' "$args" "$PARSE_SESSION_LOG_JS" 2>/dev/null || echo "false"
+}
+
+# build_classified_events <run-id> -> stdout a compact JSON array of
+# {tool, ts, toolClass, mutating} — one per toolstream.jsonl line whose tool
+# classifies to a known class (classify_tool). Unrecognized tools are
+# dropped (never a phase-surface signal — see classify_tool's comment).
+build_classified_events() {
+  local run_id="$1" line tool ts args cls mutating
+  local -a objs=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    tool="$(json_line_field "$line" "tool")"
+    ts="$(json_line_field "$line" "ts")"
+    [[ -z "$tool" || -z "$ts" ]] && continue
+    cls="$(classify_tool "$tool")"
+    [[ -z "$cls" ]] && continue
+    if [[ "$cls" == "__evaluate__" ]]; then
+      args="$(json_line_args "$line")"
+      if [[ "$(evaluate_mutates "$args")" == "true" ]]; then
+        cls="browser-evaluate-mutating"
+      else
+        cls="browser-evaluate-readonly"
+      fi
+    fi
+    mutating="false"
+    [[ "$cls" == "browser-mutation" || "$cls" == "browser-evaluate-mutating" ]] && mutating="true"
+    if has_jq; then
+      objs+=("$(jq -cn --arg tool "$tool" --arg ts "$ts" --arg cls "$cls" --argjson mutating "$mutating" \
+        '{tool: $tool, ts: $ts, toolClass: $cls, mutating: $mutating}')")
+    else
+      objs+=("$(python3 -c "import json,sys
+print(json.dumps({'tool': sys.argv[1], 'ts': sys.argv[2], 'toolClass': sys.argv[3], 'mutating': sys.argv[4] == 'true'}))" \
+        "$tool" "$ts" "$cls" "$mutating")")
+    fi
+  done < <(bash "$TOOLSTREAM_SH" read "$run_id" 2>/dev/null)
+  if [[ ${#objs[@]} -eq 0 ]]; then
+    echo "[]"
+  else
+    (IFS=,; echo "[${objs[*]}]")
+  fi
+}
+
+# build_phase_timeline <run-id> -> stdout a compact JSON array of
+# {t, phase}, one per `phase_entered` journal event, sorted ascending by t.
+build_phase_timeline() {
+  local f; f="$(journal_file "$1")"
+  [[ -s "$f" ]] || { echo "[]"; return 0; }
+  if has_jq; then
+    jq -c -R -s '
+      [ split("\n")[] | select(length > 0) | (try fromjson catch empty) ]
+      | map(select(type == "object" and .event == "phase_entered" and (.t | type == "string") and (.phase | type == "string")))
+      | map({t: .t, phase: .phase})
+      | sort_by(.t)
+    ' "$f" 2>/dev/null || echo "[]"
+  else
+    python3 -c "
+import json, sys
+out = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get('event') == 'phase_entered' and isinstance(obj.get('t'), str) and isinstance(obj.get('phase'), str):
+            out.append({'t': obj['t'], 'phase': obj['phase']})
+out.sort(key=lambda x: x['t'])
+print(json.dumps(out))
+" "$f" 2>/dev/null || echo "[]"
+  fi
+}
+
+# build_acting_windows <run-id> -> stdout a compact JSON array of
+# {key, intentT, committedT} (committedT is null for an unmatched/still-open
+# act_intent — treated as an open-ended window so an in-flight act is never
+# a false phase-surface positive; fold's own illegal-edge anomaly already
+# covers an orphaned act_intent). An act_committed with no matching
+# act_intent contributes nothing (no window; that mismatch is fold's
+# illegal-edge concern, not this pass's).
+build_acting_windows() {
+  local f; f="$(journal_file "$1")"
+  [[ -s "$f" ]] || { echo "[]"; return 0; }
+  if has_jq; then
+    jq -c -R -s '
+      [ split("\n")[] | select(length > 0) | (try fromjson catch empty) ]
+      | map(select(type == "object"))
+      | (reduce .[] as $e ({};
+          if $e.event == "act_intent" and ($e.key | type == "string") then
+            .[$e.key] = ((.[$e.key] // {}) + {key: $e.key, intentT: $e.t})
+          elif $e.event == "act_committed" and ($e.key | type == "string") then
+            .[$e.key] = ((.[$e.key] // {key: $e.key}) + {committedT: $e.t})
+          else . end
+        )) as $m
+      | [ $m[] | select(has("intentT")) | {key: .key, intentT: .intentT, committedT: (.committedT // null)} ]
+    ' "$f" 2>/dev/null || echo "[]"
+  else
+    python3 -c "
+import json, sys
+m = {}
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(e, dict):
+            continue
+        key = e.get('key')
+        if e.get('event') == 'act_intent' and isinstance(key, str):
+            m.setdefault(key, {'key': key})['intentT'] = e.get('t')
+        elif e.get('event') == 'act_committed' and isinstance(key, str):
+            m.setdefault(key, {'key': key})['committedT'] = e.get('t')
+out = [{'key': v['key'], 'intentT': v.get('intentT'), 'committedT': v.get('committedT')} for v in m.values() if 'intentT' in v]
+print(json.dumps(out))
+" "$f" 2>/dev/null || echo "[]"
+  fi
+}
+
+# phase_surface_reasons <events-json> <phases-json> <windows-json>
+# <windows-active> -> stdout a compact JSON array of human-readable reason
+# strings, one per violating toolstream event — the pure temporal-
+# correlation function. Reads state-machine.json's phaseToolSurface
+# (data-driven; never hardcoded). Phase names are matched CASE-
+# INSENSITIVELY against phaseToolSurface's keys (the plan's Global
+# Constraints: "the statechart phase names... matched case-insensitively to
+# the free-text --phase values" — checkpoint.sh's 3-arg CLI defaults
+# `--phase` to lowercase "verify", not state-machine.json's "Verify").
+#
+# <windows-active> ("true"|"false"): whether this RUN recorded ANY acting
+# window at all (i.e. build_acting_windows returned a non-empty array).
+# When "false" (a run that never used journal-emit.sh's act-intent/
+# act-commit CLI — e.g. every run built only via checkpoint.sh's plain
+# 3-arg CLI, which never emits act_intent/act_committed), the
+# mutating-outside-window rule is a NON-SIGNAL — "outside every window"
+# is vacuously true when zero windows were ever recorded, and would
+# otherwise flag EVERY legitimate mutating browser call in EVERY such run
+# (a systemic false-positive, not a real signal that this specific call
+# was misplaced). So that rule is DISABLED for the whole run in that case;
+# only the phase-forbidden-list check (which needs only phase_entered
+# events, always emitted by checkpoint.sh) still applies.
+# Deliberately uses NO apostrophes in generated reason text so the strings
+# never need escaping inside either engine's quoting.
+phase_surface_reasons() {
+  local events="$1" phases="$2" windows="$3" windows_active="$4"
+  if has_jq; then
+    jq -n -c \
+      --argjson events "$events" --argjson phases "$phases" --argjson windows "$windows" \
+      --argjson windowsActive "$windows_active" \
+      --slurpfile smArr "$STATE_MACHINE_JSON" '
+      ($smArr[0].phaseToolSurface // {}) as $surface
+      | def activePhase(ts):
+          ([ $phases[] | select(.t <= ts) ] | sort_by(.t) | last) as $p
+          | if $p == null then null else $p.phase end;
+        def inWindow(ts):
+          ([ $windows[] | select(.intentT <= ts and ((.committedT == null) or (ts <= .committedT))) ]) | length > 0;
+        def forbiddenFor(phase):
+          ($surface | to_entries[] | select(.key | ascii_downcase == (phase | ascii_downcase)) | .value.forbiddenToolClasses) // [];
+        [ $events[] |
+          . as $e
+          | (activePhase($e.ts)) as $phase
+          | (inWindow($e.ts)) as $win
+          | if ($e.mutating == true) and $windowsActive and ($win | not) then
+              (if $phase == null then
+                 "mutating tool " + $e.tool + " (class " + $e.toolClass + ") at ts=" + $e.ts + " fell outside any acting window; active phase undeterminable (no phase_entered recorded before this call)"
+               else
+                 "mutating tool " + $e.tool + " (class " + $e.toolClass + ") at ts=" + $e.ts + " fell outside any acting window while the active phase was " + $phase
+               end)
+            elif ($phase != null) and (forbiddenFor($phase) | index($e.toolClass) != null) then
+              "tool " + $e.tool + " (class " + $e.toolClass + ") used during phase " + $phase + ", which forbids toolClass " + $e.toolClass + " per state-machine.json phaseToolSurface"
+            else empty
+            end
+        ]
+      ' 2>/dev/null || echo "[]"
+  else
+    python3 -c '
+import json, sys
+events = json.loads(sys.argv[1])
+phases = json.loads(sys.argv[2])
+windows = json.loads(sys.argv[3])
+windows_active = sys.argv[4] == "true"
+sm = json.load(open(sys.argv[5]))
+surface = sm.get("phaseToolSurface") or {}
+surface_lower = {k.lower(): v for k, v in surface.items() if isinstance(v, dict)}
+phases_sorted = sorted(phases, key=lambda p: p["t"])
+
+def active_phase(ts):
+    cur = None
+    for p in phases_sorted:
+        if p["t"] <= ts:
+            cur = p["phase"]
+        else:
+            break
+    return cur
+
+def in_window(ts):
+    for w in windows:
+        if w.get("intentT") is not None and w["intentT"] <= ts and (w.get("committedT") is None or ts <= w["committedT"]):
+            return True
+    return False
+
+def forbidden_for(phase):
+    return (surface_lower.get(phase.lower(), {}) or {}).get("forbiddenToolClasses") or []
+
+reasons = []
+for e in events:
+    ts = e.get("ts")
+    phase = active_phase(ts)
+    win = in_window(ts)
+    if e.get("mutating") and windows_active and not win:
+        if phase is None:
+            reasons.append("mutating tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") at ts=" + str(ts) + " fell outside any acting window; active phase undeterminable (no phase_entered recorded before this call)")
+        else:
+            reasons.append("mutating tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") at ts=" + str(ts) + " fell outside any acting window while the active phase was " + str(phase))
+    elif phase is not None and e.get("toolClass") in forbidden_for(phase):
+        reasons.append("tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") used during phase " + str(phase) + ", which forbids toolClass " + str(e.get("toolClass")) + " per state-machine.json phaseToolSurface")
+print(json.dumps(reasons))
+' "$events" "$phases" "$windows" "$windows_active" "$STATE_MACHINE_JSON" 2>/dev/null || echo "[]"
+  fi
+}
+
+# run_phase_surface_pass <run-id> -> stdout ONE compact JSON verification
+# record (the "__phase-surface__" synthetic run-level finding) iff at least
+# one violation was found, else prints nothing. Skips entirely (prints
+# nothing) unless BOTH toolstream.jsonl and a parseable journal.ndjson exist
+# — see has_toolstream/has_journal_timeline above and the header comment.
+run_phase_surface_pass() {
+  local run_id="$1"
+  has_toolstream "$run_id" || return 0
+  has_journal_timeline "$run_id" || return 0
+
+  local events phases windows windows_active reasons
+  events="$(build_classified_events "$run_id")"
+  phases="$(build_phase_timeline "$run_id")"
+  windows="$(build_acting_windows "$run_id")"
+  windows_active="false"
+  [[ -n "$windows" && "$windows" != "[]" && "$windows" != "null" ]] && windows_active="true"
+  reasons="$(phase_surface_reasons "$events" "$phases" "$windows" "$windows_active")"
+
+  [[ -z "$reasons" || "$reasons" == "[]" || "$reasons" == "null" ]] && return 0
+
+  if has_jq; then
+    jq -cn --argjson reasons "$reasons" \
+      '{criterionId: "__phase-surface__", persona: "", inRunVerdict: "n/a", verifierVerdict: "pass", confidence: "low", reasons: $reasons}'
+  else
+    python3 -c '
+import json, sys
+print(json.dumps({
+    "criterionId": "__phase-surface__", "persona": "", "inRunVerdict": "n/a",
+    "verifierVerdict": "pass", "confidence": "low", "reasons": json.loads(sys.argv[1])
+}))
+' "$reasons"
   fi
 }
 
@@ -888,6 +1319,14 @@ main() {
     verdict="$(rec_verdict "$rec_json")"
     [[ "$verdict" != "pass" ]] && run_failed=1
   done < <(list_pass_records "$run_id")
+
+  # --- Phase-surface pass (Run FSM Enforcement Task 3) — a SEPARATE,
+  # additional pass, independent of the pass-record loop above. Adds AT
+  # MOST one synthetic "__phase-surface__" record; deliberately does NOT
+  # touch run_failed (record-only authority — see the header comment). ---
+  local ps_rec
+  ps_rec="$(run_phase_surface_pass "$run_id")"
+  [[ -n "$ps_rec" ]] && echo "$ps_rec" >> "$results_tmp"
 
   local out_file
   out_file="$(verification_file "$run_id")"

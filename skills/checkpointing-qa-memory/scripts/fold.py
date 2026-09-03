@@ -39,6 +39,21 @@ bug_ref/nonUiActionReason), the fallback value is identical to the falsy
 trigger value (e.g. `x or ""` when the fallback IS ""), so the two engines'
 results are provably identical regardless of the operator used -- see the
 inline comments at each site.
+
+Run FSM Enforcement Task 2: fold.sh also passes the state-machine.json PATH
+as argv[1] (fold.jq gets the same content via --slurpfile). This reducer
+reads ONLY `legalSubStateEdges`/`guards` from it (data-driven illegal-edge
+check below); it holds no hard-coded edge table itself. `act_intent`/
+`act_committed` events carry an opaque `key` with NO personaId component --
+journal-emit.sh's real convention is `key == "<run-id>:<scenarioId>:
+<criterionId>"` (see its header comment and qa-reconcile.sh's
+join_openacts_py, which already decodes keys this same way) -- so a tuple's
+act-seen booleans are computed by re-deriving that same key from (run_id,
+scenarioId, criterionId) and checking membership in the pass-1 intent_set/
+committed_set, ignoring personaId (matching the system's actual,
+persona-blind key shape; multiple personas sharing one scenario+criterion
+would alias to the same key -- an existing structural property of the
+journal format, not something introduced here).
 """
 import json
 import sys
@@ -64,6 +79,27 @@ def main():
     payload = json.load(sys.stdin)
     events = sorted(payload.get("events") or [], key=lambda e: e.get("seq") or 0)
     wrapper_skipped = list(payload.get("skipped") or [])
+
+    # ---- Run FSM Enforcement Task 2: statechart data + per-tuple `mutates`.
+    # argv[1] (when supplied by fold.sh) is the state-machine.json path;
+    # only legalSubStateEdges/guards are read (data-driven -- no edge name
+    # is ever hard-coded here). mutates_map is built from EVERY plan_frozen
+    # event's criteria[] entries, keyed by tuple_key, last-plan_frozen-wins
+    # -- mirroring pass 3's own "process every plan_frozen" behaviour. A
+    # tuple with no plan_frozen entry has no key in this map; .get() then
+    # yields None ("mutates: unknown"), which the illegal-edge check below
+    # treats as "cannot judge -> no anomaly" (graceful default).
+    statemachine = {}
+    if len(sys.argv) > 1 and sys.argv[1]:
+        with open(sys.argv[1]) as f:
+            statemachine = json.load(f)
+    legal_substate_edges = statemachine.get("legalSubStateEdges") or []
+    guards = statemachine.get("guards") or []
+    mutates_map = {}
+    for e in events:
+        if e.get("event") == "plan_frozen":
+            for c in (e.get("criteria") or []):
+                mutates_map[tuple_key(c)] = c.get("mutates")
 
     # ---- pass 1: act_intent / act_committed key sets (order-insensitive
     # match: "no matching act_intent" means no act_intent event anywhere
@@ -155,8 +191,45 @@ def main():
     # moment the KEPT (last-wins) verdict was recorded, so a criterion_started
     # that arrives AFTER the kept verdict does not retroactively erase the
     # anomaly. --------------------------------------------------------------
+    # illegal-edge (Task 2): computed ONLY when startedAtVerdict is True -- a
+    # tuple with no started event at all is already flagged by
+    # verdict-without-started below; the two rules are DELIBERATELY distinct
+    # (act-committed-no-intent/verdict-without-started stay exactly as they
+    # were) and never double-fire for the same root cause. For a started
+    # tuple, the sub-state it was in immediately before its KEPT verdict
+    # ("from") is inferred from the SAME order-insensitive act_intent/
+    # act_committed presence check act-committed-no-intent already uses (a
+    # key seen ANYWHERE in the journal counts, not merely "seen so far") --
+    # committed implies "baking", else intent-only implies "acting", else
+    # "arranging". The observed transition (`from`, "verdict") is then
+    # checked generically against `legal_substate_edges` (not a member at
+    # all -> illegal, guard=None) and, if it IS a member, against any
+    # LITERAL guard declared for exactly that edge (the wildcard
+    # `*->verdict:honesty-gate` guard is NOT re-implemented here -- that
+    # gate already lives in checkpoint.sh/required-kinds.sh): `not-mutates`
+    # violated when this tuple's plan_frozen `mutates` is True; `mutates`
+    # violated when it is not True. When this tuple has no plan_frozen entry
+    # at all (mutates_map.get(k) is None), the guard check is skipped --
+    # "cannot judge" is not "illegal" (graceful default for a legacy/
+    # plan_frozen-less journal, per the Task 2 brief).
+    def infer_from_state(scenario_id, criterion_id):
+        ak = "{}:{}:{}".format(run_id or "", scenario_id, criterion_id)
+        if ak in committed_set:
+            return "baking"
+        if ak in intent_set:
+            return "acting"
+        return "arranging"
+
+    def literal_guard(frm, to):
+        for g_ in guards:
+            edge = g_.get("edge")
+            if isinstance(edge, list) and len(edge) == 2 and edge[0] == frm and edge[1] == to:
+                return g_.get("requires")
+        return None
+
     criteria = []
     vws = []
+    illegal_edges = []
     for k in order:
         g = groups[k]
         v = g["verdict"]
@@ -188,6 +261,29 @@ def main():
                 "criterionId": g["criterionId"],
                 "personaId": g["personaId"],
             })
+        else:
+            from_state = infer_from_state(g["scenarioId"], g["criterionId"])
+            legal = any(
+                isinstance(e, list) and len(e) == 2 and e[0] == from_state and e[1] == "verdict"
+                for e in legal_substate_edges
+            )
+            tuple_label = "{}/{}/{}".format(g["scenarioId"], g["criterionId"], g["personaId"])
+            if not legal:
+                illegal_edges.append({
+                    "rule": "illegal-edge", "tuple": tuple_label,
+                    "from": from_state, "to": "verdict", "guard": None,
+                })
+            else:
+                req = literal_guard(from_state, "verdict")
+                mutates = mutates_map.get(k)
+                if req is not None and mutates is not None:
+                    violated = (req == "not-mutates" and mutates is True) or \
+                               (req == "mutates" and mutates is not True)
+                    if violated:
+                        illegal_edges.append({
+                            "rule": "illegal-edge", "tuple": tuple_label,
+                            "from": from_state, "to": "verdict", "guard": req,
+                        })
 
     open_acts = [k for k in intent_order if k not in committed_set]
 
@@ -296,13 +392,40 @@ def main():
         ("__shared__" if cur_groups[k]["personaId"] == "" else cur_groups[k]["scenarioId"])
         for k in cur_order
     })
+    # cursor subState (Task 2): looked up against pass 2's `groups` -- which
+    # (unlike pass 3's cur_groups) only ever gets an entry from a REAL
+    # criterion_started/criterion_verdict event, never a plan_frozen
+    # listing -- so "not present in groups" precisely means "planned only,
+    # never actually started" -> pending, matching the inference table
+    # exactly. When present, the same order-insensitive act_intent/
+    # act_committed presence check the illegal-edge rule above uses picks
+    # acting/baking; g2["started"] False with no verdict falls back to
+    # "pending" too (defensive; a group is only ever created with
+    # started=True or a non-None verdict, so this branch is unreachable in
+    # practice, never a crash risk).
     cursor_ptr = None
     for k in cur_order:
         g = cur_groups[k]
         if g["started"] and not g["verdict"]:
+            g2 = groups.get(k)
+            if g2 is None:
+                substate = "pending"
+            elif g2["verdict"] is not None:
+                substate = "verdict"
+            else:
+                ak2 = "{}:{}:{}".format(run_id or "", g2["scenarioId"], g2["criterionId"])
+                if ak2 in committed_set:
+                    substate = "baking"
+                elif ak2 in intent_set:
+                    substate = "acting"
+                elif g2["started"]:
+                    substate = "arranging"
+                else:
+                    substate = "pending"
             cursor_ptr = {
                 "scenarioId": "__shared__" if g["personaId"] == "" else g["scenarioId"],
                 "criterionId": g["criterionId"],
+                "subState": substate,
             }
             break
 
@@ -322,7 +445,7 @@ def main():
             "updated_at": last_t,
             "criteria": criteria,
         },
-        "anomalies": wrapper_skipped + anomalies + vws + seq_gap_anoms + cross_child_anoms,
+        "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms,
         "openActs": open_acts,
         "cursor": cursor_doc,
     }
