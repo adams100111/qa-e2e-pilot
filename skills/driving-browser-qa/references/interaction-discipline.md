@@ -118,7 +118,24 @@ missing/disabled/broken affordance: screenshot + the enumerated affordances from
   continuous session. Under sequential-by-default (ADR-0003) ≈1 context is open at a
   time; parallel fan-out holds ≤ `maxParallel`, guarded by `maxOpenContexts`.
 
-## 5. See also
+## 5. Clock / time-travel discipline (#7)
+
+The act must run against **real wall-clock time**. A QA run must **never** mock, freeze, or
+fast-forward the clock (`setTestNow`, `sinon.useFakeTimers`/`jest.useFakeTimers`, a
+`Date.now =` override, `__defineGetter__` on `Date`, `mockdate`/`timekeeper`, or navigating
+a clock-control route like `/__clock`/`/test/clock`/`?now=`) to force a time-dependent
+assertion to pass. Forcing the clock manufactures a pass the same way stubbing the
+backend-under-test does (§4) — it proves nothing about the real system, so it is banned by
+doctrine exactly like an evaluate-write on the act path. This is a **doctrine ban, not a
+hard gate**: generic time-travel detection is infeasible, so `capture-hook.sh` runs a
+deterministic, best-effort pattern scan over every captured call and stamps
+`advisory:"clock-control"` on a toolstream event that matches a known signal —
+**advisory only**, it never blocks the call and never changes the hook's exit code. Treat
+an `advisory:"clock-control"` line in the toolstream as a suspect signal worth a second
+look during review, not proof of a violation on its own (a legitimate in-app feature under
+test, e.g. an admin "set server time" tool, can trip the same pattern).
+
+## 6. See also
 
 - `../SKILL.md` — driver selection, the observe-round, the driver launch + delta-slice
   rule, and the React/RTL mechanics these helpers now support in a read-only/resolve-only

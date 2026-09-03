@@ -129,7 +129,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   # includes 'bash' itself -- capture-hook.sh shells out to `bash
   # "$TOOLSTREAM"` internally, and that nested invocation is looked up on
   # this same (restricted) PATH once it's forced below.
-  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum; do
+  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum grep; do
     TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
     [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
   done
@@ -229,7 +229,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   BASH_BIN="$(command -v bash)"
   FAKEBIN="$WORK/fakebin"
   mkdir -p "$FAKEBIN"
-  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum; do
+  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum grep; do
     TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
     [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
   done
@@ -247,6 +247,117 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   echo "note - jq-fallback sub-case (Finding 1/2): RAN (jq masked from PATH via a restricted fakebin)"
 else
   echo "SKIP - jq-fallback sub-case (Finding 1/2): jq or python3 not present on this host, cannot exercise fallback"
+fi
+
+# ===========================================================================
+# Case 14 (Plan H3 Task 2 / #7): a captured browser_evaluate carrying a
+# known time-control signal -> the toolstream event is stamped
+# advisory:"clock-control". ADVISORY ONLY: hook still exits 0, event still
+# written normally.
+# ===========================================================================
+setup_run
+EVAL_FAKE_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_evaluate","tool_input":{"function":"() => { sinon.useFakeTimers(); return true; }"},"tool_response":{"result":true},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$EVAL_FAKE_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook14.err" ); rc14=$?
+check "case14: hook exit 0 with a clock-control evaluate" "$rc14" "0"
+LINE14="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case14: advisory==clock-control (sinon.useFakeTimers)" "$(echo "$LINE14" | jq -r '.advisory')" "clock-control"
+
+# ===========================================================================
+# Case 15: setTestNow( signal -> flagged.
+# ===========================================================================
+setup_run
+SETTESTNOW_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_evaluate","tool_input":{"function":"() => { window.setTestNow(1700000000000); }"},"tool_response":{"result":null},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$SETTESTNOW_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook15.err" ); rc15b=$?
+check "case15: hook exit 0 with setTestNow(" "$rc15b" "0"
+LINE15="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case15: advisory==clock-control (setTestNow)" "$(echo "$LINE15" | jq -r '.advisory')" "clock-control"
+
+# ===========================================================================
+# Case 16: Date.now = override signal -> flagged.
+# ===========================================================================
+setup_run
+DATENOW_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_evaluate","tool_input":{"code":"Date.now = () => 1700000000000;"},"tool_response":{"result":null},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$DATENOW_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook16.err" ); rc16=$?
+check "case16: hook exit 0 with Date.now = override" "$rc16" "0"
+LINE16="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case16: advisory==clock-control (Date.now =)" "$(echo "$LINE16" | jq -r '.advisory')" "clock-control"
+
+# ===========================================================================
+# Case 17: jest.useFakeTimers( signal -> flagged.
+# ===========================================================================
+setup_run
+JESTFAKE_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_evaluate","tool_input":{"function":"() => { jest.useFakeTimers(); }"},"tool_response":{"result":null},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$JESTFAKE_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook17.err" ); rc17=$?
+check "case17: hook exit 0 with jest.useFakeTimers(" "$rc17" "0"
+LINE17="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case17: advisory==clock-control (jest.useFakeTimers)" "$(echo "$LINE17" | jq -r '.advisory')" "clock-control"
+
+# ===========================================================================
+# Case 18: browser_navigate to a clock-control route (?now=) -> flagged.
+# ===========================================================================
+setup_run
+CLOCKNAV_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_navigate","tool_input":{"url":"https://example.com/__clock?now=1700000000000"},"tool_response":{"ok":true},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$CLOCKNAV_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook18.err" ); rc18=$?
+check "case18: hook exit 0 with a clock-route navigate" "$rc18" "0"
+LINE18="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case18: advisory==clock-control (/__clock?now=)" "$(echo "$LINE18" | jq -r '.advisory')" "clock-control"
+
+# ===========================================================================
+# Case 19: a normal browser_click -> NO advisory field at all (absent, not
+# null/false).
+# ===========================================================================
+setup_run
+CLICK_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_click","tool_input":{"element":"Submit button","ref":"e42"},"tool_response":{"ok":true},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$CLICK_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook19.err" ); rc19=$?
+check "case19: hook exit 0 for a normal click" "$rc19" "0"
+LINE19="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case19: no advisory key present at all" "$(echo "$LINE19" | jq -r 'has("advisory")')" "false"
+
+# ===========================================================================
+# Case 20: a Bash call hitting a clock route (/test/clock) -> flagged, AND a
+# secret elsewhere in the same command is still redacted (no regression --
+# the clock-scan classifies off the UNREDACTED tool_input, but the WRITTEN
+# args go through the normal Bash redaction path unchanged).
+# ===========================================================================
+setup_run
+BASHCLOCK_EVENT='{"tool_name":"Bash","tool_input":{"command":"curl -X POST http://localhost:3000/test/clock -d '"'"'password=Sup3rSecret!'"'"'"},"tool_response":{"stdout":"ok","stderr":"","exitCode":0},"cwd":"'"$WORK"'","session_id":"sess1"}'
+( cd "$WORK" && printf '%s' "$BASHCLOCK_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook20.err" ); rc20=$?
+check "case20: hook exit 0 with a Bash clock-route + secret" "$rc20" "0"
+LINE20="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case20: advisory==clock-control (Bash /test/clock)" "$(echo "$LINE20" | jq -r '.advisory')" "clock-control"
+not_contains "case20: secret STILL redacted despite the clock-scan reading raw args" "$LINE20" "Sup3rSecret!"
+contains "case20: redacted marker present" "$(echo "$LINE20" | jq -r '.args.command')" "<redacted>"
+
+# ===========================================================================
+# Case 21 (dual-engine): re-run the clock-flag + normal-no-advisory cases
+# with jq masked from PATH (python3 fallback). Note: the FAKEBIN allowlist
+# now includes `grep`, since the clock-scan shells out to `grep -Eqi`
+# unconditionally (classification is engine-independent; only JSON field
+# extraction differs by engine).
+# ===========================================================================
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  setup_run
+  BASH_BIN="$(command -v bash)"
+  FAKEBIN="$WORK/fakebin"
+  mkdir -p "$FAKEBIN"
+  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum grep; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+
+  ( cd "$WORK" && printf '%s' "$EVAL_FAKE_EVENT" | PATH="$FAKEBIN" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook21.err" ); rc21=$?
+  check "py-fallback case14: hook exit 0 with clock-control evaluate" "$rc21" "0"
+  PYLINE21="$(tail -n1 "$(TF)" 2>/dev/null)"
+  check "py-fallback case14: advisory==clock-control" "$(echo "$PYLINE21" | jq -r '.advisory')" "clock-control"
+
+  ( cd "$WORK" && printf '%s' "$CLICK_EVENT" | PATH="$FAKEBIN" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook22.err" ); rc22=$?
+  check "py-fallback case19: hook exit 0 for a normal click" "$rc22" "0"
+  PYLINE22="$(tail -n1 "$(TF)" 2>/dev/null)"
+  check "py-fallback case19: no advisory key present" "$(echo "$PYLINE22" | jq -r 'has("advisory")')" "false"
+
+  echo "note - jq-fallback sub-case (clock-flag): RAN (jq masked from PATH via a restricted fakebin, grep included)"
+else
+  echo "SKIP - jq-fallback sub-case (clock-flag): jq or python3 not present on this host, cannot exercise fallback"
 fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
