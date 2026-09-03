@@ -1,0 +1,6 @@
+{"seq":1,"t":"2026-01-01T00:00:01Z","event":"run_started","runId":"mixed"}
+{"seq":2,"t":"2026-01-01T00:00:02Z","event":"phase_entered","phase":"Verify"}
+{"seq":3,"t":"2026-01-01T00:00:03Z","event":"criterion_started","scenarioId":"__shared__","criterionId":"C1","personaId":""}
+{"seq":4,"t":"2026-01-01T00:00:04Z","event":"act_intent","key":"mixed:__shared__:C1","writeSet":[]}
+{"seq":5,"t":"2026-01-01T00:00:06Z","event":"act_committed","key":"mixed:__shared__:C1","outcome":"landed"}
+{"seq":6,"t":"2026-01-01T00:00:07Z","event":"phase_entered","phase":"Report"}
