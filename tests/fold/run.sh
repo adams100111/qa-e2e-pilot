@@ -149,6 +149,71 @@ check "cursor: fold does NOT create bug-log.json" \
   "$([[ -e "$CURDIR/bug-log.json" ]] && echo exists || echo missing)" "missing"
 
 # ---------------------------------------------------------------------------
+# Case: substate-mutating — Run FSM Enforcement Task 2. A fully-completed
+# mutating criterion (C-FOUNDERS-01: plan_frozen mutates:true,
+# criterion_started, act_intent, act_committed, criterion_verdict) takes only
+# legal edges (pending->arranging->acting->baking->verdict) -> NO illegal-edge
+# for it. A SECOND mutating criterion (C-FOUNDERS-02) is mid-run: started +
+# act_intent seen, no act_committed, no verdict yet -> it's the cursor, and
+# its inferred subState is "acting" (state-machine-schema.md's inference
+# table: act_intent observed, no matching act_committed, no verdict).
+# ---------------------------------------------------------------------------
+seed_run substate-mut-run substate-mutating.ndjson
+( cd "$WORK" && bash "$FOLD" substate-mut-run >/dev/null ); rc_submut=$?
+SUBMUT_CUR="$WORK/.qa/runs/substate-mut-run/cursor.json"
+SUBMUT_ANOM="$WORK/.qa/runs/substate-mut-run/fold-anomalies.json"
+
+check "substate-mutating: exit 0" "$rc_submut" "0"
+check "substate-mutating: cursor points at the mid-run tuple C-FOUNDERS-02" \
+  "$(get "$SUBMUT_CUR" '.cursor.criterionId')" "C-FOUNDERS-02"
+check "substate-mutating: mid-run cursor subState == acting" \
+  "$(get "$SUBMUT_CUR" '.cursor.subState')" "acting"
+check "substate-mutating: no illegal-edge anomaly (full legal mutating arc)" \
+  "$(get "$SUBMUT_ANOM" '[.anomalies[] | select(.rule=="illegal-edge")] | length')" "0"
+
+# ---------------------------------------------------------------------------
+# Case: illegal-edge-skips-act — the HEADLINE case. A mutates:true criterion
+# (per its plan_frozen entry) reaches criterion_verdict with NO act_intent
+# and NO act_committed at all — it skipped its act phase entirely, taking
+# the arranging->verdict edge, which IS a legal edge but is guarded by
+# `not-mutates` (state-machine.json). Since this tuple's mutates is true,
+# the guard is violated -> illegal-edge, distinct from (and in addition to
+# the ABSENCE of) act-committed-no-intent, which does not fire here at all
+# (no act_committed event exists in this fixture).
+# ---------------------------------------------------------------------------
+seed_run illegal-edge-run illegal-edge-skips-act.ndjson
+( cd "$WORK" && bash "$FOLD" illegal-edge-run >/dev/null ); rc_illegal=$?
+ILLEGAL_ANOM="$WORK/.qa/runs/illegal-edge-run/fold-anomalies.json"
+
+check "illegal-edge: exit 0 (anomaly, never an abort — fold stays total)" "$rc_illegal" "0"
+check "illegal-edge: illegal-edge anomaly recorded for the mutating-skips-act tuple" \
+  "$(get "$ILLEGAL_ANOM" '[.anomalies[] | select(.rule=="illegal-edge" and .tuple=="s1/C-MUT-SKIP/p1")] | length')" "1"
+check "illegal-edge: from == arranging" \
+  "$(get "$ILLEGAL_ANOM" '.anomalies[] | select(.rule=="illegal-edge") | .from')" "arranging"
+check "illegal-edge: to == verdict" \
+  "$(get "$ILLEGAL_ANOM" '.anomalies[] | select(.rule=="illegal-edge") | .to')" "verdict"
+check "illegal-edge: guard == not-mutates" \
+  "$(get "$ILLEGAL_ANOM" '.anomalies[] | select(.rule=="illegal-edge") | .guard')" "not-mutates"
+check "illegal-edge: act-committed-no-intent does NOT also fire (no act_committed event exists)" \
+  "$(get "$ILLEGAL_ANOM" '[.anomalies[] | select(.rule=="act-committed-no-intent")] | length')" "0"
+
+# ---------------------------------------------------------------------------
+# Case: substate-nonmutating — a mutates:false criterion (per its
+# plan_frozen entry) that goes criterion_started -> criterion_verdict
+# directly (a legitimate pure-observe: e.g. "the spinner renders", nothing
+# to act on or bake) — this is the SAME arranging->verdict edge as the
+# illegal-edge case above, but its guard (`not-mutates`) HOLDS here
+# (mutates is false), so it must NOT be flagged.
+# ---------------------------------------------------------------------------
+seed_run substate-nonmut-run substate-nonmutating.ndjson
+( cd "$WORK" && bash "$FOLD" substate-nonmut-run >/dev/null ); rc_subnonmut=$?
+SUBNONMUT_ANOM="$WORK/.qa/runs/substate-nonmut-run/fold-anomalies.json"
+
+check "substate-nonmutating: exit 0" "$rc_subnonmut" "0"
+check "substate-nonmutating: legit pure-observe (mutates:false) -> NO illegal-edge" \
+  "$(get "$SUBNONMUT_ANOM" '[.anomalies[] | select(.rule=="illegal-edge")] | length')" "0"
+
+# ---------------------------------------------------------------------------
 # Case: dual-equiv — fold the SAME journal under jq, then again with jq
 # masked from PATH (forcing python3 for BOTH the line-parse and reduce
 # passes), canonicalize both checkpoint.json outputs via journal.sh
@@ -208,6 +273,17 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   # cursor:null, so this is the case most likely to hide an engine
   # divergence in the cursor-pointer selection logic itself.
   dual_equiv_case cursor cursor.ndjson
+  # illegal-edge-skips-act.ndjson under both engines (Run FSM Enforcement
+  # Task 2) -- the new illegal-edge anomaly + its guard field are exactly
+  # the kind of branch most likely to silently diverge between jq/python3
+  # (a literal-guard lookup + a boolean `mutates` comparison), so this is
+  # asserted dual-equiv in addition to the scoped `check`s above.
+  dual_equiv_case illegal-edge illegal-edge-skips-act.ndjson
+  # substate-mutating.ndjson under both engines -- the only fixture whose
+  # cursor.json.cursor.subState is anything other than "arranging" (it's
+  # "acting"), so this is the case most likely to hide an engine divergence
+  # in the subState inference itself.
+  dual_equiv_case substate-mutating substate-mutating.ndjson
 else
   echo "SKIP - dual-equiv: jq or python3 not present on this host, cannot exercise both engines"
 fi

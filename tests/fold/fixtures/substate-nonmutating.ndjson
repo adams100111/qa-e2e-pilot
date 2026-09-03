@@ -1,0 +1,5 @@
+{"seq":1,"t":"2026-09-03T09:20:00Z","event":"run_started","runId":"fsm-nonmut"}
+{"seq":2,"t":"2026-09-03T09:20:01Z","event":"phase_entered","phase":"Verify"}
+{"seq":3,"t":"2026-09-03T09:20:02Z","event":"plan_frozen","criteria":[{"criterionId":"C-RO-SPINNER","scenarioId":"s1","personaId":"p1","mutates":false}],"order":["C-RO-SPINNER"]}
+{"seq":4,"t":"2026-09-03T09:20:03Z","event":"criterion_started","scenarioId":"s1","criterionId":"C-RO-SPINNER","personaId":"p1"}
+{"seq":5,"t":"2026-09-03T09:20:04Z","event":"criterion_verdict","scenarioId":"s1","criterionId":"C-RO-SPINNER","personaId":"p1","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":[],"kinds":["observed"],"bugRef":null,"lastAction":"observed spinner","nonUiActionReason":null}

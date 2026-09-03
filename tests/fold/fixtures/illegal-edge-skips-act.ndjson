@@ -1,0 +1,5 @@
+{"seq":1,"t":"2026-09-03T09:10:00Z","event":"run_started","runId":"fsm-illegal"}
+{"seq":2,"t":"2026-09-03T09:10:01Z","event":"phase_entered","phase":"Verify"}
+{"seq":3,"t":"2026-09-03T09:10:02Z","event":"plan_frozen","criteria":[{"criterionId":"C-MUT-SKIP","scenarioId":"s1","personaId":"p1","mutates":true}],"order":["C-MUT-SKIP"]}
+{"seq":4,"t":"2026-09-03T09:10:03Z","event":"criterion_started","scenarioId":"s1","criterionId":"C-MUT-SKIP","personaId":"p1"}
+{"seq":5,"t":"2026-09-03T09:10:04Z","event":"criterion_verdict","scenarioId":"s1","criterionId":"C-MUT-SKIP","personaId":"p1","verdict":"pass","confidence":"high","layer":null,"evidenceRefs":[],"kinds":[],"bugRef":null,"lastAction":"claimed done","nonUiActionReason":null}

@@ -32,6 +32,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOURNAL_SH="$HERE/journal.sh"
 FOLD_JQ="$HERE/fold.jq"
 FOLD_PY="$HERE/fold.py"
+# Run FSM Enforcement Task 2: state-machine.json (Task 1's statechart-as-data)
+# resolved relative to THIS script, not the caller's cwd — same convention
+# as JOURNAL_SH/FOLD_JQ/FOLD_PY above. Both engines read ONLY
+# legalSubStateEdges/guards from it (data-driven sub-state inference +
+# illegal-edge anomaly); this dispatcher never interprets its contents.
+STATE_MACHINE_JSON="$HERE/../references/state-machine.json"
 
 QA_BASE="${QA_BASE:-.qa/runs}"
 
@@ -128,6 +134,7 @@ main() {
   local journal_file="${run_dir}/journal.ndjson"
 
   [[ -f "$journal_file" ]] || die "No journal found for run '${run_id}': ${journal_file}"
+  [[ -f "$STATE_MACHINE_JSON" ]] || die "fold.sh: state-machine.json not found: ${STATE_MACHINE_JSON}"
 
   local engine
   if has_jq; then
@@ -141,11 +148,11 @@ main() {
   local wrapper_json engine_out
   if [[ "$engine" == "jq" ]]; then
     wrapper_json="$(parse_journal_jq "$journal_file")" || die "fold.sh: jq failed to parse the journal."
-    engine_out="$(printf '%s' "$wrapper_json" | jq -f "$FOLD_JQ")" \
+    engine_out="$(printf '%s' "$wrapper_json" | jq --slurpfile sm "$STATE_MACHINE_JSON" -f "$FOLD_JQ")" \
       || die "fold.sh: fold.jq failed to reduce the journal."
   else
     wrapper_json="$(parse_journal_py "$journal_file")" || die "fold.sh: python3 failed to parse the journal."
-    engine_out="$(printf '%s' "$wrapper_json" | python3 "$FOLD_PY")" \
+    engine_out="$(printf '%s' "$wrapper_json" | python3 "$FOLD_PY" "$STATE_MACHINE_JSON")" \
       || die "fold.sh: fold.py failed to reduce the journal."
   fi
 

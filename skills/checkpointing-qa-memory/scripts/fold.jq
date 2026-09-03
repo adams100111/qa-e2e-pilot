@@ -8,6 +8,21 @@
 # SCHEMA comment block for field names, and checkpoint.sh's upsert_jq/
 # upsert_py for the EXACT checkpoint.json record shape reproduced below).
 #
+# Run FSM Enforcement Task 2: fold.sh also passes state-machine.json's
+# content in via --slurpfile sm (so `$sm[0]` is the parsed object). This
+# reducer reads ONLY `legalSubStateEdges`/`guards` from it (data-driven —
+# see the "sub-state + illegal-edge" block below); it holds no hard-coded
+# edge table itself. `act_intent`/`act_committed` events carry an opaque
+# `key` with NO personaId component — journal-emit.sh's real convention is
+# `key == "<run-id>:<scenarioId>:<criterionId>"` (see its header comment and
+# qa-reconcile.sh's join_openacts_*, which already decode keys this same
+# way) — so a tuple's act-seen booleans are computed by re-deriving that
+# same key from (run_id, scenarioId, criterionId) and checking membership in
+# the pass-1 intent_set/committed_set, ignoring personaId (matching the
+# system's actual, persona-blind key shape; multiple personas sharing one
+# scenario+criterion would alias to the same key — an existing structural
+# property of the journal format, not something introduced here).
+#
 # INPUT:  {"events": [<valid, schema-known event objects, any order>],
 #          "skipped": [<wrapper-level anomaly objects, e.g. unparseable-line
 #                       / unknown-event>]}
@@ -46,6 +61,28 @@ def tuple_key($e):
 | ($intents.order) as $intent_order
 | ($intents.seen)  as $intent_set
 | (reduce $ev[] as $e ({}; if $e.event == "act_committed" then .[($e.key // "")] = true else . end)) as $committed_set
+
+# ---- Run FSM Enforcement Task 2: statechart data + per-tuple `mutates` -----
+# $sm is injected by fold.sh via `--slurpfile sm <state-machine.json>`, so
+# $sm[0] is the parsed state-machine.json object. Only `legalSubStateEdges`
+# and `guards` are read (data-driven illegal-edge check below); no edge name
+# is ever hard-coded in this file. `mutates_map` is built from EVERY
+# plan_frozen event's `criteria[]` entries, keyed by tuple_key (the SAME
+# concatenation used for criterion_started/criterion_verdict groups below),
+# last-plan_frozen-wins — mirroring pass 3's own "process every plan_frozen,
+# don't special-case the duplicate" behaviour. A tuple with NO plan_frozen
+# entry (legacy journal, or a plan_frozen that never listed it) has no key
+# in this map; looking it up yields `null` ("mutates: unknown"), which the
+# illegal-edge check below treats as "cannot judge -> no anomaly" (graceful
+# default — never a false positive off an absent/legacy plan_frozen). ------
+| ($sm[0]) as $statemachine
+| ($statemachine.legalSubStateEdges // []) as $legal_substate_edges
+| ($statemachine.guards // []) as $guards
+| (reduce $ev[] as $e ({};
+    if $e.event == "plan_frozen" then
+      reduce ($e.criteria // [])[] as $c (.; .[tuple_key($c)] = ($c.mutates))
+    else . end
+  )) as $mutates_map
 
 # ---- pass 2: single ordered fold — run_id/updated_at, a "current phase"
 # cursor (set by phase_entered, carried forward), per-tuple groups (first-
@@ -101,7 +138,28 @@ def tuple_key($e):
 # flag AS OF the moment the KEPT (last-wins) verdict was recorded, so a
 # criterion_started that arrives AFTER the kept verdict does not retroactively
 # erase the anomaly. -------------------------------------------------------
-| (reduce $state.order[] as $k ({criteria: [], vws: []};
+#
+# illegal-edge (Task 2): computed ONLY when startedAtVerdict is true — a
+# tuple with no started event at all is already flagged by
+# verdict-without-started above; the two rules are DELIBERATELY distinct
+# (act-committed-no-intent/verdict-without-started stay exactly as they
+# were) and never double-fire for the same root cause. For a started tuple,
+# the sub-state it was in immediately before its KEPT verdict ("from") is
+# inferred from the SAME order-insensitive act_intent/act_committed presence
+# check act-committed-no-intent already uses (a key seen ANYWHERE in the
+# journal counts, not merely "seen so far") — committed implies "baking",
+# else intent-only implies "acting", else "arranging". The observed
+# transition (`from`, "verdict") is then checked generically against
+# `$legal_substate_edges` (not a legalSubStateEdges member at all -> illegal,
+# guard:null) and, if it IS a member, against any LITERAL guard declared for
+# exactly that edge (the wildcard `*->verdict:honesty-gate` guard is NOT
+# re-implemented here — that gate already lives in checkpoint.sh/
+# required-kinds.sh): `not-mutates` violated when this tuple's plan_frozen
+# `mutates` is `true`; `mutates` violated when it is not `true`. When this
+# tuple has no plan_frozen entry at all (`$mutates_map[$k]` is `null`), the
+# guard check is skipped — "cannot judge" is not "illegal" (graceful
+# default for a legacy/plan_frozen-less journal, per the Task 2 brief). -----
+| (reduce $state.order[] as $k ({criteria: [], vws: [], illegalEdges: []};
       ($state.groups[$k]) as $g
       | if $g.verdict == null then .
         else
@@ -121,6 +179,25 @@ def tuple_key($e):
           | (if ($g.startedAtVerdict // false) then . else
               .vws += [{rule: "verdict-without-started", scenarioId: $g.scenarioId, criterionId: $g.criterionId, personaId: $g.personaId}]
             end)
+          | (if ($g.startedAtVerdict // false) then
+              ( (($state.run_id // "") + ":" + $g.scenarioId + ":" + $g.criterionId) as $ak
+                | ($committed_set | has($ak)) as $committed
+                | ($intent_set | has($ak)) as $intent
+                | (if $committed then "baking" elif $intent then "acting" else "arranging" end) as $from
+                | ($mutates_map[$k]) as $mutates
+                | ($legal_substate_edges | any(.[0] == $from and .[1] == "verdict")) as $legal
+                | ($guards | map(select(.edge[0] == $from and .edge[1] == "verdict")) | (.[0].requires // null)) as $req
+                | ($g.scenarioId + "/" + $g.criterionId + "/" + $g.personaId) as $tupleLabel
+                | if ($legal | not) then
+                    .illegalEdges += [{rule: "illegal-edge", tuple: $tupleLabel, from: $from, to: "verdict", guard: null}]
+                  elif $req == null then .
+                  elif $mutates == null then .
+                  elif ($req == "not-mutates" and $mutates == true) or ($req == "mutates" and $mutates != true) then
+                    .illegalEdges += [{rule: "illegal-edge", tuple: $tupleLabel, from: $from, to: "verdict", guard: $req}]
+                  else .
+                  end
+              )
+            else . end)
         end
   )) as $finalized
 
@@ -231,11 +308,34 @@ def tuple_key($e):
 | ([ $c_order[] | $cur.groups[.].personaId ] | map(select(. != "")) | unique) as $personas
 | ([ $c_order[] | (if $cur.groups[.].personaId == "" then "__shared__" else $cur.groups[.].scenarioId end) ] | unique) as $scenarios
 | ([ $c_order[] | select($cur.groups[.].started and ($cur.groups[.].verdict | not)) ] | .[0]) as $cursor_key
+# ---- cursor subState (Task 2): looked up against pass 2's $state.groups —
+# which (unlike pass 3's cur.groups) only ever gets an entry from a REAL
+# criterion_started/criterion_verdict event, never a plan_frozen listing —
+# so "not present in $state.groups" precisely means "planned only, never
+# actually started" -> pending, matching the inference table exactly. When
+# present, the same order-insensitive act_intent/act_committed presence
+# check the illegal-edge rule above uses picks acting/baking; $g2.started
+# false with no verdict falls back to "pending" too (defensive; a group is
+# only ever created with started=true or a non-null verdict, so this branch
+# is unreachable in practice, never a crash risk). --------------------------
 | (if $cursor_key == null then null else
-    {
-      scenarioId: (if $cur.groups[$cursor_key].personaId == "" then "__shared__" else $cur.groups[$cursor_key].scenarioId end),
-      criterionId: $cur.groups[$cursor_key].criterionId
-    }
+    ($cur.groups[$cursor_key]) as $cg
+    | (if ($state.groups | has($cursor_key)) then
+        ($state.groups[$cursor_key]) as $g2
+        | (( ($state.run_id // "") + ":" + $g2.scenarioId + ":" + $g2.criterionId )) as $ak2
+        | if $g2.verdict != null then "verdict"
+          elif ($committed_set | has($ak2)) then "baking"
+          elif ($intent_set | has($ak2)) then "acting"
+          elif $g2.started then "arranging"
+          else "pending"
+          end
+      else "pending"
+      end) as $substate
+    | {
+        scenarioId: (if $cg.personaId == "" then "__shared__" else $cg.scenarioId end),
+        criterionId: $cg.criterionId,
+        subState: $substate
+      }
   end) as $cursor_ptr
 | {
     run_id: $state.run_id,
@@ -253,7 +353,7 @@ def tuple_key($e):
       updated_at: $state.last_t,
       criteria: $finalized.criteria
     },
-    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $seqgap_anoms + $cross_child_anoms),
+    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms),
     openActs: $open_acts,
     cursor: $cursor_doc
   }
