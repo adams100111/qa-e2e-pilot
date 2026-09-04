@@ -4,7 +4,7 @@
     "name": "adams100111"
   },
   "metadata": {
-    "description": "Single-plugin marketplace for qa-e2e-pilot: full-stack, backend-baking, memory-persistent browser QA.",
+    "description": "Marketplace for qa-e2e-pilot (the browser-QA engine) + qa-kit (a step-gated QA process shell built on it).",
     "version": "0.6.2"
   },
   "plugins": [
@@ -24,6 +24,25 @@
         "playwright",
         "verification",
         "backend"
+      ],
+      "category": "testing",
+      "strict": false
+    },
+    {
+      "name": "qa-kit",
+      "source": "./qa-kit",
+      "description": "A spec-kit-style, step-gated QA process shell over qa-e2e-pilot: constitution → spec → scenarios → analyze → run. Each step produces a human-reviewable artifact and populates the engine's existing gate inputs; qa-e2e-pilot stays the verification engine. Co-installs qa-e2e-pilot via dependencies.",
+      "version": "0.1.0",
+      "author": {
+        "name": "adams100111"
+      },
+      "keywords": [
+        "qa",
+        "e2e",
+        "process",
+        "constitution",
+        "spec",
+        "testing"
       ],
       "category": "testing",
       "strict": false

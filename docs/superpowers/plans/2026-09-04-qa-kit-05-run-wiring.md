@@ -1,6 +1,8 @@
 # qa-kit increment 5 — `/qa-run` wiring + fixture tests + quick-path/bootstrap Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
+> **⚠️ LAYOUT SUPERSEDED (2026-09-04, dependencies model).** qa-kit is a 2nd Claude plugin (`dependencies:[qa-e2e-pilot]`); it bundles its OWN scripts/commands/templates UNDER `qa-kit/` and reuses the engine's SKILLS by qualified slug `/qa-e2e-pilot:<skill>`. So wherever this plan says `scripts/qa-kit/X.sh` read `qa-kit/scripts/X.sh` (called `${CLAUDE_PLUGIN_ROOT}/scripts/X.sh` from a command); `core/qa-kit/*.command.md` → `qa-kit/commands/*.md` (Claude form); `core/qa-kit/*-template.md` → `qa-kit/templates/*.md`. "Register in the qa-kit manifest commands array" is obsolete — `commands` is a DIRECTORY (default scan): just place the file in `qa-kit/commands/`. See `2026-09-04-qa-kit-02-packaging.md` + memory `qa-kit-plugin-packaging-facts`.
+>
 >
 > **⚠️ PROVISIONAL DEPENDENCIES:** consumes increments 1–4's outputs — `.qa/constitution.md` + version, `spec-roles.json`, `scenarios.md`/`checklist.json`, and the increment-4 enforcement seam. **Pin the exact `checklist.json` / `spec-roles.json` shapes from the landed increments before writing the wiring code.** The fixture-test contracts below are firm; the wiring code steps are provisional on those shapes.
 

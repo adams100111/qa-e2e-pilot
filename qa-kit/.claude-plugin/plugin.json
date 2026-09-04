@@ -1,0 +1,23 @@
+{
+  "name": "qa-kit",
+  "description": "A spec-kit-style, step-gated QA process shell layered over qa-e2e-pilot: constitution → spec → scenarios → analyze → run. Each step produces a human-reviewable artifact and populates the engine's existing gate inputs; qa-e2e-pilot remains the verification engine. Defines a project QA constitution (roles + policy + a versioned hash) and per-spec role snapshots.",
+  "version": "0.1.0",
+  "author": {
+    "name": "adams100111"
+  },
+  "homepage": "https://github.com/adams100111/qa-e2e-pilot",
+  "repository": "https://github.com/adams100111/qa-e2e-pilot",
+  "license": "MIT",
+  "keywords": [
+    "qa",
+    "e2e",
+    "process",
+    "constitution",
+    "spec",
+    "testing",
+    "verification"
+  ],
+  "dependencies": [
+    "qa-e2e-pilot"
+  ]
+}
