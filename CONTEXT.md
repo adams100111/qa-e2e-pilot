@@ -33,7 +33,7 @@ Reading persisted state back out of the backend after a UI write, to confirm it 
 _Avoid_: persistence check (acceptable as a gloss), save verification.
 
 **Multiplicity**:
-The count a persisted entity is checked at — 0 (empty state), 1 (single), N (many) — forced deliberately on repeatable entities. An ordered property: the 0-state criterion is only true before any create criterion runs.
+The count a persisted entity is checked at — 0 (empty state), 1 (single), N (many) — forced deliberately on repeatable entities. An ordered property: the 0-state criterion is only true before any create criterion runs. **With qa-kit's data-baseline, the "0" count is the measured, scoped `seeded` baseline, not literally zero** (empty-state expects the baseline; N-create expects baseline + N) — this corrects the naive empty-means-zero assumption in a seeded app.
 _Avoid_: cardinality, count.
 
 **Computed-logic verification**:
@@ -250,6 +250,30 @@ _Avoid_: plan (there is no `/qa-plan` step — it folded into the spec).
 **Out-of-plan act**:
 An act recorded on a criterion **not** in the frozen `checklist.json` (the enforcement contract compiled
 by `/qa-scenarios`). Flagged by qa-kit's `verify-plan.sh` running *beside* an unmodified `qa-verify`.
+
+**Data-baseline**:
+The qa-kit spec's declaration of the entities scenarios touch (`.qa/specs/<target>/data-baseline.json`),
+each carrying an **origin**. Read back (not written) at run start to set the multiplicity baseline.
+_Avoid_: fixtures (a data-baseline is the *entity* declaration; a **fixture** is the per-criterion input+expected).
+
+**Origin**:
+Whether a data-baseline row is `seeded` (pre-existing base data) or `created` (the run makes it through the
+UI during scenarios). The distinction the multiplicity oracle needs.
+_Avoid_: **provenance** — that word is the engine's evidence-to-trust-domain binding (`provenance.sh`), a
+different concept. Never use "provenance" for data origin.
+
+**Fixture** (qa-kit):
+A per-criterion pin of the concrete `actionInput` + expected result, written into `checklist.json` and the
+criterion's prose oracle. `expect` is **absolute** `{path,value,tolerance,oracleSource}` (computed criteria)
+or a **relative count** `{path,baselineOf,delta}` (multiplicity).
+_Avoid_: the **fixture project** — the accuracy harness (`tools/accuracy-harness/`) is a "fixture project";
+always use the compound for it, never bare "fixture", to keep them distinct.
+
+**Pinned expectation / oracleSource**:
+A **pinned expectation** is a human-authored expected value carried in a fixture. `oracleSource` records who
+authored it: `human` (both input and expected confirmed at `/qa-scenarios`'s HITL gate → eligible for
+`confidence: high`) or `llm-suggested` (unconfirmed → `confidence: low`, since an LLM-computed expectation the
+same model later verifies buys determinism, not independence).
 
 ## Flagged ambiguities
 

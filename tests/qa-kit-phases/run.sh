@@ -15,6 +15,8 @@ CONST="$ROOT/qa-kit/scripts/constitution.sh"
 SNAP="$ROOT/qa-kit/scripts/spec-snapshot.sh"
 VP="$ROOT/qa-kit/scripts/verify-plan.sh"
 RC="$ROOT/qa-kit/scripts/runconfig-merge.sh"
+DB="$ROOT/qa-kit/scripts/data-baseline.sh"
+CF="$ROOT/qa-kit/scripts/check-fixtures.sh"
 pass=0; fail=0
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
@@ -56,6 +58,25 @@ d="$(bash "$SNAP" drift "$T/spec/spec-roles.json" "$VER")"
 check "drift in-sync while version unchanged" "$(printf '%s' "$d" | python3 -c 'import json,sys;print(json.load(sys.stdin)["stale"])')" "False"
 d="$(bash "$SNAP" drift "$T/spec/spec-roles.json" "someNewVersion")"
 check "drift stale after constitution bump" "$(printf '%s' "$d" | python3 -c 'import json,sys;print(json.load(sys.stdin)["stale"])')" "True"
+
+# 7. TDQA data layer (increment 6a): baseline validate, check-fixtures gate, measured/scoped counts.
+printf '%s' '[{"entity":"Category","origin":"seeded","identity":{"name":"Books"},"scope":null},{"entity":"Order","origin":"created","identity":null}]' > "$T/spec/data-baseline.json"
+bash "$DB" validate "$T/spec/data-baseline.json" >/dev/null; check "data-baseline validates" "$?" "0"
+# measured baseline 2 -> empty-state expects 2, after +1 -> 3 (scope A); scope B measured 5 -> 5 then 6
+check "empty-state = measured baseline (2)" "$(bash "$DB" expected-count 2 0)" "2"
+check "after 1 create -> 3" "$(bash "$DB" expected-count 2 1)" "3"
+check "scope B empty-state = 5" "$(bash "$DB" expected-count 5 0)" "5"
+check "scope B after 1 create -> 6" "$(bash "$DB" expected-count 5 1)" "6"
+# check-fixtures: a computed row without a pinned expect is flagged; a business-rule too; pinned+human passes
+printf '%s' '[{"id":"K1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"total","value":"0.003","tolerance":0,"oracleSource":"human"}}}]' > "$T/cl_ok.json"
+bash "$CF" "$T/cl_ok.json" >/dev/null; check "pinned human computed -> gate ok" "$?" "0"
+printf '%s' '[{"id":"K2","surface":"/x","kind":"computed-logic","tags":[],"action":"a"}]' > "$T/cl_missing.json"
+bash "$CF" "$T/cl_missing.json" >/dev/null 2>&1; check "unpinned computed -> gate flags" "$?" "1"
+printf '%s' '[{"id":"K3","surface":"/x","kind":"business-rule","tags":[],"action":"a"}]' > "$T/cl_br.json"
+bash "$CF" "$T/cl_br.json" >/dev/null 2>&1; check "unpinned business-rule -> gate flags (kind trigger)" "$?" "1"
+# an llm-suggested pin is present-but-low (sources.llmSuggested counted)
+printf '%s' '[{"id":"K4","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"llm-suggested"}}}]' > "$T/cl_llm.json"
+check "llm-suggested pin counted low" "$(bash "$CF" "$T/cl_llm.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["llmSuggested"])')" "1"
 
 rm -rf "$T"
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"

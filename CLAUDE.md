@@ -7,7 +7,7 @@ This repo is a **Claude Code plugin**, not an app. It ships an agent, a command,
 ## Read these first
 
 - **[CONTEXT.md](./CONTEXT.md)** — the ubiquitous language. Use these words exactly: *criterion/step/run*, *baking*, *multiplicity*, *oracle*, *reconciliation*, *verdict*, *confidence*, *suspected layer*, *driver/session*, *probing*, *memory-spec*, *checkpoint*. Don't invent synonyms.
-- **[docs/adr/](./docs/adr/)** — the hard-to-reverse decisions: 0001 reimplement opslane patterns (don't fork/vendor), 0002 run state in `.qa/runs/` not agent memory, 0003 sequential verification (narrow parallel pool), 0004 per-project `.qa/config.json`, 0017 multi-harness portability (shared core + generated adapters, Claude byte-oracle), 0022 qa-kit process shell (2nd plugin, dependencies model, `qa-verify` untouched, regenerate-wholesale constitution).
+- **[docs/adr/](./docs/adr/)** — the hard-to-reverse decisions: 0001 reimplement opslane patterns (don't fork/vendor), 0002 run state in `.qa/runs/` not agent memory, 0003 sequential verification (narrow parallel pool), 0004 per-project `.qa/config.json`, 0017 multi-harness portability (shared core + generated adapters, Claude byte-oracle), 0022 qa-kit process shell (2nd plugin, dependencies model, `qa-verify` untouched), 0023 qa-kit TDQA data layer (origin baseline + pinned fixtures + check-fixtures; engine untouched).
 
 ## Invariants (do not break)
 
@@ -20,6 +20,7 @@ This repo is a **Claude Code plugin**, not an app. It ships an agent, a command,
 - **Browser tools are called by capability**, naming the Playwright MCP tool in parens (e.g. `browser_snapshot`). New drivers drop in via config, not code.
 - **The action-under-test is performed through real UI affordances only** (ADR-0015). `human-action` is an evidence **kind**, never a verdict. The act phase uses human-path tools (click/type/…); a mutating `browser_evaluate`/`route`/direct write on the act path is a workaround the gate rejects. A UI-impossible action is `fail@FE` (confidence high); a genuine tool limitation is a logged `--nonui-reason` opt-out (confidence low). Never weaken the gate to force a `pass` through.
 - **qa-kit never modifies the engine** (ADR-0022). The `qa-kit/` process shell is additive: it reuses the engine's skills by qualified slug and bundles its own scripts under `qa-kit/scripts/` (per-plugin `${CLAUDE_PLUGIN_ROOT}` — it cannot reference the engine's files). `qa-verify` stays untouched; qa-kit's out-of-plan-act enforcement is a *separate* `qa-kit/scripts/verify-plan.sh` run beside it. The constitution regenerates roles **wholesale** (ADR-0011) + an informational diff; per-role customization is a per-spec concern, never the constitution.
+- **qa-kit TDQA data layer** (ADR-0023). A spec declares a provenance-aware `data-baseline.json` (`origin: seeded|created`, tenant-`scope`d — NOT "provenance", which is `provenance.sh`'s word); `/qa-scenarios` pins per-criterion `actionInput`+expected into the prose oracle (engine reads it natively) + a structured `fixture` field. Computing criteria (`kind ∈ {computed-logic, business-rule}`) must carry a human-confirmed pinned expect (`check-fixtures.sh`; `confidence: high` needs `oracleSource:"human"`, else low). The seeded baseline fixes the multiplicity-0 oracle (empty = measured baseline, not 0). Declare-and-verify only — 6a writes nothing; auto-seed is 6b. Still engine-untouched.
 
 ## Layout
 
@@ -37,8 +38,8 @@ scripts/build-adapter.sh                          generator: assembles git-ignor
 scripts/validate-adapters.sh                      CI gate: builds all 4 adapters, enforces the Claude byte-oracle, checks for residual {{tokens}}
 qa-kit/                                          the 2nd plugin (process shell): .claude-plugin/plugin.json (dependencies:[qa-e2e-pilot]),
                                                  commands/{qa-constitution,qa-spec,qa-scenarios,qa-analyze,qa-status}.md, scripts/{constitution,
-                                                 spec-snapshot,verify-plan,runconfig-merge}.sh, templates/, agents/qa-kit.md, README.md
-tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,qa-kit-phases}/run.sh   qa-kit's dual-engine tests
+                                                 spec-snapshot,verify-plan,runconfig-merge,data-baseline,check-fixtures}.sh, templates/, agents/qa-kit.md, README.md
+tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,qa-kit-phases}/run.sh   qa-kit's dual-engine tests
 ```
 
 **Multi-harness note (ADR-0017):** `agents/qa-e2e-pilot.md`, `commands/qa-run.md`, and

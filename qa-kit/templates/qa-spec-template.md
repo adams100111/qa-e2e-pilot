@@ -30,6 +30,17 @@
      criteriaBudget, viewport). Store only what this spec changes — NOT a full restatement.
      A run applies these over config.json for that run (increment 5); config.json is not mutated. -->
 
+## Data baseline (TDQA)
+
+<!-- The entities scenarios touch, machine-mirrored in data-baseline.json. seeded = pre-existing
+     (declare only the minimal identity to verify it exists; NOT a mirror of the app seeder).
+     created = the run makes it via the UI (values live in the criterion's actionInput). scope =
+     the tenant/persona the count is measured within (or —). declare-and-verify only in v1. -->
+
+| entity | origin (seeded/created) | identity (minimal) | scope (persona/tenant or —) |
+|--------|-------------------------|--------------------|-----------------------------|
+|        |                         |                    |                             |
+
 ## Oracles & out-of-scope
 
 <!-- What "correct" means for this target — the spec/domain rules the run recomputes

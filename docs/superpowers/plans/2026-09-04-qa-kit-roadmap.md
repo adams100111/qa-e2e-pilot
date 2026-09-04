@@ -8,6 +8,11 @@
 > out-of-plan acts on its own). 103 dual-engine helper checks pass; the full phased≡one-shot verdict
 > equivalence is the manual accuracy run's job. Deferred: non-Claude qa-kit build, the remaining
 > enforcement compilations, per-run run-config auto-application, live constitution-block. See ADR-0022.
+>
+> **Increment 6a (TDQA data layer) landed 2026-09-05** — provenance-aware `data-baseline.json` (origin
+> seeded/created) + per-criterion pinned fixtures + `check-fixtures.sh` enforcement + the multiplicity-0-vs-seed
+> fix, engine untouched (ADR-0023). 6b (opt-in auto-seed + `detecting-stack-profile` `seed:{}` detection) is
+> the remaining follow-on.
 
 **The full plan, one page.** Design: `docs/superpowers/specs/2026-09-04-qa-kit-design.md`. Each increment produces working, testable software on its own; **all five detailed plans are now written ahead** (per the chosen approach). Because later increments consume interfaces earlier ones *create* (the constitution version format, the `checklist.json` enforcement shape, the `spec-roles` snapshot), their **code steps are marked PROVISIONAL inline** — firm on scope/interface-contracts/test-contracts, with a "pin the exact shape from the landed increment before writing the code" note at the top of each dependent plan. Execute in order (1 → 2/3 → 4 → 5), re-pinning each plan's provisional bits against the prior increment's real output as you go.
 

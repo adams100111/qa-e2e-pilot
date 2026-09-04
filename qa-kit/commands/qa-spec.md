@@ -42,20 +42,44 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    and print the result plainly (in sync, or "snapshotted from `<stamped>`, constitution now
    `<current>` — re-run `/qa-spec` to refresh"). Advisory only; never auto-migrate.
 
-6. **Write `qa-spec.md` + a machine run-config.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md`
+6. **Data baseline (TDQA).** Author `.qa/specs/<target>/data-baseline.json` — a JSON **array** of only the
+   entities the scenarios will touch, each `{entity, origin, identity, scope}`:
+   - `origin: "seeded"` = pre-existing baseline data. Declare only the **minimal `identity`** (a key subset,
+     e.g. `{"name":"Books"}`) needed to verify the row exists at run time — do NOT mirror the app seeder's
+     full values (that duplicates and drifts).
+   - `origin: "created"` = the run creates it through the UI during scenarios (`identity: null`; its values
+     live in the criterion's `actionInput`, authored by `/qa-scenarios`).
+   - `scope` (optional) = the tenant/persona context the baseline count is measured within — a `spec-roles.json`
+     persona id / the `authz-matrix` `owningChain`. `null`/omit for single-tenant.
+   Then validate it:
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/data-baseline.sh" validate .qa/specs/<target>/data-baseline.json`
+   — abort and surface `{errors:[…]}` on nonzero. **6a is declare-and-verify only — this writes nothing to the
+   app;** the run reads these back to set the multiplicity baseline (auto-seeding is a later increment, 6b).
+
+7. **Write `qa-spec.md` + a machine run-config.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md`
    to `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
    `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
    machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
    (`{}` if none), so the run can compute its effective config deterministically (see step 7).
 
-7. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
-   applied, the drift result, and the next step (`/qa-scenarios <target>`). State that **roles freeze
+8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
+   applied, the drift result, the data-baseline entity count (seeded vs created), and the next step
+   (`/qa-scenarios <target>`). State that **roles freeze
    when a run starts** (`plan_frozen`), not now — the snapshot is still soft while authoring. Note that
    the eventual run computes its effective config with
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/runconfig-merge.sh" .qa/config.json .qa/specs/<target>/run-config.json`
    (deltas over defaults, per-run; `.qa/config.json` is not mutated) and then runs the engine's
    `/qa-e2e-pilot:qa-run "<target>" .qa/specs/<target>/checklist.json` — which ingests the frozen plan.
+
+   **Data-layer run consumption (TDQA, declare-and-verify):** at pre-flight the run (a) reads each `seeded`
+   row of `data-baseline.json` back **within its `scope`** and records the **measured** baseline count
+   (readable surfaces only — an unreadable seeded row is *assumed* and its dependent criteria run at
+   `confidence: low`); (b) resolves each multiplicity fixture's concrete expected via
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/data-baseline.sh" expected-count <measured> <delta>` (so empty-state
+   expects the measured baseline, not 0); (c) types every `actionInput` through the UI (ADR-0015); (d) records
+   `confidence: low` for any computed criterion whose `expect.oracleSource != "human"`. A missing required
+   `seeded` precondition → `defer` (never fake). 6a writes nothing to the app; auto-seeding is 6b.
 
 Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the
