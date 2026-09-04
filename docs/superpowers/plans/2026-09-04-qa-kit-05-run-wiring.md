@@ -27,7 +27,15 @@
 - [ ] **Step 1: Pin the shapes** — read the landed increment 3 `spec-roles.json` + increment 4 `checklist.json` outputs; confirm exactly what `/qa-run`'s Implement phase needs to consume (the frozen criteria + roles).
 - [ ] **Step 2: Wire the phased branch** — in the `/qa-run` command body: if `.qa/specs/<target>/scenarios.md`+`checklist.json` exist, consume them as the plan to freeze (`plan_frozen`), replaying the spec's `spec-roles.json`; else the existing quick path (self-discovery). One command, two branches.
 - [ ] **Step 3: Standalone regression** — confirm (in Task 3's tests) the no-spec path is unchanged behavior.
-- [ ] **Step 4: Gate + commit** — `build-adapter.sh claude` + `validate-adapters.sh` exit 0. `feat(qa-kit): /qa-run consumes phased spec artifacts (freeze+replay); quick path preserved`
+- [ ] **Step 4: Register /qa-run in qa-kit (R3-Q3)** — add `./commands/qa-run.md` (a symlink/shared reference to the existing qa-run command, since /qa-run is shared with qa-e2e-pilot) to the qa-kit manifest `commands` array so the spine ends in `/qa-run` under qa-kit too. `build-adapter.sh claude` + `validate-adapters.sh` exit 0. Commit `feat(qa-kit): /qa-run consumes phased spec artifacts (freeze+replay); quick path preserved; registered in qa-kit`
+
+## Task 1b: consume the spec's run-config at run time (R3-Q2 — close the folded-in `/qa-plan` loop)
+
+`/qa-spec` authors a `## Run-config` deltas section (increment 3) but nothing applies it. This task makes `/qa-run`, when consuming a spec, **merge the spec's run-config deltas over `.qa/config.json`** for that run (drivers/`maxParallel`/`criteriaBudget`/`viewport`).
+
+- [ ] **Step 1:** a small `scripts/qa-kit/runconfig-merge.sh <config.json> <spec-run-config.json>` → prints the effective run config (config.json defaults with the spec's deltas applied); dual-engine; tests (a delta overrides a default; absent delta → default kept; empty → config unchanged).
+- [ ] **Step 2:** `/qa-run`'s phased branch calls it and uses the merged config for the run (does not mutate `.qa/config.json` on disk — the merge is per-run). **Register in qa-kit** if it becomes a new command surface (it's a helper, not a command).
+- [ ] **Step 3: Commit** `feat(qa-kit): /qa-run applies the spec's run-config deltas over config.json (per-run, closes the /qa-plan fold)`
 
 ## Task 2: `/qa-spec` bootstrap (no-constitution path)
 

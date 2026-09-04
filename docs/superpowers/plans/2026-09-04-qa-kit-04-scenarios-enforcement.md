@@ -33,11 +33,11 @@
 
 ## Task 3: `/qa-scenarios` + `/qa-analyze` command bodies (staged)
 
-**Files (staged under `core/qa-kit/`):** `qa-scenarios.command.md`, `qa-analyze.command.md`, `qa-analyze-template.md`.
+**Files (author into the qa-kit plugin, R3-Q3):** `qa-kit/commands/qa-scenarios.md`, `qa-kit/commands/qa-analyze.md`, `qa-kit/qa-analyze-template.md`. **Register both** in the qa-kit manifest `commands` array + the non-Claude build (as Task 3's final step).
 
 - [ ] **Step 1: `/qa-scenarios`** — prereq: `qa-spec.md` + `spec-roles.json` exist (else error). Reuse `generating-qa-checklist` + `fanning-out-criteria` scoped to the spec's frozen roles; **alignment check (deterministic):** every scenario role ∈ `spec-roles.json` (reject otherwise). Write `scenarios.md` + `checklist.json` (Task 2 compiler).
 - [ ] **Step 2: `/qa-analyze`** — prereq: `scenarios.md` exists. Reuse `analyzing-feature-ui` surface map + `ingesting-spec-kit` traceability → `analysis.md` flagging coverage gaps (spec item with no scenario, unaddressed risk). **Read-only + advisory** (spec-kit `analyze` pattern — reports, offers remediation the human approves; does not block).
-- [ ] **Step 3: Gate (no build-wiring, R2-Q7)** — `build-adapter.sh claude` + `validate-adapters.sh` exit 0; re-run the tests.
+- [ ] **Step 3: Register in qa-kit (R3-Q3) + gate** — add `./commands/qa-scenarios.md` + `./commands/qa-analyze.md` to the qa-kit manifest `commands` array; extend the non-Claude qa-kit build. `build-adapter.sh claude` + `validate-adapters.sh` exit 0; re-run the tests.
 - [ ] **Step 4: Commit** `feat(qa-kit): /qa-scenarios + /qa-analyze command bodies (staged; alignment checks + coverage gate)`
 
 ## Task 4: docs

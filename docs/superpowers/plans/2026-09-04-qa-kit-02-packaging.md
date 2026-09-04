@@ -52,6 +52,11 @@
 - [ ] **Step 3: Validate** — build both plugins for all harnesses; confirm qa-e2e-pilot's dist is byte-identical to before (no regression); qa-kit's dist contains only the `qa-*` commands.
 - [ ] **Step 4: Commit** `feat(qa-kit): build-adapter plugin-id axis — qa-kit dist for codex/pi/opencode (qa-e2e-pilot dist byte-unchanged)`
 
+## Task 3b: `/qa-status` — the next-step/orchestration helper (R3-Q5)
+
+- [ ] **Step 1:** author `qa-kit/commands/qa-status.md` — reads artifact presence under `.qa/` + `.qa/specs/<target>/` (constitution? spec? scenarios? analysis? runs?) and prints **which step is next** + any constitution **drift advisory** (via `spec-snapshot.sh drift` once increment 3 lands; until then, just the step sequencing). Register it in the qa-kit manifest `commands` array. No new logic — pure artifact-presence read.
+- [ ] **Step 2: Commit** `feat(qa-kit): /qa-status — next-step + drift orchestration helper`
+
 ## Task 4: install docs + ADR note
 
 - [ ] **Step 1:** `docs/harness-adapters.md` + `harnesses/*/README.md` — how to install qa-kit per harness (Claude marketplace entry; the parameterized build for others). ADR-0022 note: increment 2 landed (sibling plugin + symlinks + marketplace + build axis).
