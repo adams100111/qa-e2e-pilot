@@ -1,5 +1,14 @@
 # qa-kit — implementation roadmap (all increments)
 
+> **STATUS (2026-09-04): the v1 spine is COMPLETE on Claude.** All five increments landed
+> (PRs #47–#50 + the increment-5 run-wiring), merged to `main`. Packaging pivoted mid-flight from the
+> planned **symlinks** to the doc-verified **dependencies model** (qa-kit bundles its own scripts under
+> `qa-kit/`, reuses the engine's skills by qualified slug); the enforcement seam is a qa-kit-owned
+> `verify-plan.sh` beside an **unmodified** `qa-verify` (increment-4 finding — `qa-verify` does not flag
+> out-of-plan acts on its own). 103 dual-engine helper checks pass; the full phased≡one-shot verdict
+> equivalence is the manual accuracy run's job. Deferred: non-Claude qa-kit build, the remaining
+> enforcement compilations, per-run run-config auto-application, live constitution-block. See ADR-0022.
+
 **The full plan, one page.** Design: `docs/superpowers/specs/2026-09-04-qa-kit-design.md`. Each increment produces working, testable software on its own; **all five detailed plans are now written ahead** (per the chosen approach). Because later increments consume interfaces earlier ones *create* (the constitution version format, the `checklist.json` enforcement shape, the `spec-roles` snapshot), their **code steps are marked PROVISIONAL inline** — firm on scope/interface-contracts/test-contracts, with a "pin the exact shape from the landed increment before writing the code" note at the top of each dependent plan. Execute in order (1 → 2/3 → 4 → 5), re-pinning each plan's provisional bits against the prior increment's real output as you go.
 
 ---
