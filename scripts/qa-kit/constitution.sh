@@ -84,6 +84,23 @@ canonical_string() {
   local personas="$1" matrix="$2"
 
   if has_jq; then
+    jq -e -n --slurpfile p "$personas" '
+      $p[0] | map(
+        (.id | type) == "string" and (.role | type) == "string" and (.plane | type) == "string"
+      ) | all
+    ' >/dev/null 2>&1 \
+      || die "constitution.sh: malformed personas (each needs string id, role, plane)"
+
+    jq -e -n --slurpfile m "$matrix" '
+      $m[0] | map(
+        (.entity | type) == "string"
+        and (((.owningChain // []) | type) == "array")
+        and (((.roleScope // {}) | type) == "object")
+        and (((.roleScope // {}) | to_entries | map(.value | type == "string") | all))
+      ) | all
+    ' >/dev/null 2>&1 \
+      || die "constitution.sh: malformed authz-matrix (each row needs string entity, array owningChain, string roleScope values)"
+
     jq -n --slurpfile p "$personas" --slurpfile m "$matrix" -r '
       ($p[0]) as $personas
       | ($m[0]) as $matrix
@@ -105,6 +122,45 @@ canonical_string() {
       | $pBlock + "\n--\n" + $mBlock
     ' || die "canonical_string: jq failed (are '${personas}'/'${matrix}' valid JSON?)."
   elif has_py; then
+    python3 -c '
+import json, sys
+
+with open(sys.argv[1]) as f:
+    personas = json.load(f)
+
+ok = all(
+    isinstance(p.get("id"), str)
+    and isinstance(p.get("role"), str)
+    and isinstance(p.get("plane"), str)
+    for p in personas
+)
+sys.exit(0 if ok else 1)
+' "$personas" \
+      || die "constitution.sh: malformed personas (each needs string id, role, plane)"
+
+    python3 -c '
+import json, sys
+
+with open(sys.argv[1]) as f:
+    matrix = json.load(f)
+
+def row_ok(row):
+    if not isinstance(row.get("entity"), str):
+        return False
+    oc = row.get("owningChain")
+    if oc is None:
+        oc = []
+    if not isinstance(oc, list):
+        return False
+    rs = row.get("roleScope") or {}
+    if not isinstance(rs, dict):
+        return False
+    return all(isinstance(v, str) for v in rs.values())
+
+sys.exit(0 if all(row_ok(r) for r in matrix) else 1)
+' "$matrix" \
+      || die "constitution.sh: malformed authz-matrix (each row needs string entity, array owningChain, string roleScope values)"
+
     python3 -c '
 import json, sys
 

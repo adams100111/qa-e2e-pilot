@@ -61,5 +61,36 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   rm -rf "$T"
 fi
 
+# Cross-engine regression: malformed personas/authz must be rejected
+# IDENTICALLY (same nonzero exit) by both engines, not silently accepted by
+# one and crashed-on by the other. See constitution.sh canonical_string()'s
+# schema validation.
+malformed_check() {
+  local E="$1" name="$2" pfile="$3" mfile="$4"
+  local rc
+  QA_ENGINE=$E bash "$SH" version "$pfile" "$mfile" >/dev/null 2>&1; rc=$?
+  check "$E $name rejected (nonzero exit)" "$([ "$rc" -ne 0 ] && echo y)" "y"
+}
+T="$(mktemp -d)"
+# persona missing `plane`
+printf '%s' '[{"id":"a","role":"r"}]' > "$T/p_missing_plane.json"
+printf '%s' '[{"entity":"e","owningChain":[],"roleScope":{}}]' > "$T/m_valid.json"
+# authz roleScope value `true` (non-string)
+printf '%s' '[{"id":"a","role":"r","plane":"p"}]' > "$T/p_valid.json"
+printf '%s' '[{"entity":"e","owningChain":[],"roleScope":{"admin":true}}]' > "$T/m_bad_scope.json"
+if command -v jq >/dev/null 2>&1; then
+  malformed_check jq "persona missing plane" "$T/p_missing_plane.json" "$T/m_valid.json"
+  malformed_check jq "roleScope value true" "$T/p_valid.json" "$T/m_bad_scope.json"
+  # control: existing valid fixture still succeeds
+  check "jq valid fixture still succeeds" "$([ -n "$(QA_ENGINE=jq bash "$SH" version "$T/p_valid.json" "$T/m_valid.json" 2>/dev/null)" ] && echo y)" "y"
+fi
+if command -v python3 >/dev/null 2>&1; then
+  malformed_check python3 "persona missing plane" "$T/p_missing_plane.json" "$T/m_valid.json"
+  malformed_check python3 "roleScope value true" "$T/p_valid.json" "$T/m_bad_scope.json"
+  # control: existing valid fixture still succeeds
+  check "python3 valid fixture still succeeds" "$([ -n "$(QA_ENGINE=python3 bash "$SH" version "$T/p_valid.json" "$T/m_valid.json" 2>/dev/null)" ] && echo y)" "y"
+fi
+rm -rf "$T"
+
 echo "constitution: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
