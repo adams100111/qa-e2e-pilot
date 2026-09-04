@@ -6,10 +6,20 @@ Accepted, 2026-09-04. Implements `docs/superpowers/specs/2026-09-04-qa-kit-desig
 the roadmap (`docs/superpowers/plans/2026-09-04-qa-kit-roadmap.md`) has landed: `/qa-constitution`
 (`constitution.sh` version/diff/state/render + the command body). Increment 2 (second-plugin
 packaging, dependencies model), increment 3 (`/qa-spec` + `spec-snapshot.sh` copy/stamp/override +
-drift), and increment 4 (`/qa-scenarios` + `/qa-analyze` + the enforcement seam `verify-plan.sh`,
-with `qa-verify` unmodified) have since landed too. The remaining increment — (5) `/qa-run` wiring +
-fixture tests — is sequenced but not yet built; this ADR records the decisions they must all honor,
-not a finished system.
+drift), increment 4 (`/qa-scenarios` + `/qa-analyze` + the enforcement seam `verify-plan.sh`, with
+`qa-verify` unmodified), and increment 5 (`runconfig-merge.sh` + `/qa-spec` run-config emission + the
+spine terminating in the engine's existing `/qa-run <target> <checklist>` + phase integration tests)
+have all landed. **The v1 spine is complete** (constitution → spec → scenarios → analyze → run) on
+**Claude**. Deferred follow-ons: the non-Claude (codex/pi/opencode) qa-kit build, the remaining
+constitution/spec enforcement compilations beyond the one seam, per-run auto-application of run-config
+inside the run, and a per-run live constitution-block on Claude. This ADR records the decisions the
+spine honors.
+
+**Increment-5 note.** Because the engine's `/qa-run` already ingests a checklist/spec path (`$2`) and
+freezes it, the spine terminates in the **unmodified** engine `/qa-run "<target>"
+.qa/specs/<target>/checklist.json` — no engine edit was needed or made. `runconfig-merge.sh` computes
+the effective per-run config (spec deltas over `.qa/config.json`) without mutating it; applying that
+effective config *inside* the unmodified engine run is the documented deferral.
 
 **Correction (2026-09-04, during increment 2).** Decision 2's original wording assumed qa-kit would
 reuse the engine's files via **symlinks** and an explicit `commands` **array**. Both were disproven
