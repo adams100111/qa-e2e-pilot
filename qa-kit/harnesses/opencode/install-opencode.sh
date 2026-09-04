@@ -5,7 +5,7 @@
 # plugin enabled in opencode.json (it exposes each SKILL.md as a skills_<name> tool — without it the
 # skills are inert documents). See ADR-0024 co-install contract.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"   # repo root (qa-kit/harnesses/opencode -> 3 up)
 QAKIT="$ROOT/qa-kit"
 PROJ="${1:?usage: install-opencode.sh <project-dir>}"
 [ -d "$PROJ/.opencode/skills/detecting-stack-profile" ] || {
