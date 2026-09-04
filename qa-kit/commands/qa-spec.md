@@ -42,14 +42,20 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    and print the result plainly (in sync, or "snapshotted from `<stamped>`, constitution now
    `<current>` — re-run `/qa-spec` to refresh"). Advisory only; never auto-migrate.
 
-6. **Write `qa-spec.md`.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md` to
-   `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
+6. **Write `qa-spec.md` + a machine run-config.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md`
+   to `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
-   `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note.
+   `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
+   machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
+   (`{}` if none), so the run can compute its effective config deterministically (see step 7).
 
 7. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
    applied, the drift result, and the next step (`/qa-scenarios <target>`). State that **roles freeze
-   when a run starts** (`plan_frozen`), not now — the snapshot is still soft while authoring.
+   when a run starts** (`plan_frozen`), not now — the snapshot is still soft while authoring. Note that
+   the eventual run computes its effective config with
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/runconfig-merge.sh" .qa/config.json .qa/specs/<target>/run-config.json`
+   (deltas over defaults, per-run; `.qa/config.json` is not mutated) and then runs the engine's
+   `/qa-e2e-pilot:qa-run "<target>" .qa/specs/<target>/checklist.json` — which ingests the frozen plan.
 
 Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the
