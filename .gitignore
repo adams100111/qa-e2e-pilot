@@ -15,3 +15,4 @@ node_modules/
 
 # Multi-harness adapter build output (scripts/build-adapter.sh) — regenerated, never committed
 dist/
+qa-kit/dist/
