@@ -15,6 +15,27 @@ verify first, start there. Codex and opencode follow the identical procedure bel
 
 ---
 
+## Installing qa-kit (Claude only, for now)
+
+`qa-kit` is a **second plugin** in this same repo/marketplace — a spec-kit-style, step-gated QA
+process shell (`/qa-constitution`, `/qa-status`, and later `/qa-spec` → `/qa-scenarios` →
+`/qa-analyze` → `/qa-run`) layered over the qa-e2e-pilot **engine**. It is packaged with the
+**dependencies model** (see [ADR-0022](./adr/0022-qa-kit-process-shell.md) + the
+`qa-kit-plugin-packaging-facts` memory):
+
+- Enable the `qa-kit` entry from this marketplace. Its `plugin.json` declares
+  `"dependencies": ["qa-e2e-pilot"]`, so Claude co-installs/enables the engine plugin — qa-kit reuses
+  the engine's skills by qualified slug (`/qa-e2e-pilot:<skill>`) and bundles its own scripts under
+  `qa-kit/` (reached via qa-kit's own `${CLAUDE_PLUGIN_ROOT}`).
+- No symlinks and no file duplication of the engine's skills. The engine (`qa-e2e-pilot`) stays
+  installable **standalone and unchanged**; installing it alone does not pull in qa-kit.
+
+**Non-Claude qa-kit is not built yet.** codex/pi/opencode have no plugin/skill namespacing to lean on,
+so a flattened qa-kit `dist/<h>/` build is a **deferred** follow-on increment. On those harnesses you
+have the engine (the sections below), not the qa-kit step commands, today.
+
+---
+
 ## The Claude assurance tier
 
 `qa-e2e-pilot`'s evidence gate (`checkpoint.sh` + `check-action-trace.js`) is a **post-hoc, uniform check** every harness runs — it inspects what the run's own agent claims to have done, after the fact. Plan H2 (WS-3, "sound core") adds a second, independent layer on Claude Code specifically: live hooks that record and, for the narrowest cases, block — plus `qa-verify`, the deterministic out-of-agent re-check that is the actual authority (`scripts/qa-verify.sh`, see [`docs/running-in-ci.md`](./running-in-ci.md#qa-verify-the-out-of-agent-authority)).

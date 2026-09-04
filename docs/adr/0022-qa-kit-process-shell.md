@@ -9,6 +9,14 @@ the roadmap (`docs/superpowers/plans/2026-09-04-qa-kit-roadmap.md`) has landed: 
 + the one enforcement compilation, (5) `/qa-run` wiring + fixture tests — are sequenced but not yet
 built; this ADR records the decisions they must all honor, not a finished system.
 
+**Correction (2026-09-04, during increment 2).** Decision 2's original wording assumed qa-kit would
+reuse the engine's files via **symlinks** and an explicit `commands` **array**. Both were disproven
+against current Claude Code docs (verified via the claude-code-guide agent; captured in the
+`qa-kit-plugin-packaging-facts` memory): plugin symlinks are undocumented/unreliable across install
+paths; `commands` is a single directory-path string, not an array; **`${CLAUDE_PLUGIN_ROOT}` is
+per-plugin and cannot reference another plugin's files**; skills are namespaced per-plugin. Decision 2
+below is the corrected **dependencies model**.
+
 ## Context
 
 qa-e2e-pilot runs a QA pass in one shot: `/qa-run <target>` analyzes, generates a checklist, and
@@ -36,11 +44,17 @@ spec-kit, without touching `qa-verify`, and without breaking the standalone quic
    is powered by an **existing** qa-e2e-pilot skill or script — no verification logic is
    reimplemented.
 
-2. **qa-kit ships as a SECOND plugin in this repo**, with its own `.claude-plugin/plugin.json` and
-   marketplace entry, reusing `core/`/`skills/`/`scripts/` — for Claude via symlinks, for the other
-   harnesses via the same parameterized `scripts/build-adapter.sh` that already produces
-   `dist/<h>/` per ADR-0017. qa-e2e-pilot (the verification engine) stays installable standalone
-   and **unchanged**; qa-kit is an additive product built on top of it, not a fork or a rewrite.
+2. **qa-kit ships as a SECOND plugin in this repo (dependencies model).** It has its own
+   `qa-kit/.claude-plugin/plugin.json` and a second `marketplace.json` entry (`source: "./qa-kit"`),
+   and declares `"dependencies": ["qa-e2e-pilot"]` so enabling qa-kit co-installs the engine. qa-kit
+   **reuses the engine's SKILLS by qualified slug** (`/qa-e2e-pilot:discovering-user-roles`, …) rather
+   than copying them, and **bundles its own NEW scripts under `qa-kit/`** (e.g. `qa-kit/scripts/
+   constitution.sh`), referenced from its commands via its own per-plugin `${CLAUDE_PLUGIN_ROOT}`
+   (which cannot reach the engine's tree). No symlinks; no duplication of the engine's skills. For the
+   **other harnesses** (codex/pi/opencode), a qa-kit build target over the ADR-0017 `core/`→`dist/<h>/`
+   tokenization is **deferred** — v1 qa-kit is Claude-first (see the packaging-cost consequence).
+   qa-e2e-pilot (the verification engine) stays installable standalone and **unchanged**; qa-kit is an
+   additive product built on top of it, not a fork or a rewrite.
 
 3. **Enforcement is `qa-verify`-post-hoc-primary.** `block-hook.sh` sees only a tool-call's shape at
    call time — it has no criterion, role, or plan context — so it can live-block only tool-*shape*
@@ -90,10 +104,13 @@ spec-kit, without touching `qa-verify`, and without breaking the standalone quic
   ships in v1; constitution allowed-roles/required-kinds and spec declared-oracle enforcement are
   later increments. Prose-only alignment checks (e.g. "prefer minimal scenarios") stay guidance,
   never a gate — qa-kit never claims a prose ideal is machine-enforced.
-- **Packaging cost:** a second plugin manifest + build target must be added
-  (`scripts/build-adapter.sh`-driven, per [ADR-0017](./0017-multi-harness-portability.md)) before
-  qa-kit's commands are installable; this is increment 2 of the roadmap, not yet built as of this
-  ADR.
+- **Packaging cost + Claude-first scope:** qa-kit needs its own plugin manifest + marketplace entry +
+  a bundled copy of any script it calls (the engine's `${CLAUDE_PLUGIN_ROOT}` is unreachable from
+  qa-kit). On **Claude** this is cheap — a manifest, a `commands/` dir, and qa-kit's own scripts, with
+  the engine's skills reused via `dependencies`. On the **other harnesses** there is no plugin/skill
+  namespacing to lean on, so a qa-kit `dist/<h>/` build (flattening qa-kit's commands + the engine's
+  skills, per [ADR-0017](./0017-multi-harness-portability.md)) is required — that is **deferred** to a
+  later increment; **v1 qa-kit is Claude-only**, and that limitation is documented rather than hidden.
 - **No mid-run mutation.** Roles and the frozen plan cannot be edited once `plan_frozen` fires —
   reproducibility is chosen over live-editing, matching ADR-0020's existing freeze-and-replay
   principle.
