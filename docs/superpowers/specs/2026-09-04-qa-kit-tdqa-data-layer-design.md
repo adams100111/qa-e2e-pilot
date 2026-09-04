@@ -162,10 +162,19 @@ structured `fixture` field are qa-kit artifacts (§3 mechanism 2) used only by q
 
 ## 7. Stack-seed detection (opt-in auto-seed only)
 
-Extend `detecting-stack-profile` to emit `seed:{mechanism, command}` per stack — Laravel
-`php artisan db:seed`, Prisma `prisma db seed`, Rails `rails db:seed`, Django `manage.py loaddata`,
-generic → `null` (auto-seed unavailable → declare-and-verify only). This is the one bigger lift and is
-**6b** (below); it never runs on a non-disposable env.
+> **CORRECTED 2026-09-05 (6b plan grill).** The original "extend `detecting-stack-profile` to emit `seed:{}`"
+> is **superseded**: `detecting-stack-profile` is an **engine** skill and 6b must not modify it (engine-untouched
+> invariant, ADR-0022). Instead a **qa-kit-owned `detect-seed.sh` READS** the engine's emitted profile and
+> derives the proposal — no engine change.
+
+A qa-kit-owned **`detect-seed.sh propose <stack-profile.json> [<config.json>]`** reads the engine profile
+(emitted per-run at `.qa/runs/<run-id>/stack-profile.json`, ADR-0002; cache `.qa/stack-profile.cache.json`),
+extracts the **backend component** (`.primary.backend` index, else first `role∈{backend,fullstack}`), and maps
+its `.framework` / `.orm.name` to a seed command — **only where a genuine standard exists** (no guessing):
+Laravel → `php artisan db:seed`, Rails → `bin/rails db:seed`, Prisma (`orm.name=="prisma"`) → `npx prisma db seed`;
+**everything else — including Django (no universal seed command), and generic** → `{mechanism:null, command:null}`
+(auto-seed unavailable → the operator sets a `seedCommand` by hand, or declare-and-verify only). The proposal is
+confirmed by a human before any exec; the exec never runs on a non-disposable env. This is **6b** (below).
 
 ## 8. Invariants honored (do not break)
 
