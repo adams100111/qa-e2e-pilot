@@ -22,6 +22,13 @@
 
 <!-- high-stakes paths (cross-tenant, destructive, money/permissions) with no criterion. -->
 
+## Data gaps (TDQA)
+
+<!-- From check-fixtures.sh: computed criteria with no well-formed pinned expect (must fix for
+     confidence:high), and llm-suggested pins that run at confidence:low. From data-baseline.json vs
+     dependsOn: dead seeded rows, uncreated 'created' entities, seeded rows with no readable surface
+     (assumed at run → low confidence). -->
+
 ## Verdict
 
 Advisory only — the run is **not** blocked. {{GAP_SUMMARY}}

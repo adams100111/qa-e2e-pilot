@@ -28,6 +28,12 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      say how "correct" is independently determined.
    - **Risk gaps** — an obvious high-stakes path (cross-tenant, destructive, money/permissions) with no
      criterion.
+   - **Data gaps (TDQA)** — run
+     `bash "${CLAUDE_PLUGIN_ROOT}/scripts/check-fixtures.sh" .qa/specs/<target>/checklist.json` and list every
+     computed criterion with no well-formed pinned expect (from `missing`), plus `llm-suggested` pins (from
+     `sources`) that will run at `confidence: low`. Also cross-check `data-baseline.json` against the criteria's
+     `dependsOn`: a `seeded` baseline row no criterion depends on (dead declaration), a `created` entity no
+     scenario creates, and a `seeded` row with no readable surface (will be *assumed* at run → low confidence).
 
 5. **Write `analysis.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
