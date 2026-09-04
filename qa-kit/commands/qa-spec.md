@@ -53,8 +53,23 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
      persona id / the `authz-matrix` `owningChain`. `null`/omit for single-tenant.
    Then validate it:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/data-baseline.sh" validate .qa/specs/<target>/data-baseline.json`
-   — abort and surface `{errors:[…]}` on nonzero. **6a is declare-and-verify only — this writes nothing to the
-   app;** the run reads these back to set the multiplicity baseline (auto-seeding is a later increment, 6b).
+   — abort and surface `{errors:[…]}` on nonzero. The run reads these back to set the multiplicity baseline.
+   Establishment is **declare-and-verify by default (writes nothing)**; opt-in auto-seed (step 6b) may first
+   apply the `seeded` rows, but only on a disposable env.
+
+6b. **Seed command (opt-in auto-seed, increment 6b).** OPTIONAL — only if you want qa-kit to *establish* the
+   declared `seeded` baseline instead of assuming it is already present. Propose the stack's seed command:
+   - Locate a stack profile. The engine emits it **per-run** at `.qa/runs/<run-id>/stack-profile.json`
+     (ADR-0002); at authoring time there is no run yet, so use the cache **`.qa/stack-profile.cache.json`** if
+     present, else invoke `/qa-e2e-pilot:detecting-stack-profile` to emit one. Then:
+     `bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-seed.sh" propose <profile-path> .qa/config.json`
+   - It prints `{mechanism, command, cwd}` — deriving `command` from the backend component's `framework`/`orm.name`
+     **only where a genuine standard exists** (laravel `php artisan db:seed`, rails `bin/rails db:seed`, prisma
+     `npx prisma db seed`). A `null` command (django, unknown ORM, generic) means **no auto-seed is available** —
+     the operator may still type a `seedCommand` by hand, else stay with declare-and-verify.
+   - **The proposal is never run blindly.** Show it; the operator confirms or edits it. Record the confirmed
+     command in `qa-spec.md`'s Data baseline section **and** a machine copy
+     `.qa/specs/<target>/seed.json = {command, cwd}`. If the operator declines, write no `seed.json` (declare-and-verify).
 
 7. **Write `qa-spec.md` + a machine run-config.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md`
    to `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
@@ -79,7 +94,19 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/data-baseline.sh" expected-count <measured> <delta>` (so empty-state
    expects the measured baseline, not 0); (c) types every `actionInput` through the UI (ADR-0015); (d) records
    `confidence: low` for any computed criterion whose `expect.oracleSource != "human"`. A missing required
-   `seeded` precondition → `defer` (never fake). 6a writes nothing to the app; auto-seeding is 6b.
+   `seeded` precondition → `defer` (never fake).
+
+   **Opt-in auto-seed exec (increment 6b) — gated, disposable-env only.** This is guidance the run follows; it
+   is NOT a change to the engine. BEFORE the read-back verify above, iff a confirmed `.qa/specs/<target>/seed.json`
+   exists, the run consults the pure gate
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto-seed.sh" decide .qa/config.json`:
+   - `seed:true` (⇔ `allowApiWrites==true` AND `seedableEnvMarker` non-empty AND `environment != "production"` —
+     the engine's own write gate) **AND** a human confirmed the exec → run `seed.json`'s `command` in its `cwd`
+     (a `Bash` exec — the one write), then fall through to the declare-and-verify read-back to confirm the
+     baseline actually landed.
+   - `seed:false` → print the `reason` and take the **declare-and-verify path (writes nothing)**.
+   The exec only ever runs on a disposable env, with writes allowed, and with explicit human confirmation. On a
+   non-disposable env qa-kit never writes — it verifies what is already there.
 
 Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the

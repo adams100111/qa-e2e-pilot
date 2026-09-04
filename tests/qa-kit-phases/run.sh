@@ -17,6 +17,8 @@ VP="$ROOT/qa-kit/scripts/verify-plan.sh"
 RC="$ROOT/qa-kit/scripts/runconfig-merge.sh"
 DB="$ROOT/qa-kit/scripts/data-baseline.sh"
 CF="$ROOT/qa-kit/scripts/check-fixtures.sh"
+DS="$ROOT/qa-kit/scripts/detect-seed.sh"
+AS="$ROOT/qa-kit/scripts/auto-seed.sh"
 pass=0; fail=0
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
@@ -77,6 +79,24 @@ bash "$CF" "$T/cl_br.json" >/dev/null 2>&1; check "unpinned business-rule -> gat
 # an llm-suggested pin is present-but-low (sources.llmSuggested counted)
 printf '%s' '[{"id":"K4","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"llm-suggested"}}}]' > "$T/cl_llm.json"
 check "llm-suggested pin counted low" "$(bash "$CF" "$T/cl_llm.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["llmSuggested"])')" "1"
+
+# 8. Opt-in auto-seed (increment 6b): detect-seed proposes from a REAL profile shape; auto-seed gates the write.
+#    The actual seed exec is NOT run here (honest boundary) — only the pure proposal + gate decision.
+printf '%s' '{"components":[{"role":"backend","framework":"laravel","orm":{"name":"eloquent"}}],"primary":{"backend":0}}' > "$T/sp_laravel.json"
+check "detect-seed laravel -> artisan" "$(bash "$DS" propose "$T/sp_laravel.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["command"])')" "php artisan db:seed"
+printf '%s' '{"components":[{"role":"backend","framework":"django","orm":{"name":"django-orm"}}],"primary":{"backend":0}}' > "$T/sp_django.json"
+check "detect-seed django -> null command" "$(bash "$DS" propose "$T/sp_django.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["command"] is None)')" "True"
+printf '%s' '{"components":[{"role":"backend","framework":"flask","orm":{"name":"sqlalchemy"}}],"primary":{"backend":0}}' > "$T/sp_flask.json"
+check "detect-seed flask -> null mechanism" "$(bash "$DS" propose "$T/sp_flask.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["mechanism"] is None)')" "True"
+# auto-seed decide: the write gate mirrors the engine (allowApiWrites + non-empty marker + environment != production)
+printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":".qa/DISPOSABLE","environment":"disposable"}' > "$T/as_ok.json"
+check "auto-seed disposable -> seed true" "$(bash "$AS" decide "$T/as_ok.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "True"
+printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"","environment":"disposable"}' > "$T/as_nomark.json"
+check "auto-seed empty marker -> seed false" "$(bash "$AS" decide "$T/as_nomark.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "False"
+printf '%s' '{"allowApiWrites":false,"seedableEnvMarker":".qa/DISPOSABLE","environment":"disposable"}' > "$T/as_nowrite.json"
+check "auto-seed writes off -> seed false" "$(bash "$AS" decide "$T/as_nowrite.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "False"
+printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":".qa/DISPOSABLE","environment":"production"}' > "$T/as_prod.json"
+check "auto-seed production -> seed false" "$(bash "$AS" decide "$T/as_prod.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "False"
 
 rm -rf "$T"
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"

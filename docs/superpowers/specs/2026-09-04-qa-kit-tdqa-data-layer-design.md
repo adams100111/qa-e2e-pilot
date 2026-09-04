@@ -1,6 +1,6 @@
 # qa-kit TDQA data/fixtures layer — design
 
-> **Status:** design approved 2026-09-04; **6a IMPLEMENTED 2026-09-05** (helpers + command augmentations; ADR-0023). 6b (auto-seed) pending. This is increment **6**
+> **Status:** design approved 2026-09-04; **6a + 6b both IMPLEMENTED 2026-09-05** (6a helpers + command augmentations; 6b `detect-seed.sh` proposal + `auto-seed.sh` gate + `/qa-spec` gated exec; ADR-0023). qa-kit v1 TDQA data layer complete on Claude. This is increment **6**
 > of qa-kit (the spine — increments 1–5 — is complete on Claude; see ADR-0022).
 
 ## 1. Problem

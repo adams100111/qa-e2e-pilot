@@ -4,10 +4,11 @@
 
 Accepted, 2026-09-05. Implements `docs/superpowers/specs/2026-09-04-qa-kit-tdqa-data-layer-design.md`
 (twice grill-hardened). Increment **6a** of qa-kit — the pure helpers (`data-baseline.sh`,
-`check-fixtures.sh`) + the `/qa-spec`/`/qa-scenarios`/`/qa-analyze` command augmentations — has landed;
-**6b** (opt-in auto-seed + a `detecting-stack-profile` `seed:{}` extension) is a sequenced follow-on.
-Builds on ADR-0022 (qa-kit process shell), ADR-0015 (human-interaction discipline), ADR-0011
-(regenerate-not-reconcile), ADR-0020 (durable run state / `plan_frozen`).
+`check-fixtures.sh`) + the `/qa-spec`/`/qa-scenarios`/`/qa-analyze` command augmentations — has landed.
+**6b** (opt-in auto-seed) has **also landed** (2026-09-05): the pure `detect-seed.sh` (proposes the stack's
+seed command) + `auto-seed.sh decide` (the write gate) + the gated exec documented in `/qa-spec` — engine
+still byte-for-byte untouched. Builds on ADR-0022 (qa-kit process shell), ADR-0015 (human-interaction
+discipline), ADR-0011 (regenerate-not-reconcile), ADR-0020 (durable run state / `plan_frozen`).
 
 ## Context
 
@@ -47,9 +48,17 @@ pin the expected results, then assert — while keeping the qa-e2e-pilot **engin
    (`oracleSource:"human"`), and the human confirms **both** the tricky `actionInput` and the expected —
    an `"llm-suggested"` pin is `confidence: low` (moving the same-model computation earlier buys
    determinism, not independence — labeled honestly, preserving the oracle invariant).
-5. **Declare-and-verify (6a); auto-seed deferred (6b).** 6a **writes nothing** to the app — it reads the
-   baseline back and defers dependent criteria if a required `seeded` precondition is absent. Auto-applying
-   seed data via the stack's mechanism (disposable env only) + detecting that mechanism is 6b.
+5. **Declare-and-verify (6a) + opt-in auto-seed (6b).** 6a **writes nothing** — it reads the baseline back
+   and defers dependent criteria if a required `seeded` precondition is absent. 6b adds an **opt-in write
+   path**, disposable-env only: `detect-seed.sh propose` derives the stack's seed command from the engine's
+   emitted `stack-profile.json` (backend component's `framework`/`orm.name` → laravel/rails/prisma, else a
+   null proposal — no guessing); `auto-seed.sh decide` gates the write on `allowApiWrites` + non-empty
+   `seedableEnvMarker` + `environment != production` (mirroring the engine's own write gate); the exec is a
+   human-confirmed `Bash` step in `/qa-spec`'s run guidance, followed by the 6a read-back to confirm the
+   baseline landed. **§7 correction (supersedes the design's original wording):** stack-seed detection is a
+   **qa-kit-owned `detect-seed.sh` that READS `stack-profile.json`** — the engine skill
+   `detecting-stack-profile` is **NOT** extended or modified (engine-untouched invariant, ADR-0022). The
+   emitted profile has no `commands.seed`, so the command is *derived*, never read.
 
 ## Consequences
 
@@ -62,7 +71,9 @@ pin the expected results, then assert — while keeping the qa-e2e-pilot **engin
   and — a correction of an earlier grill's own conclusion — the enforcement trigger is `kind`, not a
   `required-kinds` re-derivation (which is neither written into the checklist nor more powerful).
 - **Honest limits.** The full "phased run's verdicts ≡ one-shot" equivalence needs a live agent and is the
-  manual accuracy run's job. A seeded row with no readable surface is *assumed* → `confidence: low`.
-  Non-Claude qa-kit + auto-seed remain deferred.
+  manual accuracy run's job. A seeded row with no readable surface is *assumed* → `confidence: low`. The 6b
+  auto-seed **exec** (the actual `db:seed` write against a live disposable env) is a human-confirmed command
+  step + manual smoke-test — the pure proposal and gate are unit-tested, but the exec itself is deliberately
+  not faked as a headless test. Non-Claude qa-kit remains deferred.
 - **Reversibility.** Additive: two qa-kit scripts + command prose + an additive `checklist.json` field + one
   config key. Reverting removes them; the engine and the qa-kit spine are unaffected.
