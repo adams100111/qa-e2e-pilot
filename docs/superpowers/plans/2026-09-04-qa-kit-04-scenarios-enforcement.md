@@ -1,6 +1,8 @@
 # qa-kit increment 4 — `/qa-scenarios` + `/qa-analyze` + the enforcement seam Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
+> **⚠️ LAYOUT SUPERSEDED (2026-09-04, dependencies model).** qa-kit is a 2nd Claude plugin (`dependencies:[qa-e2e-pilot]`); it bundles its OWN scripts/commands/templates UNDER `qa-kit/` and reuses the engine's SKILLS by qualified slug `/qa-e2e-pilot:<skill>`. So wherever this plan says `scripts/qa-kit/X.sh` read `qa-kit/scripts/X.sh` (called `${CLAUDE_PLUGIN_ROOT}/scripts/X.sh` from a command); `core/qa-kit/*.command.md` → `qa-kit/commands/*.md` (Claude form); `core/qa-kit/*-template.md` → `qa-kit/templates/*.md`. "Register in the qa-kit manifest commands array" is obsolete — `commands` is a DIRECTORY (default scan): just place the file in `qa-kit/commands/`. See `2026-09-04-qa-kit-02-packaging.md` + memory `qa-kit-plugin-packaging-facts`.
+>
 >
 > **⚠️ THE CRUX INCREMENT — carries a genuine OPEN QUESTION that MUST be resolved as Task 1 before the rest is pinned (see below). This plan is firmer on the two commands than on the enforcement compiler, precisely because the enforcement mechanism depends on a fact about `qa-verify` not yet verified.**
 >
