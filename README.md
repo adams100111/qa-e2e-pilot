@@ -34,8 +34,13 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 
 ## What's in the box
 
+> **Two plugins in this repo.** `qa-e2e-pilot` (below) is the **verification engine**. `qa-kit/` is an
+> optional, step-gated **process shell** built on it (constitution → spec → scenarios → analyze → run) —
+> a second, separately-installable plugin that depends on the engine and leaves it unchanged. See
+> [`qa-kit/README.md`](./qa-kit/README.md) and [ADR-0022](./docs/adr/0022-qa-kit-process-shell.md).
+
 ```
-.claude-plugin/   plugin.json + marketplace.json
+.claude-plugin/   plugin.json + marketplace.json (2 plugins: qa-e2e-pilot engine + qa-kit shell)
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-and-committed, see below)
 commands/         qa-run.md   — /qa-run <target> [checklist|spec]
                   qa-roles.md — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
@@ -43,7 +48,9 @@ skills/           16 skills (see below)
 scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
                   build-adapter.sh · validate-adapters.sh (multi-harness, see below)
 .qa/              config.json.example + per-run output
-docs/adr/         0001–0017 architecture decisions
+qa-kit/           the optional step-gated process shell — 2nd plugin (own manifest, commands,
+                  scripts, agent, README); depends on the engine, reuses its skills by qualified slug
+docs/adr/         0001–0022 architecture decisions (0022 = qa-kit)
 docs/             running-in-ci.md · extending-drivers.md · harness-adapters.md · superpowers/{specs,plans}/
 CONTEXT.md        the ubiquitous language (read this first)
 harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sources + per-harness glue
@@ -209,6 +216,31 @@ See [`docs/harness-adapters.md`](./docs/harness-adapters.md) for prerequisites, 
 to add, and the manual accuracy-run procedure each adapter must clear (Pi first) — and
 [ADR-0017](./docs/adr/0017-multi-harness-portability.md) for the design decision (shared core + generated
 adapters + a Claude byte-oracle enforced in CI).
+
+---
+
+## qa-kit — the optional step-gated process shell
+
+`qa-e2e-pilot` runs a QA pass in one shot (`/qa-run`). **qa-kit** ([`qa-kit/`](./qa-kit)) adds a
+spec-kit-style **process** on top: a sequence of gated steps, each producing one human-reviewable
+artifact, before the (expensive) run.
+
+```
+/qa-constitution   →  /qa-spec <target>  →  /qa-scenarios <target>  →  /qa-analyze <target>  →  /qa-run
+project roles +       immutable role         scenarios + the frozen      advisory coverage        (the engine's
+policy + version      snapshot (stamped +    checklist.json (the         gate (read-only)         existing run,
+                      drift advisory)        enforcement contract)                                ingests the checklist)
+```
+
+It's a **second, separately-installable plugin** that declares `dependencies: ["qa-e2e-pilot"]`, reuses
+the engine's skills by qualified slug, and bundles only its own new scripts — **the engine stays
+byte-for-byte unchanged** (installable standalone as before). One enforcement seam ships:
+`qa-kit/scripts/verify-plan.sh` flags an act on a criterion that isn't in the frozen plan, running
+*beside* an unmodified `qa-verify`. v1 is **Claude-only**; non-Claude builds are deferred.
+
+The quick path is unaffected — `/qa-run "<target>"` with no `.qa/specs/` still self-discovers and runs
+in one shot, exactly as below. See [`qa-kit/README.md`](./qa-kit/README.md) and
+[ADR-0022](./docs/adr/0022-qa-kit-process-shell.md).
 
 ---
 
