@@ -72,6 +72,15 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    (deltas over defaults, per-run; `.qa/config.json` is not mutated) and then runs the engine's
    `/qa-e2e-pilot:qa-run "<target>" .qa/specs/<target>/checklist.json` — which ingests the frozen plan.
 
+   **Data-layer run consumption (TDQA, declare-and-verify):** at pre-flight the run (a) reads each `seeded`
+   row of `data-baseline.json` back **within its `scope`** and records the **measured** baseline count
+   (readable surfaces only — an unreadable seeded row is *assumed* and its dependent criteria run at
+   `confidence: low`); (b) resolves each multiplicity fixture's concrete expected via
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/data-baseline.sh" expected-count <measured> <delta>` (so empty-state
+   expects the measured baseline, not 0); (c) types every `actionInput` through the UI (ADR-0015); (d) records
+   `confidence: low` for any computed criterion whose `expect.oracleSource != "human"`. A missing required
+   `seeded` precondition → `defer` (never fake). 6a writes nothing to the app; auto-seeding is 6b.
+
 Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the
 drift check is advisory, never an auto-migrate.
