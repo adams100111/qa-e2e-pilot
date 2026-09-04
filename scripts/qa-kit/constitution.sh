@@ -144,7 +144,16 @@ cmd_version() {
 
   has_py || die "constitution.sh version requires python3 for the digest step (see DIGEST NOTE)."
 
-  canonical_string "$personas" "$matrix" | python3 -c '
+  # Capture via command substitution (NOT a direct pipe): $(...) strips all
+  # trailing newlines uniformly regardless of which engine produced the
+  # string, so `jq -r` (which always emits a trailing newline) and the
+  # python3 branch (which does not) feed byte-identical content into the
+  # digest. A direct pipe here would let a jq-vs-python3 trailing-newline
+  # difference silently produce two different hashes for the same logical
+  # state.
+  local canon
+  canon="$(canonical_string "$personas" "$matrix")" || die "version: failed to build the canonical string."
+  printf '%s' "$canon" | python3 -c '
 import hashlib, sys
 data = sys.stdin.read()
 print(hashlib.sha256(data.encode()).hexdigest()[:16])
