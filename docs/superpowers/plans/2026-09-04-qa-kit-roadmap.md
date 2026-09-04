@@ -13,11 +13,11 @@
 - **Scope:** `/qa-constitution` as a thin command over the existing role flow, adding `constitution.sh` (deterministic version/hash + informational diff + `constitution.md` render), the template, and ADR-0022.
 - **Produces (contracts later increments consume):**
   - `.qa/constitution.md` (invariants + roles table + version block).
-  - **The constitution version/hash format** + the canonical role-state tuple `id|role|plane` (auth excluded) + the fenced ```json `{roles:[{id,role,plane}], version}` state block. *(Increment 3 stamps this version.)*
+  - **The constitution version/hash format** + the canonical role-state tuple `id|role|plane` (auth excluded) + the authz tuple `entity|owningChain|<sorted "role:scope" pairs>` (**scope VALUES included, R2-Q6**) + the fenced ```json `{roles:[{id,role,plane}], version}` state block. *(Increment 3 stamps this version.)*
   - Confirmation that the role state IS `.qa/config.json` `personas[]` + `.qa/authz-matrix.json` (reused, not rebuilt).
 - **Consumes:** existing `discovering-user-roles`, `confirming-discovered-roles`, `write-persona-config.sh`, ADR-0016 seed store.
 - **Depends on:** nothing (foundation).
-- **Tasks:** (1) `constitution.sh` + tests; (2) command + template + build; (3) ADR-0022.
+- **Tasks:** (1) `constitution.sh` + tests; (2) author the command + template FILES + ADR-0022 — **but do NOT wire the command into the shipped build** (R2-Q7); increment 2 packages/wires it as qa-kit so `/qa-constitution` never ships transiently in the qa-e2e-pilot plugin.
 
 ## Increment 2 — qa-kit as a second plugin + build target
 
@@ -30,19 +30,19 @@
 
 ## Increment 3 — `/qa-spec` + spec snapshot (freeze semantics)
 
-- **Scope:** `/qa-spec` that (a) selects scenarios + roles from the constitution, (b) **copies** roles into `.qa/specs/<target>/spec-roles.json` and **stamps the constitution version** (increment 1's format), (c) captures per-spec overrides/customization + oracles, (d) records the drift advisory when the stamped version ≠ the current constitution's. The freeze itself lands at run start (`plan_frozen`, ADR-0020) — this increment authors the snapshot the run freezes.
+- **Scope:** `/qa-spec` that (a) selects scenarios + roles from the constitution, (b) **copies** roles into `.qa/specs/<target>/spec-roles.json` and **stamps the constitution version** (increment 1's format), (c) captures per-spec overrides/customization + oracles + the **run-config** override section (drivers/budget from `.qa/config.json` defaults — the folded-in `/qa-plan`, R2-Q3), (d) records the drift advisory when the stamped version ≠ the current constitution's. The freeze itself lands at run start (`plan_frozen`, ADR-0020) — this increment authors the snapshot the run freezes. One spec → N runs (R2-Q5).
 - **Produces:** `qa-spec.md`, `spec-roles.json` (frozen snapshot + version stamp), the per-spec override shape, the drift-advisory. *(Increment 4 reads spec-roles + the selected scenarios.)*
 - **Consumes:** increment 1's constitution version/state; existing `detecting-stack-profile`, `ingesting-spec-kit` (as an input path).
 - **Depends on:** increments 1 (+ 2 for packaging, but buildable against 1).
 - **Tasks (provisional):** (1) `spec-snapshot.sh` (copy roles + stamp version + drift-check) + tests; (2) `/qa-spec` command + template; (3) docs.
 
-## Increment 4 — `/qa-plan` + `/qa-scenarios` + `/qa-analyze` + the enforcement seam
+## Increment 4 — `/qa-scenarios` + `/qa-analyze` + the enforcement seam
 
-- **Scope:** the three commands, plus the **one end-to-end enforcement compilation** — scenarios' planned-criteria written into `checklist.json` (the exact shape `qa-verify`/`required-kinds.sh` already read) so `qa-verify` **post-hoc** flags an act on an out-of-plan criterion. `/qa-analyze` = the consistency+coverage gate before the run. Per-step alignment checks (structural = deterministic set-membership: scenario roles ⊆ `spec-roles`; semantic = LLM-advisory).
-- **Produces:** `run-plan.md`, `scenarios.md`/`checklist.json`, `analysis.md`; **the proven "phases populate the gate's existing inputs" seam** (`qa-verify` unmodified).
+- **Scope:** the two commands (`/qa-scenarios`, `/qa-analyze` — `/qa-plan` was folded into `/qa-spec`, R2-Q3), plus the **one end-to-end enforcement compilation** — scenarios' planned-criteria written into `checklist.json` (the exact shape `qa-verify`/`required-kinds.sh` already read) so `qa-verify` **post-hoc** flags an act on an out-of-plan criterion. `/qa-analyze` = the consistency+coverage gate before the run. Per-step alignment checks (structural = deterministic set-membership: scenario roles ⊆ `spec-roles`; semantic = LLM-advisory).
+- **Produces:** `scenarios.md`/`checklist.json`, `analysis.md`; **the proven "steps populate the gate's existing inputs" seam** (`qa-verify` unmodified).
 - **Consumes:** increment 3's `spec-roles` + selections; existing `generating-qa-checklist`, `fanning-out-criteria`, `analyzing-feature-ui`, and critically `qa-verify` + `checklist.json`'s current schema (the compilation target).
 - **Depends on:** increment 3.
-- **Tasks (provisional):** (1) the scenarios→`checklist.json` compiler + a **round-trip test** (feed the output to `qa-verify` and confirm it flags an out-of-plan act); (2) the three commands + alignment checks; (3) docs.
+- **Tasks (provisional):** (1) the scenarios→`checklist.json` compiler + a **round-trip test** (feed the output to `qa-verify` and confirm it flags an out-of-plan act); (2) the two commands + alignment checks; (3) docs.
 
 ## Increment 5 — `/qa-run` as Implement + fixture tests + quick-path/bootstrap
 
@@ -56,7 +56,7 @@
 
 ## Sequencing + parallelism
 
-- **Strict order:** 1 → 3 → 4 → 5 (each consumes the prior's produced interfaces). Increment **2 (packaging)** depends only on 1 and can slot after 1 (or run alongside 3) — it doesn't block the functional chain.
+- **Strict order:** 1 → 3 → 4 → 5 (spine: constitution → spec[+run-config] → scenarios → analyze → run) (each consumes the prior's produced interfaces). Increment **2 (packaging)** depends only on 1 and can slot after 1 (or run alongside 3) — it doesn't block the functional chain.
 - **Each increment = its own branch + PR + review** (SDD), like the six efforts already merged this session.
 - **The measured proof points:** increment 1 (state format is deterministic + reuses existing roles), increment 4 (the enforcement seam round-trips through `qa-verify` unmodified), increment 5 (phased run ≡ one-shot findings). If any of those fails, the design assumption behind it gets revisited before proceeding.
 

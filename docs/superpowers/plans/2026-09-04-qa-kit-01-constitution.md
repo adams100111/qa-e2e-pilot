@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship `/qa-constitution` — the first qa-kit phase command — as a thin orchestration over the **existing** role machinery, adding only the genuinely-new pieces: a deterministic **constitution version/hash** (that later spec snapshots stamp), an **informational role diff** on re-run, and a human-reviewable **`constitution.md`**. No role logic is rebuilt.
+**Goal:** Build `/qa-constitution` — the first qa-kit step — as a thin orchestration over the **existing** role machinery, adding only the genuinely-new pieces: a deterministic **constitution version/hash** (that later spec snapshots stamp), an **informational role diff** on re-run, and a human-reviewable **`constitution.md`**. No role logic is rebuilt.
 
-**Architecture:** qa-kit's constitution reuses `discovering-user-roles` → `confirming-discovered-roles` → `write-persona-config.sh` (which already regenerate `.qa/config.json` `personas[]` + `.qa/authz-matrix.json` wholesale, ADR-0011). This increment adds `scripts/constitution.sh` (a pure, dual-engine helper: version-hash + diff + `constitution.md` render) and `core/commands/qa-constitution.md` (the command body that runs the existing role flow, then calls the helper). The command generates into the build like `qa-run`/`qa-roles` today; packaging qa-kit as a *second plugin* is a later increment — this increment's command ships in the existing build so it's immediately runnable and testable.
+**Architecture:** qa-kit's constitution reuses `discovering-user-roles` → `confirming-discovered-roles` → `write-persona-config.sh` (which already regenerate `.qa/config.json` `personas[]` + `.qa/authz-matrix.json` wholesale, ADR-0011). This increment adds the pure, dual-engine helper `constitution.sh` (version-hash + informational diff + `constitution.md` render) + its tests, and **authors** the command body + template as staged files under `core/qa-kit/` — it deliberately does **NOT** wire the command into the shipped build (R2-Q7): increment 2 packages qa-kit as a second plugin and wires `/qa-constitution` then, so it never ships transiently inside the qa-e2e-pilot plugin. This increment's testable deliverable is the helper (fully covered) + the authored files.
 
 **Tech Stack:** Bash + `jq`-preferred/`python3`-fallback (the repo idiom), markdown command body + template. No new dependency. Tests are a bash runner over the pure helper (dual-engine), mirroring `tests/ux-conventions/run.sh`.
 
@@ -22,7 +22,7 @@
 
 - `skills/checkpointing-qa-memory/scripts/constitution.sh` **(new)** — the pure helper (lives alongside the other durable-state scripts, or `scripts/constitution.sh` at repo root — pick per where sibling helpers sit; see Task 1). Subcommands: `version`, `diff`, `render`.
 - `tests/constitution/run.sh` **(new)** — dual-engine tests for `version`/`diff`/`render`.
-- `core/commands/qa-constitution.md` **(new)** — the command body (orchestration prose).
+- `core/qa-kit/qa-constitution.command.md` **(new, staged)** — the command body (orchestration prose); wired into the qa-kit plugin in increment 2.
 - `core/qa-kit/constitution-template.md` **(new)** — the `constitution.md` skeleton the helper fills (invariants + roles-summary placeholder + version block).
 - `docs/adr/0022-qa-kit-process-shell.md` **(new)** — records the qa-kit architecture decisions (phased shell, 2nd plugin, post-hoc-primary enforcement, regenerate-wholesale constitution + per-spec customization) — the hard-to-reverse calls from the design.
 
@@ -33,7 +33,7 @@
 - Create: `tests/constitution/run.sh`
 
 **Interfaces:**
-- `constitution.sh version <personas.json> <authz-matrix.json>` → prints a deterministic hex hash over the **canonical role state**: personas sorted by `id`, each reduced to `"<id>|<role>|<plane>"` (auth EXCLUDED — credentials aren't identity and rotate), joined; then authz rows sorted by `entity`, each `"<entity>|<owningChain joined by ,>|<sorted roleScope keys joined by ,>"`; the two blocks concatenated with a separator; hash = a stable digest (see impl). Byte-identical across engines.
+- `constitution.sh version <personas.json> <authz-matrix.json>` → prints a deterministic hex hash over the **canonical role state**: personas sorted by `id`, each reduced to `"<id>|<role>|<plane>"` (auth EXCLUDED — credentials aren't identity and rotate), joined; then authz rows sorted by `entity`, each `"<entity>|<owningChain joined by ,>|<sorted 'role:scope' pairs joined by ,>"` — **roleScope VALUES are included, not just keys (Grill R2-Q6)**, so `admin: owns → read-scoped` bumps the version; the two blocks concatenated with a separator; hash = a stable digest (see impl). Byte-identical across engines.
 - `constitution.sh diff <prev-state.json> <curr-state.json>` → prints JSON `{added:[roleIds], removed:[roleIds], changed:[{id, was, now}]}` comparing two canonical-state objects (`{roles:[{id,role,plane}], version}`); `changed` = same `id`, different `role` or `plane`. Empty prev (`{}` / missing) → all current roles are `added`.
 - `constitution.sh render <personas.json> <version> <template> <timestamp>` → prints the filled `constitution.md`: the template with `{{ROLES_TABLE}}` (a Markdown table of `id | role | plane`), `{{VERSION}}`, `{{TIMESTAMP}}` substituted, plus a machine-readable fenced ```json state block ({roles, version}). Deterministic given its args.
 
@@ -62,6 +62,9 @@ run_engine() {
   # a role change -> different version
   printf '%s' '[{"id":"admin","role":"superadmin","plane":"global","auth":"a@x (seeded)"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"}]' > "$T/p4.json"
   check "$E role-change changes version" "$([ "$(QA_ENGINE=$E bash "$SH" version "$T/p4.json" "$T/m.json")" != "$v1" ] && echo y)" "y"
+  # a roleScope VALUE change -> different version (R2-Q6: values, not just keys)
+  printf '%s' '[{"entity":"submission","owningChain":["team_id"],"roleScope":{"admin":"read-scoped","viewer":"read-scoped"}}]' > "$T/m2.json"
+  check "$E scope-value change bumps version" "$([ "$(QA_ENGINE=$E bash "$SH" version "$T/p.json" "$T/m2.json")" != "$v1" ] && echo y)" "y"
   # diff: added / removed / changed
   printf '%s' '{"roles":[{"id":"admin","role":"admin","plane":"global"},{"id":"guest","role":"guest","plane":"contextual"}],"version":"old"}' > "$T/prev.json"
   printf '%s' '{"roles":[{"id":"admin","role":"superadmin","plane":"global"},{"id":"auditor","role":"auditor","plane":"global"}],"version":"new"}' > "$T/curr.json"
@@ -99,29 +102,29 @@ git add skills/checkpointing-qa-memory/scripts/constitution.sh tests/constitutio
 git commit -m "feat(qa-kit): constitution.sh — deterministic role-state version/hash + informational diff + constitution.md render"
 ```
 
-## Task 2: `/qa-constitution` command body + template + build
+## Task 2: `/qa-constitution` command body + template (authored, NOT wired into the build)
 
-**Files:**
+**Files (staging — NOT `core/commands/`, so the current qa-e2e-pilot build does NOT ship them; increment 2 packages them as qa-kit, R2-Q7):**
 - Create: `core/qa-kit/constitution-template.md`
-- Create: `core/commands/qa-constitution.md`
+- Create: `core/qa-kit/qa-constitution.command.md` (the command body, staged; increment 2 wires it into the qa-kit plugin's command dir + build)
 
 **Interfaces:** consumes `constitution.sh` (Task 1) + the existing role skills (`discovering-user-roles`, `confirming-discovered-roles`). Produces `.qa/constitution.md` + the informational diff for the operator.
 
-- [ ] **Step 1: Write `constitution-template.md`** — the `constitution.md` skeleton: prose QA invariants (verdict/confidence/layer vocab; oracle-is-the-spec-not-the-backend; UI-only act discipline; no-HITL-in-Verify-loop) + a `## Roles` section with `{{ROLES_TABLE}}` + a `## Version` line `{{VERSION}} @ {{TIMESTAMP}}`. (Pull the invariant wording from `CONTEXT.md` + ADR-0015/0018.)
+- [ ] **Step 1: Write `constitution-template.md`** — a **PROJECT-SPECIFIC policy** skeleton (R2-Q4), NOT a restatement of the universal invariants: a `## Roles` section with `{{ROLES_TABLE}}`, an `## Enabled optional gates` section (which of sanitize/assure/perf/security/uiux this project turns on), an `## Oracle notes / out-of-scope` section, and a `## Version` line `{{VERSION}} @ {{TIMESTAMP}}` + the machine-readable state block. It **references** the plugin-universal invariants (a link to `CONTEXT.md` + ADR-0015/0018) rather than copying them (which would drift). The universal invariants live in `CONTEXT.md`; the constitution is *this project's* policy on top.
 
-- [ ] **Step 2: Write `core/commands/qa-constitution.md`** — the command body (imperative, checklist-structured), following the shape of `core/commands/qa-run.md`/`qa-roles.md`. It orchestrates:
+- [ ] **Step 2: Write `core/qa-kit/qa-constitution.command.md`** — the command body (imperative, checklist-structured), following the shape of `core/commands/qa-run.md`/`qa-roles.md` (increment 2 moves it to the qa-kit plugin's command dir + wires the build). It orchestrates:
   1. Run the existing role flow: `discovering-user-roles` → `confirming-discovered-roles` (which writes `.qa/config.json` `personas[]` + `.qa/authz-matrix.json` wholesale). *(Reference the skills; do not duplicate their logic.)*
   2. Compute the new version: `constitution.sh version .qa/config.json's personas .qa/authz-matrix.json`. *(Extract `personas` to a temp file first — `config.json` holds more than personas.)*
   3. If a prior `.qa/constitution.md` state block exists, run `constitution.sh diff <prev-state> <curr-state>` and **print the informational diff** ("since the last constitution: +auditor, −guest, admin role→superadmin") — awareness only, no merge.
   4. Render + write `.qa/constitution.md` via `constitution.sh render`.
   5. State plainly: personas were regenerated wholesale (ADR-0011); customizations belong in a spec, not here.
 
-- [ ] **Step 3: Generate + gate** — `bash scripts/build-adapter.sh claude >/dev/null && bash scripts/validate-adapters.sh` (exit 0; confirm the new command generates into `dist/claude/` and the byte-oracle stays green). Re-run `tests/constitution/run.sh`. `wc -l core/commands/qa-constitution.md` (keep it tight, imperative).
+- [ ] **Step 3: Gate (no build-wiring — R2-Q7)** — the staged files under `core/qa-kit/` are NOT consumed by the current build, so `/qa-constitution` does NOT ship in the qa-e2e-pilot plugin this increment. Run `bash scripts/build-adapter.sh claude >/dev/null && bash scripts/validate-adapters.sh` (exit 0) only to confirm **nothing broke** (the byte-oracle + existing commands are unchanged). Re-run `tests/constitution/run.sh`. `wc -l core/qa-kit/qa-constitution.command.md` (keep it tight, imperative).
 
 - [ ] **Step 4: Commit**
 ```bash
-git add core/qa-kit/constitution-template.md core/commands/qa-constitution.md
-git commit -m "feat(qa-kit): /qa-constitution command — runs the role flow, stamps a version, writes constitution.md + informational diff"
+git add core/qa-kit/constitution-template.md core/qa-kit/qa-constitution.command.md
+git commit -m "feat(qa-kit): /qa-constitution command body + template (staged; runs role flow, stamps version, writes constitution.md + informational diff)"
 ```
 
 ## Task 3: ADR-0022 — qa-kit process shell
@@ -149,4 +152,4 @@ git commit -m "docs(qa-kit): ADR-0022 — qa-kit process shell (2nd plugin, post
 
 ## Execution Handoff
 
-Plan saved to `docs/superpowers/plans/2026-09-04-qa-kit-01-constitution.md`. Execution: **Subagent-Driven Development** (fresh implementer per task + task-scoped review + fix loop; final whole-branch review). This is **increment 1 of ~5** — the sequenced follow-ons (per design §9): (2) 2nd-plugin packaging + build target; (3) `/qa-spec` + spec-roles snapshot + freeze + version stamp; (4) `/qa-plan` + `/qa-scenarios` + `/qa-analyze` + the one post-hoc enforcement compilation into `checklist.json`; (5) `/qa-run` wiring as Implement + fixture tests + quick-path/bootstrap. Each is its own plan.
+Plan saved to `docs/superpowers/plans/2026-09-04-qa-kit-01-constitution.md`. Execution: **Subagent-Driven Development** (fresh implementer per task + task-scoped review + fix loop; final whole-branch review). This is **increment 1 of ~5** — the sequenced follow-ons (per the roadmap): (2) 2nd-plugin packaging + build target (wires this increment's staged command); (3) `/qa-spec` + spec-roles snapshot + freeze + version stamp + run-config (folded-in `/qa-plan`); (4) `/qa-scenarios` + `/qa-analyze` + the one post-hoc enforcement compilation into `checklist.json`; (5) `/qa-run` wiring as Implement + fixture tests + quick-path/bootstrap. Each is its own plan.
