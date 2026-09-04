@@ -74,7 +74,7 @@ run_engine() {
   check "$E diff removed guest"  "$(printf '%s' "$d" | python3 -c 'import json,sys;print("guest" in json.load(sys.stdin)["removed"])')" "True"
   check "$E diff changed admin"  "$(printf '%s' "$d" | python3 -c 'import json,sys;print(any(c["id"]=="admin" for c in json.load(sys.stdin)["changed"]))')" "True"
   check "$E empty-prev all added" "$(printf '{}' > "$T/e.json"; QA_ENGINE=$E bash "$SH" diff "$T/e.json" "$T/curr.json" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["added"]))')" "2"
-  # render: substitutes + emits a state block
+  # render: substitutes placeholders (human-only — no state block, R3-Q4)
   printf '%s\n' '# QA Constitution' 'VERSION: {{VERSION}} @ {{TIMESTAMP}}' '{{ROLES_TABLE}}' > "$T/tmpl.md"
   local out; out="$(QA_ENGINE=$E bash "$SH" render "$T/p.json" "abc123" "$T/tmpl.md" "2026-09-04T00:00:00Z")"
   check "$E render has version" "$(printf '%s' "$out" | grep -c 'abc123')" "1"
@@ -115,7 +115,7 @@ git commit -m "feat(qa-kit): constitution.sh — deterministic role-state versio
 
 **Interfaces:** consumes `constitution.sh` (Task 1) + the existing role skills (`discovering-user-roles`, `confirming-discovered-roles`). Produces `.qa/constitution.md` + the informational diff for the operator.
 
-- [ ] **Step 1: Write `constitution-template.md`** — a **PROJECT-SPECIFIC policy** skeleton (R2-Q4), NOT a restatement of the universal invariants: a `## Roles` section with `{{ROLES_TABLE}}`, an `## Enabled optional gates` section (which of sanitize/assure/perf/security/uiux this project turns on), an `## Oracle notes / out-of-scope` section, and a `## Version` line `{{VERSION}} @ {{TIMESTAMP}}` + the machine-readable state block. It **references** the plugin-universal invariants (a link to `CONTEXT.md` + ADR-0015/0018) rather than copying them (which would drift). The universal invariants live in `CONTEXT.md`; the constitution is *this project's* policy on top.
+- [ ] **Step 1: Write `constitution-template.md`** — a **PROJECT-SPECIFIC policy** skeleton (R2-Q4), NOT a restatement of the universal invariants: a `## Roles` section with `{{ROLES_TABLE}}`, an `## Enabled optional gates` section (which of sanitize/assure/perf/security/uiux this project turns on), an `## Oracle notes / out-of-scope` section, and a `## Version` line `{{VERSION}} @ {{TIMESTAMP}}` (human-readable only — the authoritative machine state is the sibling `.qa/constitution.state.json`, R3-Q4; the template carries NO fenced state block). It **references** the plugin-universal invariants (a link to `CONTEXT.md` + ADR-0015/0018) rather than copying them (which would drift). The universal invariants live in `CONTEXT.md`; the constitution is *this project's* policy on top.
 
 - [ ] **Step 2: Write `core/qa-kit/qa-constitution.command.md`** — the command body (imperative, checklist-structured), following the shape of `core/commands/qa-run.md`/`qa-roles.md` (increment 2 moves it to the qa-kit plugin's command dir + wires the build). It orchestrates:
   1. Run the existing role flow: `discovering-user-roles` → `confirming-discovered-roles` (which writes `.qa/config.json` `personas[]` + `.qa/authz-matrix.json` wholesale). *(Reference the skills; do not duplicate their logic.)*
