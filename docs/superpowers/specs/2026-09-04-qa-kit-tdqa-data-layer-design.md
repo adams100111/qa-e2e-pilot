@@ -82,17 +82,25 @@ run asserts* — while keeping the qa-e2e-pilot **engine byte-for-byte unchanged
   "fixture": {
     "actionInput": { "qty": 3, "unitPrice": 0.001 },
     "expect": { "path": "total", "value": "0.003", "tolerance": 0, "oracleSource": "human" },
-    "dependsOn": ["Category:Books"] } }
+    "dependsOn": [ { "entity": "Category", "scope": null } ] } }
 ```
+
+**`expect` has two forms** (grill-2): an **absolute** form `{path, value, tolerance, oracleSource}` for computed
+criteria (what `check-fixtures.sh` gates), and a **relative count** form `{path, baselineOf:{entity,scope},
+delta}` for multiplicity criteria (empty-state `delta:0`, N-create `delta:N`) — resolved at run start from the
+measured baseline (`data-baseline.sh expected-count`). Multiplicity criteria derive `bake`, not `computed`, so
+they are NOT `check-fixtures`-gated; only the run consumes their relative form. `dependsOn` is `[{entity,scope}]`
+(objects, same shape as `baselineOf`), not `"Entity:key"` strings.
 
 - The prose is the engine's native input (unchanged mechanism); the struct is qa-kit's enforcement mirror.
   `/qa-scenarios` authors both from one source so they cannot drift.
 - **`expect.value`** is a **string for exact decimals/money** (no float drift — `verifying-computed-logic`
   insists "compute exact `4000000*0.001`, never pre-round"); `tolerance` is absolute (0 = exact).
-- **`expect.oracleSource`** is `"human"` or `"llm-suggested"` (Q1). Only a **human-confirmed** pin earns
-  `confidence: high`; an `"llm-suggested"` pin is `confidence: low` at run — no more independent than
-  run-time recompute, labeled honestly. `/qa-scenarios`'s HITL gate is where a human confirms computed
-  criteria's expected values.
+- **`expect.oracleSource`** is `"human"` or `"llm-suggested"` (Q1). At `/qa-scenarios`'s HITL gate a human
+  confirms/edits **BOTH** the `actionInput` (the deliberately-tricky values — e.g. the sub-cent `0.001`) **and**
+  the pinned expected, for computed criteria (grill-2: the input choice is what catches the edge-case bug, so
+  the human must own it, not just the answer). `"human"` (both confirmed) → eligible for `confidence: high`;
+  `"llm-suggested"`/absent → `confidence: low` — no more independent than run-time recompute, labeled honestly.
 - **`expect.path` aligns with the engine's existing `assertedState.readBackPath`**; `fixture.expect` adds
   the concrete **value** that `assertedState.expectChange` (a bool) lacks — the two are complementary, not
   parallel (the fold-in from grill).
@@ -137,11 +145,13 @@ structured `fixture` field are qa-kit artifacts (§3 mechanism 2) used only by q
 ## 6. Enforcement + confidence
 
 - `qa-kit/scripts/check-fixtures.sh` (pure, dual-engine; beside `verify-plan.sh`) — flags every criterion
-  **that requires the `computed` evidence kind** whose `fixture.expect` is absent/ill-formed. The trigger
-  is the engine's own **`required-kinds.sh derive`** on the row (→ does it include `computed`?), NOT a
-  naive `kind == "computed-logic"` match — because `kind` is single-valued, so a `happy-path` criterion
-  that also computes would otherwise be missed (grill fix). Exit nonzero listing offenders; all-pinned
-  control exits clean. Config `fixtures.hardBlock` (default `false`) decides block vs advisory.
+  whose **`kind ∈ {computed-logic, business-rule}`** whose `fixture.expect` is absent/ill-formed. *(Grill-2
+  correction: this IS the engine's own definition of "computes" — `required-kinds.sh` derives `computed`
+  from `kind` alone, and `generating-qa-checklist` does NOT write `requiredKinds` into `checklist.json`; so
+  keying on the reliably-present `kind` is both correct and the only workable trigger. A criterion that
+  computes must be categorized `computed-logic`/`business-rule` by `/qa-scenarios` — the engine's generator
+  already does this; a "computing happy-path" is a mis-categorization, not a gate gap.)* Exit nonzero listing
+  offenders; all-pinned control clean. Config `fixtures.hardBlock` (default `false`) decides block vs advisory.
 - **Confidence (Q1):** a **human-confirmed** pin (`expect.oracleSource:"human"`) → the criterion may
   record `confidence: high` (the oracle is genuinely spec-derived, dodging the "expected could only come
   from backend → low" trap). An **`"llm-suggested"`** or **absent** pin on a computed criterion →
@@ -209,8 +219,9 @@ roadmap/design status. If any invariant lands in `CLAUDE.md`, add it there too.
   `owningChain` (§3/§4).
 - **Q4 terms** — `provenance`→`origin` (avoids `provenance.sh` collision); keep "fixture" but disambiguate
   from the accuracy "fixture project" (§3/§9).
-- **Enforcement trigger** — via `required-kinds.sh derive` (does the row require `computed`?), not `kind`
-  alone (§6). **Additive `fixture` field verified safe** — `validate-checklist-json.sh` ignores unknown
+- **Enforcement trigger** — `kind ∈ {computed-logic, business-rule}` (the engine's own computed definition;
+  grill-2 corrected the earlier "via required-kinds derive" — required-kinds derives computed from kind, and
+  requiredKinds isn't written into checklist.json) (§6). **Additive `fixture` field verified safe** — `validate-checklist-json.sh` ignores unknown
   keys (no reject-additional clause).
 - **Seeded-row verification** limited to entities with a readable surface/probe; else assumed + low
   confidence (§4). **Minimal `identity`** declared, not a full seeder mirror (§3).

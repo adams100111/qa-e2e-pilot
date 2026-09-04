@@ -13,8 +13,10 @@ pinned expected, and fix the multiplicity-0-vs-seed bug — with the qa-e2e-pilo
 **Architecture:** Two new pure dual-engine scripts (`data-baseline.sh`, `check-fixtures.sh`) + edits to the
 qa-kit commands `/qa-spec`, `/qa-scenarios`, `/qa-analyze` (Claude-form) that author `data-baseline.json` and
 the dual-written fixtures (prose oracle line the engine reads natively + a structured `fixture` field qa-kit
-enforces). The "requires computed" decision is made at **authoring time** by `/qa-scenarios` (it already runs
-the engine's checklist derivation) and recorded as the row's `requiredKinds`; the pure gate only reads that.
+enforces). "Computes" is decided by the criterion's `kind` (`computed-logic`/`business-rule`) — the engine's
+own definition, assigned by `generating-qa-checklist` at authoring time and reliably present in `checklist.json`;
+`check-fixtures.sh` keys on `kind` and never reads `requiredKinds` (which the engine doesn't write there) and
+never calls an engine script at runtime.
 
 **Tech Stack:** Bash + `jq`-preferred/`python3`-fallback (repo idiom); dual-engine tests mirroring
 `tests/spec-snapshot/run.sh` + `tests/qa-kit-enforcement/run.sh`.
@@ -50,7 +52,7 @@ the engine's checklist derivation) and recorded as the row's `requiredKinds`; th
 - `tests/check-fixtures/run.sh` **(new)** — dual-engine tests.
 - `qa-kit/commands/qa-spec.md` **(modify)** + `qa-kit/templates/qa-spec-template.md` **(modify)** — author
   `data-baseline.json` + a Data-baseline spec section.
-- `qa-kit/commands/qa-scenarios.md` **(modify)** — dual-write fixtures + mark `requiredKinds` + `baseline+N`.
+- `qa-kit/commands/qa-scenarios.md` **(modify)** — augment the engine checklist with fixtures (dual-write) + relative baseline+N counts.
 - `qa-kit/commands/qa-analyze.md` **(modify)** + `qa-kit/templates/qa-analyze-template.md` **(modify)** —
   a Data-gaps section.
 - `tests/qa-kit-phases/run.sh` **(modify)** — extend the integration test (origin→measured/scoped counts;
@@ -115,14 +117,21 @@ echo "data-baseline: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
 **Files:** Create `qa-kit/scripts/check-fixtures.sh`, `tests/check-fixtures/run.sh`.
 
 **Interfaces:**
-- `check-fixtures.sh <checklist.json>` → for each row that **requires the `computed` kind** — i.e.
-  `requiredKinds` contains `"computed"`, OR (fallback) `kind ∈ {"computed-logic","business-rule"}` — assert a
-  well-formed `fixture.expect`: `expect.path` (non-empty string), `expect.value` (present, string or number),
-  `expect.tolerance` (number), `expect.oracleSource ∈ {"human","llm-suggested"}`. Prints
-  `{ok, missing:[{id,reason}], sources:{human:<n>,llmSuggested:<n>}}`. Exit 0 iff every computed row has a
-  well-formed `expect`; else exit 1 (offenders in `missing`). Rows NOT requiring `computed` are ignored.
-  *(The `requiredKinds` field is populated by `/qa-scenarios` via the engine's derivation at authoring time —
-  this gate is a pure structural read of it, so it never calls an engine script at runtime.)*
+- `check-fixtures.sh <checklist.json>` → for each row whose **`kind ∈ {"computed-logic","business-rule"}`**
+  (case-insensitive) — this IS the engine's own definition of "computes" (`required-kinds.sh`'s
+  `COMPUTED_KIND_RE`, rule 2; verified) — assert a well-formed **absolute** `fixture.expect`: `expect.path`
+  (non-empty string), `expect.value` (present, string or number), `expect.tolerance` (number),
+  `expect.oracleSource ∈ {"human","llm-suggested"}`. Prints `{ok, missing:[{id,reason}],
+  sources:{human:<n>,llmSuggested:<n>}}`. Exit 0 iff every such row has a well-formed absolute `expect`; else
+  exit 1 (offenders in `missing`). Non-computing rows are ignored (multiplicity rows derive `bake`, not
+  `computed` — verified — so they are NOT gated here; their relative count form is asserted by the run, not by
+  this gate).
+  *(Rationale, verified: `generating-qa-checklist` does NOT write `requiredKinds` into `checklist.json`
+  (Step 7 derives kinds later), so this gate keys on `kind` — a REQUIRED, reliably-present field — not on
+  `requiredKinds`. Keying on `kind` is also no less powerful, since `required-kinds` derives `computed`
+  from `kind` alone. A criterion that computes must be categorized `computed-logic`/`business-rule` by
+  `/qa-scenarios` — the engine's generator already does this; a mis-categorized "computing happy-path" is an
+  authoring error fixed by correct categorization, not by this gate. No engine script is called at runtime.)*
 
 - [ ] **Step 1: Write the failing tests** (`tests/check-fixtures/run.sh`, dual-engine + cross-engine + a
   malformed case; mirror `tests/qa-kit-enforcement/run.sh`):
@@ -134,20 +143,20 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/check-fixtures.sh"
 pass=0; fail=0
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
-OKROW='{"id":"C1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","requiredKinds":["computed"],"fixture":{"actionInput":{"q":3},"expect":{"path":"total","value":"0.003","tolerance":0,"oracleSource":"human"}}}'
-DISPLAY='{"id":"C2","surface":"/x","kind":"empty-state","tags":["read-only"],"action":"a","requiredKinds":[]}'
-MISSING='{"id":"C3","surface":"/x","kind":"computed-logic","tags":[],"action":"a","requiredKinds":["computed"]}'
-HAPPYCOMP='{"id":"C4","surface":"/x","kind":"happy-path","tags":[],"action":"a","requiredKinds":["bake","computed"]}'
+OKROW='{"id":"C1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"actionInput":{"q":3},"expect":{"path":"total","value":"0.003","tolerance":0,"oracleSource":"human"}}}'
+DISPLAY='{"id":"C2","surface":"/x","kind":"empty-state","tags":["read-only"],"action":"a"}'
+MISSING='{"id":"C3","surface":"/x","kind":"computed-logic","tags":[],"action":"a"}'
+BIZRULE='{"id":"C4","surface":"/x","kind":"business-rule","tags":[],"action":"a"}'
 run_engine() {
   local E="$1" T; T="$(mktemp -d)"
   printf '[%s,%s]' "$OKROW" "$DISPLAY" > "$T/ok.json"
   QA_ENGINE=$E bash "$SH" "$T/ok.json" >/dev/null; check "$E computed pinned + display exempt -> ok" "$?" "0"
   printf '[%s]' "$MISSING" > "$T/m.json"
   local out; out="$(QA_ENGINE=$E bash "$SH" "$T/m.json")"; local rc=$?
-  check "$E missing expect -> exit 1" "$rc" "1"
+  check "$E computed-logic missing expect -> exit 1" "$rc" "1"
   check "$E missing lists C3" "$(printf '%s' "$out" | python3 -c 'import json,sys;print(any(m["id"]=="C3" for m in json.load(sys.stdin)["missing"]))')" "True"
-  printf '[%s]' "$HAPPYCOMP" > "$T/hc.json"
-  QA_ENGINE=$E bash "$SH" "$T/hc.json" >/dev/null 2>&1; check "$E computing happy-path caught (requiredKinds)" "$?" "1"
+  printf '[%s]' "$BIZRULE" > "$T/br.json"
+  QA_ENGINE=$E bash "$SH" "$T/br.json" >/dev/null 2>&1; check "$E business-rule missing expect -> exit 1 (kind trigger)" "$?" "1"
   printf '%s' '{"nope":1}' > "$T/na.json"
   QA_ENGINE=$E bash "$SH" "$T/na.json" >/dev/null 2>&1; check "$E non-array dies" "$?" "1"
   rm -rf "$T"
@@ -164,15 +173,16 @@ echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
 
 - [ ] **Step 2: Run → FAIL**.
 - [ ] **Step 3: Implement `qa-kit/scripts/check-fixtures.sh`** — idiom from `qa-kit/scripts/verify-plan.sh`.
-  Parse the top-level array (die if not array). A row "requires computed" iff `(.requiredKinds // [] | index("computed"))`
-  OR `(.kind | IN("computed-logic","business-rule"))`. For each such row, `expect` is well-formed iff
-  `fixture.expect.path` is a non-empty string, `fixture.expect.value` is present (string or number),
-  `fixture.expect.tolerance` is a number, and `fixture.expect.oracleSource` ∈ `{"human","llm-suggested"}`.
-  Build `missing` = `[{id, reason}]` for offenders; `sources` counts by oracleSource; `ok = (missing|length==0)`.
-  Print the object (sorted for cross-engine byte-identity — jq `--sort-keys`, python `sort_keys=True`, `missing`
-  sorted by id). Exit `0` iff ok else `1`.
+  Parse the top-level array (die if not array). A row is "computing" iff
+  `(.kind | ascii_downcase | IN("computed-logic","business-rule"))` — this is the ONLY trigger (matches the
+  engine's `COMPUTED_KIND_RE`; do NOT read `requiredKinds`, which isn't written into `checklist.json`). For each
+  computing row, the absolute `expect` is well-formed iff `fixture.expect.path` is a non-empty string,
+  `fixture.expect.value` is present (string or number), `fixture.expect.tolerance` is a number, and
+  `fixture.expect.oracleSource` ∈ `{"human","llm-suggested"}`. Build `missing` = `[{id, reason}]` for offenders;
+  `sources` counts by oracleSource; `ok = (missing|length==0)`. Print the object (sorted for cross-engine
+  byte-identity — jq `--sort-keys`, python `sort_keys=True`, `missing` sorted by id). Exit `0` iff ok else `1`.
 - [ ] **Step 4: Run → `FAIL=0`**; `bash -n`.
-- [ ] **Step 5: Commit** `feat(qa-kit): check-fixtures.sh — computed criteria must carry a well-formed pinned expect (structural gate on requiredKinds; qa-verify untouched)`
+- [ ] **Step 5: Commit** `feat(qa-kit): check-fixtures.sh — computed criteria (kind=computed-logic/business-rule) must carry a well-formed pinned expect (qa-verify untouched)`
 
 ## Task 3: `/qa-spec` authors `data-baseline.json` + template section
 
@@ -192,30 +202,38 @@ echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
   exit 0 (engine untouched); `bash tests/data-baseline/run.sh` green.
 - [ ] **Step 5: Commit** `feat(qa-kit): /qa-spec authors + validates data-baseline.json (origin/identity/scope); template Data-baseline section`
 
-## Task 4: `/qa-scenarios` dual-writes fixtures + marks requiredKinds + baseline+N
+## Task 4: `/qa-scenarios` augments the checklist with fixtures + relative baseline+N
 
 **Files:** Modify `qa-kit/commands/qa-scenarios.md`.
 
-- [ ] **Step 1: Command body** — extend `/qa-scenarios` so, for each criterion, it authors BOTH:
-  (a) **prose** — the pinned `actionInput` values in the `action` text and the pinned expected on the oracle
-  line of `scenarios.md`/`checklist.md` (where the engine's agent already reads the oracle); (b) **struct** — a
-  `fixture:{actionInput, expect:{path,value,tolerance,oracleSource}, dependsOn:[…]}` field on the `checklist.json`
-  row. `expect.value` is a string for exact decimals. Mark each row's `requiredKinds` from the engine's derivation
-  (it already runs `/qa-e2e-pilot:generating-qa-checklist`, which derives kinds) so `check-fixtures.sh` can read it.
-- [ ] **Step 2: HITL confirmation (Q1)** — for any criterion whose `requiredKinds` includes `computed`, the
-  command PROMPTS the operator to confirm the pinned expected value; set `expect.oracleSource:"human"` only on
-  confirmation, else `"llm-suggested"`. State plainly that unconfirmed pins run at `confidence: low`.
-- [ ] **Step 3: Multiplicity via baseline (Q2/Q3)** — for empty-state/multiplicity criteria, write the expected
-  as the FORMULA against the measured, scoped baseline: empty-state `expect count = <measured baseline in scope>`,
-  N-create `expect count = baseline + N`. The concrete number is resolved at run start (Task 6); the fixture
-  records the delta + the `dependsOn` baseline entity/scope.
+- [ ] **Step 1: Command body — AUGMENT the engine's checklist (do not write it from scratch).** `/qa-scenarios`
+  first runs `/qa-e2e-pilot:generating-qa-checklist` (which writes `scenarios.md`/`checklist.md`/`checklist.json`
+  and assigns each criterion's `kind`, including `computed-logic`/`business-rule` for computing criteria — that
+  categorization IS the enforcement trigger, so a computing criterion must carry the computed kind, not
+  `happy-path`). Then, for each criterion, `/qa-scenarios` **augments** that output: (a) **prose** — put the
+  concrete `actionInput` values into the `action` text and the pinned expected on the criterion's oracle line
+  (upgrading "the rule" to a concrete pinned value); (b) **struct** — add a `fixture` field to the `checklist.json`
+  row. It does NOT set `requiredKinds` (the gate keys on `kind`, and the engine derives kinds itself).
+  `expect.value` is a string for exact decimals. `fixture.dependsOn` is `[{entity, scope}]` (objects — same
+  shape as `baselineOf` below), not `"Entity:key"` strings.
+- [ ] **Step 2: HITL — confirm BOTH input and expected (design Q, this grill).** For any `computed-logic`/
+  `business-rule` criterion, the command PROMPTS the operator to confirm/edit **both** the `actionInput` (the
+  deliberately-tricky values — the LLM proposes defaults, the human owns the choice) **and** the pinned
+  `expect.value`. Set `expect.oracleSource:"human"` (→ eligible for `confidence: high`) only when BOTH are
+  human-confirmed; otherwise `"llm-suggested"` (→ `confidence: low` at run). State this plainly.
+- [ ] **Step 3: Multiplicity via measured, scoped baseline (Q2/Q3) — RELATIVE expect form.** For
+  empty-state/multiplicity criteria (`kind` derives `bake`, NOT `computed` — so they are not `check-fixtures`
+  gated), write the RELATIVE expect: `fixture.expect = { "path":"count", "baselineOf":{"entity":"Category",
+  "scope":<scope|null>}, "delta": N }` — empty-state `delta:0`, N-create `delta:N`. The concrete count is
+  resolved at run start from the measured baseline (Task 6 via `data-baseline.sh expected-count`). This is a
+  distinct expect shape from the absolute `{path,value,tolerance}` used by computed criteria.
 - [ ] **Step 4: Enforcement call** — after writing `checklist.json`, run
   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/check-fixtures.sh" .qa/specs/<target>/checklist.json`; surface any
   `missing` to the operator (advisory unless `fixtures.hardBlock`).
 - [ ] **Step 5: Docs** — update the command's guardrails (dual-write single-source; prose is the engine's input,
   struct is qa-kit's mirror).
 - [ ] **Step 6: Gate + Commit** — build/validate exit 0; `bash tests/check-fixtures/run.sh` green.
-  `feat(qa-kit): /qa-scenarios dual-writes fixtures (prose oracle + struct) + HITL-confirmed expects + baseline+N counts`
+  `feat(qa-kit): /qa-scenarios dual-writes fixtures (prose oracle + struct) + HITL-confirmed input+expected + relative baseline+N counts`
 
 ## Task 5: `/qa-analyze` data-gaps section
 
@@ -249,8 +267,7 @@ echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
 - [ ] **Step 1** — append assertions to `tests/qa-kit-phases/run.sh` (reuse its `check` + tmp-dir pattern):
   `data-baseline.sh validate` accepts a seeded+created baseline; `check-fixtures.sh` flags a computed row with no
   `expect` and passes when pinned; `expected-count` gives measured 2 → empty-state 2 and after +1 → 3, and a
-  second scope with measured 5 → 5 then 6; a computing `happy-path` (`requiredKinds:["bake","computed"]`) with no
-  `expect` is flagged; an `oracleSource:"llm-suggested"` pin is present-but-flagged-low (assert `sources.llmSuggested>=1`).
+  second scope with measured 5 → 5 then 6; a `business-rule` row with no `expect` is flagged (kind trigger); an `oracleSource:"llm-suggested"` pin is present-but-flagged-low (assert `sources.llmSuggested>=1`).
 - [ ] **Step 2: Run → green** (`bash tests/qa-kit-phases/run.sh`).
 - [ ] **Step 3: Commit** `test(qa-kit): phase integration — origin baseline, check-fixtures gate, measured/scoped counts, oracleSource`
 
@@ -269,6 +286,7 @@ echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
   entry: "the 0-state count is the measured, scoped seeded baseline, not literally zero."
 - [ ] **Step 3: qa-kit/README.md** — a `## Data (TDQA)` section (baseline + fixtures + the enforcement gate) and
   the updated helper list (`data-baseline.sh`, `check-fixtures.sh`).
+- [ ] **Step 3b: config toggle** — add `"fixtures": { "hardBlock": false }` to `.qa/config.json.example` and document it (advisory by default; `true` makes an unpinned computed criterion block `/qa-scenarios`).
 - [ ] **Step 4: CLAUDE.md** — extend the qa-kit invariant: "computed criteria carry a human-confirmed pinned
   expected (`check-fixtures.sh`); the `origin`/data-baseline concept fixes multiplicity; still engine-untouched."
 - [ ] **Step 5: Status** — mark increment 6a in the roadmap + the design spec status; note 6b (auto-seed) pending.
@@ -278,7 +296,7 @@ echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
 ## Self-Review
 
 **1. Spec coverage:** layered baseline+fixtures → Tasks 1/3/4; declare-and-verify → Tasks 3/6 (6b deferred);
-folded into spec/scenarios/analyze → Tasks 3/4/5; enforcement (computed→pinned, via requiredKinds) → Task 2/4;
+folded into spec/scenarios/analyze → Tasks 3/4/5; enforcement (computed→pinned, keyed on `kind`) → Task 2/4;
 multiplicity fix via measured/scoped pinned counts → Tasks 4/6/7; Q1 human-confirm confidence → Task 4 step 2 +
 Task 6; Q3 scope → Tasks 3/4/6; Q4 origin naming → constraints + Task 1/8; docs → every task + Task 8. ✅
 Engine-untouched + additive-field-safe are asserted in Task 3/4/5 gates.
@@ -288,8 +306,7 @@ derivation rule + field contracts + the sibling idiom to copy (`spec-snapshot.sh
 repo's plan style. No TBD/"handle edge cases".
 
 **3. Type consistency:** `origin ∈ {seeded,created}`, `expect:{path,value(string for decimals),tolerance(number),
-oracleSource∈{human,llm-suggested}}`, `check-fixtures` trigger = `requiredKinds ∋ "computed" OR kind ∈
-{computed-logic,business-rule}`, `expected-count <measured> <delta>` — identical across Tasks 1/2/4/6/7.
+oracleSource∈{human,llm-suggested}}`, `check-fixtures` trigger = `kind ∈ {computed-logic,business-rule}` (the engine's own computed definition), `expected-count <measured> <delta>` — identical across Tasks 1/2/4/6/7.
 
 ## Execution Handoff
 
