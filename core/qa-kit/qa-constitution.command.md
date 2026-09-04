@@ -38,12 +38,11 @@ Forwarded as-is to the role flow: `--refresh`, `--global`, `--from-global` (see
    - This is **awareness only** — never merge or preserve the prior role set; step 4 always
      writes the wholesale-regenerated set.
 
-4. **Write the constitution.** Two files, both derived from the same `<personas-tmp>` +
-   `<new-version>` + a single timestamp (ISO-8601, computed once and reused for both calls so
-   they agree):
+4. **Write the constitution.** Two files, both stamped with the same `<personas-tmp>` +
+   `<new-version>`; the human doc additionally takes an ISO-8601 `<timestamp>` (compute it once):
    - `.qa/constitution.state.json` ← `scripts/qa-kit/constitution.sh state <personas-tmp>
      <new-version>` (authoritative machine state; later qa-kit steps read this file, never the
-     `.md`).
+     `.md`). `state` takes no timestamp — the machine state is timestamp-free by design.
    - `.qa/constitution.md` ← `scripts/qa-kit/constitution.sh render <personas-tmp> <new-version>
      core/qa-kit/constitution-template.md <timestamp>` (human doc; always renders from the
      pristine template — see that file's regeneration note before assuming edits persist).
