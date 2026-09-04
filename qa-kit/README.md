@@ -40,8 +40,10 @@ from the plan (increment-4 finding — see ADR-0022). qa-kit closes that with a 
 - `runconfig-merge.sh` — effective run config = spec deltas over `.qa/config.json` (per-run, no mutation).
 - `data-baseline.sh` — validate `data-baseline.json` (origin/identity/scope) + `expected-count` (measured + delta).
 - `check-fixtures.sh` — computing criteria (`kind ∈ {computed-logic, business-rule}`) must carry a well-formed pinned expect.
+- `detect-seed.sh` — (6b) propose the stack's seed command by READING the engine's `stack-profile.json` (backend component's `framework`/`orm.name`); never modifies `detecting-stack-profile`.
+- `auto-seed.sh` — (6b) `decide` the opt-in write gate: `allowApiWrites` + non-empty `seedableEnvMarker` + `environment != production` (mirrors the engine's write gate). Decides only; never execs.
 
-All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,qa-kit-phases}/run.sh`
+All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases}/run.sh`
 (cross-engine byte-identity + malformed-input symmetry). The full **phased ≡ one-shot** verdict
 equivalence needs a live browser agent and is the **manual accuracy run**'s job (`docs/harness-adapters.md`),
 not a headless test.
@@ -63,9 +65,13 @@ qa-kit is **test-data-driven**: declare the data, pin the expected results, then
 - **`check-fixtures.sh`** (beside `verify-plan.sh`) flags a computing criterion with no well-formed pinned
   expect; `.qa/config.json` `fixtures.hardBlock` (default false) chooses advisory vs block.
 
-**Declare-and-verify only (6a): qa-kit writes nothing to the app** — it reads the baseline back and defers a
-criterion whose required seeded precondition is absent. Opt-in auto-seeding via the stack's mechanism
-(disposable env only) is the deferred **6b**. See [ADR-0023](../docs/adr/0023-qa-kit-tdqa-data-layer.md).
+**Establishment: declare-and-verify by default (writes nothing)** — the run reads the baseline back and defers a
+criterion whose required seeded precondition is absent. **Opt-in auto-seed (6b)** can first *establish* the
+`seeded` baseline, disposable-env only: `/qa-spec` proposes the stack's seed command via `detect-seed.sh` (a
+human confirms or edits it into `.qa/specs/<target>/seed.json`), and at pre-flight the run runs it **only** when
+`auto-seed.sh decide` returns `seed:true` (writes allowed + disposable + not production) **and** a human
+confirms — then falls through to the same declare-and-verify read-back to confirm the baseline landed. On a
+non-disposable env qa-kit never writes. See [ADR-0023](../docs/adr/0023-qa-kit-tdqa-data-layer.md).
 
 ## Invariants qa-kit inherits (does not redefine)
 
