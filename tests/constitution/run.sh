@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SH="$DIR/../../scripts/qa-kit/constitution.sh"   # adjust to chosen location
+pass=0; fail=0
+check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
+run_engine() {
+  local E="$1" T; T="$(mktemp -d)"
+  printf '%s' '[{"id":"admin","role":"admin","plane":"global","auth":"a@x (seeded)"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"}]' > "$T/p.json"
+  printf '%s' '[{"entity":"submission","owningChain":["team_id"],"roleScope":{"admin":"owns","viewer":"read-scoped"}}]' > "$T/m.json"
+  # version is deterministic + engine-stable + auth-independent
+  local v1 v2; v1="$(QA_ENGINE=$E bash "$SH" version "$T/p.json" "$T/m.json")"
+  printf '%s' '[{"id":"admin","role":"admin","plane":"global","auth":"DIFFERENT (seeded)"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"}]' > "$T/p2.json"
+  v2="$(QA_ENGINE=$E bash "$SH" version "$T/p2.json" "$T/m.json")"
+  check "$E version non-empty" "$([ -n "$v1" ] && echo y)" "y"
+  check "$E version auth-independent" "$v1" "$v2"
+  # order-independent: reordered personas -> same version
+  printf '%s' '[{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"},{"id":"admin","role":"admin","plane":"global","auth":"a@x (seeded)"}]' > "$T/p3.json"
+  check "$E version order-independent" "$(QA_ENGINE=$E bash "$SH" version "$T/p3.json" "$T/m.json")" "$v1"
+  # a role change -> different version
+  printf '%s' '[{"id":"admin","role":"superadmin","plane":"global","auth":"a@x (seeded)"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"}]' > "$T/p4.json"
+  check "$E role-change changes version" "$([ "$(QA_ENGINE=$E bash "$SH" version "$T/p4.json" "$T/m.json")" != "$v1" ] && echo y)" "y"
+  # a roleScope VALUE change -> different version (R2-Q6: values, not just keys)
+  printf '%s' '[{"entity":"submission","owningChain":["team_id"],"roleScope":{"admin":"read-scoped","viewer":"read-scoped"}}]' > "$T/m2.json"
+  check "$E scope-value change bumps version" "$([ "$(QA_ENGINE=$E bash "$SH" version "$T/p.json" "$T/m2.json")" != "$v1" ] && echo y)" "y"
+  # diff: added / removed / changed
+  printf '%s' '{"roles":[{"id":"admin","role":"admin","plane":"global"},{"id":"guest","role":"guest","plane":"contextual"}],"version":"old"}' > "$T/prev.json"
+  printf '%s' '{"roles":[{"id":"admin","role":"superadmin","plane":"global"},{"id":"auditor","role":"auditor","plane":"global"}],"version":"new"}' > "$T/curr.json"
+  local d; d="$(QA_ENGINE=$E bash "$SH" diff "$T/prev.json" "$T/curr.json")"
+  check "$E diff added auditor" "$(printf '%s' "$d" | python3 -c 'import json,sys;print("auditor" in json.load(sys.stdin)["added"])')" "True"
+  check "$E diff removed guest"  "$(printf '%s' "$d" | python3 -c 'import json,sys;print("guest" in json.load(sys.stdin)["removed"])')" "True"
+  check "$E diff changed admin"  "$(printf '%s' "$d" | python3 -c 'import json,sys;print(any(c["id"]=="admin" for c in json.load(sys.stdin)["changed"]))')" "True"
+  check "$E empty-prev all added" "$(printf '{}' > "$T/e.json"; QA_ENGINE=$E bash "$SH" diff "$T/e.json" "$T/curr.json" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["added"]))')" "2"
+  # render: substitutes placeholders (human-only — no state block, R3-Q4)
+  printf '%s\n' '# QA Constitution' 'VERSION: {{VERSION}} @ {{TIMESTAMP}}' '{{ROLES_TABLE}}' > "$T/tmpl.md"
+  local out; out="$(QA_ENGINE=$E bash "$SH" render "$T/p.json" "abc123" "$T/tmpl.md" "2026-09-04T00:00:00Z")"
+  check "$E render has version" "$(printf '%s' "$out" | grep -c 'abc123')" "1"
+  check "$E render has admin row" "$(printf '%s' "$out" | grep -c '| admin | admin | global |')" "1"
+  # state subcommand emits the authoritative machine state (R3-Q4: sibling file, not in the md)
+  local st; st="$(QA_ENGINE=$E bash "$SH" state "$T/p.json" "abc123")"
+  check "$E state has version" "$(printf '%s' "$st" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')" "abc123"
+  check "$E state has admin role" "$(printf '%s' "$st" | python3 -c 'import json,sys;print(any(r["id"]=="admin" for r in json.load(sys.stdin)["roles"]))')" "True"
+  rm -rf "$T"
+}
+command -v jq >/dev/null 2>&1 && run_engine jq
+command -v python3 >/dev/null 2>&1 && run_engine python3
+echo "constitution: PASS=$pass FAIL=$fail"
+[ "$fail" -eq 0 ]
