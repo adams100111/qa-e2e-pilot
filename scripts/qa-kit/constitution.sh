@@ -93,6 +93,7 @@ canonical_string() {
           | map(.id + "|" + .role + "|" + .plane)
           | join("\n")) as $pBlock
       | ($matrix
+          | sort_by(.entity)
           | map(
               . as $row
               | ($row.roleScope // {}) as $rs
@@ -100,7 +101,6 @@ canonical_string() {
               | (($row.owningChain // []) | join(",")) as $ocStr
               | ($row.entity + "|" + $ocStr + "|" + $rsStr)
             )
-          | sort
           | join("\n")) as $mBlock
       | $pBlock + "\n--\n" + $mBlock
     ' || die "canonical_string: jq failed (are '${personas}'/'${matrix}' valid JSON?)."
@@ -113,18 +113,18 @@ with open(sys.argv[1]) as f:
 with open(sys.argv[2]) as f:
     matrix = json.load(f)
 
-p_lines = sorted(
-    "{}|{}|{}".format(p["id"], p["role"], p["plane"]) for p in personas
+p_sorted = sorted(personas, key=lambda p: p["id"])
+p_block = "\n".join(
+    "{}|{}|{}".format(p["id"], p["role"], p["plane"]) for p in p_sorted
 )
-p_block = "\n".join(p_lines)
 
 m_lines = []
-for row in matrix:
+for row in sorted(matrix, key=lambda r: r["entity"]):
     rs = row.get("roleScope") or {}
     rs_str = ",".join("{}:{}".format(k, rs[k]) for k in sorted(rs.keys()))
     oc_str = ",".join(row.get("owningChain") or [])
     m_lines.append("{}|{}|{}".format(row["entity"], oc_str, rs_str))
-m_block = "\n".join(sorted(m_lines))
+m_block = "\n".join(m_lines)
 
 sys.stdout.write(p_block + "\n--\n" + m_block)
 ' "$personas" "$matrix" || die "canonical_string: python3 failed (are '${personas}'/'${matrix}' valid JSON?)."

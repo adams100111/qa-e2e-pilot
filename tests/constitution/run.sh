@@ -44,5 +44,22 @@ run_engine() {
 }
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
+
+# Cross-engine regression: jq and python3 must build the EXACT same canonical
+# string (and therefore hash) for the same logical role state, even when
+# persona ids / entity names are prefixes of one another (e.g. "admin" vs
+# "admin_ro"). Sorting the ALREADY-COMPOSED "id|role|plane" delimited string
+# (where "|" == 0x7C sorts after letters/digits/_/-) diverges from sorting by
+# the structured field first — this check catches that divergence directly.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  T="$(mktemp -d)"
+  printf '%s' '[{"id":"admin_ro","role":"viewer","plane":"global","auth":"a@x (seeded)"},{"id":"admin","role":"admin","plane":"global","auth":"a@x (seeded)"}]' > "$T/p.json"
+  printf '%s' '[{"entity":"team_member","owningChain":["team_id"],"roleScope":{"viewer":"read-scoped"}},{"entity":"team","owningChain":[],"roleScope":{"admin":"owns"}}]' > "$T/m.json"
+  V_JQ="$(QA_ENGINE=jq bash "$SH" version "$T/p.json" "$T/m.json")"
+  V_PY="$(QA_ENGINE=python3 bash "$SH" version "$T/p.json" "$T/m.json")"
+  check "cross-engine version identical (prefix-colliding ids)" "$V_JQ" "$V_PY"
+  rm -rf "$T"
+fi
+
 echo "constitution: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
