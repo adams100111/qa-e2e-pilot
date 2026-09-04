@@ -38,11 +38,34 @@ from the plan (increment-4 finding — see ADR-0022). qa-kit closes that with a 
 - `spec-snapshot.sh` — `create` (copy+stamp+override) / `drift`.
 - `verify-plan.sh` — out-of-plan-act enforcement.
 - `runconfig-merge.sh` — effective run config = spec deltas over `.qa/config.json` (per-run, no mutation).
+- `data-baseline.sh` — validate `data-baseline.json` (origin/identity/scope) + `expected-count` (measured + delta).
+- `check-fixtures.sh` — computing criteria (`kind ∈ {computed-logic, business-rule}`) must carry a well-formed pinned expect.
 
 All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,qa-kit-phases}/run.sh`
 (cross-engine byte-identity + malformed-input symmetry). The full **phased ≡ one-shot** verdict
 equivalence needs a live browser agent and is the **manual accuracy run**'s job (`docs/harness-adapters.md`),
 not a headless test.
+
+## Data (TDQA)
+
+qa-kit is **test-data-driven**: declare the data, pin the expected results, then the run asserts.
+
+- **`/qa-spec`** authors `.qa/specs/<target>/data-baseline.json` — the entities scenarios touch, each
+  flagged **`origin: seeded`** (pre-existing baseline; declare a minimal identity to verify it) or
+  **`created`** (the run makes it via the UI), optionally tenant/persona-`scope`d.
+- **`/qa-scenarios`** pins each criterion's `actionInput` + expected into both the prose oracle (the engine
+  reads it natively) and a structured `checklist.json` `fixture` field. For **computed/business-rule**
+  criteria a human confirms **both** the tricky input and the expected at the HITL gate — that (and only
+  that) earns `confidence: high`; an `llm-suggested` pin runs `confidence: low`.
+- **The multiplicity fix:** because the baseline distinguishes seeded from created, empty-state expects the
+  **measured seeded baseline** (not 0) and N-create expects `baseline + N` — authored into the fixtures, so
+  the engine is untouched.
+- **`check-fixtures.sh`** (beside `verify-plan.sh`) flags a computing criterion with no well-formed pinned
+  expect; `.qa/config.json` `fixtures.hardBlock` (default false) chooses advisory vs block.
+
+**Declare-and-verify only (6a): qa-kit writes nothing to the app** — it reads the baseline back and defers a
+criterion whose required seeded precondition is absent. Opt-in auto-seeding via the stack's mechanism
+(disposable env only) is the deferred **6b**. See [ADR-0023](../docs/adr/0023-qa-kit-tdqa-data-layer.md).
 
 ## Invariants qa-kit inherits (does not redefine)
 

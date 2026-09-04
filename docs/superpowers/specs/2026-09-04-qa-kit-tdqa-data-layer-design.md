@@ -1,6 +1,6 @@
 # qa-kit TDQA data/fixtures layer — design
 
-> **Status:** design approved 2026-09-04 (brainstorming). Feeds `writing-plans`. This is increment **6**
+> **Status:** design approved 2026-09-04; **6a IMPLEMENTED 2026-09-05** (helpers + command augmentations; ADR-0023). 6b (auto-seed) pending. This is increment **6**
 > of qa-kit (the spine — increments 1–5 — is complete on Claude; see ADR-0022).
 
 ## 1. Problem
