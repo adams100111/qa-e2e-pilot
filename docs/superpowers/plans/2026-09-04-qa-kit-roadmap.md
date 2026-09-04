@@ -1,8 +1,6 @@
 # qa-kit — implementation roadmap (all increments)
 
-**The full plan, one page.** Design: `docs/superpowers/specs/2026-09-04-qa-kit-design.md`. Each increment below produces working, testable software on its own; each gets a full no-placeholder plan written **just before** it's built (informed by the prior increment's real outputs). Increment 1's detailed plan already exists.
-
-**Why increment-by-increment, not five detailed plans upfront:** increments consume interfaces earlier ones *create* (the constitution version format, the `checklist.json` enforcement shape, the spec-roles snapshot). Writing them all now = building on assumed/unbuilt interfaces = placeholders + rewrites. The roles investigation reshaped increment 1 the moment it hit real code; the same will happen downstream. So: this roadmap is firm on **scope + interface contracts + dependencies**; the per-task code is pinned per increment at build time.
+**The full plan, one page.** Design: `docs/superpowers/specs/2026-09-04-qa-kit-design.md`. Each increment produces working, testable software on its own; **all five detailed plans are now written ahead** (per the chosen approach). Because later increments consume interfaces earlier ones *create* (the constitution version format, the `checklist.json` enforcement shape, the `spec-roles` snapshot), their **code steps are marked PROVISIONAL inline** — firm on scope/interface-contracts/test-contracts, with a "pin the exact shape from the landed increment before writing the code" note at the top of each dependent plan. Execute in order (1 → 2/3 → 4 → 5), re-pinning each plan's provisional bits against the prior increment's real output as you go.
 
 ---
 
@@ -26,7 +24,7 @@
 - **Produces:** the qa-kit install path (`/qa-constitution` et al. installable as the qa-kit plugin); the build/validate story for two plugins.
 - **Consumes:** increment 1's command (the first thing packaged).
 - **Depends on:** increment 1. *(Could run in parallel conceptually, but sequencing after 1 gives it a real command to package.)*
-- **Tasks (provisional, pinned after the investigation):** (1) investigate + decide the 2-plugin mechanism; (2) add the qa-kit manifest + marketplace entry; (3) build/`validate-adapters` coverage for both plugins; (4) install docs (`harnesses/`/`docs/harness-adapters.md`).
+- **Tasks (mechanism resolved):** (1) qa-kit manifest + commands + engine symlinks (Claude); (2) 2nd marketplace entry; (3) `build-adapter.sh` plugin-id axis for the non-Claude dist; (4) install docs. See the detailed plan.
 
 ## Increment 3 — `/qa-spec` + spec snapshot (freeze semantics) · **plan written** (`2026-09-04-qa-kit-03-spec.md`)
 
