@@ -4,7 +4,7 @@
 # resolve against the engine's co-installed .agents/skills/ (codex's split layout: skills under
 # .agents/skills/, agents under .codex/agents/). See ADR-0024 co-install contract.
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"   # repo root (qa-kit/harnesses/codex -> 3 up)
 QAKIT="$ROOT/qa-kit"
 PROJ="${1:?usage: install-codex.sh <project-dir>}"
 [ -d "$PROJ/.agents/skills/detecting-stack-profile" ] || {
