@@ -12,7 +12,7 @@ qa-kit today pins the **oracle rule** per criterion but not the **data**. Concre
   (sub-cent, boundaries, specific N) are left to chance.
 - The concrete **expected output** is recomputed live from the rule, not pinned or enforced — the
   `checklist.json` schema has no expected-value field, only `assertedState:{entity,readBackPath,expectChange:bool}`.
-- There is **no seeded-vs-created provenance**, which produces a real latent bug: the engine's
+- There is **no seeded-vs-created origin** distinction, which produces a real latent bug: the engine's
   `multiplicity-0` oracle is *"empty list, zero count… only true before any create criterion runs"*
   (`CONTEXT.md`, `generating-qa-checklist`). That silently assumes the entity **starts at zero rows** —
   **wrong** in any app with seeded base data (seeded categories, a seeded admin). The run has no way to
@@ -24,7 +24,7 @@ run asserts* — while keeping the qa-e2e-pilot **engine byte-for-byte unchanged
 
 ## 2. Decisions (settled in brainstorming)
 
-1. **Layered** — a spec-level **data baseline** (provenance) + **per-criterion fixtures** (input+expected).
+1. **Layered** — a spec-level **data baseline** (origin: seeded/created) + **per-criterion fixtures** (input+expected).
    Not either/or: the baseline fixes multiplicity/reachability; the fixtures give TDD-style pinned
    assertions. Both are what "define users/products/categories… then expect the results" describes.
 2. **Establishment = declare-and-verify (default) + opt-in auto-seed (disposable env only).** Default
@@ -148,7 +148,7 @@ structured `fixture` field are qa-kit artifacts (§3 mechanism 2) used only by q
   `confidence: low` at run — pinning without human review only buys determinism, not independence, and we
   label that honestly rather than inflate confidence.
 - `/qa-analyze` gains a **data-gap** section: computed criteria without a pinned expect; `seeded`
-  baseline rows no criterion depends on; `expected-created` entities no scenario creates.
+  baseline rows no criterion depends on; `created` entities no scenario actually creates.
 
 ## 7. Stack-seed detection (opt-in auto-seed only)
 
