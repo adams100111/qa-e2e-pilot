@@ -5,10 +5,11 @@
 Accepted, 2026-09-04. Implements `docs/superpowers/specs/2026-09-04-qa-kit-design.md`. Increment 1 of
 the roadmap (`docs/superpowers/plans/2026-09-04-qa-kit-roadmap.md`) has landed: `/qa-constitution`
 (`constitution.sh` version/diff/state/render + the command body). Increment 2 (second-plugin
-packaging, dependencies model) and increment 3 (`/qa-spec` + `spec-snapshot.sh` copy/stamp/override +
-drift) have since landed too. The remaining increments — (4) `/qa-scenarios`/`/qa-analyze` + the one
-enforcement compilation, (5) `/qa-run` wiring + fixture tests — are sequenced but not yet built; this
-ADR records the decisions they must all honor, not a finished system.
+packaging, dependencies model), increment 3 (`/qa-spec` + `spec-snapshot.sh` copy/stamp/override +
+drift), and increment 4 (`/qa-scenarios` + `/qa-analyze` + the enforcement seam `verify-plan.sh`,
+with `qa-verify` unmodified) have since landed too. The remaining increment — (5) `/qa-run` wiring +
+fixture tests — is sequenced but not yet built; this ADR records the decisions they must all honor,
+not a finished system.
 
 **Correction (2026-09-04, during increment 2).** Decision 2's original wording assumed qa-kit would
 reuse the engine's files via **symlinks** and an explicit `commands` **array**. Both were disproven
