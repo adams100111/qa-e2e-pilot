@@ -10,7 +10,26 @@ recomputation, probing, verdicts, evidence). qa-kit adds the *process*, not new 
 Enable the `qa-kit` entry from this repo's marketplace. Its `plugin.json` declares
 `"dependencies": ["qa-e2e-pilot"]`, so the engine is co-installed. qa-kit reuses the engine's skills by
 qualified slug (`/qa-e2e-pilot:<skill>`) and bundles its own scripts under `qa-kit/scripts/`. The engine
-installs standalone and unchanged. **Non-Claude harnesses are not yet supported** (deferred — see ADR-0022).
+installs standalone and unchanged.
+
+## Running on other harnesses (Codex · Pi · opencode)
+
+Since increment 7 ([ADR-0024](../docs/adr/0024-qa-kit-multi-harness.md)) qa-kit runs on all four harnesses.
+Claude is the reference build; the others are generated from the shared `qa-kit/core/` (a qa-kit-owned copy of
+the engine's ADR-0017 pipeline) into git-ignored `qa-kit/dist/<h>/` and installed per harness. **Install the
+engine adapter for that harness FIRST** (the co-install contract — qa-kit's step commands reference the
+engine's skills; each installer aborts if the engine's skills dir is absent):
+
+```bash
+bash harnesses/pi/install-pi.sh <project>          # engine first  (or codex / opencode)
+bash qa-kit/harnesses/pi/install-pi.sh <project>   # then qa-kit
+```
+
+Skill references render per harness — Claude `/qa-e2e-pilot:<name>`; **Pi/Codex** a bare `` the `<name>` skill ``
+(read from the engine's `.pi/agents/skills/` / `.agents/skills/`); **opencode** the `skills_<name>` tool, which
+**requires the community `opencode-skills` plugin** enabled in `opencode.json`. Per-harness details:
+`qa-kit/harnesses/<h>/README.md`. Generator + composition are covered by `tests/qakit-adapters/run.sh`; a live
+end-to-end run per non-Claude harness is the **manual accuracy run**.
 
 ## The spine
 

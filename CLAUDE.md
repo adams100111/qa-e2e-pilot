@@ -2,7 +2,7 @@
 
 This repo is a **Claude Code plugin**, not an app. It ships an agent, a command, and ten skills that perform full-stack browser QA. There is no build step and no runtime test suite; "tests" here means static validation + functional smoke-tests of the bundled scripts.
 
-**Two plugins live here.** `qa-e2e-pilot` (repo root) is the **verification engine**. `qa-kit/` is an optional, step-gated **process shell** built on it — a *second* plugin with its own manifest, commands, scripts, and agent that declares `dependencies: ["qa-e2e-pilot"]` and reuses the engine's skills by qualified slug (`/qa-e2e-pilot:<skill>`). **The engine must stay byte-for-byte unchanged when working on qa-kit** (`core/`, root `commands/`/`skills/`/`scripts/`, `qa-verify.sh`, the byte-oracle) — qa-kit is purely additive. qa-kit is Claude-only in v1; see [ADR-0022](./docs/adr/0022-qa-kit-process-shell.md), [`qa-kit/README.md`](./qa-kit/README.md), and the `qa-kit-plugin-packaging-facts` memory (per-plugin `${CLAUDE_PLUGIN_ROOT}`; no symlinks; `commands` is a dir not an array).
+**Two plugins live here.** `qa-e2e-pilot` (repo root) is the **verification engine**. `qa-kit/` is an optional, step-gated **process shell** built on it — a *second* plugin with its own manifest, commands, scripts, and agent that declares `dependencies: ["qa-e2e-pilot"]` and reuses the engine's skills by qualified slug (`/qa-e2e-pilot:<skill>`). **The engine must stay byte-for-byte unchanged when working on qa-kit** (`core/`, root `commands/`/`skills/`/`scripts/`, `qa-verify.sh`, the byte-oracle) — qa-kit is purely additive. qa-kit runs on **all four harnesses** since increment 7 ([ADR-0024](./docs/adr/0024-qa-kit-multi-harness.md)): Claude ships as the dependencies-model plugin; Codex/Pi/opencode are generated from `qa-kit/core/` (qa-kit-owned copy of the ADR-0017 pipeline) into git-ignored `qa-kit/dist/<h>/`, engine still untouched. See [ADR-0022](./docs/adr/0022-qa-kit-process-shell.md), [ADR-0024](./docs/adr/0024-qa-kit-multi-harness.md), [`qa-kit/README.md`](./qa-kit/README.md), and the `qa-kit-plugin-packaging-facts` memory (per-plugin `${CLAUDE_PLUGIN_ROOT}`; no symlinks; `commands` is a dir not an array).
 
 ## Read these first
 
@@ -38,8 +38,9 @@ scripts/build-adapter.sh                          generator: assembles git-ignor
 scripts/validate-adapters.sh                      CI gate: builds all 4 adapters, enforces the Claude byte-oracle, checks for residual {{tokens}}
 qa-kit/                                          the 2nd plugin (process shell): .claude-plugin/plugin.json (dependencies:[qa-e2e-pilot]),
                                                  commands/{qa-constitution,qa-spec,qa-scenarios,qa-analyze,qa-status}.md, scripts/{constitution,
-                                                 spec-snapshot,verify-plan,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed}.sh, templates/, agents/qa-kit.md, README.md
-tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases}/run.sh   qa-kit's dual-engine tests
+                                                 spec-snapshot,verify-plan,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,build-qakit-adapter,validate-qakit-adapters}.sh, templates/, agents/qa-kit.md, README.md;
+                                                 core/ + harness-profiles.qakit.json + harnesses/<pi|codex|opencode>/ (ADR-0024 multi-harness: Claude generated-and-committed, others in git-ignored qa-kit/dist/)
+tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases,qakit-adapters}/run.sh   qa-kit's dual-engine tests
 ```
 
 **Multi-harness note (ADR-0017):** `agents/qa-e2e-pilot.md`, `commands/qa-run.md`, and
