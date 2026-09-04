@@ -19,16 +19,16 @@
 - **Depends on:** nothing (foundation).
 - **Tasks:** (1) `constitution.sh` + tests; (2) author the command + template FILES + ADR-0022 — **but do NOT wire the command into the shipped build** (R2-Q7); increment 2 packages/wires it as qa-kit so `/qa-constitution` never ships transiently in the qa-e2e-pilot plugin.
 
-## Increment 2 — qa-kit as a second plugin + build target
+## Increment 2 — qa-kit as a second plugin + build target · **plan written** (`2026-09-04-qa-kit-02-packaging.md`)
 
 - **Scope:** package qa-kit as its **own** installable plugin in this repo — a second `.claude-plugin/`-style manifest + a marketplace entry — that ships the `qa-*` phase commands, reusing the shared `core/`/`skills/`/`scripts/`. qa-e2e-pilot stays installable standalone.
-- **First task is an INVESTIGATION** (flagged design §11 — genuinely open): how a second plugin manifest coexists with Claude's repo-root `.claude-plugin/plugin.json`, and how `build-adapter.sh`/`marketplace.json` express two plugins from one repo. Decide: (a) a second manifest + a 2-entry `marketplace.json`, or (b) a `qa-kit/` subdir plugin, or (c) a build target that emits a `dist/qa-kit/` plugin. **Pin the mechanism before writing the packaging tasks.**
+- **Mechanism RESOLVED** (packaging investigation, 2026-09-04 — sibling plugin dir + symlinks + 2nd marketplace entry, per the Claude Code plugin docs). Formerly an open question: how a second plugin manifest coexists with Claude's repo-root `.claude-plugin/plugin.json`, and how `build-adapter.sh`/`marketplace.json` express two plugins from one repo. Decide: (a) a second manifest + a 2-entry `marketplace.json`, or (b) a `qa-kit/` subdir plugin, or (c) a build target that emits a `dist/qa-kit/` plugin. **Pin the mechanism before writing the packaging tasks.**
 - **Produces:** the qa-kit install path (`/qa-constitution` et al. installable as the qa-kit plugin); the build/validate story for two plugins.
 - **Consumes:** increment 1's command (the first thing packaged).
 - **Depends on:** increment 1. *(Could run in parallel conceptually, but sequencing after 1 gives it a real command to package.)*
 - **Tasks (provisional, pinned after the investigation):** (1) investigate + decide the 2-plugin mechanism; (2) add the qa-kit manifest + marketplace entry; (3) build/`validate-adapters` coverage for both plugins; (4) install docs (`harnesses/`/`docs/harness-adapters.md`).
 
-## Increment 3 — `/qa-spec` + spec snapshot (freeze semantics)
+## Increment 3 — `/qa-spec` + spec snapshot (freeze semantics) · **plan written** (`2026-09-04-qa-kit-03-spec.md`)
 
 - **Scope:** `/qa-spec` that (a) selects scenarios + roles from the constitution, (b) **copies** roles into `.qa/specs/<target>/spec-roles.json` and **stamps the constitution version** (increment 1's format), (c) captures per-spec overrides/customization + oracles + the **run-config** override section (drivers/budget from `.qa/config.json` defaults — the folded-in `/qa-plan`, R2-Q3), (d) records the drift advisory when the stamped version ≠ the current constitution's. The freeze itself lands at run start (`plan_frozen`, ADR-0020) — this increment authors the snapshot the run freezes. One spec → N runs (R2-Q5).
 - **Produces:** `qa-spec.md`, `spec-roles.json` (frozen snapshot + version stamp), the per-spec override shape, the drift-advisory. *(Increment 4 reads spec-roles + the selected scenarios.)*
@@ -36,7 +36,7 @@
 - **Depends on:** increments 1 (+ 2 for packaging, but buildable against 1).
 - **Tasks (provisional):** (1) `spec-snapshot.sh` (copy roles + stamp version + drift-check) + tests; (2) `/qa-spec` command + template; (3) docs.
 
-## Increment 4 — `/qa-scenarios` + `/qa-analyze` + the enforcement seam
+## Increment 4 — `/qa-scenarios` + `/qa-analyze` + the enforcement seam · **plan written** (`2026-09-04-qa-kit-04-scenarios-enforcement.md`)
 
 - **Scope:** the two commands (`/qa-scenarios`, `/qa-analyze` — `/qa-plan` was folded into `/qa-spec`, R2-Q3), plus the **one end-to-end enforcement compilation** — scenarios' planned-criteria written into `checklist.json` (the exact shape `qa-verify`/`required-kinds.sh` already read) so `qa-verify` **post-hoc** flags an act on an out-of-plan criterion. `/qa-analyze` = the consistency+coverage gate before the run. Per-step alignment checks (structural = deterministic set-membership: scenario roles ⊆ `spec-roles`; semantic = LLM-advisory).
 - **Produces:** `scenarios.md`/`checklist.json`, `analysis.md`; **the proven "steps populate the gate's existing inputs" seam** (`qa-verify` unmodified).
@@ -44,7 +44,7 @@
 - **Depends on:** increment 3.
 - **Tasks (provisional):** (1) the scenarios→`checklist.json` compiler + a **round-trip test** (feed the output to `qa-verify` and confirm it flags an out-of-plan act); (2) the two commands + alignment checks; (3) docs.
 
-## Increment 5 — `/qa-run` as Implement + fixture tests + quick-path/bootstrap
+## Increment 5 — `/qa-run` as Implement + fixture tests + quick-path/bootstrap · **plan written** (`2026-09-04-qa-kit-05-run-wiring.md`)
 
 - **Scope:** wire `/qa-run` to consume the phased artifacts (`scenarios.md`/`checklist.json`) as its Implement input; **keep `/qa-run` first-class standalone** (the quick path — self-discovers roles, no constitution required); `/qa-spec` **bootstrap** when there's no constitution (offer `/qa-constitution` or per-spec-only roles). The **fixture-project phase tests** (design §12): artifacts produced, prereq/alignment gates fire, compiled `checklist.json` is the shape `qa-verify` consumes, and a full phased run on the accuracy-harness fixture **matches a one-shot `/qa-run`'s findings**.
 - **Produces:** the complete phased pipeline + its validation harness.
