@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SH="$DIR/../../scripts/qa-kit/constitution.sh"   # adjust to chosen location
+SH="$DIR/../../qa-kit/scripts/constitution.sh"   # qa-kit-owned (dependencies model)
 pass=0; fail=0
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 run_engine() {

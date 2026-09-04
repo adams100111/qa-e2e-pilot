@@ -11,8 +11,8 @@ with them — reference them instead.
 <!-- Adjust the two `../` path prefixes above if this file is not read from `.qa/constitution.md`
      relative to the repo root. -->
 
-> **Regeneration note:** `/qa-constitution` re-renders this entire file from
-> `core/qa-kit/constitution-template.md` every time it runs (only `{{ROLES_TABLE}}`, `{{VERSION}}`,
+> **Regeneration note:** `/qa-constitution` re-renders this entire file from qa-kit's bundled
+> `templates/constitution-template.md` every time it runs (only `{{ROLES_TABLE}}`, `{{VERSION}}`,
 > and `{{TIMESTAMP}}` below are machine-filled — everything else, including your edits to "Enabled
 > optional gates" and "Oracle notes" below, is plain template text that gets reset on a re-render).
 > `.qa/` is git-ignored, so there is no VCS safety net either. If you've customized the sections
