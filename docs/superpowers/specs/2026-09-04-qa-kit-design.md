@@ -13,21 +13,26 @@
 1. **Model A — thin process shell, same repo.** qa-kit is new commands (+ hook config) in *this* repo that orchestrate the **existing skills unchanged**; `/qa-run` becomes the "Implement" step. No fork, no cross-repo dependency, no logic duplication. Inherits ADR-0017 portability, ADR-0020 durable run state, and the H1/H2/H4 honesty stack for free.
 2. **Borrow spec-kit's patterns, not its steps.** qa-kit does **not** reuse spec-kit's `constitution→specify→plan→tasks→implement` step names/bodies. It reuses the *pattern* (phased, aligned, artifact-per-step, per-harness command+hook installers) and defines QA-specific steps.
 3. **Delivered as per-harness commands + per-harness hooks.** Steps ship as commands in each harness's idiom (the existing `core/` → `dist/<h>/` build). Enforcement rides `PreToolUse`/`PostToolUse`-style hooks per harness.
-4. **Enforcement is honestly tiered per harness (non-negotiable reality).** Live-block on Claude (real `PreToolUse`/`PostToolUse`); post-hoc catch-and-override via `qa-verify` on Codex/opencode/Pi (their live hooks are best-effort/unverified — H4), with the documented live-hook recipes (`harnesses/<h>/hooks.md`) as opt-in hardening. **`qa-verify` is the universal floor on every harness.** One design, tiered strength — identical *live* blocking on all four is not promised because the harnesses do not allow it (confirmed by both spec-kit's own `events.py` and H4).
+4. **Enforcement of the constitution/spec/plan is `qa-verify` POST-HOC on every harness (corrected).** `block-hook.sh` sees only the tool-call payload and runs `mutates()` — it has **no criterion/role/plan context** at pre-tool time, so criterion-level rules (only-planned-criteria, allowed-roles, declared-oracle) **cannot be live-blocked**; they are enforced post-hoc by `qa-verify`, which has the journal/criterion context. **Live-blocking is limited to `block-hook`'s existing tool-*shape* absolutes** (mutating `evaluate`, `run_code_unsafe`) — universal, no per-run config. A per-run *live* constitution-block on Claude is a **later enhancement** (requires modifying `block-hook`), not v1. `qa-verify` is the universal authority; the harness divergence (H4) affects only the optional *live* tier, not this post-hoc spine.
 5. **Constitution = the living, stateful home** for roles/personas + QA invariants (prose) + the machine-checkable enforcement block. Roles are discovered once and **maintained** thereafter via **regenerate → diff → confirm** (reuses ADR-0011 frontier-round HITL + ADR-0016 seed store). It compiles into the `block-hook`/`qa-verify` config.
 6. **Each spec pins an immutable role snapshot.** Constitution roles are **copied** into the spec (`spec-roles.json`), editable while *authoring* the spec, **frozen at `plan_frozen`** (ADR-0020) for the run, plus per-spec overrides/additions. A live reference would break the durable-resume + reproducibility guarantee — rejected. The constitution mutates; each run is a reproducible snapshot of it.
 7. **Alignment enforcement is woven into every step**, not one end-gate: each step must be consistent with the constitution + spec + plan (e.g. a scenario cannot use a role absent from the spec's frozen set; a run cannot customize away a constitution invariant). This is spec-kit's `analyze` idea, per-step.
-8. **QA-specific optional gates** (`/qa-sanitize`, `/qa-assure`, `/qa-perf`, `/qa-security`, `/qa-uiux`) are opt-in plug-ins to Implement, not required spine steps.
+8. **QA-specific optional gates** (`/qa-sanitize`, `/qa-assure`, `/qa-perf`, `/qa-security`, `/qa-uiux`) are opt-in plug-ins, not required spine steps. **They read the completed run's evidence (`.qa/runs/<id>/`) and emit their own gate artifact + pass/advisory — they do NOT re-drive.** Anything needing *driving* (a perf timing, a security probe) becomes a tagged **criterion** in scenarios, so the run stays the single driving surface. *(Grill Q8.)*
+9. **qa-kit is a SECOND plugin in this repo** — its own `.claude-plugin/plugin.json` + marketplace entry, reusing `core/`/`skills/`/`scripts/` via the build. qa-e2e-pilot stays installable standalone; qa-kit ships as its own installable product. *(Grill Q4.)*
+10. **The quick path survives.** `/qa-run` stays first-class **standalone** (no constitution required — self-discovers roles as today). The phased flow is opt-in and additive. `/qa-spec` with no constitution offers to bootstrap one **or** proceed with per-spec-only roles — never a tax on the one-shot path. *(Grill Q5.)*
+11. **A dedicated `/qa-analyze` consistency+coverage gate** sits before `/qa-run` (per-step alignment catches *ordering* violations; `/qa-analyze` catches *coverage gaps* — a spec item with no scenario, an unaddressed risk — before the expensive run). *(Grill Q3.)*
+12. **Enforcement compiles into the gate's EXISTING inputs, not a new rules file (corrected).** `qa-verify` reads `checklist.json` (required-kinds, criterion↔role, declared-oracle) + `.qa/config.json` (`personas[].expectedSubject`) — it does NOT read any `constitution.rules.json`. So qa-kit's phases **populate those existing shapes**; `qa-verify` stays genuinely untouched. *(Grill Q2.)*
 
 ## 3. The steps (qa-kit's own — powered by existing skills)
 
 | Command | Artifact(s) | State | Powered by (existing) | Compiles into enforcement |
 |---|---|---|---|---|
-| `/qa-constitution` | `.qa/constitution.md`, `.qa/roles.json`, `.qa/constitution.rules.json` | **stateful across runs** — roles/personas + invariants + rules; updated via regenerate→diff→confirm | `discovering-user-roles`, `confirming-discovered-roles`, ADR-0016 seed store, `CONTEXT.md` vocab | allowed-roles set, forbidden-tool-patterns, required-evidence-kinds → `block-hook` (Claude live) + `qa-verify` (all) |
-| `/qa-spec` | `.qa/specs/<target>/qa-spec.md`, `spec-roles.json` | per-run snapshot — selects scenarios + roles (copied from constitution) + per-run customization/oracles | `detecting-stack-profile`, oracle definition, `ingesting-spec-kit` (as an input path) | declared-oracle-per-criterion → `qa-verify` checks the recorded verdict used it |
+| `/qa-constitution` | `.qa/constitution.md`, `.qa/roles.json` | **stateful across runs** — roles/personas + invariants; updated via regenerate→diff→confirm | `discovering-user-roles`, `confirming-discovered-roles`, ADR-0016 seed store, `CONTEXT.md` vocab | allowed-roles / required-evidence-kinds → written into `checklist.json`+`.qa/config.json` → `qa-verify` post-hoc (all) |
+| `/qa-spec` | `.qa/specs/<target>/qa-spec.md`, `spec-roles.json` | per-run snapshot — selects scenarios + roles (copied from constitution, stamped with constitution version) + per-run customization/oracles | `detecting-stack-profile`, oracle definition, `ingesting-spec-kit` (as an input path) | declared-oracle-per-criterion → `checklist.json` → `qa-verify` checks the recorded verdict used it |
 | `/qa-plan` | `.qa/specs/<target>/run-plan.md` | per-run | ADR-0011/0012 persona/criteria-budget, driver pool config | run budget/parallelism bounds |
-| `/qa-scenarios` | `.qa/specs/<target>/scenarios.md` / `checklist.json` | per-run | `generating-qa-checklist`, `fanning-out-criteria` | only-planned-criteria-may-act → `block-hook` (Claude) + `qa-verify` (all) |
-| `/qa-run` (Implement) | `.qa/runs/<run-id>/` + `report.md`/`.html` | per-run (durable journal, ADR-0020) | the whole verification pipeline (driving-browser-qa, verifying-backend-persistence, verifying-computed-logic, walking-multistep-flows, probing-apis-through-browser, checkpointing-qa-memory, writing-qa-reports) | governed by all the above at runtime |
+| `/qa-scenarios` | `.qa/specs/<target>/scenarios.md` / `checklist.json` | per-run | `generating-qa-checklist`, `fanning-out-criteria` | only-planned-criteria-may-act → `checklist.json` → `qa-verify` post-hoc (all) |
+| `/qa-analyze` | `.qa/specs/<target>/analysis.md` | per-run (read-only gate) | `analyzing-feature-ui` surface map, `ingesting-spec-kit` traceability | consistency+coverage gaps flagged before the run (LLM-reasoned, spec-kit `analyze` pattern) |
+| `/qa-run` (Implement) | `.qa/runs/<run-id>/` + `report.md`/`.html` | per-run (durable journal, ADR-0020) | the whole verification pipeline (driving-browser-qa, verifying-backend-persistence, verifying-computed-logic, walking-multistep-flows, probing-apis-through-browser, checkpointing-qa-memory, writing-qa-reports) | `qa-verify` post-hoc enforces the compiled `checklist.json`/`config.json` on all harnesses |
 | optional: `/qa-sanitize` `/qa-assure` `/qa-perf` `/qa-security` `/qa-uiux` | per-gate artifact | per-run | probing rules; ADR-0018 assurance tiers; UX engine (ADR-0019); etc. | opt-in gates layered on Implement |
 
 Every step also runs a **spec-kit-style prerequisite + alignment check** before proceeding (see §5).
@@ -44,27 +49,31 @@ Three layers, reusing what already exists:
 
 1. **Phase ordering — real file-existence checks (cheap, deterministic).** Like spec-kit's `check-prerequisites.sh` (which hard-`exit 1`s if a prior artifact is missing): `/qa-plan` requires `qa-spec.md`, `/qa-run` requires `scenarios.md`, etc. A small `qa-kit-prereqs.sh` per step.
 2. **Alignment checks — per step.** Before a step proceeds, it validates consistency against the earlier artifacts (scenario roles ⊆ spec-roles ⊆ constitution roles; the run's customizations don't violate a constitution invariant). Deterministic where the data is structured (role-set membership, oracle presence); LLM-reasoned where it's prose (spec-kit's `analyze` pattern).
-3. **Runtime enforcement — the machine-checkable blocks compile into the honesty gate.** This is the differentiator (spec-kit built the hook socket in `events.py` and left it empty; qa-kit fills it with qa-e2e-pilot's engine):
-   - The constitution's **allowed-roles / forbidden-tool-patterns / required-evidence-kinds** → feed the existing `block-hook` (Claude, live pre-tool deny) + `qa-verify` required-kinds/provenance (universal, post-hoc override).
-   - The scenarios' **planned-criteria set** → `qa-verify` (+ Claude live-block) enforces *only-planned-criteria-may-act*.
-   - The spec's **declared oracle per criterion** → `qa-verify` checks the recorded verdict used the declared oracle, not the backend's own formula (the load-bearing QA invariant).
-   - **Honest boundary:** only the *machine-checkable* parts of each artifact enforce; the *prose* parts (e.g. "prefer minimal scenarios") stay guidance. qa-kit never pretends a prose ideal is hook-enforced.
+3. **Runtime enforcement — POST-HOC via `qa-verify`, by populating the gate's existing inputs (corrected per Grill Q1/Q2).** This is the differentiator (spec-kit built the hook socket in `events.py` and left it empty; qa-kit fills the *post-hoc* seam with qa-e2e-pilot's engine). qa-kit's phases write into the shapes `qa-verify` **already** reads — `checklist.json` (criterion↔role, required-evidence-kinds, declared-oracle-per-criterion) + `.qa/config.json` (`personas[].expectedSubject`) — so `qa-verify` (**unmodified**) enforces them after the run on **every** harness:
+   - scenarios' **planned-criteria set** → `qa-verify` flags an act on a criterion not in the frozen plan (needs journal/criterion context — post-hoc only).
+   - constitution's **allowed-roles / required-kinds** → `checklist.json` rows + `qa-verify`'s required-kinds re-derivation.
+   - spec's **declared oracle per criterion** → `qa-verify` checks the recorded verdict used the declared oracle, not the backend's own formula (the load-bearing QA invariant).
+   - **Live-block (`block-hook`) stays limited to tool-*shape* absolutes** (mutating `evaluate`, `run_code_unsafe`) — it has no criterion context, so it cannot enforce criterion-level rules live. A per-run live constitution-block on Claude is a later `block-hook` enhancement.
+   - **Honest boundary:** only *machine-checkable* parts enforce; *prose* parts (e.g. "prefer minimal scenarios") stay guidance. qa-kit never pretends a prose ideal is gate-enforced.
 
 ## 6. Artifact / disk layout (reuses `.qa/`)
 
 ```
 .qa/
   constitution.md              # human: invariants + roles summary (living, project-level)
-  roles.json                   # stateful role/persona store (living)
-  constitution.rules.json      # compiled machine-checkable enforcement (hooks/qa-verify read this)
+  roles.json                   # stateful role/persona store (living); carries a version/hash
+  config.json                  # EXISTING — personas[].expectedSubject etc; /qa-constitution populates it
   specs/<target-name>/         # one dir per spec (mirrors spec-kit's specs/<feature>/)
     qa-spec.md                 # what "correct" means for this run + selections + customization
-    spec-roles.json            # the FROZEN role snapshot for this spec
+    spec-roles.json            # FROZEN role snapshot + the constitution version/hash it was built from
     run-plan.md
-    scenarios.md / checklist.json
+    scenarios.md / checklist.json  # EXISTING checklist shape — the gate input qa-verify reads
+    analysis.md                # /qa-analyze consistency+coverage report
     runs.json                  # which .qa/runs/<id> this spec produced
   runs/<run-id>/               # UNCHANGED — journal, checkpoint, bug-log, traceability, report
 ```
+
+There is **no** `constitution.rules.json` gate-input (Grill Q2) — the enforcement lands in the *existing* `checklist.json` + `.qa/config.json` that `qa-verify` already reads, so `qa-verify` is untouched. `spec-roles.json` stamps the **constitution version/hash** it snapshotted (Grill Q6); re-opening a spec against a newer constitution surfaces a drift advisory (never auto-migrates).
 
 Project-level state (constitution/roles) sits like spec-kit's `.specify/`; per-spec snapshots sit like spec-kit's `specs/<feature>/`; the durable run evidence stays exactly where ADR-0020 put it.
 
@@ -80,22 +89,33 @@ From a full analysis of `github/spec-kit`'s implementation (not its README):
 
 - **Per-spec dir naming:** named by target + short timestamp (e.g. `checkout-flow-20260904`), not auto-incrementing integers — matches `.qa/runs/<id>` style and avoids cross-branch numbering races. *(Rec.)*
 - **`ingesting-spec-kit`'s fate:** stays, repositioned as an **input to `/qa-spec`** — when a *feature* spec-kit's `spec.md`/`tasks.md` exists, `/qa-spec` ingests it to seed oracles/criteria + the traceability matrix. Not subsumed, not required. *(Rec.)*
-- **Which enforcement lands first (v1):** the **scenarios → only-planned-criteria-may-act** check (highest value, cleanest to compile, directly reuses `qa-verify` + `block-hook`), then the constitution's allowed-roles/required-kinds, then the spec's declared-oracle. *(Rec.)*
+- **Which enforcement lands first (v1):** the **scenarios → only-planned-criteria-may-act** check (highest value, cleanest to compile, post-hoc via `qa-verify` reading `checklist.json`), then the constitution's allowed-roles/required-kinds, then the spec's declared-oracle. *(Rec.)*
 - **Alignment-check implementation:** deterministic set/membership checks where data is structured (roles, criteria, kinds); LLM-reasoned for prose alignment — mirroring spec-kit's `analyze`. *(Rec.)*
 - **`/qa-run` relationship:** `/qa-run` *is* qa-kit's Implement step (the existing command, invoked at the end of the chain); it also remains usable standalone (a one-shot run without the phased shell) for backward compatibility. *(Rec.)*
 
 ## 9. v1 scope vs. later
 
 **v1 (a coherent first plan):**
-- The spine commands `/qa-constitution → /qa-spec → /qa-plan → /qa-scenarios → /qa-run`, generated per harness (ADR-0017 build).
-- The stateful constitution (roles.json + regenerate→diff→confirm) + spec snapshot (spec-roles.json, frozen at plan_frozen).
-- Phase-ordering (file-existence) + per-step alignment checks.
-- **One** runtime-enforcement compilation end-to-end — scenarios' planned-criteria → `qa-verify` (universal) + `block-hook` (Claude) — proving the "artifacts compile into the honesty gate" seam works.
+- qa-kit as a **second plugin** (`.claude-plugin/plugin.json` + marketplace entry) in this repo, reusing `core/`/`skills/`/`scripts/`.
+- The spine commands `/qa-constitution → /qa-spec → /qa-plan → /qa-scenarios → /qa-analyze → /qa-run`, generated per harness (ADR-0017 build). `/qa-run` remains valid standalone (quick path).
+- The stateful constitution (roles.json + version/hash + regenerate→diff→confirm) + spec snapshot (spec-roles.json, frozen at plan_frozen, drift advisory).
+- Phase-ordering (file-existence prereqs) + per-step alignment checks (structural = deterministic; semantic = LLM-advisory) + the `/qa-analyze` coverage gate.
+- **One** runtime-enforcement compilation end-to-end — scenarios' planned-criteria written into `checklist.json` → `qa-verify` **post-hoc** (all harnesses) flags an out-of-plan act — proving the "phases populate the gate's existing inputs" seam works, `qa-verify` unmodified.
+- Fixture-project phase tests (§12).
 
 **Later (separate plans):**
-- The remaining enforcement compilations (constitution rules, spec oracle-binding).
-- The optional QA gates (`/qa-sanitize`, `/qa-assure`, `/qa-perf`, `/qa-security`, `/qa-uiux`).
-- Full per-harness *live*-hook wiring beyond Claude (rides H4's documented recipes; qa-verify already covers the floor).
+- The remaining enforcement compilations (constitution allowed-roles/required-kinds, spec oracle-binding into `checklist.json`/`config.json`).
+- The optional QA gates (`/qa-sanitize`, `/qa-assure`, `/qa-perf`, `/qa-security`, `/qa-uiux`) — read run evidence, don't re-drive.
+- The per-run *live* constitution-block on Claude (a `block-hook` enhancement — qa-verify already covers the post-hoc floor everywhere).
+
+## 12. Test strategy (Grill Q7)
+
+qa-kit is validated by **fixture-project phase tests** reusing the existing test idioms:
+- Run each phase command against a seeded fixture; assert the **right artifacts** are produced.
+- Assert **prereq/alignment gates fire**: a missing `qa-spec.md` makes `/qa-plan` error (non-zero); a scenario referencing a role absent from `spec-roles.json` is rejected.
+- Assert the compiled `checklist.json`/`.qa/config.json` are the **exact shapes `qa-verify`/`required-kinds.sh` already consume** (a schema round-trip — feed them to `qa-verify` and confirm it reads them).
+- Assert a full **phased run on the accuracy-harness fixture matches a one-shot `/qa-run`'s findings** (the phased shell changes orchestration, not verdicts).
+- The stateful path: `/qa-constitution` re-run after a fixture role change → the regenerate→diff→confirm delta is correct and preserves per-role customizations; a spec's `spec-roles.json` stays frozen across the change.
 
 ## 10. Honest constraints & non-goals
 
@@ -107,6 +127,6 @@ From a full analysis of `github/spec-kit`'s implementation (not its README):
 
 ## 11. Open questions for the plan stage (not blocking this design)
 
-- Do the qa-kit commands live in `core/commands/` alongside `qa-run`/`qa-roles` (so they generate into every `dist/<h>/`), or a `core/qa-kit/` sub-namespace? (Leaning: same `core/commands/`, prefixed `qa-`.)
-- Does `constitution.rules.json` reuse the exact schema `qa-verify`/`block-hook` already consume, or a thin compiler that emits their existing config shapes? (Leaning: a thin compiler → existing shapes, so the honesty gate is unchanged.)
-- Skill count / conventions: qa-kit adds commands (not necessarily new skills) — confirm the phase logic lives in command bodies + tiny helper scripts, reusing existing skills, so the "16 skills" surface grows minimally.
+- Do qa-kit's commands live in `core/commands/` alongside `qa-run`/`qa-roles` (generating into every `dist/<h>/`), or a `core/qa-kit/` sub-namespace? How does a second `plugin.json` in this repo select its command/skill subset from the shared `core/`? (Leaning: `core/commands/` prefixed `qa-`; the qa-kit `plugin.json` + build target picks up the `qa-*` phase commands.)
+- The thin compiler that writes qa-kit's selections into `checklist.json` + `.qa/config.json` — confirm it emits exactly the shapes `qa-verify`/`required-kinds.sh` already parse (no schema change to the gate). *(Resolved in principle by Grill Q2; the plan pins the field mapping.)*
+- Skill count / conventions: qa-kit adds commands (not necessarily new skills) — confirm the phase logic lives in command bodies + tiny helper scripts, reusing existing skills, so the skill surface grows minimally.
