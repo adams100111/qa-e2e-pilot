@@ -212,9 +212,49 @@ _Avoid_: confidence (that is the verdict attribute), certainty.
 The two detection sources. *Runtime fingerprint* = read-only GETs to `baseUrl` (headers, cookies, HTML markers, OpenAPI probe) describing the running app — the only source against a bare production target. *Code-based* = reading local manifests from `repos[]`, authoritative for the shape oracle. Merged: runtime wins on live identity, code wins on the shape oracle; disagreement is recorded as drift.
 _Avoid_: scan (the fingerprint is a tiny allowlist, never a path scan).
 
+### qa-kit process vocabulary (the optional step-gated shell — ADR-0022)
+
+These terms belong to **qa-kit**, the process shell built on the engine. They describe *process
+artifacts*, not verification concepts; a plain `/qa-run` never touches them.
+
+**Constitution**:
+The project-level QA **policy**: the confirmed roles (regenerated **wholesale**, ADR-0011) + a
+deterministic **version/hash** + project policy (enabled optional gates, oracle notes). Machine state is
+`.qa/constitution.state.json` (authoritative); `.qa/constitution.md` is the human doc. Re-running
+regenerates roles from scratch and prints an **informational diff** — it never merge-preserves a per-role
+edit.
+_Avoid_: config (that is `.qa/config.json`), spec (a spec is per-target).
+
+**Spec (qa-kit)**:
+A per-target QA spec (`.qa/specs/<target>/qa-spec.md`) that pins an immutable **spec-roles snapshot** +
+**run-config** deltas + oracle/out-of-scope notes. One spec → N runs.
+_Avoid_: constitution (that is project-wide), and the *ingested* spec-kit `spec.md` (that is an input the
+engine may consume, not this artifact).
+
+**Spec-roles snapshot**:
+The immutable point-in-time **copy** of the constitution's roles in `.qa/specs/<target>/spec-roles.json`,
+stamped with the `constitutionVersion` it was built from. A run replays it; it never re-reads the live
+constitution mid-run.
+_Avoid_: reference (it is a copy, deliberately not a live link).
+
+**Drift (qa-kit)**:
+The advisory that a spec's stamped `constitutionVersion` ≠ the current constitution's — its frozen roles
+may be stale. Advisory only; never auto-migrates. (A specific, compatible case of the general "diverged"
+sense of drift used elsewhere here.)
+
+**Run-config (qa-kit)**:
+The per-spec **deltas** over `.qa/config.json` defaults (drivers/`maxParallel`/`criteriaBudget`/viewport) —
+only what the spec changes, applied per-run without mutating `.qa/config.json`.
+_Avoid_: plan (there is no `/qa-plan` step — it folded into the spec).
+
+**Out-of-plan act**:
+An act recorded on a criterion **not** in the frozen `checklist.json` (the enforcement contract compiled
+by `/qa-scenarios`). Flagged by qa-kit's `verify-plan.sh` running *beside* an unmodified `qa-verify`.
+
 ## Flagged ambiguities
 
 - **"backend"** previously named two things: the app under test, and a browser-MCP pool entry. Resolved: **Backend** = app under test only; a pool entry is a **Driver**, and the browser context it spawns is a **Session**.
+- **"step"** names two things across the two plugins. In the engine, **Step** = one within-criterion verification layer (drive/bake/recompute/probe). In **qa-kit**, a "step" is a whole gated **process stage** of the spine (constitution → spec → scenarios → analyze → run). They are different scales; write **"qa-kit step"** / "process step" vs the within-criterion **Step** whenever context could confuse them. (Neither is a **phase** — a phase is a stage of the engine's Run pipeline.)
 
 ## Example dialogue
 
