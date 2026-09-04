@@ -65,10 +65,23 @@ spec-kit, without touching `qa-verify`, and without breaking the standalone quic
    kinds, declared oracle) and `.qa/config.json` (`personas[].expectedSubject`) — which `qa-verify`
    already reads post-hoc, on every harness. `qa-verify` itself is **untouched**: qa-kit feeds it
    configuration, never modifies its logic. v1 lands exactly **one** such compilation end-to-end —
-   scenarios' planned-criteria set written into `checklist.json`, with `qa-verify` flagging an act
-   on an out-of-plan criterion — proving the "phases populate the gate's existing shapes" seam
-   works before the remaining compilations (constitution allowed-roles/required-kinds, spec
-   oracle-binding) are built out. A per-run *live* constitution-block on Claude is deliberately
+   scenarios' planned-criteria set written into `checklist.json`, with an **act on an out-of-plan
+   criterion flagged** — proving the "phases populate the gate's existing shapes" seam works before
+   the remaining compilations (constitution allowed-roles/required-kinds, spec oracle-binding) are
+   built out.
+
+   **Increment-4 investigation finding (2026-09-04), important correction:** `qa-verify` does **not**
+   itself flag an act on an out-of-plan criterion. It iterates only the recorded passes in
+   `checkpoint.json`; when a recorded criterion has no matching `checklist.json` row it *skips* the
+   required-kinds re-derivation (see `qa-verify.sh` ~line 1030 + `checklist_row_for` ~line 481) — an
+   unlisted acted criterion is verified on its own evidence, never rejected as out-of-plan. Since the
+   escalation trigger ("the only honest fix modifies `qa-verify`") did **not** hold — a checker beside
+   `qa-verify` works — the seam is a **qa-kit-owned standalone `qa-kit/scripts/verify-plan.sh`** run
+   alongside `qa-verify` (the "sits beside the gate" pattern, like session-preflight). It compares the
+   run's acted `checkpoint.json[].criterion_id` against the frozen `checklist.json[].id` and exits
+   nonzero listing any out-of-plan act. `qa-verify` stays byte-for-byte unmodified.
+
+   A per-run *live* constitution-block on Claude is deliberately
    deferred (a `block-hook` enhancement); `qa-verify` already covers the post-hoc floor on every
    harness in the meantime.
 
