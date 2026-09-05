@@ -41,9 +41,19 @@ single conditional, not a reason to keep three copies). *Note:* the engine keeps
 installers; this shared-lib is a **qa-kit-local** choice, justified because qa-kit's three are near-identical
 where the engine's diverge (different MCP handling). Kills S1/SP2.
 
-**D2 — `field()` fails loud on a missing key.** Replace `.get('$1','')` with `['$1']` (a `KeyError` → non-zero
-exit) wrapped so the script dies with a clear message naming the missing `harnesses.<h>.<field>`. A profile
-typo/removal then fails at install time with a legible error instead of silently mis-placing files. Fixes S2.
+**`source` semantics the plan must honour (grill G1/G4):** the wrapper sets `HARNESS=…` then
+`source …/_install-common.sh` with the project-dir still in `$1`. Inside the sourced file: (a) use **`$0`** in
+the usage/`:?` message so it names the *wrapper* (`install-pi.sh`), not `_install-common.sh`; (b) resolve `ROOT`
+and `PROFILE` from **the common file's own `BASH_SOURCE[0]`** (`qa-kit/harnesses/_install-common.sh` →
+`ROOT=../..`, `PROFILE=../harness-profiles.qakit.json`), never the wrapper's; (c) `set -euo pipefail` lives in
+the common file; (d) the opencode `opencode-skills` echo is preserved as the `[ "$HARNESS" = opencode ]` branch.
+
+**D2 — `field()` fails loud on a missing key — via the CALLER, not inside the subshell (grill G2).** `field`
+reads `['$1']` (KeyError on absence), prints a clear `missing harnesses.<h>.<field>` to **stderr**, and
+**returns non-zero**. It **cannot** `die`/`exit` the installer itself — it runs inside `$(…)`, whose `exit`
+only leaves the subshell. So every read is `VAR="$(field x)" || exit 1` (an explicit `||`, because `set -e`
+does not reliably catch a failed command substitution in an assignment). Result: a profile typo/removal fails
+at install with a legible error instead of an empty path that writes to the project root. Fixes S2.
 
 **D3 — Single-source the qa-kit CI list in `qa-kit/scripts/run-qakit-ci.sh`.** One script runs
 `validate-qakit-adapters.sh` + the qa-kit suites (the list lives here, the *obvious* place). `adapters.yml`'s
@@ -78,8 +88,13 @@ this one.
 
 - **Install smoke (positive + abort) for all 3 harnesses** must still pass after D1/D2 — the same temp-dir
   checks used in increment 7 (fake engine skills dir → files land in the right per-harness dirs; empty dir →
-  abort). Add a **missing-field** negative check for D2 (a doctored profile missing `agentDir` → install dies
-  with a clear message, not a silent root-write).
+  abort).
+- **Missing-field negative check for D2 — via a profile override, never the committed file (grill G3).**
+  `_install-common.sh` reads `PROFILE` from an env-overridable `QAKIT_PROFILE` (default: the committed
+  `qa-kit/harness-profiles.qakit.json`). The test copies the profile to a temp file, removes `agentDir`, runs an
+  installer with `QAKIT_PROFILE=<temp>` against a fake-skills project dir, and asserts a **non-zero exit + a
+  stderr message naming the missing field** — with **no edit to the real profile and no `git checkout`** to undo
+  (the destructive-git rule stands).
 - `run-qakit-ci.sh` (D3) run locally → all green; then `adapters.yml`'s `qa-kit` job (calling it) green in real CI.
 - `validate-qakit-adapters.sh` + `tests/qakit-adapters/run.sh` green (byte-oracle unaffected).
 - **Honest boundary unchanged:** still no live end-to-end qa-kit run per non-Claude harness — that remains the
