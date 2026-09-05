@@ -8,11 +8,14 @@
 ## 🔴 Pending — do these
 
 ### CI / gate (config, but the highest-value gap)
-- [ ] **`.github/workflows/adapters.yml` only runs `scripts/validate-adapters.sh`** (the engine byte-oracle).
-      It runs **no qa-kit test suite and not `validate-qakit-adapters.sh`** — so ALL of 6a/6b/7 is **ungated in
-      CI**. Add steps to run `bash qa-kit/scripts/validate-qakit-adapters.sh` and each
-      `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases,qakit-adapters}/run.sh`.
-      (Consider a tiny `for d in tests/*/run.sh; do bash "$d"; done` loop so new suites auto-enroll.)
+- [x] **`.github/workflows/adapters.yml` only ran `scripts/validate-adapters.sh`** (engine byte-oracle) — no
+      qa-kit gate. **DONE (PR #63):** added a dedicated `qa-kit` job running `validate-qakit-adapters.sh` + the
+      10 qa-kit dual-engine suites.
+- [ ] **Broader finding (out of this session's scope):** the **entire `tests/` corpus (44 suites)** — including
+      all the *engine* tests — is likewise **ungated in CI** (adapters.yml never ran them). The new `qa-kit` job
+      covers the qa-kit subset; wiring the engine suites (some need node) is a separate maintainer decision — a
+      blanket `for d in tests/*/run.sh` loop is the obvious move but needs each suite confirmed green in a clean
+      CI image first.
 
 ### Root `README.md`
 - [ ] **Line ~239:** "v1 is **Claude-only**; non-Claude builds are deferred." — **contradicts increment 7**
