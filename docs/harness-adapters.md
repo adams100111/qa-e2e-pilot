@@ -51,6 +51,25 @@ plugin** enabled in `opencode.json` (else the skills are inert). See each
 accuracy run** — the generator + composition are unit-tested (`tests/qakit-adapters/run.sh`), the live
 agent behaviour is not.
 
+### The qa-kit manual accuracy run (per non-Claude harness)
+
+The structural gates (`qa-kit/scripts/run-qakit-ci.sh`: the byte-oracle + every qa-kit suite) prove the adapter
+*builds and composes*; they do **not** prove the generated step commands actually drive a run on that harness.
+Before trusting qa-kit on Codex/Pi/opencode, do one live pass — this is the load-bearing check:
+
+1. **Co-install** (order matters): the engine adapter first (`harnesses/<h>/install-<h>.sh <project>`), then
+   qa-kit (`qa-kit/harnesses/<h>/install-<h>.sh <project>`). On opencode, enable the `opencode-skills` plugin.
+2. **Drive the spine** against a disposable target: `/qa-constitution → /qa-spec → /qa-scenarios → /qa-analyze
+   → /qa-run`. Confirm at each step that (a) the step's engine-skill references **resolve** (the bare-name
+   `<name>` skill / `skills_<name>` tool the agent actually invokes), and (b) its `{{PLUGIN_ROOT}}` scripts run
+   (e.g. `constitution.sh`, `data-baseline.sh`) from the installed `.<h>/qa-kit/` dir.
+3. **Score** the resulting run against the engine's accuracy procedure (below) exactly as for the engine
+   adapter. A skill that doesn't resolve, or a `{{PLUGIN_ROOT}}` script not found, is an install/compose bug to
+   fix in the adapter — not a run to trust.
+
+This is the honest boundary called out throughout ADR-0024: everything up to here is unit-tested; this step is
+the manual acceptance that the *behaviour* is right on that harness.
+
 ---
 
 ## The Claude assurance tier

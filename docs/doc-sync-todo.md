@@ -34,10 +34,19 @@
       untouched. (Lives outside the repo, so not in any PR.)
 
 ## 🟡 Optional / lower priority
-- [ ] `docs/harness-adapters.md` — the per-harness engine READMEs say "Runs the same **16 skills**" (matches the
-      README's 16, not CLAUDE's 17) — fold into the skills-count reconciliation above.
-- [ ] Consider a short **"qa-kit manual accuracy run"** procedure in `docs/harness-adapters.md` (mirrors the
-      engine's), since increment 7's honest boundary points at it but doesn't spell out the qa-kit-specific steps.
+- [ ] **(engine-doc item — NOT a qa-kit change)** the per-harness *engine* adapter READMEs
+      (`harnesses/{pi,codex,opencode}/README.md`) say "Runs the same **16 skills**" — should be 17. Left for an
+      **engine** change: editing engine-owned files from a qa-kit change would breach engine-untouched
+      (design D5, spec 2026-09-05-qa-kit-review-followups). Root README + CLAUDE.md are already 17.
+- [x] **DONE (PR #68):** added the **"qa-kit manual accuracy run"** procedure to `docs/harness-adapters.md`
+      (co-install order → drive the spine → confirm skill/`{{PLUGIN_ROOT}}` resolution → score).
+
+## 🧹 Code-review follow-ups (from the two inline reviews) — DONE (PR #68)
+- [x] S1/SP2 — de-duplicated the 3 installers into `qa-kit/harnesses/_install-common.sh` + thin wrappers.
+- [x] S2 — `field()` fails loud on a missing profile key (was a silent `''`).
+- [x] SP1 — single-sourced the qa-kit CI suite list in `qa-kit/scripts/run-qakit-ci.sh`; `adapters.yml` calls it.
+- [ ] **Deferred (measured):** the broader 44-suite `tests/` corpus stays ungated — a full `tests/*/run.sh`
+      glob hangs without a live app (2-min timeout), so wiring the engine suites is a separate maintainer call.
 
 ## ✅ Already updated inline this session (for traceability — verify, don't redo)
 - ADR-0023 — 6b landing + §7 correction (detect-seed reads `stack-profile.json`).
