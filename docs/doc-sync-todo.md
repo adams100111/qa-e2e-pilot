@@ -17,14 +17,11 @@
       blanket `for d in tests/*/run.sh` loop is the obvious move but needs each suite confirmed green in a clean
       CI image first.
 
-### Root `README.md`
-- [ ] **Line ~239:** "v1 is **Claude-only**; non-Claude builds are deferred." — **contradicts increment 7**
-      (ADR-0024). Flip to: qa-kit now generates Codex/Pi/opencode adapters from `qa-kit/core/`; engine untouched.
-- [ ] **Line ~53:** "`docs/adr/  0001–0022`" → **`0001–0024`** (0023 TDQA data layer, 0024 multi-harness added).
-- [ ] **Line ~47:** "`skills/  16 skills`" disagrees with `CLAUDE.md:62` ("**17 skills**"). Reconcile to one
-      number (pre-existing discrepancy, not caused by 6b/7 — confirm the true count and fix whichever is wrong).
-- [ ] (Optional) The qa-kit paragraph (lines ~235–243) doesn't mention the **TDQA data layer** (6a/6b) or
-      **multi-harness** (7). Add a sentence + links to ADR-0023 / ADR-0024 if you want README to reflect them.
+### Root `README.md` — DONE (PR #64)
+- [x] **~239:** "v1 Claude-only" flipped to: TDQA data layer (ADR-0023) + all-four-harnesses (ADR-0024).
+- [x] **~53:** ADR range `0001–0022` → `0001–0024` (0023/0024 named).
+- [x] **~47:** `16 skills` → `17 skills` (confirmed 17 dirs under `skills/`; CLAUDE.md was right).
+- [x] qa-kit paragraph now mentions the TDQA data layer + multi-harness with ADR links.
 
 ### `CONTEXT.md` (glossary — domain-modeling discipline)
 - [ ] Add/confirm glossary entries for the terms 6b introduced: **auto-seed** (opt-in, disposable-env-only
