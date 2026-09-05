@@ -23,17 +23,15 @@
 - [x] **~47:** `16 skills` → `17 skills` (confirmed 17 dirs under `skills/`; CLAUDE.md was right).
 - [x] qa-kit paragraph now mentions the TDQA data layer + multi-harness with ADR links.
 
-### `CONTEXT.md` (glossary — domain-modeling discipline)
-- [ ] Add/confirm glossary entries for the terms 6b introduced: **auto-seed** (opt-in, disposable-env-only
-      write path), **seed command / detect-seed** (the proposed stack seed command; a *proposal*, human-confirmed),
-      and the **co-install contract** (7). The *multiplicity* entry (line 36) already notes the seeded baseline.
-- [ ] Confirm 6a terms have their own entries (not just inline mentions): **data-baseline**, **origin**
-      (seeded|created), **fixture**, **oracleSource** (human|llm-suggested), **pinned expectation**. Add any missing.
+### `CONTEXT.md` (glossary — domain-modeling discipline) — DONE (PR #65)
+- [x] Added glossary entries: **Auto-seed (qa-kit)**, **Seed command (qa-kit)**, **Co-install (qa-kit, non-Claude)**.
+- [x] Confirmed 6a terms already have their own entries (Data-baseline, Origin, Fixture, Pinned
+      expectation / oracleSource, plus Drift / Run-config / Out-of-plan act) — no additions needed.
 
-### Memory (not a repo doc, but stale)
-- [ ] `…/memory/qa-kit-plugin-packaging-facts.md` describes only the Claude dependencies-model packaging. Add a
-      line noting qa-kit is now **multi-harness** (ADR-0024): Codex/Pi/opencode generated from `qa-kit/core/` into
-      git-ignored `qa-kit/dist/<h>/`, co-install contract, engine still untouched.
+### Memory (not a repo doc) — DONE
+- [x] `…/memory/qa-kit-plugin-packaging-facts.md` updated: the "non-Claude build deferred" line now records the
+      increment-7 landing (ADR-0024) — generator, per-harness skill-ref rendering, co-install contract, engine
+      untouched. (Lives outside the repo, so not in any PR.)
 
 ## 🟡 Optional / lower priority
 - [ ] `docs/harness-adapters.md` — the per-harness engine READMEs say "Runs the same **16 skills**" (matches the
