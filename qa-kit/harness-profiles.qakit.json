@@ -14,7 +14,6 @@
       "agentExt": "md",
       "agentDir": ".pi/agents",
       "cmdDir": ".pi/prompts",
-      "filesDir": ".pi/qa-kit",
       "engineSkillsDir": ".pi/agents/skills"
     },
     "codex": {
@@ -24,7 +23,6 @@
       "agentExt": "toml",
       "agentDir": ".codex/agents",
       "cmdDir": ".codex/prompts",
-      "filesDir": ".codex/qa-kit",
       "engineSkillsDir": ".agents/skills"
     },
     "opencode": {
@@ -34,7 +32,6 @@
       "agentExt": "md",
       "agentDir": ".opencode/agent",
       "cmdDir": ".opencode/command",
-      "filesDir": ".opencode/qa-kit",
       "engineSkillsDir": ".opencode/skills"
     }
   }
