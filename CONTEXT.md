@@ -275,6 +275,23 @@ authored it: `human` (both input and expected confirmed at `/qa-scenarios`'s HIT
 `confidence: high`) or `llm-suggested` (unconfirmed → `confidence: low`, since an LLM-computed expectation the
 same model later verifies buys determinism, not independence).
 
+**Auto-seed (qa-kit)**:
+The **opt-in** establishment path (increment 6b): qa-kit *applies* the declared `seeded` rows via the stack's
+seed command, instead of only reading them back. Runs ONLY when `auto-seed.sh decide` returns `seed:true`
+(`allowApiWrites` + non-empty `seedableEnvMarker` + `environment != production` — the engine's own write gate)
+AND a human confirms. Any gate unmet → the default **declare-and-verify** path (writes nothing).
+_Avoid_: conflating with declare-and-verify (the default, which never writes) — auto-seed is the *write* variant.
+
+**Seed command (qa-kit)**:
+The database-seed command `detect-seed.sh` **proposes** by reading the engine's `stack-profile.json`
+(laravel `php artisan db:seed`, rails `bin/rails db:seed`, prisma `npx prisma db seed`; else `null`). Always a
+**proposal**, never auto-run — the operator confirms/edits it into `.qa/specs/<target>/seed.json`.
+
+**Co-install (qa-kit, non-Claude)**:
+The increment-7 contract: on Codex/Pi/opencode the engine adapter must be installed **first** so its skills
+populate the harness's shared skills dir; qa-kit's generated step commands reference those skills by name and
+each installer aborts if they're absent. On Claude this is the `dependencies:["qa-e2e-pilot"]` plugin model.
+
 ## Flagged ambiguities
 
 - **"backend"** previously named two things: the app under test, and a browser-MCP pool entry. Resolved: **Backend** = app under test only; a pool entry is a **Driver**, and the browser context it spawns is a **Session**.
