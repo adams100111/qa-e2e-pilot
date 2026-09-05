@@ -10,3 +10,25 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }   # guarantees stdlib tomllib (3.11+) for the TOML checks
       - run: bash scripts/validate-adapters.sh
+
+  qa-kit:
+    # Gate the qa-kit plugin (engine byte-oracle above is separate): the qa-kit multi-harness
+    # byte-oracle + every qa-kit dual-engine suite (6a data layer, 6b auto-seed, increment-7 adapters).
+    # ubuntu-latest ships jq, so each suite exercises BOTH the jq and python3 engines; python3 3.12
+    # covers the jq-absent leg the scripts fall back to.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: qa-kit adapter byte-oracle (Claude dist == committed) + residual-token check
+        run: bash qa-kit/scripts/validate-qakit-adapters.sh
+      - name: qa-kit dual-engine suites
+        run: |
+          set -e
+          for d in constitution spec-snapshot qa-kit-enforcement runconfig-merge \
+                   data-baseline check-fixtures detect-seed auto-seed \
+                   qa-kit-phases qakit-adapters; do
+            echo "== tests/$d =="
+            bash "tests/$d/run.sh"
+          done
