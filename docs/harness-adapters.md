@@ -15,24 +15,41 @@ verify first, start there. Codex and opencode follow the identical procedure bel
 
 ---
 
-## Installing qa-kit (Claude only, for now)
+## Installing qa-kit (all four harnesses since increment 7)
 
 `qa-kit` is a **second plugin** in this same repo/marketplace — a spec-kit-style, step-gated QA
-process shell (`/qa-constitution`, `/qa-status`, and later `/qa-spec` → `/qa-scenarios` →
-`/qa-analyze` → `/qa-run`) layered over the qa-e2e-pilot **engine**. It is packaged with the
-**dependencies model** (see [ADR-0022](./adr/0022-qa-kit-process-shell.md) + the
-`qa-kit-plugin-packaging-facts` memory):
+process shell (`/qa-constitution` → `/qa-spec` → `/qa-scenarios` → `/qa-analyze` → `/qa-run`, plus
+`/qa-status`) layered over the qa-e2e-pilot **engine**.
+
+**On Claude** it ships as a plugin via the **dependencies model** (see
+[ADR-0022](./adr/0022-qa-kit-process-shell.md) + the `qa-kit-plugin-packaging-facts` memory):
 
 - Enable the `qa-kit` entry from this marketplace. Its `plugin.json` declares
   `"dependencies": ["qa-e2e-pilot"]`, so Claude co-installs/enables the engine plugin — qa-kit reuses
   the engine's skills by qualified slug (`/qa-e2e-pilot:<skill>`) and bundles its own scripts under
   `qa-kit/` (reached via qa-kit's own `${CLAUDE_PLUGIN_ROOT}`).
-- No symlinks and no file duplication of the engine's skills. The engine (`qa-e2e-pilot`) stays
-  installable **standalone and unchanged**; installing it alone does not pull in qa-kit.
+- No symlinks and no file duplication of the engine's skills.
 
-**Non-Claude qa-kit is not built yet.** codex/pi/opencode have no plugin/skill namespacing to lean on,
-so a flattened qa-kit `dist/<h>/` build is a **deferred** follow-on increment. On those harnesses you
-have the engine (the sections below), not the qa-kit step commands, today.
+**On Codex, Pi, and opencode** (since increment 7, [ADR-0024](./adr/0024-qa-kit-multi-harness.md))
+qa-kit is generated from the shared `qa-kit/core/` — the same ADR-0017 pattern as the engine,
+qa-kit-owned — into git-ignored `qa-kit/dist/<h>/`, then installed by a per-harness script. **The
+engine adapter for that harness must be installed FIRST** (the co-install contract): qa-kit's step
+commands reference the engine's skills, and each installer aborts if the engine's skills dir is absent.
+
+```bash
+# 1) engine adapter first (populates the shared skills dir)
+bash harnesses/pi/install-pi.sh <project>            # or codex/opencode
+# 2) then qa-kit
+bash qa-kit/harnesses/pi/install-pi.sh <project>     # or codex/opencode
+```
+
+Skill references render per harness — Claude uses the `/qa-e2e-pilot:<skill>` slug; **Pi and Codex**
+use a bare `` the `<name>` skill `` (the agent reads `.pi/agents/skills/<name>/` resp. `.agents/skills/<name>/`);
+**opencode** uses the `skills_<name>` tool and therefore **requires the community `opencode-skills`
+plugin** enabled in `opencode.json` (else the skills are inert). See each
+`qa-kit/harnesses/<h>/README.md`. A live end-to-end qa-kit run per non-Claude harness is the **manual
+accuracy run** — the generator + composition are unit-tested (`tests/qakit-adapters/run.sh`), the live
+agent behaviour is not.
 
 ---
 

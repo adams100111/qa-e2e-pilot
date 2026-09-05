@@ -1,0 +1,41 @@
+{
+  "_doc": "qa-kit-specific per-harness render + install fields for build-qakit-adapter.sh (increment 7, ADR-0024). Shared harness facts live in the engine's harness-profiles.json (read-only); this file adds only what qa-kit needs. skillRef/engineRun templates use {name} as the skill/command placeholder. No QAKIT_CMD token: bare /qa-<step> command refs are left literal (they read fine on every harness). pluginRoot is where qa-kit's OWN scripts/templates install (per-plugin root); it is NOT the engine skills path (bare-name skill refs resolve from the engine adapter's co-installed shared skills dir).",
+  "harnesses": {
+    "claude": {
+      "skillRef": "/qa-e2e-pilot:{name}",
+      "engineRun": "/qa-e2e-pilot:qa-run",
+      "pluginRoot": "${CLAUDE_PLUGIN_ROOT}",
+      "agentExt": "md"
+    },
+    "pi": {
+      "skillRef": "the `{name}` skill",
+      "engineRun": "the `/qa-run` prompt",
+      "pluginRoot": ".pi/qa-kit",
+      "agentExt": "md",
+      "agentDir": ".pi/agents",
+      "cmdDir": ".pi/prompts",
+      "filesDir": ".pi/qa-kit",
+      "engineSkillsDir": ".pi/agents/skills"
+    },
+    "codex": {
+      "skillRef": "the `{name}` skill",
+      "engineRun": "the `/qa-run` prompt",
+      "pluginRoot": ".codex/qa-kit",
+      "agentExt": "toml",
+      "agentDir": ".codex/agents",
+      "cmdDir": ".codex/prompts",
+      "filesDir": ".codex/qa-kit",
+      "engineSkillsDir": ".agents/skills"
+    },
+    "opencode": {
+      "skillRef": "the `skills_{name}` tool",
+      "engineRun": "the `/qa-run` command",
+      "pluginRoot": ".opencode/qa-kit",
+      "agentExt": "md",
+      "agentDir": ".opencode/agent",
+      "cmdDir": ".opencode/command",
+      "filesDir": ".opencode/qa-kit",
+      "engineSkillsDir": ".opencode/skills"
+    }
+  }
+}

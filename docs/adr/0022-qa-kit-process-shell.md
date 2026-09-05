@@ -136,6 +136,9 @@ spec-kit, without touching `qa-verify`, and without breaking the standalone quic
   namespacing to lean on, so a qa-kit `dist/<h>/` build (flattening qa-kit's commands + the engine's
   skills, per [ADR-0017](./0017-multi-harness-portability.md)) is required — that is **deferred** to a
   later increment; **v1 qa-kit is Claude-only**, and that limitation is documented rather than hidden.
+  **(SUPERSEDED 2026-09-05 by [ADR-0024](./0024-qa-kit-multi-harness.md): increment 7 ships qa-kit on
+  Codex/Pi/opencode, generated from `qa-kit/core/` — the "different composition" is per-harness skill
+  references resolved from the engine adapter's co-installed shared skills dir; engine still untouched.)**
 - **No mid-run mutation.** Roles and the frozen plan cannot be edited once `plan_frozen` fires —
   reproducibility is chosen over live-editing, matching ADR-0020's existing freeze-and-replay
   principle.
