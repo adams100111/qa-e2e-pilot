@@ -50,7 +50,8 @@ PERSONA_BODY_FILE="$(mktemp)"; export PERSONA_BODY_FILE
 render < "$QAKIT/core/persona-body.md" > "$PERSONA_BODY_FILE"
 EXT="$(python3 -c "import json;print(json.load(open('$PROFILE'))['harnesses']['$H']['agentExt'])")"
 render < "$QAKIT/harnesses/$H/manifest.tmpl" > "$OUT/agent/qa-kit.$EXT"
-unset PERSONA_BODY_FILE
+# (PERSONA_BODY_FILE stays set so the EXIT trap cleans it — do NOT unset it here, or the trap's
+#  "${PERSONA_BODY_FILE:-}" expands empty and the mktemp'd file leaks. Nothing renders after this.)
 # qa-kit's own scripts + templates copied verbatim (reached via {{PLUGIN_ROOT}} at run time)
 cp -R "$QAKIT/scripts" "$OUT/scripts"
 [ -d "$QAKIT/templates" ] && cp -R "$QAKIT/templates" "$OUT/templates"
