@@ -51,6 +51,8 @@
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
+#               NODE is required ONLY when gating a `human-action` kind (the value-check
+#               shells out to check-action-trace.js); no node is needed otherwise.
 #
 # NOTE: All paths are relative to the current working directory (project root).
 
@@ -623,6 +625,10 @@ gate_value_check() {
       # so a record lookup would always be empty (the opt-out would be dead).
       local allow=""
       if [[ -n "$nonui_reason" ]]; then allow="--allow-nonui"; fi
+      if ! command -v node >/dev/null 2>&1; then
+        echo "EVIDENCE GATE: human-action gating requires 'node' (check-action-trace.js) but node is not on PATH — install node, or record a non-pass verdict." >&2
+        return 1
+      fi
       if ! node "$(dirname "${BASH_SOURCE[0]}")/check-action-trace.js" "$full_path" $allow; then
         return 1   # check-action-trace.js already printed the reason to stderr
       fi

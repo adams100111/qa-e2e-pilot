@@ -1284,5 +1284,23 @@ else
   echo "SKIP - kinds-gate jq-fallback sub-case: jq or python3 not present on this host"
 fi
 
+# --- C1: human-action gating without node -> clear guard message, not raw not-found ---
+# Build a PATH that has jq/python3/coreutils but NOT node, present a well-formed
+# action-trace.json (so the gate reaches the node value-check), and assert the
+# reject names node explicitly and exits non-zero (never a bare "command not found").
+NODE_RUN_ID="test-run-no-node"
+NODE_EVID="$WORK/.qa/runs/${NODE_RUN_ID}/evidence/HA1"
+mkdir -p "$NODE_EVID"
+printf '%s' '{"steps":[{"tool":"browser_click","target":"#go","phase":"act"}],"fingerprints":{"before":0,"after":1}}' > "$NODE_EVID/action-trace.json"
+NNBIN="$WORK/nonodebin"; mkdir -p "$NNBIN"
+for tool in bash date mkdir cat mv rm dirname mktemp grep sort jq python3; do
+  tp="$(command -v "$tool" 2>/dev/null)"; [ -n "$tp" ] && ln -sf "$tp" "$NNBIN/$tool"
+done
+NODE_ERR="$(cd "$WORK" && PATH="$NNBIN" "$(command -v bash)" "$SCRIPT" "$NODE_RUN_ID" HA1 pass --kinds human-action 2>&1 >/dev/null)"
+NODE_RC=$?
+check "no-node: human-action pass exits non-zero" "$([ "$NODE_RC" -ne 0 ] && echo yes)" "yes"
+check "no-node: error names node"        "$(printf '%s' "$NODE_ERR" | grep -ic 'node')" "1"
+check "no-node: not a raw command-not-found" "$(printf '%s' "$NODE_ERR" | grep -c 'command not found')" "0"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
