@@ -52,33 +52,51 @@ The audit found that the *paper* enforcement design is stronger than what actual
 
 ### Increment A — wire the two authorities into the operational flow (F1 + F2)
 
-The packaging constraint shapes this: qa-kit cannot invoke the engine's `qa-verify.sh` by path, so
-the wiring is split across the seam both plugins already share — the run directory.
+**Correction from the audit spec's first draft:** F1's root is not "`/qa-analyze` doesn't call
+verify-plan" — it's that **qa-kit has no post-run step at all**. `/qa-analyze` is explicitly
+*pre-run* (spec-kit `analyze` pattern, advisory, never blocks); `/qa-status` is read-only
+presence-inspection ("never create, modify, or run anything"). `verify-plan.sh` needs the run's
+`checkpoint.json`, which only exists *after* `/qa-run`. So the fix adds a new post-run step.
 
-**A1 (engine increment).** The engine finishes every run by running its own authority. Edit
-`core/persona-body.md` (and `core/commands/qa-run.md` if the Report phase is described there): the
-Report phase gains a mandatory final step — run
+The packaging constraint shapes A1↔A2: qa-kit cannot invoke the engine's `qa-verify.sh` by path, so
+the seam both plugins share is the run directory — specifically `.qa/runs/<run-id>/verification.json`
+(the JSON array of per-pass override records qa-verify.sh already writes) and `checkpoint.json`.
+
+**A1 (engine increment).** The engine finishes every interactive run by running its own authority.
+Edit `core/persona-body.md`: the **Remember** phase (step 5) gains a mandatory final action — run
 `${CLAUDE_PLUGIN_ROOT}/scripts/qa-verify.sh <run-id>` and treat its output as authoritative: any
-override it emits replaces the recorded verdict in the report, and its verdict/confidence downgrades
-are reflected in the tally. `qa-verify.sh` already writes its results into the run dir; the report
-cites them. Regenerate adapters; byte-oracle updates with the regeneration.
+override it emits replaces the recorded verdict in the report, and its confidence downgrades flow
+into the tally. `qa-verify.sh` already writes `verification.json`; the report cites it. This is an
+engine increment — edit `core/persona-body.md`, then regenerate via `build-adapter.sh` (never the
+committed generated files directly); the Claude byte-oracle updates as part of the regeneration
+commit. Ships as its own PR *before* A2 so a fresh run has a `verification.json` for A2 to read.
 
-**A2 (qa-kit increment).** `/qa-analyze` step 1 becomes "verify before analyzing":
-1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh .qa/runs/<run-id>/checkpoint.json
-   .qa/runs/<run-id>/checklist.json`. Non-zero exit → the analysis MUST lead with the out-of-plan
-   criteria list; out-of-plan acts are a process violation finding, not a footnote.
-2. Read the engine's qa-verify output from the run dir (written by A1). If it is absent (older run,
-   engine not yet upgraded), say so explicitly in the analysis — "deterministic re-verification not
-   found for this run" — never silently proceed as if verified.
-The `qa-analyze-template.md` gains a fixed "Verification" section with three states: verified /
-overridden (list) / not-verified (reason).
+**A2 (qa-kit increment) — new `/qa-verify <target>` command.** The 6th qa-kit command, run after
+`/qa-run`. Flow becomes: constitution → spec → scenarios → analyze → run → **verify** → status.
+`qa-kit/commands/qa-verify.md`:
+1. Resolve the target's latest run dir (via `runs.json` / `.qa/runs/`). Prereq: `checkpoint.json`
+   present, else error pointing at `/qa-run`.
+2. Run `${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh <run>/checkpoint.json <run>/checklist.json`.
+   Non-zero exit → lead with the out-of-plan criteria list (a process-violation finding, not a
+   footnote).
+3. Read `<run>/verification.json` (written by A1). Absent (older run / engine not upgraded) → say so
+   explicitly: "deterministic re-verification not found for this run" — never imply verified.
+   Present → surface every record whose verdict was overridden or confidence downgraded.
+4. Write `.qa/specs/<target>/verification.md` from a new
+   `qa-kit/templates/qa-verify-template.md` with three states: verified / overridden (list) /
+   not-verified (reason). Exit non-zero if any out-of-plan act or override exists (so CI/automation
+   can gate on it); the *command* reports rather than silently blocks, matching qa-kit's advisory
+   tone, but the deterministic verify-plan/qa-verify results are authoritative.
 
-**A3.** Fix the `qa-scenarios.md` prose to say *where* verify-plan actually fires (in `/qa-analyze`),
-so the promise and the wiring agree.
+**A3.** Fix `qa-scenarios.md`'s prose (line ~58) to say verify-plan fires in `/qa-verify` (not
+"beside qa-verify" ambiguously). Add `/qa-verify` to `/qa-status`'s next-step ladder (after a run
+exists but before `verification.md`) and to the agent flow list in `qa-kit/agents/qa-kit.md`.
 
-Tests: extend `tests/qa-kit-phases/run.sh` — the qa-analyze command text must reference
-`verify-plan.sh` and the template must contain the Verification section; a negative fixture with an
-out-of-plan criterion must make the documented invocation exit non-zero.
+Tests: extend `tests/qa-kit-phases/run.sh` — assert the `/qa-verify` command references
+`verify-plan.sh` and reads `verification.json`, and the template carries the three-state section.
+A new/extended fixture: a checkpoint.json with an acted criterion absent from checklist.json makes
+the documented `verify-plan.sh` invocation exit non-zero (this reuses the existing `verify-plan`
+suite's fixtures; the phases suite asserts the *wiring*).
 
 ### Increment B — gate the engine suites in CI (F3)
 
@@ -142,8 +160,9 @@ qa-verify output" has something to read in fresh runs).
 
 ## Success criteria
 
-1. A fresh interactive run ends with `qa-verify.sh` executed and its result in the report; a
-   qa-kit run's `/qa-analyze` refuses to bury out-of-plan acts. 2. `adapters.yml` runs three jobs
+1. A fresh interactive run ends with `qa-verify.sh` executed and its result in the report; `/qa-verify`
+   exists, runs verify-plan + reads verification.json, and surfaces out-of-plan acts and overrides.
+   2. `adapters.yml` runs three jobs
    (adapters, qa-kit, engine) and the engine job gates ≥600 checks. 3. All four F7 files say 17;
    every SKILL.md body <500 lines. 4. A human-action pass attempt on a node-less host prints the
    clear message. 5. `docs/accuracy-runs/` contains the first pi run record.
