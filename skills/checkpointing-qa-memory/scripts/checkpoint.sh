@@ -291,7 +291,7 @@ cmd_resume() {
 
   if has_jq; then
     local count
-    count=$(jq '.criteria | length' "$file")
+    count=$(jq '(.criteria // []) | length' "$file")
     if [[ "$count" -eq 0 ]]; then
       echo "RESUME: no criteria checkpointed yet — start from the beginning."
       exit 1
@@ -732,7 +732,14 @@ checklist_row_for() {
   [[ -f "$file" ]] || return 0
   json_is_valid "$file" || return 0
 
+  # A checklist.json with >1 row for the same id is a plan bug: we deterministically
+  # use the FIRST match (behavior unchanged), but surface a one-line stderr note so the
+  # duplicate doesn't stay silent. The count is computed the same way in both engines.
+  local dup_count=0
   if has_jq; then
+    dup_count="$(jq -r --arg id "$crit_id" '
+      if type == "array" then ([ .[] | select(type == "object" and .id == $id) ] | length) else 0 end
+    ' "$file" 2>/dev/null || echo 0)"
     jq -c --arg id "$crit_id" '
       if type == "array" then
         (([ .[] | select(type == "object" and .id == $id) ] | .[0]) // empty)
@@ -741,6 +748,16 @@ checklist_row_for() {
       end
     ' "$file" 2>/dev/null || true
   elif has_py; then
+    dup_count="$(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(data, list):
+    print(0); sys.exit(0)
+print(sum(1 for r in data if isinstance(r, dict) and r.get("id") == sys.argv[2]))
+' "$file" "$crit_id" 2>/dev/null || echo 0)"
     python3 -c '
 import json, sys
 try:
@@ -754,6 +771,9 @@ for row in data:
         print(json.dumps(row))
         sys.exit(0)
 ' "$file" "$crit_id" || true
+  fi
+  if [[ "$dup_count" =~ ^[0-9]+$ ]] && (( dup_count > 1 )); then
+    echo "NOTE: checklist.json has ${dup_count} rows with id '${crit_id}' — using the first; a duplicate criterion id is a plan bug." >&2
   fi
   return 0
 }

@@ -1313,5 +1313,22 @@ check "C4: the record was written" \
 BR2_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BR_RUN_ID" F2 fail --bug-ref BUG-9 2>&1 >/dev/null)"
 check "C4: fail WITH bug-ref emits no note" "$(printf '%s' "$BR2_ERR" | grep -ic 'bug-ref')" "0"
 
+# --- C5a: --resume on a checkpoint.json with no .criteria -> clean exit 1, no crash ---
+RES_RUN_ID="test-run-nocriteria"
+mkdir -p "$WORK/.qa/runs/${RES_RUN_ID}"
+printf '%s' '{}' > "$WORK/.qa/runs/${RES_RUN_ID}/checkpoint.json"
+RES_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$RES_RUN_ID" 2>&1)"; RES_RC=$?
+check "C5a: resume on no-criteria exits 1" "$RES_RC" "1"
+check "C5a: resume on no-criteria says 'no criteria'" "$(printf '%s' "$RES_OUT" | grep -ic 'no criteria')" "1"
+
+# --- C5b: duplicate checklist id -> stderr note (pass still records) ---
+DUP_RUN_ID="test-run-dupid"
+mkdir -p "$WORK/.qa/runs/${DUP_RUN_ID}"
+printf '%s' '[{"id":"DUP"},{"id":"DUP"}]' > "$WORK/.qa/runs/${DUP_RUN_ID}/checklist.json"
+DUP_ERR="$(cd "$WORK" && bash "$SCRIPT" "$DUP_RUN_ID" DUP pass 2>&1 >/dev/null)"
+check "C5b: duplicate checklist id emits a note" "$(printf '%s' "$DUP_ERR" | grep -ic 'duplicate\|rows with id')" "1"
+check "C5b: pass still recorded" \
+  "$([[ -f "$WORK/.qa/runs/${DUP_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
