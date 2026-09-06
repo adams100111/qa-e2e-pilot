@@ -34,10 +34,10 @@
       untouched. (Lives outside the repo, so not in any PR.)
 
 ## 🟡 Optional / lower priority
-- [ ] **(engine-doc item — NOT a qa-kit change)** the per-harness *engine* adapter READMEs
-      (`harnesses/{pi,codex,opencode}/README.md`) say "Runs the same **16 skills**" — should be 17. Left for an
-      **engine** change: editing engine-owned files from a qa-kit change would breach engine-untouched
-      (design D5, spec 2026-09-05-qa-kit-review-followups). Root README + CLAUDE.md are already 17.
+- [x] **DONE (2026-09-06, audit-remediation C3):** the per-harness *engine* adapter READMEs
+      (`harnesses/{pi,codex,opencode}/README.md`) + `docs/harness-adapters.md` now say "17 skills"
+      (was 16). Done as an **engine** change in its own increment (not qa-kit), so engine-untouched
+      is preserved. Root README + CLAUDE.md were already 17.
 - [x] **DONE (PR #68):** added the **"qa-kit manual accuracy run"** procedure to `docs/harness-adapters.md`
       (co-install order → drive the spine → confirm skill/`{{PLUGIN_ROOT}}` resolution → score).
 
