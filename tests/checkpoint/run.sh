@@ -1284,5 +1284,51 @@ else
   echo "SKIP - kinds-gate jq-fallback sub-case: jq or python3 not present on this host"
 fi
 
+# --- C1: human-action gating without node -> clear guard message, not raw not-found ---
+# Build a PATH that has jq/python3/coreutils but NOT node, present a well-formed
+# action-trace.json (so the gate reaches the node value-check), and assert the
+# reject names node explicitly and exits non-zero (never a bare "command not found").
+NODE_RUN_ID="test-run-no-node"
+NODE_EVID="$WORK/.qa/runs/${NODE_RUN_ID}/evidence/HA1"
+mkdir -p "$NODE_EVID"
+printf '%s' '{"steps":[{"tool":"browser_click","target":"#go","phase":"act"}],"fingerprints":{"before":0,"after":1}}' > "$NODE_EVID/action-trace.json"
+NNBIN="$WORK/nonodebin"; mkdir -p "$NNBIN"
+for tool in bash date mkdir cat mv rm dirname mktemp grep sort jq python3; do
+  tp="$(command -v "$tool" 2>/dev/null)"; [ -n "$tp" ] && ln -sf "$tp" "$NNBIN/$tool"
+done
+NODE_ERR="$(cd "$WORK" && PATH="$NNBIN" "$(command -v bash)" "$SCRIPT" "$NODE_RUN_ID" HA1 pass --kinds human-action 2>&1 >/dev/null)"
+NODE_RC=$?
+check "no-node: human-action pass exits non-zero" "$([ "$NODE_RC" -ne 0 ] && echo yes)" "yes"
+check "no-node: error names node"        "$(printf '%s' "$NODE_ERR" | grep -ic 'node')" "1"
+check "no-node: not a raw command-not-found" "$(printf '%s' "$NODE_ERR" | grep -c 'command not found')" "0"
+
+# --- C4: fail/error without --bug-ref -> stderr NOTE (record still writes) ---
+BR_RUN_ID="test-run-bugref"
+BR_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BR_RUN_ID" F1 fail 2>&1 >/dev/null)"; BR_RC=$?
+check "C4: fail without bug-ref still records (exit 0)" "$BR_RC" "0"
+check "C4: fail without bug-ref emits NOTE" "$(printf '%s' "$BR_ERR" | grep -ic 'bug-ref')" "1"
+check "C4: the record was written" \
+  "$([[ -f "$WORK/.qa/runs/${BR_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
+# with --bug-ref -> no such note
+BR2_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BR_RUN_ID" F2 fail --bug-ref BUG-9 2>&1 >/dev/null)"
+check "C4: fail WITH bug-ref emits no note" "$(printf '%s' "$BR2_ERR" | grep -ic 'bug-ref')" "0"
+
+# --- C5a: --resume on a checkpoint.json with no .criteria -> clean exit 1, no crash ---
+RES_RUN_ID="test-run-nocriteria"
+mkdir -p "$WORK/.qa/runs/${RES_RUN_ID}"
+printf '%s' '{}' > "$WORK/.qa/runs/${RES_RUN_ID}/checkpoint.json"
+RES_OUT="$(cd "$WORK" && bash "$SCRIPT" --resume "$RES_RUN_ID" 2>&1)"; RES_RC=$?
+check "C5a: resume on no-criteria exits 1" "$RES_RC" "1"
+check "C5a: resume on no-criteria says 'no criteria'" "$(printf '%s' "$RES_OUT" | grep -ic 'no criteria')" "1"
+
+# --- C5b: duplicate checklist id -> stderr note (pass still records) ---
+DUP_RUN_ID="test-run-dupid"
+mkdir -p "$WORK/.qa/runs/${DUP_RUN_ID}"
+printf '%s' '[{"id":"DUP"},{"id":"DUP"}]' > "$WORK/.qa/runs/${DUP_RUN_ID}/checklist.json"
+DUP_ERR="$(cd "$WORK" && bash "$SCRIPT" "$DUP_RUN_ID" DUP pass 2>&1 >/dev/null)"
+check "C5b: duplicate checklist id emits a note" "$(printf '%s' "$DUP_ERR" | grep -ic 'duplicate\|rows with id')" "1"
+check "C5b: pass still recorded" \
+  "$([[ -f "$WORK/.qa/runs/${DUP_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

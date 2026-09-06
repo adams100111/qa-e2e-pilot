@@ -51,6 +51,8 @@
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
+#               NODE is required ONLY when gating a `human-action` kind (the value-check
+#               shells out to check-action-trace.js); no node is needed otherwise.
 #
 # NOTE: All paths are relative to the current working directory (project root).
 
@@ -289,7 +291,7 @@ cmd_resume() {
 
   if has_jq; then
     local count
-    count=$(jq '.criteria | length' "$file")
+    count=$(jq '(.criteria // []) | length' "$file")
     if [[ "$count" -eq 0 ]]; then
       echo "RESUME: no criteria checkpointed yet — start from the beginning."
       exit 1
@@ -623,6 +625,10 @@ gate_value_check() {
       # so a record lookup would always be empty (the opt-out would be dead).
       local allow=""
       if [[ -n "$nonui_reason" ]]; then allow="--allow-nonui"; fi
+      if ! command -v node >/dev/null 2>&1; then
+        echo "EVIDENCE GATE: human-action gating requires 'node' (check-action-trace.js) but node is not on PATH — install node, or record a non-pass verdict." >&2
+        return 1
+      fi
       if ! node "$(dirname "${BASH_SOURCE[0]}")/check-action-trace.js" "$full_path" $allow; then
         return 1   # check-action-trace.js already printed the reason to stderr
       fi
@@ -726,7 +732,14 @@ checklist_row_for() {
   [[ -f "$file" ]] || return 0
   json_is_valid "$file" || return 0
 
+  # A checklist.json with >1 row for the same id is a plan bug: we deterministically
+  # use the FIRST match (behavior unchanged), but surface a one-line stderr note so the
+  # duplicate doesn't stay silent. The count is computed the same way in both engines.
+  local dup_count=0
   if has_jq; then
+    dup_count="$(jq -r --arg id "$crit_id" '
+      if type == "array" then ([ .[] | select(type == "object" and .id == $id) ] | length) else 0 end
+    ' "$file" 2>/dev/null || echo 0)"
     jq -c --arg id "$crit_id" '
       if type == "array" then
         (([ .[] | select(type == "object" and .id == $id) ] | .[0]) // empty)
@@ -735,6 +748,16 @@ checklist_row_for() {
       end
     ' "$file" 2>/dev/null || true
   elif has_py; then
+    dup_count="$(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); sys.exit(0)
+if not isinstance(data, list):
+    print(0); sys.exit(0)
+print(sum(1 for r in data if isinstance(r, dict) and r.get("id") == sys.argv[2]))
+' "$file" "$crit_id" 2>/dev/null || echo 0)"
     python3 -c '
 import json, sys
 try:
@@ -748,6 +771,9 @@ for row in data:
         print(json.dumps(row))
         sys.exit(0)
 ' "$file" "$crit_id" || true
+  fi
+  if [[ "$dup_count" =~ ^[0-9]+$ ]] && (( dup_count > 1 )); then
+    echo "NOTE: checklist.json has ${dup_count} rows with id '${crit_id}' — using the first; a duplicate criterion id is a plan bug." >&2
   fi
   return 0
 }
@@ -915,6 +941,13 @@ cmd_upsert() {
     high|low) ;;
     *) die "Invalid confidence '${confidence}'. Must be: high | low" ;;
   esac
+
+  # A fail/error should carry a bug-log ref (the bug-log entry is where the suspected
+  # layer FE|route|service|migration|DB lives). Not mandatory — that would break
+  # characterization — but surface a visible nudge, mirroring the un-gated-pass NOTE.
+  if [[ "$verdict" == "fail" || "$verdict" == "error" ]] && [[ -z "$bug_ref" ]]; then
+    echo "NOTE: ${verdict} recorded for '${crit_id}' with no --bug-ref — the bug-log entry is where the suspected layer (FE|route|service|migration|DB) is recorded; add one for a complete failure trail." >&2
+  fi
 
   local kinds_json="[]"
   if [[ -n "$kinds_csv" ]]; then

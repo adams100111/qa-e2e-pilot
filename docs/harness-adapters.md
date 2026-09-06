@@ -1,7 +1,7 @@
 # Running qa-e2e-pilot on other harnesses
 
 `qa-e2e-pilot` was built as a Claude Code plugin. Since [ADR-0017](./adr/0017-multi-harness-portability.md),
-the same 16 skills, 6-phase orchestrator, and human-interaction gate (ADR-0015) can also run on
+the same 17 skills, 6-phase orchestrator, and human-interaction gate (ADR-0015) can also run on
 **Codex**, **Pi**, and **opencode** — generated from one shared core (`core/` + `skills/` + `scripts/`)
 via `harness-profiles.json` and `scripts/build-adapter.sh` into thin, per-harness adapters under
 `harnesses/<h>/`. v1 is **sequential-only** on every harness — no adapter wires subagent fan-out

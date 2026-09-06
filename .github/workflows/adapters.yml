@@ -23,3 +23,19 @@ jobs:
         with: { python-version: "3.12" }
       - name: qa-kit byte-oracle + all qa-kit suites
         run: bash qa-kit/scripts/run-qakit-ci.sh
+
+  engine:
+    # Gate the ENGINE's self-contained test suites. The suite LIST lives in scripts/run-engine-ci.sh
+    # (single source), so enrolling a suite there enrolls it here automatically. Needs node (the
+    # human-action gate + session-to-toolstream shell out to node) + jq (ubuntu-latest ships it) +
+    # python3 (the jq-absent fallback leg). Two suites (qa-reconcile, rebake) are RED on a clean tree
+    # and are excluded with reasons in run-engine-ci.sh — see that file.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: engine self-contained test suites
+        run: bash scripts/run-engine-ci.sh

@@ -14,7 +14,7 @@ for h in pi codex opencode; do
   agentdir="$(python3 -c "import json;print(json.load(open('$PROF'))['harnesses']['$h']['agentDir'])")"
   cmddir="$(python3 -c "import json;print(json.load(open('$PROF'))['harnesses']['$h']['cmdDir'])")"
   check "$h positive: agent placed" "$([ -f "$T/$agentdir/qa-kit.$ext" ] && echo y)" "y"
-  check "$h positive: 5 commands"   "$(ls "$T/$cmddir" 2>/dev/null | wc -l | tr -d ' ')" "5"
+  check "$h positive: 6 commands"   "$(ls "$T/$cmddir" 2>/dev/null | wc -l | tr -d ' ')" "6"
   rm -rf "$T"
   # abort: no engine skills -> non-zero
   T2="$(mktemp -d)"; bash "$REPO/qa-kit/harnesses/$h/install-$h.sh" "$T2" >/dev/null 2>&1; check "$h abort guard" "$?" "1"; rm -rf "$T2"

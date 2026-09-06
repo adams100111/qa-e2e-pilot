@@ -23,6 +23,8 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    - `analysis.md` → analyze done. If absent (but scenarios present) → next step: **`/qa-analyze`**.
    - a `runs.json` entry or `.qa/runs/<id>/` for this spec → at least one run happened. If none (but
      scenarios present) → next step: **`/qa-run "<target>"`**.
+   - `.qa/specs/<t>/verification.md` → post-run verify done. If absent (but a run exists) → next step:
+     **`/qa-verify "<target>"`**.
 
 3. **Drift advisory (per spec).** For each spec with a `spec-roles.json`, compare its stamped
    `constitutionVersion` to the current `.qa/constitution.state.json` `version`:

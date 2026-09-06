@@ -1,6 +1,6 @@
 # qa-e2e-pilot on Pi
 
-Runs the same 16 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
+Runs the same 17 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
 plugin, adapted for Pi's agent markdown + `pi-mcp-adapter` proxy tool. v1 is **sequential-only**
 (ADR-0003/Task 10) — nothing here requires or assumes subagent dispatch.
 

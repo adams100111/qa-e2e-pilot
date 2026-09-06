@@ -1,6 +1,6 @@
 # qa-e2e-pilot on Codex
 
-Runs the same 16 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
+Runs the same 17 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
 plugin, adapted for Codex's `developer_instructions` agent + `[mcp_servers]` config. v1 is
 **sequential-only** (ADR-0003/Task 10) — nothing here requires or assumes `[features]
 multi_agent`; no subagent dispatch is wired for Codex in this version.

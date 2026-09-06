@@ -34,10 +34,10 @@
       untouched. (Lives outside the repo, so not in any PR.)
 
 ## 🟡 Optional / lower priority
-- [ ] **(engine-doc item — NOT a qa-kit change)** the per-harness *engine* adapter READMEs
-      (`harnesses/{pi,codex,opencode}/README.md`) say "Runs the same **16 skills**" — should be 17. Left for an
-      **engine** change: editing engine-owned files from a qa-kit change would breach engine-untouched
-      (design D5, spec 2026-09-05-qa-kit-review-followups). Root README + CLAUDE.md are already 17.
+- [x] **DONE (2026-09-06, audit-remediation C3):** the per-harness *engine* adapter READMEs
+      (`harnesses/{pi,codex,opencode}/README.md`) + `docs/harness-adapters.md` now say "17 skills"
+      (was 16). Done as an **engine** change in its own increment (not qa-kit), so engine-untouched
+      is preserved. Root README + CLAUDE.md were already 17.
 - [x] **DONE (PR #68):** added the **"qa-kit manual accuracy run"** procedure to `docs/harness-adapters.md`
       (co-install order → drive the spine → confirm skill/`{{PLUGIN_ROOT}}` resolution → score).
 
@@ -45,8 +45,11 @@
 - [x] S1/SP2 — de-duplicated the 3 installers into `qa-kit/harnesses/_install-common.sh` + thin wrappers.
 - [x] S2 — `field()` fails loud on a missing profile key (was a silent `''`).
 - [x] SP1 — single-sourced the qa-kit CI suite list in `qa-kit/scripts/run-qakit-ci.sh`; `adapters.yml` calls it.
-- [ ] **Deferred (measured):** the broader 44-suite `tests/` corpus stays ungated — a full `tests/*/run.sh`
-      glob hangs without a live app (2-min timeout), so wiring the engine suites is a separate maintainer call.
+- [x] **Engine suites now gated (2026-09-06):** `scripts/run-engine-ci.sh` enrolls the 33 self-contained
+      engine suites (probed green under `timeout 90`); `adapters.yml` runs it as the `engine` job. Excluded
+      with reasons in that script: `qa-reconcile` + `rebake` are **RED on main@147e5a9** (a pre-existing
+      state-machine/journal failure the ungated corpus was hiding) — fix separately, then enroll. A blanket
+      `tests/*/run.sh` glob is still avoided (some suites need a live app / hang).
 
 ## ✅ Already updated inline this session (for traceability — verify, don't redo)
 - ADR-0023 — 6b landing + §7 correction (detect-seed reads `stack-profile.json`).
