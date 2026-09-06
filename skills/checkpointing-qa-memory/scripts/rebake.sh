@@ -141,6 +141,11 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 JOURNAL_EMIT_SH="${SCRIPT_DIR}/journal-emit.sh"
 CHECKPOINT_SH="${SCRIPT_DIR}/checkpoint.sh"
 
+# Run-directory layout, in ONE place (mirrors checkpoint.sh/journal-emit.sh's
+# QA_BASE) so the `.qa/runs/<id>/journal.ndjson` literal is not restated inline.
+QA_BASE=".qa/runs"
+run_journal_path() { echo "${QA_BASE}/$1/journal.ndjson"; }
+
 # Resolve the engine ONCE, from THIS script's own has_jq (which already
 # honors QA_ENGINE), then pass it explicitly to journal-emit.sh/checkpoint.sh
 # subprocess calls — same rationale as journal-emit.sh's ENGINE/append_event
@@ -164,27 +169,40 @@ has_jq && ENGINE="jq"
 key_already_committed() {
   local journal_file="$1" key="$2"
   [[ -f "$journal_file" ]] || return 1
+  # TOLERANT per-line parse in BOTH engines — byte-identical to
+  # qa-reconcile.sh's key_has_act_intent. reconcile is the crash-recovery
+  # tool, so the journal may have a TORN last line; a valid act_committed
+  # earlier in the file must still be seen (skip the bad line, keep scanning),
+  # and both engines must agree. A wholesale slurp (jq -s / json all-at-once)
+  # would drop the whole file on one bad line — brittle exactly when it counts.
   if has_jq; then
     local n
-    n="$(jq -s --arg k "$key" '
-      [ .[] | select(type == "object" and .event == "act_committed" and (.key // "") == $k) ] | length
+    n="$(jq -R -s --arg k "$key" '
+      [ split("\n")[]
+        | select(length > 0)
+        | (try fromjson catch null)
+        | select(. != null and type == "object" and .event == "act_committed" and (.key // "") == $k)
+      ] | length
     ' < "$journal_file" 2>/dev/null || echo 0)"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
   else
-    # Parse ALL lines up front (matching jq -s's wholesale slurp): a malformed
-    # journal fails BOTH engines identically to "not committed" (exit 1), rather
-    # than jq failing wholesale while a line-by-line python scan finds a match
-    # before the bad line — that asymmetry would be a dual-engine divergence.
     python3 -c '
 import json, sys
 key = sys.argv[2]
 try:
-    objs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-except Exception:
-    sys.exit(1)
-for obj in objs:
-    if isinstance(obj, dict) and obj.get("event") == "act_committed" and obj.get("key", "") == key:
-        sys.exit(0)
+    with open(sys.argv[1]) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and obj.get("event") == "act_committed" and obj.get("key", "") == key:
+                sys.exit(0)
+except FileNotFoundError:
+    pass
 sys.exit(1)
 ' "$journal_file" "$key"
   fi
@@ -493,7 +511,7 @@ cmd_reconcile() {
       # goes through the guard.
       local commit_key="${run_id}:${scenario_id}:${criterion_id}"
       local force_arg=""
-      if key_already_committed ".qa/runs/${run_id}/journal.ndjson" "$commit_key"; then
+      if key_already_committed "$(run_journal_path "$run_id")" "$commit_key"; then
         force_arg="--force"
       fi
       QA_ENGINE="$ENGINE" bash "$JOURNAL_EMIT_SH" act-commit "$run_id" "$scenario_id" "$criterion_id" "$persona_id" --outcome landed $force_arg >/dev/null \

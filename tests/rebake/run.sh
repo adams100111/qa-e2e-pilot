@@ -163,6 +163,38 @@ ANOM_RC1="$WORK/.qa/runs/rc1/fold-anomalies.json"
 check "reconcile landed: fold openActs EMPTY after reconcile" "$(get "$ANOM_RC1" '.openActs | length')" "0"
 
 # ---------------------------------------------------------------------------
+# reconcile: CORROBORATION over a TORN journal tail. reconcile is the
+# crash-recovery tool, and a crash commonly leaves a truncated LAST line.
+# key_already_committed must still SEE the earlier valid act_committed
+# (tolerating the torn line, like qa-reconcile.sh's key_has_act_intent) and
+# --force the corroborating commit — NOT treat the whole journal as
+# unreadable and try an unforced close that the FSM guard then rejects.
+# ---------------------------------------------------------------------------
+printf '%s\n' '{"event":"phase_entered","phase":"verify"' >> "$JF_RC1"   # truncated JSON, no close brace
+RECON_TORN_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc1 admin AC1 admin --write-set "$WS_ALL" --readbacks "$RB_ALL" 2>/dev/null )"; rc_torn=$?
+check "reconcile corroboration over torn journal: does NOT die" "$rc_torn" "0"
+check "reconcile corroboration over torn journal: last line 'done'" "$(tail -n1 <<< "$RECON_TORN_OUT")" "done"
+check "reconcile corroboration over torn journal: a 2nd act_committed was force-journaled" \
+  "$(grep -c '"event":"act_committed"' "$JF_RC1")" "2"
+
+# Same torn-journal corroboration under the python3 leg (jq masked from PATH) —
+# key_already_committed must tolerate the torn line IDENTICALLY across engines.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  NOJQ="$WORK/nojq"; mkdir -p "$NOJQ"
+  for t in bash python3 date mkdir cat mv rm dirname mktemp grep sort; do
+    tp="$(command -v "$t")"; [ -n "$tp" ] && ln -sf "$tp" "$NOJQ/$t"
+  done
+  ( cd "$WORK" && bash "$EMIT" started rc1torn admin AC1 admin >/dev/null )
+  ( cd "$WORK" && bash "$EMIT" act-intent rc1torn admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+  ( cd "$WORK" && bash "$REBAKE" reconcile rc1torn admin AC1 admin --write-set "$WS_ALL" --readbacks "$RB_ALL" >/dev/null )
+  printf '%s\n' '{"event":"phase_entered","phase":"verify"' >> "$WORK/.qa/runs/rc1torn/journal.ndjson"
+  ( cd "$WORK" && PATH="$NOJQ" "$(command -v bash)" "$REBAKE" reconcile rc1torn admin AC1 admin --write-set "$WS_ALL" --readbacks "$RB_ALL" >/dev/null 2>&1 )
+  check "reconcile corroboration over torn journal (python3 leg): does NOT die" "$?" "0"
+  check "reconcile corroboration over torn journal (python3 leg): 2nd act_committed forced" \
+    "$(grep -c '"event":"act_committed"' "$WORK/.qa/runs/rc1torn/journal.ndjson")" "2"
+fi
+
+# ---------------------------------------------------------------------------
 # reconcile: partial -> journals a BLOCKED criterion_verdict naming the
 # missing key(s) in last_action; prints "blocked" as the final line; the
 # open act is NOT closed (no act_committed emitted for a partial landing —
