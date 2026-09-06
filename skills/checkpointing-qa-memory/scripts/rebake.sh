@@ -171,19 +171,20 @@ key_already_committed() {
     ' < "$journal_file" 2>/dev/null || echo 0)"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
   else
+    # Parse ALL lines up front (matching jq -s's wholesale slurp): a malformed
+    # journal fails BOTH engines identically to "not committed" (exit 1), rather
+    # than jq failing wholesale while a line-by-line python scan finds a match
+    # before the bad line — that asymmetry would be a dual-engine divergence.
     python3 -c '
 import json, sys
 key = sys.argv[2]
 try:
-    for line in open(sys.argv[1]):
-        line = line.strip()
-        if not line:
-            continue
-        obj = json.loads(line)
-        if isinstance(obj, dict) and obj.get("event") == "act_committed" and obj.get("key", "") == key:
-            sys.exit(0)
+    objs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 except Exception:
     sys.exit(1)
+for obj in objs:
+    if isinstance(obj, dict) and obj.get("event") == "act_committed" and obj.get("key", "") == key:
+        sys.exit(0)
 sys.exit(1)
 ' "$journal_file" "$key"
   fi
@@ -490,12 +491,12 @@ cmd_reconcile() {
       # the confirming case). The FSM guard rejects the latter unless --force,
       # so force ONLY when the key is already committed — the normal close still
       # goes through the guard.
-      local _key="${run_id}:${scenario_id}:${criterion_id}"
-      local _force_arg=""
-      if key_already_committed ".qa/runs/${run_id}/journal.ndjson" "$_key"; then
-        _force_arg="--force"
+      local commit_key="${run_id}:${scenario_id}:${criterion_id}"
+      local force_arg=""
+      if key_already_committed ".qa/runs/${run_id}/journal.ndjson" "$commit_key"; then
+        force_arg="--force"
       fi
-      QA_ENGINE="$ENGINE" bash "$JOURNAL_EMIT_SH" act-commit "$run_id" "$scenario_id" "$criterion_id" "$persona_id" --outcome landed $_force_arg >/dev/null \
+      QA_ENGINE="$ENGINE" bash "$JOURNAL_EMIT_SH" act-commit "$run_id" "$scenario_id" "$criterion_id" "$persona_id" --outcome landed $force_arg >/dev/null \
         || die "reconcile: failed to journal act_committed for the landed outcome (run=${run_id} scenario=${scenario_id} criterion=${criterion_id})."
       echo "done"
       ;;
