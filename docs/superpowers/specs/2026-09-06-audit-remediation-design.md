@@ -63,13 +63,17 @@ the seam both plugins share is the run directory — specifically `.qa/runs/<run
 (the JSON array of per-pass override records qa-verify.sh already writes) and `checkpoint.json`.
 
 **A1 (engine increment).** The engine finishes every interactive run by running its own authority.
-Edit `core/persona-body.md`: the **Remember** phase (step 5) gains a mandatory final action — run
-`${CLAUDE_PLUGIN_ROOT}/scripts/qa-verify.sh <run-id>` and treat its output as authoritative: any
-override it emits replaces the recorded verdict in the report, and its confidence downgrades flow
-into the tally. `qa-verify.sh` already writes `verification.json`; the report cites it. This is an
-engine increment — edit `core/persona-body.md`, then regenerate via `build-adapter.sh` (never the
-committed generated files directly); the Claude byte-oracle updates as part of the regeneration
-commit. Ships as its own PR *before* A2 so a fresh run has a `verification.json` for A2 to read.
+Edit `core/persona-body.md`: the **Report** phase (step 4) gains a mandatory FIRST action — run the
+plugin's `scripts/qa-verify.sh <run-id>` (referenced bare, matching the persona's existing
+`scripts/preflight.sh` convention — not `${CLAUDE_PLUGIN_ROOT}`, which the engine persona never uses)
+and treat its output as authoritative: each `verification.json` record carries `inRunVerdict` +
+`verifierVerdict`, so where they differ the report's card + tally use `verifierVerdict`, and
+confidence downgrades flow in. It runs at the **top of Report, not in Remember** — qa-verify is a
+once-per-run whole-run re-check whose overrides must FEED the report (phase 4), and Remember (phase
+5) runs after the report is already written. This is an engine increment — edit `core/persona-body.md`,
+regenerate via `build-adapter.sh` (never the committed files directly); the Claude byte-oracle
+updates in the regeneration commit. Ships as its own PR *before* A2 so a fresh run has a
+`verification.json` for A2 to read.
 
 **A2 (qa-kit increment) — new `/qa-verify <target>` command.** The 6th qa-kit command, run after
 `/qa-run`. Flow becomes: constitution → spec → scenarios → analyze → run → **verify** → status.
@@ -154,9 +158,15 @@ qa-verify output" has something to read in fresh runs).
   tap/type/UI-hierarchy/screenshot plus the diagnostic tier — network inspection and in-app JS
   eval), per-driver ADR-0015 gate semantics (human-path = tap/swipe/type; JS eval/adb/deep-link =
   lint/carve-out territory), and hook-matcher extensions. Not part of remediation.
-- Hook-layer parity for non-Claude harnesses (revisit *after* Increment D produces measurements).
-- Making `--bug-ref` mandatory on `fail` (rejected for now: breaks characterization; C4's note is
-  the deliberate middle ground).
+- **Hook-layer parity for non-Claude harnesses** (block-hook/capture-hook are Claude-only, so
+  Codex/Pi/opencode run the degraded lint+fingerprints tier). Deliberately deferred: **do not build
+  it blind** — revisit *after* Increment D measures what the degraded tier actually misses in a live
+  run. (grill Q6a.)
+- **The agent persona's ~1,400-char single-paragraph instructions** (e.g. the persona-identity-
+  binding block) — a readability/robustness concern under context pressure. A separate persona-clarity
+  pass, not remediation. (grill Q6b.)
+- Making `--bug-ref` mandatory on `fail` (rejected for now: breaks characterization; C4's stderr
+  note is the deliberate middle ground — grill Q6c).
 
 ## Success criteria
 

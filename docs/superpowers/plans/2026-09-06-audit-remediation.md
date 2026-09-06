@@ -24,7 +24,7 @@
 ## File Structure
 
 **Increment A (post-run verification wiring). Everything command/agent-shaped is generated-and-committed — edit the `core/`/manifest SOURCE, then regenerate; never hand-edit the committed `qa-kit/commands/*.md` or `qa-kit/agents/qa-kit.md`:**
-- Modify: `core/persona-body.md` (engine Remember phase — add bare `scripts/qa-verify.sh` run) → regenerate `agents/qa-e2e-pilot.md` + `commands/*.md` via `build-adapter.sh`.
+- Modify: `core/persona-body.md` (engine **Report phase, as its first action** — add bare `scripts/qa-verify.sh` run so the report consumes its overrides) → regenerate `agents/qa-e2e-pilot.md` + `commands/*.md` via `build-adapter.sh`.
 - Create: `qa-kit/core/commands/qa-verify.md` (tokenized source) → regenerate `qa-kit/commands/qa-verify.md`.
 - Create: `qa-kit/templates/qa-verify-template.md` (copied verbatim; not token-checked).
 - Modify (SOURCES): `qa-kit/core/commands/qa-scenarios.md` (prose), `qa-kit/core/commands/qa-status.md` (next-step ladder), `qa-kit/core/persona-body.md` (agent flow list), and all four `qa-kit/harnesses/*/manifest.tmpl` (the `constitution -> … -> run` flow-string → add `-> verify`) → regenerate `qa-kit/commands/*` + `qa-kit/agents/qa-kit.md`.
@@ -49,28 +49,30 @@
 
 ## Increment A — wire the two verification authorities
 
-### Task A1: Engine runs qa-verify.sh at the end of every interactive run
+### Task A1: Engine runs qa-verify.sh at the TOP of the Report phase (so the report consumes its overrides)
 
 **Files:**
-- Modify: `core/persona-body.md` (Remember phase, currently the "5. **Remember**" bullet near line 49)
+- Modify: `core/persona-body.md` (**Report phase — the "4. **Report**" bullet**, NOT Remember)
 - Regenerate: `agents/qa-e2e-pilot.md`, `commands/qa-run.md`, `commands/qa-roles.md`, `commands/qa-resume.md` (via `build-adapter.sh`)
 - Verify: `scripts/validate-adapters.sh`
 
+**Ordering rationale (grill Q1):** the pipeline is `… → Verify(3) → Report(4) → Remember(5)`, and `writing-qa-reports` writes `report.md`/`report.html` in phase 4. qa-verify is a **once-per-run whole-run re-check** (it needs every criterion already checkpointed) whose overrides must **feed** the report. So it runs at the **top of the Report phase**, after the criterion loop finishes and before the report is written — NOT in Remember (phase 5), which is per-criterion and runs after the report is already on disk.
+
 **Interfaces:**
-- Produces: an interactive run now writes `.qa/runs/<run-id>/verification.json` (already qa-verify.sh's output) as a mandatory step, so A2's `/qa-verify` has it to read on fresh runs.
-- Consumes: `scripts/qa-verify.sh <run-id>` (unchanged; already writes `verification.json` and prints a one-line summary to stderr, exit non-zero if any pass was overridden).
+- Produces: an interactive run writes `.qa/runs/<run-id>/verification.json` (qa-verify.sh's output) before the report, so the report reflects overrides and A2's `/qa-verify` has it to read on fresh runs.
+- Consumes: `scripts/qa-verify.sh <run-id>` (unchanged; writes `verification.json` — a JSON array of `{criterionId, persona, inRunVerdict, verifierVerdict, confidence, reasons}` — and a one-line stderr summary; exit non-zero if any pass was overridden).
 
-- [ ] **Step 1: Confirm the current Remember phase text and byte-oracle baseline**
+- [ ] **Step 1: Confirm the current Report phase text and byte-oracle baseline**
 
-Run: `bash scripts/validate-adapters.sh && sed -n '49p' core/persona-body.md`
-Expected: validate-adapters prints its success line (byte-oracle green); the sed prints the "5. **Remember**" bullet.
+Run: `bash scripts/validate-adapters.sh && grep -n '^4\. \*\*Report' core/persona-body.md`
+Expected: validate-adapters prints its success line (byte-oracle green); the grep locates the Report bullet (~line 47).
 
-- [ ] **Step 2: Edit `core/persona-body.md` Remember phase**
+- [ ] **Step 2: Edit `core/persona-body.md` Report phase**
 
-Append to the end of the "5. **Remember**" bullet (after the existing "On resume: …" sentence) this sentence:
+Prepend to the "4. **Report**" bullet (as the FIRST action of the phase, before "invoke **writing-qa-reports**") this sentence:
 
 ```
-**At run end, run the out-of-agent authority:** invoke the plugin's `scripts/qa-verify.sh <run-id>` once (referenced bare, matching how this persona already names `scripts/preflight.sh`/`scripts/detect-stack.sh` — no `${CLAUDE_PLUGIN_ROOT}`, which the engine persona never uses and which would mis-render for non-Claude harnesses), after the last criterion is checkpointed. It re-checks every recorded `pass` against the captured toolstream and writes `.qa/runs/<run-id>/verification.json`; treat it as authoritative — any verdict it **overrides** replaces the recorded verdict in `report.md`/`report.html`, and any **confidence downgrade** it records flows into the tally. If it is skipped (no `jq`/`python3`, or the run had no passes), say so in the report rather than implying an independent re-check happened.
+**First, run the out-of-agent authority:** once the last criterion is checkpointed and before writing the report, invoke the plugin's `scripts/qa-verify.sh <run-id>` (referenced bare, matching how this persona already names `scripts/preflight.sh`/`scripts/detect-stack.sh` — no `${CLAUDE_PLUGIN_ROOT}`, which the engine persona never uses and which mis-renders for non-Claude harnesses). It re-checks every recorded `pass` against the captured toolstream and writes `.qa/runs/<run-id>/verification.json` (each record carries `inRunVerdict` + `verifierVerdict`). Treat it as authoritative: where `verifierVerdict != inRunVerdict`, the report's verdict card and the tally use `verifierVerdict` (the **override**), and any confidence downgrade it records flows into the card. If it is skipped (no `jq`/`python3`, or the run had no passes), state that in the report rather than implying an independent re-check happened. Then:
 ```
 
 - [ ] **Step 3: Regenerate the adapters**
@@ -83,21 +85,21 @@ Expected: no error; `git status` shows `agents/qa-e2e-pilot.md` and `commands/*.
 Run: `bash scripts/validate-adapters.sh`
 Expected: success line printed; exit 0. (This proves the committed Claude files match the generator output byte-for-byte and no residual `{{` remains.)
 
-- [ ] **Step 5: Grep-confirm the wiring landed in the generated agent**
+- [ ] **Step 5: Grep-confirm the wiring landed in the generated agent, in the Report phase**
 
-Run: `grep -c 'qa-verify.sh <run-id>' agents/qa-e2e-pilot.md`
-Expected: `1` (the Remember-phase instruction rendered into the committed agent).
+Run: `grep -n 'qa-verify.sh <run-id>' agents/qa-e2e-pilot.md`
+Expected: exactly one match, and it appears within the Report phase (before the Remember phase text) — confirm by eye that the line precedes the "Remember" bullet.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add core/persona-body.md agents/qa-e2e-pilot.md commands/
 git commit -m "$(cat <<'EOF'
-feat(engine): run qa-verify.sh at run end so interactive runs get the out-of-agent re-check
+feat(engine): run qa-verify.sh at the top of the Report phase so interactive runs get the out-of-agent re-check
 
 The deterministic authority was invoked only by qa-ci.sh; interactive runs
-described it but never ran it. Remember phase now runs it and treats its
-verification.json as authoritative. Regenerated adapters; byte-oracle green.
+described it but never ran it. Report phase now runs it FIRST and folds its
+verification.json overrides into the report/tally. Regenerated adapters; byte-oracle green.
 
 Co-Authored-By: <required trailer per repo>
 EOF
@@ -117,11 +119,12 @@ EOF
 **CRITICAL packaging fact (self-review catch):** qa-kit is generated-and-committed exactly like the engine. `qa-kit/core/commands/*.md` are the tokenized sources; `qa-kit/commands/*.md` are the committed Claude byte-oracle target (`validate-qakit-adapters.sh` enforces `qa-kit/commands` == `build-qakit-adapter.sh claude` output, and fails on any residual `{{` in rendered commands/agent). So EVERY command/agent edit in A2+A3 goes in `core/` (or the manifests), then regenerate. Never hand-edit `qa-kit/commands/*.md` or `qa-kit/agents/qa-kit.md`.
 
 **Interfaces:**
+- **Run resolution (grill Q2):** nothing writes a `runs.json` target→run-id map, and `.qa/runs/latest` is the newest run *globally* (not per-target). The real link is `run-manifest.json`'s **`target_feature`** field, which qa-kit's `/qa-run` populates by invoking the engine as `{{ENGINE_RUN}} "<target>" …`. So `/qa-verify` resolves the run by scanning `.qa/runs/*/run-manifest.json` for `target_feature == <target>` and taking the newest match; it accepts an optional explicit `<run-id>`; and it falls back to `.qa/runs/latest` **only** with an explicit "assuming the most recent run globally — pass a run-id to disambiguate" warning.
 - Consumes (shared run state, per packaging constraint — never engine paths):
-  - `${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh <checkpoint.json> <checklist.json>` → prints `{ok, outOfPlan:[ids], planned:<n>, acted:<n>}`, exit 0 iff every acted criterion is in the plan.
-  - `.qa/runs/<run-id>/verification.json` — JSON array of `{criterionId, persona, verdict, confidence, reasons[...], ...}` records written by the engine's qa-verify.sh (A1). Records whose verdict != the checkpoint's recorded verdict are overrides.
-  - `.qa/runs/<run-id>/checkpoint.json` (`{criteria:[{criterion_id,verdict,...}]}`) and `checklist.json` (top-level array of `{id,...}`).
-- Produces: `.qa/specs/<target>/verification.md`; command exits non-zero if any out-of-plan act OR any override exists (so automation can gate), while the prose stays advisory in tone.
+  - `{{PLUGIN_ROOT}}/scripts/verify-plan.sh <checkpoint.json> <checklist.json>` → prints `{ok, outOfPlan:[ids], planned:<n>, acted:<n>}`, **exit 0 iff every acted criterion is in the plan, non-zero otherwise**. This SCRIPT's exit code is the deterministic gate CI/automation reads.
+  - `.qa/runs/<run-id>/verification.json` — JSON array of `{criterionId, persona, inRunVerdict, verifierVerdict, confidence, reasons}` records written by the engine's qa-verify.sh (A1). **An override is exactly `verifierVerdict != inRunVerdict`** — both verdicts are already in the record, so NO `checkpoint.json` join is needed (grill Q3). Note the synthetic `criterionId:"__phase-surface__"` record (persona `""`, `inRunVerdict:"n/a"`) — surface it as a run-level note, not a criterion row.
+  - `.qa/runs/<run-id>/run-manifest.json` (for `target_feature`), `checkpoint.json` (`{criteria:[{criterion_id,verdict,...}]}`), `checklist.json` (top-level array of `{id,...}`).
+- Produces: `.qa/specs/<target>/verification.md`. **The command REPORTS** (grill Q4) — it is an agent prompt, not a script, so it has no exit code; it leads its output with out-of-plan acts and overrides when any exist. **The deterministic gate is `verify-plan.sh`'s exit code**, which CI reads directly. The command stays advisory in tone; the script results are authoritative facts.
 
 - [ ] **Step 1: Write `qa-kit/core/commands/qa-verify.md`** (the TOKENIZED source)
 
@@ -129,44 +132,52 @@ Model the frontmatter + structure on `qa-kit/core/commands/qa-analyze.md`. Use `
 
 ```markdown
 ---
-description: The post-run verification surface for a qa-kit run — runs the out-of-plan-act check (verify-plan.sh) and surfaces the engine's deterministic re-verification (verification.json) as overrides. Reports; the deterministic results are authoritative.
-argument-hint: <target>
+description: The post-run verification surface for a qa-kit run. Primary job — the out-of-plan-act check (verify-plan.sh), which the engine never does. Secondary — a qa-kit-flow-native restatement of the engine's deterministic overrides (verification.json), pointing at report.md as the authoritative source. Reports; the script results are the gate.
+argument-hint: <target> [<run-id>]
 disable-model-invocation: false
 ---
 
-Produce `.qa/specs/<target>/verification.md` — the post-run verification of the latest run for
-`<target>`. This is the **sixth** qa-kit step: constitution → spec → scenarios → analyze → run →
-**verify** → status. Full input: `$ARGUMENTS` — the first token is `<target>`.
+Produce `.qa/specs/<target>/verification.md` — the post-run verification for `<target>`. Sixth
+qa-kit step: constitution → spec → scenarios → analyze → run → **verify** → status. Full input:
+`$ARGUMENTS` — the first token is `<target>`, an optional second token is an explicit `<run-id>`.
 
 ## What to do
 
-1. **Resolve the run.** Find `<target>`'s latest run dir (its `runs.json` entry, else the newest
-   `.qa/runs/<id>/` whose `checkpoint.json` covers this target). Require `checkpoint.json` +
-   `checklist.json`. If no run exists, error and point at `/qa-run "<target>"`.
+1. **Resolve the run.** If a `<run-id>` was given, use `.qa/runs/<run-id>/`. Else scan
+   `.qa/runs/*/run-manifest.json` for `target_feature == <target>` and take the newest match. If none
+   match, fall back to `.qa/runs/latest` **only with an explicit warning**: "no run-manifest names
+   target `<target>`; assuming the most recent run globally — pass a `<run-id>` to disambiguate."
+   Require `checkpoint.json` + `checklist.json` in the resolved dir; if no run exists at all, error
+   and point at `/qa-run "<target>"`.
 
-2. **Out-of-plan acts (verify-plan).** Run
+2. **Out-of-plan acts (verify-plan — THIS command's primary job; the engine never checks this).** Run
    `bash "{{PLUGIN_ROOT}}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/runs/<id>/checklist.json`.
-   Parse its JSON. A non-empty `outOfPlan[]` is a **process violation** — a criterion was acted that
-   the frozen plan never authorized. List every offending id; do not bury it.
+   Parse its JSON (`{ok, outOfPlan, planned, acted}`). A non-empty `outOfPlan[]` is a **process
+   violation** — a criterion was acted that the frozen plan never authorized. List every offending
+   id first; do not bury it. (The script's non-zero exit on a non-empty `outOfPlan` is the gate CI
+   reads — this command reports it for the human.)
 
-3. **Deterministic re-verification (engine).** Read `.qa/runs/<id>/verification.json`.
-   - **Absent** → the engine did not run its out-of-agent re-check for this run (older run, or the
-     engine ran without `jq`/`python3`). State this plainly: "deterministic re-verification not found
-     for this run — its verdicts reflect the in-run agent's self-report only." Never imply verified.
-   - **Present** → for each record, compare its `verdict` to the checkpoint's recorded verdict for the
-     same `(criterionId, persona)`. Surface every **override** (verdict changed) and every
-     **confidence downgrade** (`reasons[]` explains why), with the reason text.
+3. **Deterministic overrides (engine's re-check — a RESTATEMENT, not a re-derivation).** Read
+   `.qa/runs/<id>/verification.json` (written by the engine in the Report phase).
+   - **Absent** → state plainly: "deterministic re-verification not found for this run — its verdicts
+     reflect the in-run agent's self-report only." Never imply verified.
+   - **Present** → each record carries both `inRunVerdict` and `verifierVerdict`. An **override** is
+     exactly `verifierVerdict != inRunVerdict` — no `checkpoint.json` join needed. List each override
+     as `criterionId[@persona]: inRunVerdict → verifierVerdict` with its `reasons`, and each
+     confidence downgrade. Skip the synthetic `criterionId == "__phase-surface__"` record as a
+     criterion row; fold it into a one-line run-level note if present. Point at the engine's
+     `report.md` as the authoritative source for these overrides (this command restates, it does not
+     re-adjudicate).
 
-4. **Write `verification.md`** from `{{PLUGIN_ROOT}}/templates/qa-verify-template.md`: the three
-   states (verified / overridden / not-verified), the out-of-plan list, and per-override reasons.
+4. **Write `verification.md`** from `{{PLUGIN_ROOT}}/templates/qa-verify-template.md`: out-of-plan
+   list, override list, confidence downgrades, and the verified/overridden/not-verified state.
 
 5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades — and the next step
-   (`/qa-status "<target>"`). If any out-of-plan act or override exists, say so first.
+   (`/qa-status "<target>"`). Lead with out-of-plan acts and overrides when any exist.
 
 Guardrails: read-only w.r.t. artifacts (never edits `checkpoint.json`/`checklist.json`/
-`verification.json`); the deterministic results (verify-plan exit code, verification.json overrides)
-are authoritative and are reported as facts, not opinions. The command exits non-zero when an
-out-of-plan act or override exists so CI can gate; it does not itself mutate the run.
+`verification.json`/`report.md`). This is an agent-followed command — it has no exit code; it
+REPORTS. The deterministic gate for automation is `verify-plan.sh`'s exit code, read directly by CI.
 ```
 
 - [ ] **Step 2: Write `qa-kit/templates/qa-verify-template.md`**
@@ -180,11 +191,13 @@ out-of-plan act or override exists so CI can gate; it does not itself mutate the
 {{ one of: "None — every acted criterion was in the frozen plan." | a bullet list of offending
 criterion ids, each: "`<id>` — acted but absent from checklist.json (process violation)." }}
 
-## Deterministic re-verification
+## Deterministic re-verification (authoritative source: the engine's report.md)
 {{ one of:
-  - "VERIFIED — the engine's qa-verify.sh re-checked every recorded pass; no verdict was overridden."
-  - "OVERRIDDEN — the following passes were overridden by the out-of-agent authority:" + a list,
-     each: "`<criterionId>`[@`<persona>`] — recorded `pass` → `<override-verdict>`; reason: <reason>."
+  - "VERIFIED — the engine's qa-verify.sh re-checked every recorded pass; no `verifierVerdict`
+     differed from its `inRunVerdict`."
+  - "OVERRIDDEN — the out-of-agent authority overrode these (see report.md for the authoritative
+     record):" + a list, each: "`<criterionId>`[@`<persona>`] — `<inRunVerdict>` → `<verifierVerdict>`;
+     reason: <reason>."
   - "NOT VERIFIED — no verification.json for this run; verdicts reflect the in-run agent's self-report
      only. Re-run under an engine that emits verification.json for an independent re-check." }}
 
