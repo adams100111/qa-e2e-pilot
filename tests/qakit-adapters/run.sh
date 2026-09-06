@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-harness render assertions for qa-kit's multi-harness adapters (ADR-0024, increment 7).
-# Builds all 4 adapters and asserts: 5 commands + agent per harness with the right agent ext; skill refs
+# Builds all 4 adapters and asserts: 6 commands + agent per harness with the right agent ext; skill refs
 # rendered to each harness's convention; no residual tokens; the Claude byte-oracle; and every referenced
 # engine skill exists under the engine's skills/<name>/ (the composition's one fragility).
 set -uo pipefail
@@ -12,9 +12,10 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 for h in claude pi codex opencode; do bash "$B" "$h" >/dev/null || { echo "build $h failed"; exit 1; }; done
 
-# (a) 5 commands + agent per harness, right agent ext
+# (a) 6 commands + agent per harness, right agent ext
+# (constitution, spec, scenarios, analyze, verify, status)
 for h in claude pi codex opencode; do
-  check "$h has 5 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "5"
+  check "$h has 6 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "6"
 done
 check "claude agent md"   "$(ls "$D/claude/agent")"   "qa-kit.md"
 check "pi agent md"       "$(ls "$D/pi/agent")"       "qa-kit.md"
