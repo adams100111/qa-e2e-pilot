@@ -142,7 +142,8 @@ echo "---"; echo "PASS=$PASS FAIL=$FAIL (classify, jq default engine)"
 # summary then the literal "done" as the final line.
 # ---------------------------------------------------------------------------
 MUT_CRIT='{"criterionId":"AC1","kinds":["human-action"],"action":"Create founders","title":"Create founders"}'
-( cd "$WORK" && bash "$EMIT" started rc1 admin AC1 admin >/dev/null && bash "$EMIT" act-intent rc1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc1 admin AC1 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 
 RECON_LANDED_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc1 admin AC1 admin --write-set "$WS_ALL" --readbacks "$RB_ALL" )"
 check "reconcile landed: last line is literal 'done'" "$(tail -n1 <<< "$RECON_LANDED_OUT")" "done"
@@ -167,7 +168,8 @@ check "reconcile landed: fold openActs EMPTY after reconcile" "$(get "$ANOM_RC1"
 # open act is NOT closed (no act_committed emitted for a partial landing —
 # crash-safety: the caller can retry the act later).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" started rc2 admin AC2 admin >/dev/null && bash "$EMIT" act-intent rc2 admin AC2 admin --criterion '{"criterionId":"AC2","kinds":["human-action"],"action":"Create three founders"}' --write-set "$WS_THREE" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc2 admin AC2 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc2 admin AC2 admin --criterion '{"criterionId":"AC2","kinds":["human-action"],"action":"Create three founders"}' --write-set "$WS_THREE" >/dev/null )
 
 RECON_PARTIAL_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc2 admin AC2 admin --write-set "$WS_THREE" --readbacks "$RB_SOME" )"
 check "reconcile partial: last line is literal 'blocked'" "$(tail -n1 <<< "$RECON_PARTIAL_OUT")" "blocked"
@@ -192,7 +194,8 @@ check "reconcile partial: no act_committed line was journaled" \
 # reconcile: none -> journals NOTHING (no act_committed, no criterion_verdict,
 # open act unchanged); prints "retry" as the final line.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" started rc3 admin AC3 admin >/dev/null && bash "$EMIT" act-intent rc3 admin AC3 admin --criterion '{"criterionId":"AC3","kinds":["human-action"],"action":"Create founders"}' --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc3 admin AC3 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc3 admin AC3 admin --criterion '{"criterionId":"AC3","kinds":["human-action"],"action":"Create founders"}' --write-set "$WS_ALL" >/dev/null )
 JF_RC3="$WORK/.qa/runs/rc3/journal.ndjson"
 LINES_BEFORE_RC3="$(wc -l < "$JF_RC3" | tr -d ' ')"
 
@@ -211,7 +214,8 @@ check "reconcile none: open act still OPEN (unchanged, retryable)" "$(get "$ANOM
 # reconcile: deferred -> journals NOTHING; prints "deferred: ..." with the
 # reason naming the unconfirmable write-only key(s) — never a silent "done".
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" started rc4 admin AC4 admin >/dev/null && bash "$EMIT" act-intent rc4 admin AC4 admin --criterion '{"criterionId":"AC4","kinds":["human-action"],"action":"Trigger webhook"}' --write-set "$WS_WO" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc4 admin AC4 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc4 admin AC4 admin --criterion '{"criterionId":"AC4","kinds":["human-action"],"action":"Trigger webhook"}' --write-set "$WS_WO" >/dev/null )
 JF_RC4="$WORK/.qa/runs/rc4/journal.ndjson"
 LINES_BEFORE_RC4="$(wc -l < "$JF_RC4" | tr -d ' ')"
 
@@ -234,7 +238,8 @@ check "reconcile deferred: no checkpoint.json was created for rc4" \
 # naming the normal key (f2), NOT a "deferred" no-op. The open act is NOT
 # closed (same crash-safety as the plain-partial case).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" started rc6 admin AC6 admin >/dev/null && bash "$EMIT" act-intent rc6 admin AC6 admin --criterion '{"criterionId":"AC6","kinds":["human-action"],"action":"Mixed writeOnly + normal"}' --write-set "$WS_MIX3" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc6 admin AC6 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc6 admin AC6 admin --criterion '{"criterionId":"AC6","kinds":["human-action"],"action":"Mixed writeOnly + normal"}' --write-set "$WS_MIX3" >/dev/null )
 
 RECON_MIX_OUT="$( cd "$WORK" && bash "$REBAKE" reconcile rc6 admin AC6 admin --write-set "$WS_MIX3" --readbacks "$RB_MIX3_ONE_NORMAL_MISS" )"
 check "reconcile mixed precedence: last line is literal 'blocked' (partial wins over deferred)" \
@@ -264,7 +269,8 @@ check "reconcile mixed precedence: no act_committed line was journaled" \
 # criterion_verdict). A pre-existing open act for the same run/criterion
 # stays OPEN and unchanged (fold openActs unaffected).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" started rc7 admin AC7 admin >/dev/null && bash "$EMIT" act-intent rc7 admin AC7 admin --criterion '{"criterionId":"AC7","kinds":["human-action"],"action":"Create founders"}' --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started rc7 admin AC7 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent rc7 admin AC7 admin --criterion '{"criterionId":"AC7","kinds":["human-action"],"action":"Create founders"}' --write-set "$WS_ALL" >/dev/null )
 JF_RC7="$WORK/.qa/runs/rc7/journal.ndjson"
 LINES_BEFORE_RC7="$(wc -l < "$JF_RC7" | tr -d ' ')"
 
@@ -361,7 +367,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN"; shift; fi
     ( cd "$dir" \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-rc admin AC1 admin >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-rc admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-rc admin AC1 admin >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-rc admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$REBAKE" reconcile dual-rc admin AC1 admin --write-set "$WS_ALL" --readbacks "$RB_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$FOLD" dual-rc >/dev/null )
   }
@@ -392,7 +399,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN"; shift; fi
     ( cd "$dir" \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-rcp admin AC2 admin >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-rcp admin AC2 admin --criterion '{"criterionId":"AC2","kinds":["human-action"],"action":"Create three founders"}' --write-set "$WS_THREE" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-rcp admin AC2 admin >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-rcp admin AC2 admin --criterion '{"criterionId":"AC2","kinds":["human-action"],"action":"Create three founders"}' --write-set "$WS_THREE" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$REBAKE" reconcile dual-rcp admin AC2 admin --write-set "$WS_THREE" --readbacks "$RB_SOME" >/dev/null )
   }
   run_partial_scenario "$WORK_JQ_P"

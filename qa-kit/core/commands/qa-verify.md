@@ -10,10 +10,18 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
 
 ## What to do
 
-1. **Resolve the run.** If a `<run-id>` was given, use `.qa/runs/<run-id>/`. Else scan
-   `.qa/runs/*/run-manifest.json` for `target_feature == <target>` and take the newest match. If none
-   match, fall back to `.qa/runs/latest` **only with an explicit warning**: "no run-manifest names
-   target `<target>`; assuming the most recent run globally — pass a `<run-id>` to disambiguate."
+1. **Resolve the run** (most-specific first — never rely on a single agent-populated field):
+   1. If a `<run-id>` was given, use `.qa/runs/<run-id>/`.
+   2. Else, **deterministic content match**: among `.qa/runs/*/` whose `checklist.json` equals the
+      target's frozen `.qa/specs/<target>/checklist.json` (same set of criterion `id`s — the engine
+      was invoked with that exact frozen plan), take the newest. This link is a fact on disk, not an
+      agent-written field.
+   3. Else, **hint**: scan `.qa/runs/*/run-manifest.json` for `target_feature == <target>` and take
+      the newest match. (Populated by the agent in the Remember phase, so treat it as a hint, not
+      ground truth — hence it ranks below the content match.)
+   4. Else, fall back to `.qa/runs/latest` **only with an explicit warning**: "could not link a run to
+      target `<target>` by frozen checklist or run-manifest; assuming the most recent run globally —
+      pass a `<run-id>` to disambiguate."
    Require `checkpoint.json` + `checklist.json` in the resolved dir; if no run exists at all, error
    and point at `/qa-run "<target>"`.
 
