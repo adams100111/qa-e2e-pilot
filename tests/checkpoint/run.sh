@@ -1302,5 +1302,16 @@ check "no-node: human-action pass exits non-zero" "$([ "$NODE_RC" -ne 0 ] && ech
 check "no-node: error names node"        "$(printf '%s' "$NODE_ERR" | grep -ic 'node')" "1"
 check "no-node: not a raw command-not-found" "$(printf '%s' "$NODE_ERR" | grep -c 'command not found')" "0"
 
+# --- C4: fail/error without --bug-ref -> stderr NOTE (record still writes) ---
+BR_RUN_ID="test-run-bugref"
+BR_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BR_RUN_ID" F1 fail 2>&1 >/dev/null)"; BR_RC=$?
+check "C4: fail without bug-ref still records (exit 0)" "$BR_RC" "0"
+check "C4: fail without bug-ref emits NOTE" "$(printf '%s' "$BR_ERR" | grep -ic 'bug-ref')" "1"
+check "C4: the record was written" \
+  "$([[ -f "$WORK/.qa/runs/${BR_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
+# with --bug-ref -> no such note
+BR2_ERR="$(cd "$WORK" && bash "$SCRIPT" "$BR_RUN_ID" F2 fail --bug-ref BUG-9 2>&1 >/dev/null)"
+check "C4: fail WITH bug-ref emits no note" "$(printf '%s' "$BR2_ERR" | grep -ic 'bug-ref')" "0"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

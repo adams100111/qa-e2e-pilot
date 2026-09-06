@@ -922,6 +922,13 @@ cmd_upsert() {
     *) die "Invalid confidence '${confidence}'. Must be: high | low" ;;
   esac
 
+  # A fail/error should carry a bug-log ref (the bug-log entry is where the suspected
+  # layer FE|route|service|migration|DB lives). Not mandatory — that would break
+  # characterization — but surface a visible nudge, mirroring the un-gated-pass NOTE.
+  if [[ "$verdict" == "fail" || "$verdict" == "error" ]] && [[ -z "$bug_ref" ]]; then
+    echo "NOTE: ${verdict} recorded for '${crit_id}' with no --bug-ref — the bug-log entry is where the suspected layer (FE|route|service|migration|DB) is recorded; add one for a complete failure trail." >&2
+  fi
+
   local kinds_json="[]"
   if [[ -n "$kinds_csv" ]]; then
     kinds_json="$(csv_to_json_array "$kinds_csv")"
