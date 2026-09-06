@@ -9,8 +9,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SUITES=(constitution spec-snapshot qa-kit-enforcement runconfig-merge data-baseline
         check-fixtures detect-seed auto-seed qa-kit-phases qakit-adapters qakit-install)
 bash "$ROOT/qa-kit/scripts/validate-qakit-adapters.sh"
+# 120s per-suite hang backstop (coreutils timeout; runaway -> exit 124, CI fails
+# loudly rather than stalling). Mirrors scripts/run-engine-ci.sh.
 for d in "${SUITES[@]}"; do
   echo "== tests/$d =="
-  bash "$ROOT/tests/$d/run.sh"
+  timeout 120 bash "$ROOT/tests/$d/run.sh" || {
+    rc=$?; [ "$rc" -eq 124 ] && echo "TIMEOUT: tests/$d exceeded 120s" >&2; exit "$rc";
+  }
 done
 echo "run-qakit-ci: all green"

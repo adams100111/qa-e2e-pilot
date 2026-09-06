@@ -18,8 +18,13 @@ SUITES=(
   ux-adjudicate ux-conventions ux-detectors validate-checklist-json vision-binding
   write-persona-config
 )
+# Each suite is self-contained and finishes in seconds; the 120s cap is a hang
+# backstop (a runaway suite fails CI loudly with exit 124 instead of stalling the
+# job until its global timeout). `timeout` is coreutils, present on the runner.
 for d in "${SUITES[@]}"; do
   echo "== tests/$d =="
-  bash "$ROOT/tests/$d/run.sh"
+  timeout 120 bash "$ROOT/tests/$d/run.sh" || {
+    rc=$?; [ "$rc" -eq 124 ] && echo "TIMEOUT: tests/$d exceeded 120s" >&2; exit "$rc";
+  }
 done
 echo "run-engine-ci: all green"

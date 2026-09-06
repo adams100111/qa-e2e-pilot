@@ -24,6 +24,18 @@ jobs:
       - name: qa-kit byte-oracle + all qa-kit suites
         run: bash qa-kit/scripts/run-qakit-ci.sh
 
+  suite-coverage:
+    # Meta-gate: every tests/<suite>/ dir must be enrolled in exactly one CI list
+    # (run-engine-ci.sh or run-qakit-ci.sh). Fails the build if a new suite is added
+    # but never enrolled — the silent-omission risk a code review flagged.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: every tests/ suite is gated exactly once
+        run: bash scripts/check-suite-coverage.sh
+
   engine:
     # Gate the ENGINE's self-contained test suites. The suite LIST lives in scripts/run-engine-ci.sh
     # (single source), so enrolling a suite there enrolls it here automatically. Needs node (the
