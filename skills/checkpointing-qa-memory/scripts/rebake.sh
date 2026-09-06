@@ -154,6 +154,42 @@ ENGINE="python3"
 has_jq && ENGINE="jq"
 
 # ---------------------------------------------------------------------------
+# key_already_committed <journal-file> <key> — exit 0 iff the journal already
+# carries an act_committed event for <key>. Used by reconcile's `landed`
+# branch to tell a normal close (acting->baking, guard-legal) apart from a
+# CORROBORATION of an already-committed key (baking->baking, which the FSM
+# guard rejects unless --force is passed). Dual-engine, mirrors
+# qa-reconcile.sh's key_has_act_intent.
+# ---------------------------------------------------------------------------
+key_already_committed() {
+  local journal_file="$1" key="$2"
+  [[ -f "$journal_file" ]] || return 1
+  if has_jq; then
+    local n
+    n="$(jq -s --arg k "$key" '
+      [ .[] | select(type == "object" and .event == "act_committed" and (.key // "") == $k) ] | length
+    ' < "$journal_file" 2>/dev/null || echo 0)"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 ))
+  else
+    python3 -c '
+import json, sys
+key = sys.argv[2]
+try:
+    for line in open(sys.argv[1]):
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if isinstance(obj, dict) and obj.get("event") == "act_committed" and obj.get("key", "") == key:
+            sys.exit(0)
+except Exception:
+    sys.exit(1)
+sys.exit(1)
+' "$journal_file" "$key"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # shape validation — dies (nothing computed/journaled) before any classify
 # or journal write, same "fail before any write" discipline as journal-
 # emit.sh's validate_plan_json.
@@ -449,7 +485,17 @@ cmd_reconcile() {
 
   case "$outcome" in
     landed)
-      QA_ENGINE="$ENGINE" bash "$JOURNAL_EMIT_SH" act-commit "$run_id" "$scenario_id" "$criterion_id" "$persona_id" --outcome landed >/dev/null \
+      # A `landed` reconcile is either closing an OPEN act (acting->baking,
+      # guard-legal) or CORROBORATING an already-committed key (baking->baking,
+      # the confirming case). The FSM guard rejects the latter unless --force,
+      # so force ONLY when the key is already committed — the normal close still
+      # goes through the guard.
+      local _key="${run_id}:${scenario_id}:${criterion_id}"
+      local _force_arg=""
+      if key_already_committed ".qa/runs/${run_id}/journal.ndjson" "$_key"; then
+        _force_arg="--force"
+      fi
+      QA_ENGINE="$ENGINE" bash "$JOURNAL_EMIT_SH" act-commit "$run_id" "$scenario_id" "$criterion_id" "$persona_id" --outcome landed $_force_arg >/dev/null \
         || die "reconcile: failed to journal act_committed for the landed outcome (run=${run_id} scenario=${scenario_id} criterion=${criterion_id})."
       echo "done"
       ;;
