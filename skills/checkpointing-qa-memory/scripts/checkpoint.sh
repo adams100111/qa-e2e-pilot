@@ -757,7 +757,9 @@ if not isinstance(data, list):
 matches = [r for r in data if isinstance(r, dict) and r.get("id") == sys.argv[2]]
 print(len(matches))
 if matches:
-    print(json.dumps(matches[0]))
+    # compact separators so this row is byte-identical to the jq tojson leg
+    # (jq emits no spaces); the value is consumed downstream, not canonicalized.
+    print(json.dumps(matches[0], separators=(",", ":")))
 ' "$file" "$crit_id" 2>/dev/null || echo 0)"
   else
     return 0
