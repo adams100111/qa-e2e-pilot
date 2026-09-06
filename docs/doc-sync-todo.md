@@ -45,11 +45,12 @@
 - [x] S1/SP2 — de-duplicated the 3 installers into `qa-kit/harnesses/_install-common.sh` + thin wrappers.
 - [x] S2 — `field()` fails loud on a missing profile key (was a silent `''`).
 - [x] SP1 — single-sourced the qa-kit CI suite list in `qa-kit/scripts/run-qakit-ci.sh`; `adapters.yml` calls it.
-- [x] **Engine suites now gated (2026-09-06):** `scripts/run-engine-ci.sh` enrolls the 33 self-contained
-      engine suites (probed green under `timeout 90`); `adapters.yml` runs it as the `engine` job. Excluded
-      with reasons in that script: `qa-reconcile` + `rebake` are **RED on main@147e5a9** (a pre-existing
-      state-machine/journal failure the ungated corpus was hiding) — fix separately, then enroll. A blanket
-      `tests/*/run.sh` glob is still avoided (some suites need a live app / hang).
+- [x] **Engine suites now gated (2026-09-06):** `scripts/run-engine-ci.sh` enrolls **all 35** self-contained
+      engine suites (probed green under `timeout 90`); `adapters.yml` runs it as the `engine` job. `qa-reconcile`
+      + `rebake` were **RED on main@147e5a9** (their `act_intent`/`act_committed` emissions predated the FSM
+      guard's `criterion_started` requirement — a latent bug the ungated corpus was hiding) — **fixed** in
+      `fix/reconcile-rebake-fsm-guard` and now enrolled. A blanket `tests/*/run.sh` glob is still avoided
+      (some suites need a live app / hang).
 
 ## ✅ Already updated inline this session (for traceability — verify, don't redo)
 - ADR-0023 — 6b landing + §7 correction (detect-seed reads `stack-profile.json`).

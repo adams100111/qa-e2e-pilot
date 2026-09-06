@@ -28,8 +28,7 @@ jobs:
     # Gate the ENGINE's self-contained test suites. The suite LIST lives in scripts/run-engine-ci.sh
     # (single source), so enrolling a suite there enrolls it here automatically. Needs node (the
     # human-action gate + session-to-toolstream shell out to node) + jq (ubuntu-latest ships it) +
-    # python3 (the jq-absent fallback leg). Two suites (qa-reconcile, rebake) are RED on a clean tree
-    # and are excluded with reasons in run-engine-ci.sh — see that file.
+    # python3 (the jq-absent fallback leg). All 35 self-contained engine suites are enrolled.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

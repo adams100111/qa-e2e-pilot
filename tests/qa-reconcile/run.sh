@@ -27,7 +27,10 @@ RB_SOME='[{"entity":"founder","key":"f1","found":true},{"entity":"founder","key"
 # plan: an open act (act_intent, no commit) lists the key + its writeSet;
 # no persona context anywhere -> personaId "" (shared/no-context default).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qp1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+# NO started/verdict for this tuple on purpose (the persona-default '' case): a
+# scripted caller uses --force to bracket an act_intent with no criterion_started
+# (the FSM guard's sanctioned bypass), so reconcile's persona-join finds no context.
+( cd "$WORK" && bash "$EMIT" act-intent qp1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" --force >/dev/null )
 PLAN1="$( cd "$WORK" && bash "$RECON" plan qp1 )"
 check "plan: one open act listed" "$(jq 'length' <<< "$PLAN1")" "1"
 check "plan: key == qp1:admin:AC1" "$(jq -r '.[0].key' <<< "$PLAN1")" "qp1:admin:AC1"
@@ -40,7 +43,7 @@ check "plan: writeSet joined from the act_intent event" "$(jq -c '.[0].writeSet'
 # plan: a journal where the act WAS committed -> plan is empty (nothing to
 # reconcile).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qp2 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qp2 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qp2 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 ( cd "$WORK" && bash "$EMIT" act-commit qp2 admin AC1 admin --outcome landed >/dev/null )
 PLAN2="$( cd "$WORK" && bash "$RECON" plan qp2 )"
 check "plan: committed act -> empty array" "$PLAN2" "[]"
@@ -49,8 +52,8 @@ check "plan: committed act -> empty array" "$PLAN2" "[]"
 # plan: MULTIPLE open acts -> each entry gets its OWN correctly-joined
 # writeSet (proves the join doesn't cross-wire keys).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qp3 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
-( cd "$WORK" && bash "$EMIT" act-intent qp3 user AC2 user --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qp3 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qp3 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qp3 user AC2 user >/dev/null && bash "$EMIT" act-intent qp3 user AC2 user --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
 PLAN3="$( cd "$WORK" && bash "$RECON" plan qp3 )"
 check "plan: two open acts listed" "$(jq 'length' <<< "$PLAN3")" "2"
 check "plan: entry[0] key == qp3:admin:AC1" "$(jq -r '.[0].key' <<< "$PLAN3")" "qp3:admin:AC1"
@@ -81,7 +84,7 @@ check "plan: shared-persona case -> personaId == ''" "$(jq -r '.[0].personaId' <
 # apply: all-found readbacks -> "done"; act_committed journaled; re-fold ->
 # openActs empty for that run.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa1 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qa1 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 APPLY_DONE="$( cd "$WORK" && bash "$RECON" apply qa1 "qa1:admin:AC1" --readbacks "$RB_ALL" )"
 check "apply done: first line outcome == landed" "$(head -n1 <<< "$APPLY_DONE" | jq -r '.outcome')" "landed"
 check "apply done: last line == done" "$(tail -n1 <<< "$APPLY_DONE")" "done"
@@ -95,7 +98,7 @@ check "apply done: openActs EMPTY after re-fold" "$(get "$WORK/.qa/runs/qa1/fold
 # the missing key(s); the open act itself is NOT closed (matches rebake's
 # own partial convention — crash-safe retry-later).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa2 admin AC2 admin --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa2 admin AC2 admin >/dev/null && bash "$EMIT" act-intent qa2 admin AC2 admin --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
 APPLY_PARTIAL="$( cd "$WORK" && bash "$RECON" apply qa2 "qa2:admin:AC2" --readbacks "$RB_SOME" )"
 check "apply partial: last line == blocked" "$(tail -n1 <<< "$APPLY_PARTIAL")" "blocked"
 CKPT_QA2="$WORK/.qa/runs/qa2/checkpoint.json"
@@ -113,7 +116,7 @@ check "apply partial: open act still counted (not closed by a partial landing)" 
 # key). Nothing journaled (no act_committed, no criterion_verdict); the
 # attempt marker for this key is now 1.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa3 admin AC3 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa3 admin AC3 admin >/dev/null && bash "$EMIT" act-intent qa3 admin AC3 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 JF_QA3="$WORK/.qa/runs/qa3/journal.ndjson"
 LINES_BEFORE_QA3="$(wc -l < "$JF_QA3" | tr -d ' ')"
 
@@ -163,7 +166,7 @@ check "apply: no journal for run -> rejected (nonzero)" "$([[ $rc_not_open -ne 0
 # it. This rejection stays: apply must still die clearly for a key that was
 # never intended at all.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa6 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa6 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qa6 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 APPLY_UNKNOWN_ERR="$( cd "$WORK" && bash "$RECON" apply qa6 "qa6:admin:AC-NEVER-INTENDED" --readbacks "$RB_ALL" 2>&1 >/dev/null )"; rc_unknown=$?
 check "apply: genuinely-unknown key -> rejected (nonzero)" "$([[ $rc_unknown -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 check "apply: genuinely-unknown key -> dies clearly (mentions the key)" \
@@ -181,7 +184,7 @@ check "apply: genuinely-unknown key journals no act_committed" \
 # key — exactly the retry-escalation ladder committed keys were previously
 # excluded from.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa7 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa7 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qa7 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 ( cd "$WORK" && bash "$EMIT" act-commit qa7 admin AC1 admin --outcome landed >/dev/null )
 JF_QA7="$WORK/.qa/runs/qa7/journal.ndjson"
 check "corroboration setup: journal already shows this key committed" \
@@ -212,7 +215,7 @@ check "corroboration: plan STILL empty for this committed act post-escalation (p
 # apply: CONFIRMING case — committed key + all-found readbacks -> "done"
 # (confirms the self-report; no error, no spurious re-open).
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa8 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa8 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qa8 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 ( cd "$WORK" && bash "$EMIT" act-commit qa8 admin AC1 admin --outcome landed >/dev/null )
 CORR_CONFIRM="$( cd "$WORK" && bash "$RECON" apply qa8 "qa8:admin:AC1" --readbacks "$RB_ALL" )"; rc_confirm=$?
 check "confirming case: apply on a committed key with all-found readbacks does NOT die" "$rc_confirm" "0"
@@ -224,7 +227,7 @@ check "confirming case: still exactly ONE act_committed line total (idempotent-i
 # apply: rejects a malformed invocation (missing --readbacks) — nothing
 # journaled.
 # ---------------------------------------------------------------------------
-( cd "$WORK" && bash "$EMIT" act-intent qa5 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+( cd "$WORK" && bash "$EMIT" started qa5 admin AC1 admin >/dev/null && bash "$EMIT" act-intent qa5 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
 ( cd "$WORK" && bash "$RECON" apply qa5 "qa5:admin:AC1" >/dev/null 2>&1 ); rc_no_rb=$?
 check "apply: missing --readbacks rejected (nonzero)" "$([[ $rc_no_rb -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 check "apply: missing --readbacks journals no act_committed" \
@@ -263,7 +266,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     ( cd "$dir" \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-plan admin AC1 admin >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-plan admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-plan user AC2 user --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-plan user AC2 user >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-plan user AC2 user --criterion "$MUT_CRIT" --write-set "$WS_THREE" >/dev/null )
   }
   run_plan_scenario "$WORK_JQ"
   run_plan_scenario "$WORK_PY" --py
@@ -281,7 +284,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN"; shift; fi
     ( cd "$dir" \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-done admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-done admin AC1 admin >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-done admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$RECON" apply dual-done "dual-done:admin:AC1" --readbacks "$RB_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$FOLD" dual-done >/dev/null )
   }
@@ -301,7 +304,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN"; shift; fi
     ( cd "$dir" \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-esc admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-esc admin AC1 admin >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-esc admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$RECON" apply dual-esc "dual-esc:admin:AC1" --readbacks "$RB_NONE" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$RECON" apply dual-esc "dual-esc:admin:AC1" --readbacks "$RB_NONE" >/dev/null )
   }
@@ -328,7 +331,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     local run_bash=(bash); local run_path=""
     if [[ "${1:-}" == "--py" ]]; then run_bash=("$BASH_BIN"); run_path="$FAKEBIN"; shift; fi
     ( cd "$dir" \
-        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-corr admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
+        && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" started dual-corr admin AC1 admin >/dev/null && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-intent dual-corr admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$EMIT" act-commit dual-corr admin AC1 admin --outcome landed >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$RECON" apply dual-corr "dual-corr:admin:AC1" --readbacks "$RB_NONE" >/dev/null \
         && PATH="${run_path:-$PATH}" "${run_bash[@]}" "$RECON" apply dual-corr "dual-corr:admin:AC1" --readbacks "$RB_NONE" >/dev/null )
