@@ -99,5 +99,18 @@ printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":".qa/DISPOSABLE","enviro
 check "auto-seed production -> seed false" "$(bash "$AS" decide "$T/as_prod.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "False"
 
 rm -rf "$T"
+
+# A3: /qa-verify command exists and wires verify-plan + verification.json
+QV="$ROOT/qa-kit/commands/qa-verify.md"
+check "qa-verify command exists" "$([ -f "$QV" ] && echo y)" "y"
+grep -q 'verify-plan.sh'    "$QV"; check "qa-verify references verify-plan.sh" "$?" "0"
+grep -q 'verification.json' "$QV"; check "qa-verify reads verification.json"   "$?" "0"
+QVT="$ROOT/qa-kit/templates/qa-verify-template.md"
+check "qa-verify template has three states" \
+  "$(grep -Eic 'VERIFIED|OVERRIDDEN|NOT VERIFIED' "$QVT")" "3"
+# status ladder and agent flow name the new step
+grep -q '/qa-verify' "$ROOT/qa-kit/commands/qa-status.md"; check "status names /qa-verify" "$?" "0"
+grep -q 'qa-verify'  "$ROOT/qa-kit/agents/qa-kit.md";      check "agent flow names /qa-verify" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

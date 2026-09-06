@@ -55,8 +55,8 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/check-fixtures.sh" .qa/specs/<target>/checklist.json` — surface any
    `missing` (computed criteria lacking a well-formed pinned expect) to the operator (advisory unless
    `.qa/config.json`'s `fixtures.hardBlock` is true). Then state plainly: the `checklist.json` is the set of
-   criteria the run may act on; at run time `verify-plan.sh` (beside `qa-verify`) flags any act on a criterion
-   NOT in this plan.
+   criteria the run may act on; after the run, `/qa-verify` runs `verify-plan.sh` and flags any act on a
+   criterion NOT in this plan.
 
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
    check-fixtures result (pinned vs unpinned computed), and the next step (`/qa-analyze <target>`).
