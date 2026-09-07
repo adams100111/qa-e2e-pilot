@@ -159,15 +159,49 @@ if have curl && have python3; then
   check "marker hit: evidence recorded" "$(get "$OUTR1" '.components[0].evidence | join(" ") | contains("html marker __NEXT_DATA__")')" "true"
   kill "$R1_PID" 2>/dev/null
 
-  # Case R2: openapi probe hit recorded — /openapi.json served, no cookie/header signal at all
+  # Case R2: openapi probe hit recorded — /openapi.json served, no cookie/header signal at all.
+  # /openapi.json is SHARED by fastapi/nestjs/hono/go's openapiPaths (real
+  # stack-signatures.json), so this is also the "shared-path-only fixture"
+  # negative control: a bare probe hit on a multi-owner path, uncorroborated
+  # by any other signal, must NOT be reported as strong (array-order would
+  # otherwise always crown fastapi, the first-indexed owner, with false
+  # confidence for what could equally be a nestjs/hono/go backend).
   IFS='|' read -r R2_PORT R2_LOG R2_PID <<< "$(start_server "$FIX/runtime/openapi")"
   OUTR2="$(mktemp)"
   QA_CONFIG="$FASTCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2_PORT" --out "$OUTR2" >/dev/null 2>&1
   check "openapi hit: framework fastapi" "$(get "$OUTR2" '.components[0].framework')" "fastapi"
-  check "openapi hit: signal strong"     "$(get "$OUTR2" '.components[0].signal')"    "strong"
+  check "openapi hit (shared, uncorroborated): signal weak" "$(get "$OUTR2" '.components[0].signal')" "weak"
   check "openapi hit: evidence recorded" "$(get "$OUTR2" '.components[0].evidence | join(" ") | contains("openapi probe hit /openapi.json")')" "true"
+  check "openapi hit: ambiguity note recorded" "$(get "$OUTR2" '.components[0].evidence | join(" ") | contains("ambiguous")')" "true"
   check "openapi hit: request logged"    "$(grep -qc '"GET /openapi.json' "$R2_LOG" && echo yes)" "yes"
   kill "$R2_PID" 2>/dev/null
+
+  # Case R2b: a probe hit on a path UNIQUE to one stack (spring's /v3/api-docs,
+  # not shared by any other signature) still gets full strong confidence —
+  # the ambiguity downgrade only applies to genuinely multi-owner paths.
+  IFS='|' read -r R2U_PORT R2U_LOG R2U_PID <<< "$(start_server "$FIX/runtime/openapi-unique")"
+  OUTR2U="$(mktemp)"
+  QA_CONFIG="$FASTCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2U_PORT" --out "$OUTR2U" >/dev/null 2>&1
+  check "openapi hit (unique path): framework spring" "$(get "$OUTR2U" '.components[0].framework')" "spring"
+  check "openapi hit (unique path): signal strong"    "$(get "$OUTR2U" '.components[0].signal')"    "strong"
+  kill "$R2U_PID" 2>/dev/null
+
+  # Case R2c: marker+openapi fixture stays strong — a stack matched by an
+  # independent html marker ALSO has an ambiguous (multi-owner, per this
+  # fixture's own signatures) openapi probe hit; the marker alone is
+  # sufficient, so the ambiguity downgrade must not pull the result to weak.
+  # Custom QA_SIGNATURES (stackA: html marker + openapiPaths; stackB: the
+  # SAME openapiPaths, no other signal — makes the path genuinely ambiguous
+  # within this fixture) keeps this isolated from the real signatures file.
+  MARKERAMBIG_SIG="$FIX/runtime-signatures/marker-ambig.json"
+  IFS='|' read -r R2C_PORT R2C_LOG R2C_PID <<< "$(start_server "$FIX/runtime/marker-ambig")"
+  OUTR2C="$(mktemp)"
+  QA_CONFIG="$FASTCFG" QA_SIGNATURES="$MARKERAMBIG_SIG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2C_PORT" --out "$OUTR2C" >/dev/null 2>&1
+  check "marker+ambiguous-openapi: framework stackA" "$(get "$OUTR2C" '.components[0].framework')" "stackA"
+  check "marker+ambiguous-openapi: signal stays strong" "$(get "$OUTR2C" '.components[0].signal')" "strong"
+  check "marker+ambiguous-openapi: marker evidence present" "$(get "$OUTR2C" '.components[0].evidence | join(" ") | contains("html marker MARKER_A")')" "true"
+  check "marker+ambiguous-openapi: ambiguity note also present" "$(get "$OUTR2C" '.components[0].evidence | join(" ") | contains("ambiguous")')" "true"
+  kill "$R2C_PID" 2>/dev/null
 
   # Case R3: noProbePaths excludes a path — /openapi.json exists on the server but
   # is listed in noProbePaths, so it must never be requested and never match.
