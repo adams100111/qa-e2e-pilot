@@ -115,5 +115,54 @@ check "pi-merge case3: prints the snippet content" \
   "$(printf '%s\n' "$OUT" | grep -q 'playwright-qa' && echo yes || echo no)" "yes"
 rm -rf "$T7" "$MASKDIR"
 
+# === pi-merge dual-engine parity: a STALE pre-existing playwright-qa entry (extra sub-key,
+# e.g. "cwd") must be fully REPLACED by the snippet's entry, not deep-merged with it — under
+# BOTH engines. jq's `.[0] * .[1]` is a recursive merge, so it was preserving the stale
+# sub-key while the python3 leg (dict.update) was already replacing the whole entry —
+# reviewer-reported divergence. ===
+pi_merge_parity_case() { # <label> <PATH-override-or-empty>
+  local label="$1" pathoverride="$2" T
+  T="$(mktemp -d)"; mkdir -p "$T/.pi"
+  cat > "$T/.pi/mcp.json" <<'JSON'
+{
+  "mcpServers": {
+    "foo": { "command": "foo-cmd", "args": [] },
+    "playwright-qa": { "command": "npx", "args": ["-y", "@playwright/mcp@0.0.1"], "cwd": "/stale" }
+  }
+}
+JSON
+  if [ -n "$pathoverride" ]; then
+    PATH="$pathoverride" bash "$REPO/harnesses/pi/install-pi.sh" "$T" >/dev/null 2>&1
+  else
+    bash "$REPO/harnesses/pi/install-pi.sh" "$T" >/dev/null 2>&1
+  fi
+  check "$label: foreign key 'foo' intact" \
+    "$(jq -e '.mcpServers|has("foo")' "$T/.pi/mcp.json" 2>/dev/null)" "true"
+  check "$label: playwright-qa equals snippet entry exactly (stale sub-key gone)" \
+    "$(jq -S '.mcpServers."playwright-qa"' "$T/.pi/mcp.json" 2>/dev/null)" \
+    "$(jq -S '.mcpServers."playwright-qa"' "$REPO/harnesses/pi/mcp.snippet")"
+  rm -rf "$T"
+}
+
+# jq leg (PATH untouched — this box has jq)
+pi_merge_parity_case "pi-merge parity (jq)" ""
+
+# python3 leg: mask ONLY jq off PATH (keep python3), same scratch-PATH technique as case 3.
+shopt -s nullglob
+MASKDIR_NOJQ="$(mktemp -d)"
+IFS=':' read -ra PDIRS2 <<< "$PATH"
+for d in "${PDIRS2[@]}"; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    [ -x "$f" ] && [ -f "$f" ] || continue
+    b="$(basename "$f")"
+    [ "$b" = "jq" ] && continue
+    [ -e "$MASKDIR_NOJQ/$b" ] || ln -s "$f" "$MASKDIR_NOJQ/$b" 2>/dev/null
+  done
+done
+shopt -u nullglob
+pi_merge_parity_case "pi-merge parity (python3, jq masked)" "$MASKDIR_NOJQ"
+rm -rf "$MASKDIR_NOJQ"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
