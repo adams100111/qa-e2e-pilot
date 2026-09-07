@@ -46,6 +46,27 @@ PY
   fi
 }
 
+# Read a top-level array config value (e.g. fingerprintPaths, noProbePaths) as
+# newline-separated items. Empty when absent/malformed/missing config — never fails.
+cfg_arr() { # jq-filter
+  local f="$1"
+  [[ -f "$CONFIG_FILE" ]] || return 0
+  if have jq; then
+    jq -r "($f // [])[]?" "$CONFIG_FILE" 2>/dev/null
+  else
+    python3 - "$CONFIG_FILE" "$f" <<'PY'
+import json,sys
+try:
+  c=json.load(open(sys.argv[1])); ks=[k for k in sys.argv[2].lstrip('.').split('.') if k]
+  for k in ks: c=c[k] if isinstance(c,dict) else None
+  if isinstance(c, list):
+    for x in c:
+      print(x)
+except Exception: pass
+PY
+  fi
+}
+
 [[ -z "$BASE_URL" ]] && BASE_URL="$(cfg '.baseUrl' '')"
 if [[ -z "$REPOS" && -f "$CONFIG_FILE" ]] && have jq; then
   REPOS="$(jq -r '.repos[]?.path' "$CONFIG_FILE" 2>/dev/null | paste -sd, -)"
@@ -217,33 +238,154 @@ fetch_headers() {
   curl -sI --max-time 8 "$BASE_URL" 2>/dev/null || true
 }
 
-# Match captured headers against signature runtime cookies/headers. Echoes a component or nothing.
+# Fetch the base page BODY once (for runtime.html marker matching). Offline
+# --headers-file mode has no body to match against — skip, degrade cleanly.
+# curl/network absent -> echoes nothing; never fails.
+fetch_body() {
+  [[ -n "$HEADERS_FILE" ]] && return 0
+  [[ -n "$BASE_URL" ]] && have curl || return 0
+  curl -s --max-time 8 "$BASE_URL" 2>/dev/null || true
+}
+
+# ── openapi / fingerprint probing ─────────────────────────────────────────────
+# Candidate set: every signature stack's runtime.openapiPaths (incl. implies[])
+# UNION config fingerprintPaths, MINUS config noProbePaths, deduped (first-seen
+# order), capped at 4 total read-only GETs. Honors maxRequestsPerSecond via a
+# sleep between requests. Echoes each probed path that returned an HTTP 2xx, one
+# per line. Degrades to nothing when curl/BASE_URL/network are unavailable, or
+# when offline --headers-file mode is in effect — never fails.
+probe_paths() {
+  [[ -n "$HEADERS_FILE" ]] && return 0
+  [[ -n "$BASE_URL" ]] && have curl || return 0
+  have jq || return 0
+
+  local sig_paths cfg_paths noprobe candidates
+  sig_paths="$(jq -r '[.stacks[] | (.runtime.openapiPaths[]?), (.implies[]?.openapiPaths[]?)] | .[]' "$SIGNATURES" 2>/dev/null)"
+  cfg_paths="$(cfg_arr '.fingerprintPaths')"
+  noprobe="$(cfg_arr '.noProbePaths')"
+
+  # Documented residual: if awk is missing/broken, this dedup pipe silently
+  # yields no candidates (empty $candidates -> `return 0` below), which quietly
+  # disables probing rather than erroring — consistent with this function's
+  # overall "never fail, degrade to no runtime-probe evidence" contract.
+  candidates="$(printf '%s\n%s\n' "$sig_paths" "$cfg_paths" | sed '/^$/d' 2>/dev/null | awk '!seen[$0]++')"
+  if [[ -n "$noprobe" ]]; then
+    candidates="$(printf '%s\n' "$candidates" | grep -vFxf <(printf '%s\n' "$noprobe") 2>/dev/null || true)"
+  fi
+  candidates="$(printf '%s\n' "$candidates" | sed '/^$/d' | head -4)"
+  [[ -n "$candidates" ]] || return 0
+
+  local rps; rps="$(cfg '.maxRequestsPerSecond' '2')"
+  [[ "$rps" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$rps" != "0" ]] || rps=2
+  local delay; delay="$(awk -v r="$rps" 'BEGIN{d=1/r; if (d<0) d=0; printf "%.3f", d}' 2>/dev/null)"
+  [[ -n "$delay" ]] || delay=0.5
+
+  local base="${BASE_URL%/}" p first=1 code
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    [[ "$first" -eq 0 ]] && sleep "$delay" 2>/dev/null
+    first=0
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$base$p" 2>/dev/null || true)"
+    [[ "$code" =~ ^2[0-9][0-9]$ ]] && printf '%s\n' "$p"
+  done <<< "$candidates"
+}
+
+# Match captured headers/body/probe evidence against signature runtime
+# cookies/headers/html markers/openapi paths. Echoes a component or nothing.
+# Cookie/header hits alone give signal:weak (as before); an html marker or
+# openapi probe hit strengthens the matched stack's signal to :strong, and can
+# ALSO be the sole basis for a match (several backend signatures — fastapi,
+# nestjs, hono, go — carry no distinguishing cookie/header at all, only
+# openapiPaths, so probing is the only runtime path that ever detects them).
 detect_runtime_component() {
   local hdr; hdr="$(fetch_headers)"
-  [[ -n "$hdr" ]] || return 0
+  local body; body="$(fetch_body)"
+  local hits; hits="$(probe_paths)"
+  [[ -n "$hdr" || -n "$body" || -n "$hits" ]] || return 0
   have jq || return 0
   local n; n="$(jq '.stacks | length' "$SIGNATURES")"
+  # Paths that appear in MORE THAN ONE stack's openapiPaths (e.g. /openapi.json
+  # is claimed by fastapi, nestjs, hono's implies, and go). A probe hit on one
+  # of these is not, by itself, distinguishing evidence for any single stack —
+  # array-order would otherwise always crown whichever stack happens to be
+  # listed first (fastapi), mislabeling a nestjs/hono/go backend. Computed once
+  # per run (static w.r.t. the signatures file), not per stack.
+  local shared_paths
+  shared_paths="$(jq -r '
+    [ .stacks[] as $s
+      | (($s.runtime.openapiPaths // []) + [($s.implies[]?.openapiPaths[]?)] | unique[])
+      | {path: ., id: $s.id}
+    ]
+    | group_by(.path)
+    | map(select((map(.id) | unique | length) > 1) | .[0].path)
+    | .[]
+  ' "$SIGNATURES" 2>/dev/null)"
   local i
   for i in $(seq 0 $((n-1))); do
-    local matched=0 c h
+    local matched=0 strong=0 ambig=0 ch_matched=0 c hp hk hv hline m op evid="[]"
     while IFS= read -r c; do
       [[ -z "$c" ]] && continue
-      grep -qi "$c" <<< "$hdr" && matched=1
+      if [[ -n "$hdr" ]] && grep -qi -- "$c" <<< "$hdr"; then
+        matched=1; ch_matched=1
+        evid="$(jq -c '. + ["runtime: header/cookie match"]' <<< "$evid")"
+      fi
     done < <(jq -r ".stacks[$i].runtime.cookies[]?" "$SIGNATURES")
-    while IFS= read -r h; do
-      [[ -z "$h" ]] && continue
-      grep -qi "$h" <<< "$hdr" && matched=1
-    done < <(jq -r ".stacks[$i].runtime.headers | to_entries[]? | .key" "$SIGNATURES")
+    # header entries carry {key, value}: an empty value means presence-only
+    # (e.g. symfony's X-Debug-Token varies per request); a non-empty value
+    # must actually appear in that header's line (e.g. flask's "Server:
+    # Werkzeug" — matching on the bare key "Server" would false-positive on
+    # any HTTP server, since virtually every server sends a Server header).
+    while IFS= read -r hp; do
+      [[ -z "$hp" ]] && continue
+      hk="$(jq -r '.key' <<< "$hp")"; hv="$(jq -r '.value' <<< "$hp")"
+      [[ -n "$hdr" ]] || continue
+      hline="$(grep -i -- "^$hk:" <<< "$hdr" | head -1)"
+      [[ -n "$hline" ]] || continue
+      if [[ -z "$hv" ]] || grep -qi -- "$hv" <<< "$hline"; then
+        matched=1; ch_matched=1
+        evid="$(jq -c '. + ["runtime: header/cookie match"]' <<< "$evid")"
+      fi
+    done < <(jq -c ".stacks[$i].runtime.headers | to_entries[]?" "$SIGNATURES")
+    while IFS= read -r m; do
+      [[ -z "$m" ]] && continue
+      if [[ -n "$body" ]] && grep -qF -- "$m" <<< "$body"; then
+        matched=1; strong=1
+        evid="$(jq -c --arg m "$m" '. + ["runtime: html marker " + $m]' <<< "$evid")"
+      fi
+    done < <(jq -r ".stacks[$i].runtime.html[]?" "$SIGNATURES")
+    while IFS= read -r op; do
+      [[ -z "$op" ]] && continue
+      if [[ -n "$hits" ]] && grep -qFx -- "$op" <<< "$hits"; then
+        matched=1
+        if [[ -n "$shared_paths" ]] && grep -qFx -- "$op" <<< "$shared_paths"; then
+          # shared by multiple stacks' openapiPaths: a hit here doesn't tell
+          # us WHICH one is actually running — stays weak unless corroborated
+          # by an independent cookie/header signal (see sig computation below).
+          ambig=1
+          evid="$(jq -c --arg p "$op" '. + ["runtime: openapi probe hit " + $p + " (ambiguous — path shared by multiple stacks)"]' <<< "$evid")"
+        else
+          strong=1
+          evid="$(jq -c --arg p "$op" '. + ["runtime: openapi probe hit " + $p]' <<< "$evid")"
+        fi
+      fi
+    done < <(jq -r ".stacks[$i].runtime.openapiPaths[]?, (.stacks[$i].implies[]?.openapiPaths[]?)" "$SIGNATURES")
     [[ "$matched" -eq 1 ]] || continue
+    # strong: an html marker or a probe hit on a path UNIQUE to this stack; OR
+    # an otherwise-ambiguous shared-path probe hit corroborated by an
+    # independent cookie/header match. A shared-path hit alone stays weak.
+    local sig="weak"
+    if [[ "$strong" -eq 1 ]]; then sig="strong"
+    elif [[ "$ambig" -eq 1 && "$ch_matched" -eq 1 ]]; then sig="strong"
+    fi
     jq -n --argjson row "$(jq ".stacks[$i]" "$SIGNATURES")" \
-          --arg ev "runtime: header/cookie match" \
+          --argjson ev "$evid" --arg sig "$sig" \
           --argjson i18n "$(i18n_absent "runtime-only component — no repo scanned")" '{
       role: $row.role, path: null, language: $row.language, languageVersion: "",
       framework: $row.id, frameworkVersion: "", packages: [],
       router: $row.router, frontend: { routing: $row.frontendRouting },
       orm: $row.orm, auth: $row.auth, commands: $row.commands,
       buildIdSource: "none", playbook: $row.playbook, i18n: $i18n,
-      signal: "weak", evidence: [$ev], drift: [] }'
+      signal: $sig, evidence: $ev, drift: [] }'
     return 0
   done
 }

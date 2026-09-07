@@ -499,8 +499,23 @@ cmd_apply() {
   [[ "$has_intent" == "true" ]] \
     || die "apply: key '${key}' has no act_intent event in the journal for run '${run_id}' — genuinely unknown key, nothing to reconcile."
 
+  # Fix-27 class (Appendix A): `key` is caller-supplied (the CLI positional
+  # argument) and MUST be encoded through a proper JSON encoder, never
+  # spliced into a JSON-array literal via string interpolation — a `key`
+  # containing a `"` or `\` would otherwise corrupt the JSON or (worse) grow
+  # the array with an injected extra element that join_openacts would then
+  # process as though it were a second open act.
+  local single_key_json
+  if has_jq; then
+    single_key_json="$(jq -cn --arg k "$key" '[$k]')" \
+      || die "apply: jq failed to encode key '${key}' as a JSON array."
+  else
+    single_key_json="$(python3 -c 'import json,sys; print(json.dumps([sys.argv[1]]))' "$key")" \
+      || die "apply: python3 failed to encode key '${key}' as a JSON array."
+  fi
+
   local joined
-  joined="$(join_openacts "$run_id" "$journal_file" "[\"${key}\"]")"
+  joined="$(join_openacts "$run_id" "$journal_file" "$single_key_json")"
 
   local scenario_id criterion_id persona_id write_set
   if has_jq; then

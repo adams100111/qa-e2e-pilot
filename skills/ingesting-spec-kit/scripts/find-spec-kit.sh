@@ -120,6 +120,23 @@ if [ -f "$CONFIG_FILE" ]; then
   fi
 fi
 
+# Normalize each root to an absolute, resolved path BEFORE de-duplicating
+# (Appendix A: duplicate inventory). SEARCH_ROOTS starts with "$(pwd)" (an
+# absolute path) but repo entries come straight from config's raw
+# `.path`/`.root` string (e.g. the very common single-repo default `"."`,
+# exactly what bootstrapping-qa-config's init-config.sh writes) — an exact-
+# string dedup on the RAW values would never notice that "." and "$(pwd)"
+# name the SAME directory, so search_dir ran on it twice and every artifact
+# found there was emitted twice in the inventory. `cd ... && pwd` collapses
+# both to the identical absolute path; a root that doesn't exist (nothing to
+# find there anyway) falls back to its raw value rather than being dropped.
+NORMALIZED_ROOTS=()
+for r in "${SEARCH_ROOTS[@]}"; do
+  abs_r="$(cd "$r" 2>/dev/null && pwd)"
+  NORMALIZED_ROOTS+=("${abs_r:-$r}")
+done
+SEARCH_ROOTS=("${NORMALIZED_ROOTS[@]}")
+
 # De-duplicate roots (preserve order).
 declare -A _seen_roots=()
 UNIQUE_ROOTS=()

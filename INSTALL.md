@@ -1,6 +1,19 @@
 # Installing qa-e2e-pilot
 
-Three install methods. All three make the **agent** (`qa-e2e-pilot`), the **`/qa-run`** command, and the nine **skills** discoverable by Claude Code. After any of them, restart Claude Code or run `/agents` to load them.
+Three install methods. All three make the **agent** (`qa-e2e-pilot`), the three commands (**`/qa-run`**, **`/qa-roles`**, **`/qa-resume`**), and the seventeen **skills** discoverable by Claude Code. After any of them, restart Claude Code or run `/agents` to load them.
+
+**Hooks note (Method A only):** the plugin also declares three hooks in `.claude-plugin/plugin.json`
+— a `SessionStart` prerequisite check (`check-prereqs.sh`), a `PostToolUse` capture hook
+(`capture-hook.sh`, records the toolstream `qa-verify` re-checks against), and a `PreToolUse` block
+hook (`block-hook.sh`, blocks `browser_evaluate`/`browser_run_code_unsafe` on the act path). Claude
+Code wires hooks from a plugin's manifest only when it loads the plugin through the marketplace
+mechanism (**Method A**). **Methods B (npx) and C (manual symlink) install the agent, commands, and
+skills but do NOT wire these hooks** — `scripts/skills.json` (Method B) has no hooks stanza, and
+`install.sh` (Method C) only symlinks `agents/`, `commands/`, and `skills/`. On a Method B/C install
+you lose the session-start prereq check, the tamper-evident toolstream capture, and the live
+workaround block — `qa-verify.sh`'s deterministic checks still run (they don't depend on the hooks),
+but runs will degrade to `confidence: low` more often on the no-toolstream path. Use Method A if you
+want the hooks.
 
 ---
 

@@ -17,9 +17,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 fail(){ echo "FAIL: $*" >&2; exit 1; }
 
-# 1) profiles + core-sources sanity
-bash scripts/tests/test-profiles.sh >/dev/null || fail "profiles"
-bash scripts/tests/test-core-sources.sh >/dev/null || fail "core sources"
+# 1) profiles + core-sources sanity, plus every other scripts/tests/*.sh
+# functional test EXCEPT test-validate.sh (per-harness adapter render
+# assertions, docs drift, qa-ci.sh harness-profile wiring, humanInteraction/
+# sessionLogDir config defaults). test-validate.sh is a TDD test of THIS
+# script (it shells out to `bash scripts/validate-adapters.sh`), so invoking
+# it from here would recurse; it's enrolled separately as the
+# tests/validate-adapters suite (scripts/run-engine-ci.sh). check-suite-
+# coverage.sh inventories scripts/tests/*.sh against both enrollment paths so
+# an unenrolled orphan fails that meta-gate structurally (audit-2 W3-6).
+for t in \
+  test-profiles test-core-sources \
+  test-codex test-docs test-generator test-humaninteraction-defaults \
+  test-opencode test-pi test-qaci-harness test-sessionlogdir
+do
+  bash "scripts/tests/${t}.sh" >/dev/null || fail "scripts/tests/${t}.sh"
+done
 
 # 2) build all four; byte-oracle for claude
 for h in claude codex pi opencode; do bash scripts/build-adapter.sh "$h" >/dev/null || fail "build $h"; done

@@ -5,17 +5,18 @@
 #
 # A blanket tests/*/run.sh glob is NOT used: some suites need a live browser/app. Enrolled below =
 # every non-qa-kit suite that passes standalone under `timeout 90`. (The qa-kit suites are gated
-# separately by qa-kit/scripts/run-qakit-ci.sh.) All 37 self-contained engine suites are enrolled —
+# separately by qa-kit/scripts/run-qakit-ci.sh.) All 38 self-contained engine suites are enrolled —
 # rebake + qa-reconcile were RED on main@147e5a9 (their act_intent/act_committed emissions predated
 # the FSM guard's criterion_started requirement) and were fixed in the audit-remediation branch.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUITES=(
-  action-trace block-hook bash32-safety capture-hook checkpoint critic-coverage detect-stack fold frontier
-  init-config installers interaction-ux journal journal-emit journal-merge mutation-flag persona-identity
+  action-trace bash32-safety block-hook capture-hook checkpoint critic-coverage detect-stack find-spec-kit fold frontier
+  index-routes init-config installers interaction-ux journal journal-emit journal-merge memory-sync mutation-flag persona-identity
   portability provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
-  required-kinds resume-idempotency session-preflight session-to-toolstream state-machine toolstream
-  ux-adjudicate ux-conventions ux-detectors validate-checklist-json vision-binding
+  required-kinds resume-idempotency session-preflight session-to-toolstream skill-gate-consistency
+  state-machine toolstream
+  ux-adjudicate ux-conventions ux-detectors validate-adapters validate-checklist-json vision-binding
   write-persona-config
 )
 # Each suite is self-contained and finishes in seconds; the 120s cap is a hang

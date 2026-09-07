@@ -46,6 +46,8 @@ cmd_create() {
   [ -f "$state" ] || die "spec-snapshot create: constitution state file not found: $state"
   [ -d "$spec_dir" ] || die "spec-snapshot create: spec dir not found: $spec_dir"
   local out="$spec_dir/spec-roles.json"
+  local tmp; tmp="$(mktemp "$spec_dir/.spec-roles.XXXXXX")" || die "spec-snapshot create: mktemp failed in $spec_dir"
+  trap "rm -f '$tmp'" EXIT
 
   if has_jq; then
     local ov_arg='null'
@@ -63,10 +65,11 @@ cmd_create() {
       | (if ($o != null and ($o.subset? != null))
            then ($roles1 | map(select(.id as $i | ($o.subset | index($i)) != null)))
            else $roles1 end) as $roles2
-      # modify (patch role/plane on matching id)
+      # modify (patch role/plane on matching id; only the role/plane keys are ever
+      # applied — extra keys on a modify entry are ignored, matching the python leg)
       | (if ($o != null and ($o.modify? != null))
            then reduce $o.modify[] as $m ($roles2;
-                 map(if .id == $m.id then . + ($m | del(.id)) else . end))
+                 map(if .id == $m.id then . + ($m | with_entries(select(.key == "role" or .key == "plane"))) else . end))
            else $roles2 end) as $roles3
       # add (die on id clash)
       | (if ($o != null and ($o.add? != null))
@@ -81,7 +84,7 @@ cmd_create() {
       | { constitutionVersion: $ver,
           roles: ($roles4 | sort_by(.id)),
           overrides: $o }
-    ' > "$out" || die "spec-snapshot create: jq failed (bad state/overrides, or an add-id collision)."
+    ' > "$tmp" && mv "$tmp" "$out" || die "spec-snapshot create: jq failed (bad state/overrides, or an add-id collision)."
   elif has_py; then
     OVP="$overrides" python3 -c '
 import json, os, sys
@@ -112,8 +115,9 @@ roles.sort(key=lambda r: r["id"])
 obj = {"constitutionVersion": ver, "roles": roles, "overrides": o}
 with open(out_path, "w") as f:
     json.dump(obj, f, indent=2); f.write("\n")
-' "$state" "$out" || die "spec-snapshot create: python3 failed (bad state/overrides, or an add-id collision)."
+' "$state" "$tmp" && mv "$tmp" "$out" || die "spec-snapshot create: python3 failed (bad state/overrides, or an add-id collision)."
   else
+    rm -f "$tmp"
     die "spec-snapshot.sh needs either 'jq' or 'python3'."
   fi
 }

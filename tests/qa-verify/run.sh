@@ -336,4 +336,63 @@ check "no unbound-variable stderr on a plain qa-verify invocation" \
 check "no leaked mktemp results_tmp file after qa-verify exits" \
   "$([[ "$LEAK_BEFORE" == "$LEAK_AFTER" ]] && echo same || echo diff)" "same"
 
+# ---------------------------------------------------------------------------
+# Appendix A: verification.json is written atomically (temp-in-same-dir +
+# rename), not streamed directly to the destination path. Assert (a) no
+# `.tmp.$$` sibling is left behind next to verification.json after a run,
+# and (b) the final file is well-formed JSON (a partial/torn write would
+# fail to parse) — the closest black-box proxy for atomicity without
+# instrumenting a mid-write kill.
+# ---------------------------------------------------------------------------
+( cd "$WORK" && bash "$QAVERIFY" genuine >/dev/null 2>&1 )
+RUN_DIR_TMP="$(dirname "$(vf genuine)")"
+LEAKED_VF_TMP="$(find "$RUN_DIR_TMP" -maxdepth 1 -name 'verification.json.tmp.*' 2>/dev/null)"
+check "no leaked verification.json.tmp.\$\$ sibling after a run" \
+  "$([[ -z "$LEAKED_VF_TMP" ]] && echo none || echo "$LEAKED_VF_TMP")" "none"
+check "verification.json parses as valid JSON after the atomic write" \
+  "$(jq -e 'type' "$(vf genuine)" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+
+# ===========================================================================
+# Appendix A: die()-in-subshell criterion loss. process_criterion is invoked
+# inside `rec_json="$(process_criterion ...)"` — a die() anywhere in its call
+# chain (e.g. required-kinds.sh derive crashing) only exits that SUBSHELL
+# (qa-verify.sh runs under `set -uo pipefail`, no `-e`), so before the fix
+# the criterion silently VANISHED from verification.json (empty rec_json,
+# no error surfaced, exit code potentially still 0). Proven by poisoning a
+# COPY of the whole scripts/+skills/ tree's required-kinds.sh (it's resolved
+# via a hardcoded path relative to qa-verify.sh's own location, not PATH, so
+# a PATH-based poison can't reach it) so the ONE criterion whose checklist
+# row forces a required-kinds.sh derive call crashes deep inside
+# process_criterion.
+# ===========================================================================
+ROOT="$(cd "$HERE/../.." && pwd)"
+POISON_TREE="$WORK/poison-tree"
+mkdir -p "$POISON_TREE"
+cp -r "$ROOT/scripts" "$POISON_TREE/scripts"
+cp -r "$ROOT/skills" "$POISON_TREE/skills"
+cat > "$POISON_TREE/skills/checkpointing-qa-memory/scripts/required-kinds.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "POISONED required-kinds.sh: simulated crash" >&2
+exit 1
+EOF
+chmod +x "$POISON_TREE/skills/checkpointing-qa-memory/scripts/required-kinds.sh"
+POISON_QAVERIFY="$POISON_TREE/scripts/qa-verify.sh"
+
+( cd "$WORK" && bash "$TOOLSTREAM" append lostcrit '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"lc1"},"responseBody":"{\"anything\":1}"}' >/dev/null )
+LC_REF2="$( cd "$WORK" && bash "$REC" lostcrit LC1 bake --read-back '{"anything":1}' --multiplicity 1 )"
+( cd "$WORK" && bash "$CKPT" lostcrit LC1 pass --kinds bake --evidence-refs "$LC_REF2" >/dev/null )
+write_checklist lostcrit '[{"id":"LC1","surface":"/x","kind":"happy-path","tags":[],"action":"View the list"}]'
+
+( cd "$WORK" && bash "$POISON_QAVERIFY" lostcrit >"$WORK/lostcrit.stdout" 2>"$WORK/lostcrit.stderr" ); RC_LOST=$?
+check "die()-in-subshell: qa-verify exits non-zero (never a silent clean exit)" "$([[ "$RC_LOST" -ne 0 ]] && echo yes)" "yes"
+check "die()-in-subshell: verification.json still written" "$([[ -f "$(vf lostcrit)" ]] && echo yes)" "yes"
+check "die()-in-subshell: exactly ONE record (the criterion, not vanished)" "$(jq 'length' "$(vf lostcrit)")" "1"
+check "die()-in-subshell: the record is for LC1, not dropped" "$(jq -r '.[0].criterionId' "$(vf lostcrit)")" "LC1"
+check "die()-in-subshell: verifierVerdict is error (not pass, not silently absent)" \
+  "$(jq -r '.[0].verifierVerdict' "$(vf lostcrit)")" "error"
+check "die()-in-subshell: confidence is high (this is a definite internal failure, not a judgment call)" \
+  "$(jq -r '.[0].confidence' "$(vf lostcrit)")" "high"
+check_contains "die()-in-subshell: reason names the internal failure, not silence" \
+  "$(jq -r '.[0].reasons | join("; ")' "$(vf lostcrit)")" "internal error"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

@@ -53,13 +53,29 @@ purely an emission concern: it records that a mutating act happened and its outc
 does not weaken or replace the UI-only act-phase gate above — the act itself is still
 performed exclusively via `browser_click`/`type`/`fill_form`/etc. on genuine affordances.
 
+## 1a-i. Mandatory before/after state fingerprints (Check 3)
+
+Distinct from the journal bracket above, a `human-action` criterion's `pass` also requires a
+before/after **persisted-state fingerprint** — `check-action-trace.js` Check 3 hard-dies on any
+`human-action` pass whose recorded evidence lacks a `{before, after}` `fingerprints` object. The
+fingerprint is captured via the SAME read-only observe path this document's Assert/Observe phase
+already allows (§1's table) — never a mutating read — bracketing the act exactly like §1a's
+journal calls: read the asserted state before the act, perform the act via the human-path tools,
+read the same state again after. Both values are then passed to
+`record-evidence.sh action-trace --fingerprint-before <…> --fingerprint-after <…>` (optionally
+`--fingerprint-target <…>` for Check 3b's coverage check). The full recipe — including which
+read-back path to use and how it composes with the `--save-session` delta-slice — lives in
+`../SKILL.md`'s "Mandatory before/after state fingerprints (Check 3)" section; this is a doctrine
+cross-reference, not a duplicate.
+
 ## 1b. Named act-phase navigate carve-outs (WS-2 C)
 
 `browser_navigate` is **not** a human-path act tool (§1's table lists only
 click/type/fill_form/press_key/select_option/hover/drag/file_upload) — following
 a real link is a `browser_click` side effect, so an **act-phase `browser_navigate`
 is an address-bar URL-skip** and is fail-closed by default (`check-action-trace.js`
-Check 1/3). Five named exceptions **LOOSEN** that gate. Each is **tag-required**:
+Check 1/3). Four named exceptions (`check-action-trace.js`'s `NAV_CARVEOUTS` Set)
+**LOOSEN** that gate. Each is **tag-required**:
 the step must carry `carveout:"<name>"` naming one of these exact values, checked
 by Set membership — an untagged act-phase navigate, or one tagged with anything
 NOT in this list (a typo, `"bogus"`, an old/retired name), stays fail-closed and
@@ -179,6 +195,6 @@ test, e.g. an admin "set server time" tool, can trip the same pattern).
 ## 6. See also
 
 - `../SKILL.md` — driver selection, the observe-round, the driver launch + delta-slice
-  rule, and the React/RTL mechanics these helpers now support in a read-only/resolve-only
-  role.
+  rule, the mandatory before/after fingerprint recipe (§1a-i above), and the React/RTL
+  mechanics these helpers now support in a read-only/resolve-only role.
 - `docs/adr/0015-human-interaction-discipline.md` — the accepted decision record.

@@ -77,5 +77,57 @@ check "grade critic-layout-off" "$(grade critic-layout-off)" "heuristic"
 check "critic suspicion advisory" "$(field adjudicate '[{"detector":"critic-layout-off","rawSignal":"x"},{}]' 'advisory')" "true"
 check "critic suspicion corroborated -> fail high" "$(field adjudicate '[{"detector":"critic-layout-off","rawSignal":"x"},{"corroborated":true}]' 'confidence')" "high"
 
+# --- W3-2 completeness: every id ux-detectors.js's DETECT() can emit must adjudicate to its
+# intended grade, not the default. Two known mismatches (audit-2): `asset-broken-image` fell
+# through 'broken-image's definite-dom prefix (position-0 prefix match, no match -> default
+# 'heuristic'), and `overlap-modal-behind-backdrop` matched the 'overlap' heuristic prefix
+# BEFORE 'modal-behind-backdrop' could ever be considered. This case enumerates the STATIC
+# (non-dynamic) suspicion-id literals straight out of ux-detectors.js's source -- so a newly
+# added detector id that nobody wired into ORACLE_GRADES fails here instead of silently
+# degrading to 'heuristic' -- plus the dynamic content-<kind> family's known kinds, each
+# checked against a COMMITTED expectation table.
+DET="$HERE/../../skills/detecting-visual-ux/scripts/ux-detectors.js"
+
+# Static suspicion('id', ...) literals emitted by DETECT(), scraped from source. The dynamic
+# 'content-' + sig.kind family is excluded here (its prefix literal is never itself an emitted
+# id) and enumerated by hand below instead.
+ACTUAL_LITERAL_IDS="$(grep -oE "suspicion\('[a-zA-Z0-9_-]+'" "$DET" | sed -E "s/suspicion\('//; s/'$//" | grep -v '^content-$' | sort -u)"
+EXPECT_LITERAL_IDS="$(printf '%s\n' \
+  broken-image \
+  content-empty-required-label \
+  i18n-locale-date \
+  i18n-raw-key \
+  i18n-script-mismatch \
+  invisible-text \
+  modal-behind-backdrop \
+  overlap-controls | sort -u)"
+check "completeness: static suspicion ids match the committed set (no undeclared drift)" \
+  "$ACTUAL_LITERAL_IDS" "$EXPECT_LITERAL_IDS"
+
+# Committed expectation table: detector id -> intended oracle grade (W3-2 authority: detector
+# ids ARE the graded prefixes; adjudicate.js's ORACLE_GRADES is unchanged).
+declare -A EXPECT_GRADE=(
+  [broken-image]=definite-dom
+  [content-empty-required-label]=definite-dom
+  [i18n-locale-date]=definite-catalog
+  [i18n-raw-key]=definite-dom
+  [i18n-script-mismatch]=definite-catalog
+  [invisible-text]=definite-dom
+  [modal-behind-backdrop]=definite-dom
+  [overlap-controls]=heuristic
+  # dynamic content-<kind> family (contentOracleSignal's committed kinds; Task 2 above pins them)
+  [content-null]=definite-dom
+  [content-undefined]=definite-dom
+  [content-nan]=definite-dom
+  [content-object-object]=definite-dom
+  [content-currency-nan]=definite-dom
+  [content-invalid-date]=definite-dom
+  [content-raw-interp]=definite-dom
+  [content-raw-iso]=definite-dom
+)
+for id in "${!EXPECT_GRADE[@]}"; do
+  check "completeness grade: $id -> ${EXPECT_GRADE[$id]}" "$(grade "$id")" "${EXPECT_GRADE[$id]}"
+done
+
 echo; echo "ux-adjudicate: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

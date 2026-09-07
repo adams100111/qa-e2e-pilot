@@ -15,7 +15,7 @@ This skill gets that truth. It reads existing traffic first, falls back to an au
 - **Criterion**: the end-to-end behavior under test.
 - **Probing**: going under a lying UI to read the truth — network response body or API read-back with the session's cookies.
 - **Session**: the isolated browser context whose storageState (cookies, localStorage) carries the authenticated identity.
-- **allowApiWrites / seedableEnvMarker**: the two config flags in `.qa/config.json` that must both be true before any write is issued.
+- **allowApiWrites / seedableEnvMarker**: the two config flags in `.qa/config.json` that must both be true before any write is issued — `seedableEnvMarker` must be non-empty AND not the literal historical bootstrap sentinel `"QA_DISPOSABLE_ENV"` (that value was never a deliberate opt-in; it's treated as NOT disposable — audit-2 W1-5).
 - **auth scheme**: read `auth.scheme` / `auth.csrf` from the run's `stack-profile.json` to form requests correctly — `session-cookie` (in-page fetch carries cookies with `credentials:'include'`; for `csrf: laravel-xsrf` send `X-XSRF-TOKEN` from the `XSRF-TOKEN` cookie), or `bearer` (send the `Authorization` header captured from the session). In **production** mode, writes are hard-off regardless of the flags above.
 
 ---
@@ -93,7 +93,7 @@ Prerequisites:
    ```js
    return await probe({ url: '/api/trpc/governance.templateList' });
    ```
-3. Pass the combined text to **browser_evaluate** (or **browser_run_code_unsafe** if evaluate is unavailable).
+3. Pass the combined text to **browser_evaluate**. Never `browser_run_code_unsafe` — `scripts/block-hook.sh` denies it unconditionally on every phase, any payload (RCE-equivalent); if `browser_evaluate` is genuinely unavailable on the configured driver, record the probe step `blocked` instead of substituting it.
 4. Capture the returned object: `{ ok, status, url, body, durationMs }`.
 
 The script uses `credentials:'include'` so the existing session cookies authenticate the call automatically. It refuses any non-GET unless `allowWrite:true` is explicitly passed. It strips auth headers from anything it echoes and truncates body to 8 000 chars.
@@ -117,11 +117,11 @@ If `body` is `[probe] fetch error: …`, the fetch itself failed (network error,
 Direct API writes are opt-in and doubly gated. You may only issue a write if **both** conditions are true:
 
 - [ ] `allowApiWrites` is `true` in `.qa/config.json`.
-- [ ] `seedableEnvMarker` resolves to a live, disposable environment (the marker key/value must be present in the config and must match what the running backend advertises).
+- [ ] `seedableEnvMarker` resolves to a live, disposable environment: non-empty, present in the config, **and not** the literal bootstrap-default sentinel `"QA_DISPOSABLE_ENV"` (that verbatim value is treated as NOT disposable — it was never a deliberate opt-in, audit-2 W1-5).
 
 If either condition is missing:
 - Set the criterion verdict to **blocked**.
-- Record the reason: "Write needed but allowApiWrites is off" or "seedableEnvMarker not present — refusing to write to an unknown environment."
+- Record the reason: "Write needed but allowApiWrites is off" or "seedableEnvMarker not present (or still the bootstrap sentinel) — refusing to write to an unknown environment."
 - Do NOT seed on a hunch. Do NOT infer the environment is disposable.
 
 When both gates are clear and `allowWrite:true` is passed:
@@ -230,5 +230,5 @@ These are concrete "given X → catch Y" cases drawn from the real governance mo
 ## Reference
 
 - `scripts/backend-probe.js` — inject via browser_evaluate; returns `{ ok, status, url, body, durationMs }`; refuses non-GET without `allowWrite:true`; strips auth headers.
-- Browser tools used: **browser_network_requests** (list captured traffic), **browser_network_request** (read one response body), **browser_evaluate** / **browser_run_code_unsafe** (inject probe script).
-- Config flags: `allowApiWrites`, `seedableEnvMarker` — both required for any write; see `.qa/config.json` (ADR-0004).
+- Browser tools used: **browser_network_requests** (list captured traffic), **browser_network_request** (read one response body), **browser_evaluate** (inject probe script) — never `browser_run_code_unsafe`, which `scripts/block-hook.sh` denies unconditionally.
+- Config flags: `allowApiWrites`, `seedableEnvMarker` — both required for any write; `seedableEnvMarker` must also not equal the bootstrap sentinel `"QA_DISPOSABLE_ENV"`; see `.qa/config.json` (ADR-0004).

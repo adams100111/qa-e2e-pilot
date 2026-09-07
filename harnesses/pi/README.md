@@ -27,7 +27,7 @@ This builds `dist/pi/` (via `scripts/build-adapter.sh pi`) and copies:
   (alongside the skills, not the project's own root — the persona instructs the agent to read
   these, but the reference is unanchored, so see "Manual accuracy run" below)
 - the agent manifest → `<project>/.pi/agents/qa-e2e-pilot.md`
-- the `/qa-run` and `/qa-roles` prompts → `<project>/.pi/prompts/`
+- the `/qa-run`, `/qa-roles`, and `/qa-resume` prompts → `<project>/.pi/prompts/`
 - the `mcpServers` fragment (from `harnesses/pi/mcp.snippet`) → `<project>/.pi/mcp.json`
 
 The installer never writes to `~/.pi` or any other global Pi config; the `playwright-qa` server

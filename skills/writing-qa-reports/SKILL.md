@@ -31,7 +31,7 @@ All output lives under `.qa/runs/<run-id>/`. One run dir per invocation (ADR-000
       screenshot-after.png
       bake-read-back.json
       network-response.json
-      recompute.md
+      recompute.json
 ```
 
 Reference evidence files by relative path from the run dir (`evidence/<criterion-id>/screenshot-after.png`). Never embed binary content in the report text.
@@ -103,7 +103,7 @@ For every `fail` criterion, fill `templates/bug-report.md`:
 Bug #9 example (cap-table governance, amount precision):
 > Expected: 4,000,000 × $0.001 = $4,000.00 (domain rule: amount = shares × price_per_share).
 > Actual: $4.00 displayed and stored.
-> Suspected layer: DB/migration — `decimal(10,2)` column silently truncates sub-cent unit prices.
+> Suspected layer: migration — `decimal(10,2)` column silently truncates sub-cent unit prices.
 
 Show the recomputed-expected vs actual side-by-side whenever computed logic is involved. Never hide the arithmetic.
 
@@ -129,7 +129,7 @@ If no spec-kit artifacts exist, omit the section entirely — do not fabricate r
 ## Mini-Evals
 
 **Eval 1 — Precision bug, amount truncated (Bug #9)**
-Criterion `GOV-09` verifies that creating a Series A issuance at 4,000,000 shares × $0.001/share stores amount = $4,000. Oracle: `amount = shares × price_per_share`. Actual stored: $4.00. The bug report must show `4,000,000 × $0.001 = $4,000.00 (expected) vs $4.00 (actual)` with suspected layer `DB/migration`. Verdict: `fail`, confidence: `low` (expected derivable only from backend column definition, not a public spec rule). The SKILL must surface this as a named bug appendix entry, never hide it under a vague "calculation error."
+Criterion `GOV-09` verifies that creating a Series A issuance at 4,000,000 shares × $0.001/share stores amount = $4,000. Oracle: `amount = shares × price_per_share`. Actual stored: $4.00. The bug report must show `4,000,000 × $0.001 = $4,000.00 (expected) vs $4.00 (actual)` with suspected layer `migration` (one of the CLAUDE.md-canonical `FE|route|service|migration|DB` values — never a slash-joined combo like `DB/migration`). Verdict: `fail`, confidence: `low` (expected derivable only from backend column definition, not a public spec rule). The SKILL must surface this as a named bug appendix entry, never hide it under a vague "calculation error."
 
 **Eval 2 — Honest DEFERRED (round-close math)**
 The criterion `GOV-12` verifies round-close pro-rata math. The env has no closed round. Record as verdict `deferred` with reason: "Round-close math requires a completed round — not available in this env. Verify in staging after round close." The `## Deferred` section must contain this entry. The tally must show 1 deferred. Never record `pass` for this criterion.

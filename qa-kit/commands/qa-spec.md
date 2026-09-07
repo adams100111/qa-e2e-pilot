@@ -76,7 +76,7 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
    `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
    machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
-   (`{}` if none), so the run can compute its effective config deterministically (see step 7).
+   (`{}` if none), so the run can compute its effective config deterministically (see step 8).
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
    applied, the drift result, the data-baseline entity count (seeded vs created), and the next step
@@ -100,7 +100,8 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    is NOT a change to the engine. BEFORE the read-back verify above, iff a confirmed `.qa/specs/<target>/seed.json`
    exists, the run consults the pure gate
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto-seed.sh" decide .qa/config.json`:
-   - `seed:true` (⇔ `allowApiWrites==true` AND `seedableEnvMarker` non-empty AND `environment != "production"` —
+   - `seed:true` (⇔ `allowApiWrites==true` AND `seedableEnvMarker` non-empty and not the literal bootstrap
+     sentinel `"QA_DISPOSABLE_ENV"` (never a deliberate opt-in) AND `environment != "production"` —
      the engine's own write gate) **AND** a human confirmed the exec → run `seed.json`'s `command` in its `cwd`
      (a `Bash` exec — the one write), then fall through to the declare-and-verify read-back to confirm the
      baseline actually landed.

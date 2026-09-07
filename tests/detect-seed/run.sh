@@ -4,10 +4,14 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/detect-seed.sh"
+command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: detect-seed: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
+TMPDIRS=()
+cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 run_engine() {
-  local E="$1" T; T="$(mktemp -d)"
+  local E="$1" T; T="$(mktemp -d)"; TMPDIRS+=("$T")
   # laravel backend component (primary.backend index) -> artisan
   printf '%s' '{"components":[{"role":"backend","framework":"laravel","orm":{"name":"eloquent"}}],"primary":{"backend":0}}' > "$T/laravel.json"
   check "$E laravel -> artisan" "$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["command"])')" "php artisan db:seed"
@@ -37,13 +41,32 @@ run_engine() {
   check "$E cwd fullstack fallback" "$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" "$T/cfg2.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cwd"])')" "/srv/app"
   # cwd: default '.' with no config
   check "$E cwd default dot" "$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cwd"])')" "."
-  rm -rf "$T"
+  # cwd: backend repo entry present but WITHOUT a path -> falls through to fullstack, not null
+  # (audit-2 W3-7b, CONFIRMED: python leg used to return cwd:null here)
+  printf '%s' '{"repos":[{"role":"backend"},{"role":"fullstack","path":"/srv/fs"}]}' > "$T/cfg3.json"
+  check "$E cwd backend-without-path falls back to fullstack" \
+    "$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" "$T/cfg3.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cwd"])')" "/srv/fs"
+  # cwd: backend repo entry present without path AND no fullstack -> falls back to "."
+  printf '%s' '{"repos":[{"role":"backend"}]}' > "$T/cfg4.json"
+  check "$E cwd backend-without-path and no fullstack falls back to dot" \
+    "$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" "$T/cfg4.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cwd"])')" "."
+  # error-blame: invalid JSON in the CONFIG file must be blamed on the config, not the profile
+  printf '%s' '{bad json' > "$T/badcfg.json"
+  errmsg="$(QA_ENGINE=$E bash "$SH" propose "$T/laravel.json" "$T/badcfg.json" 2>&1 >/dev/null)"
+  check "$E error blames the config file, not the profile" \
+    "$(printf '%s' "$errmsg" | grep -qF "$T/badcfg.json" && echo blamed-config || echo blamed-wrong)" "blamed-config"
 }
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-  X="$(mktemp -d)"; printf '%s' '{"components":[{"role":"backend","framework":"laravel","orm":{"name":"eloquent"}}],"primary":{"backend":0}}' > "$X/s.json"
+  X="$(mktemp -d)"; TMPDIRS+=("$X")
+  printf '%s' '{"components":[{"role":"backend","framework":"laravel","orm":{"name":"eloquent"}}],"primary":{"backend":0}}' > "$X/s.json"
   vj="$(QA_ENGINE=jq bash "$SH" propose "$X/s.json")"; vp="$(QA_ENGINE=python3 bash "$SH" propose "$X/s.json")"
-  check "cross-engine proposal identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"; rm -rf "$X"
+  check "cross-engine proposal identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  # byte-parity for the cwd fallback bug: backend repo present but path missing
+  printf '%s' '{"repos":[{"role":"backend"},{"role":"fullstack","path":"/srv/fs"}]}' > "$X/cfg.json"
+  vj="$(QA_ENGINE=jq bash "$SH" propose "$X/s.json" "$X/cfg.json")"; vp="$(QA_ENGINE=python3 bash "$SH" propose "$X/s.json" "$X/cfg.json")"
+  check "cross-engine cwd-fallback proposal byte-identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  check "cross-engine cwd-fallback resolves to fullstack path (not null)" "$(printf '%s' "$vj" | python3 -c 'import json,sys;print(json.load(sys.stdin)["cwd"])')" "/srv/fs"
 fi
 echo "detect-seed: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

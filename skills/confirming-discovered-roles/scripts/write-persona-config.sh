@@ -30,6 +30,25 @@
 #     roleScope (object)}, and every roleScope key names a persona id that
 #     actually survived --personas-file (fails loud rather than writing a
 #     matrix that references a persona nobody confirmed / an orphan)
+#   - the matrix-file MAY be an empty array ONLY when --allow-empty is
+#     passed (the weak-signal/single-user degrade path, SKILL.md Eval 2 --
+#     Step 4 found no protected entities to scope, so an empty result is a
+#     deliberate, cited outcome). WITHOUT --allow-empty an empty matrix is
+#     still rejected (negative control) -- an agent cannot silently skip
+#     Round 3's work by handing back `[]`.
+#
+# --allow-empty    Permits --matrix-file to be an empty JSON array `[]`.
+#                  Only the matrix may be empty this way; --personas-file
+#                  must always be a non-empty array regardless of this flag.
+#
+# Wholesale personas regeneration (Decision 5) still REPLACES the `personas`
+# key, but per-persona id it MERGES forward a small preserve-list of
+# operator-only keys (currently just `expectedSubject` -- the ground truth
+# qa-verify.sh uses to hard-fail an acting-identity mismatch, CONTEXT.md) from
+# the OLD config onto the freshly discovered entry of the same id. Discovered
+# fields (id/role/plane/auth) always come from --personas-file; a persona id
+# dropped from --personas-file disappears from the config (still wholesale --
+# ADR-0011).
 #
 # DEPENDENCIES: bash, coreutils, and EITHER jq OR python3.
 set -euo pipefail
@@ -38,6 +57,12 @@ CONFIG=".qa/config.json"
 MATRIX_OUT=".qa/authz-matrix.json"
 PERSONAS_FILE=""
 MATRIX_FILE=""
+ALLOW_EMPTY=0
+
+# Operator-only keys preserved across wholesale personas regeneration, merged
+# forward per persona id. Single source of truth for both engine legs --
+# encoded to a JSON array string below without needing jq/python3 yet.
+PRESERVE_KEYS=(expectedSubject)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,9 +70,19 @@ while [[ $# -gt 0 ]]; do
     --matrix-file)   MATRIX_FILE="$2"; shift 2 ;;
     --config)        CONFIG="$2"; shift 2 ;;
     --matrix-out)    MATRIX_OUT="$2"; shift 2 ;;
+    --allow-empty)   ALLOW_EMPTY=1; shift 1 ;;
     *) echo "write-persona-config: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+preserve_keys_json="["
+_first=1
+for _k in "${PRESERVE_KEYS[@]}"; do
+  [[ "$_first" -eq 0 ]] && preserve_keys_json+=","
+  preserve_keys_json+="\"$_k\""
+  _first=0
+done
+preserve_keys_json+="]"
 
 [[ -n "$PERSONAS_FILE" && -f "$PERSONAS_FILE" ]] || { echo "write-persona-config: --personas-file <path> is required and must exist" >&2; exit 2; }
 [[ -n "$MATRIX_FILE" && -f "$MATRIX_FILE" ]] || { echo "write-persona-config: --matrix-file <path> is required and must exist" >&2; exit 2; }
@@ -65,18 +100,35 @@ if have jq; then
   jq -e '([.[].id] | length) == ([.[].id] | unique | length)' "$PERSONAS_FILE" >/dev/null \
     || { echo "write-persona-config: personas-file has duplicate persona id(s) — each persona id must be unique (checkpoints are keyed by (criterion_id, persona_id); duplicates collide, ADR-0012)" >&2; exit 4; }
 
+  jq -e 'type=="array"' "$MATRIX_FILE" >/dev/null \
+    || { echo "write-persona-config: matrix-file must be a JSON array" >&2; exit 4; }
+
   persona_ids="$(jq -c '[.[].id]' "$PERSONAS_FILE")"
-  jq -e --argjson ids "$persona_ids" '
-    type=="array" and length>0 and
-    all(.[]; has("entity") and has("owningChain") and has("roleScope")
-        and (.owningChain|type=="array") and (.owningChain|length>0)
-        and (.roleScope|type=="object")
-        and ((.roleScope|keys) - $ids | length == 0)
-        and ((.roleScope | [.[]]) - ["owns","read-scoped","none"] | length == 0))
-  ' "$MATRIX_FILE" >/dev/null || { echo "write-persona-config: matrix-file failed shape/reference validation (every roleScope key must be a confirmed persona id; every roleScope value must be one of owns|read-scoped|none — an invalid scope silently reads as non-isolating and disables the cross-role isolation probe; owningChain must be a non-empty array)" >&2; exit 4; }
+  matrix_len="$(jq 'length' "$MATRIX_FILE")"
+  if [[ "$matrix_len" -eq 0 ]]; then
+    [[ "$ALLOW_EMPTY" -eq 1 ]] || { echo "write-persona-config: matrix-file is empty -- pass --allow-empty for the weak-signal/single-user degrade path (no protected entities to scope); without the flag an empty matrix is rejected" >&2; exit 4; }
+  else
+    jq -e --argjson ids "$persona_ids" '
+      all(.[]; has("entity") and has("owningChain") and has("roleScope")
+          and (.owningChain|type=="array") and (.owningChain|length>0)
+          and (.roleScope|type=="object")
+          and ((.roleScope|keys) - $ids | length == 0)
+          and ((.roleScope | [.[]]) - ["owns","read-scoped","none"] | length == 0))
+    ' "$MATRIX_FILE" >/dev/null || { echo "write-persona-config: matrix-file failed shape/reference validation (every roleScope key must be a confirmed persona id; every roleScope value must be one of owns|read-scoped|none — an invalid scope silently reads as non-isolating and disables the cross-role isolation probe; owningChain must be a non-empty array)" >&2; exit 4; }
+  fi
 
   tmp_cfg="$(mktemp)"
-  jq --slurpfile personas "$PERSONAS_FILE" '.personas = $personas[0]' "$CONFIG" > "$tmp_cfg"
+  jq --slurpfile personas "$PERSONAS_FILE" --argjson preserve "$preserve_keys_json" '
+    (.personas // []) as $old |
+    ($old | map({(.id): .}) | add // {}) as $oldById |
+    .personas = ($personas[0] | map(
+      . as $p |
+      ($oldById[$p.id] // {}) as $op |
+      reduce $preserve[] as $k ($p;
+        if ($op | has($k)) and (($p | has($k)) | not) then . + {($k): $op[$k]} else . end
+      )
+    ))
+  ' "$CONFIG" > "$tmp_cfg"
   mv "$tmp_cfg" "$CONFIG"
   jq '.' "$MATRIX_FILE" > "$MATRIX_OUT"
 
@@ -85,10 +137,12 @@ if have jq; then
   echo "Wrote $n_personas persona(s) into $CONFIG; wrote $n_rows authz-matrix row(s) to $MATRIX_OUT"
 
 elif have python3; then
-  python3 - "$PERSONAS_FILE" "$MATRIX_FILE" "$CONFIG" "$MATRIX_OUT" <<'PYEOF'
+  python3 - "$PERSONAS_FILE" "$MATRIX_FILE" "$CONFIG" "$MATRIX_OUT" "$ALLOW_EMPTY" "$preserve_keys_json" <<'PYEOF'
 import json, sys
 
-personas_file, matrix_file, config_file, matrix_out = sys.argv[1:5]
+personas_file, matrix_file, config_file, matrix_out, allow_empty_flag, preserve_keys_json = sys.argv[1:7]
+allow_empty = allow_empty_flag == "1"
+preserve_keys = json.loads(preserve_keys_json)
 
 with open(personas_file) as f:
     personas = json.load(f)
@@ -108,29 +162,45 @@ persona_ids = set(ids_list)
 
 with open(matrix_file) as f:
     matrix = json.load(f)
-if not isinstance(matrix, list) or not matrix:
-    sys.exit("write-persona-config: matrix-file must be a non-empty JSON array")
-for row in matrix:
-    if not all(k in row for k in ("entity", "owningChain", "roleScope")):
-        sys.exit("write-persona-config: matrix-file failed shape validation (need entity/owningChain/roleScope on every row)")
-    if not isinstance(row["owningChain"], list) or not row["owningChain"]:
-        sys.exit("write-persona-config: matrix-file row owningChain must be a non-empty array")
-    if not isinstance(row["roleScope"], dict):
-        sys.exit("write-persona-config: matrix-file row roleScope must be an object")
-    unknown = sorted(set(row["roleScope"].keys()) - persona_ids)
-    if unknown:
-        sys.exit(f"write-persona-config: matrix-file references unconfirmed persona id(s): {unknown}")
-    # roleScope VALUES are a closed enum. generating-qa-checklist emits a
-    # cross-role isolation probe ONLY when a value is "none"/"read-scoped"; an
-    # invalid/typo'd value silently reads as non-isolating ("owns"), disabling
-    # the isolation probe → fail-open leak. Reject anything off-enum.
-    bad_scope = sorted(set(row["roleScope"].values()) - {"owns", "read-scoped", "none"})
-    if bad_scope:
-        sys.exit(f"write-persona-config: matrix-file row roleScope has invalid value(s) {bad_scope} for entity {row.get('entity')!r} — allowed: owns | read-scoped | none (an invalid scope silently reads as non-isolating and disables the cross-role isolation probe)")
+if not isinstance(matrix, list):
+    sys.exit("write-persona-config: matrix-file must be a JSON array")
+if not matrix:
+    if not allow_empty:
+        sys.exit("write-persona-config: matrix-file is empty -- pass --allow-empty for the weak-signal/single-user degrade path (no protected entities to scope); without the flag an empty matrix is rejected")
+else:
+    for row in matrix:
+        if not all(k in row for k in ("entity", "owningChain", "roleScope")):
+            sys.exit("write-persona-config: matrix-file failed shape validation (need entity/owningChain/roleScope on every row)")
+        if not isinstance(row["owningChain"], list) or not row["owningChain"]:
+            sys.exit("write-persona-config: matrix-file row owningChain must be a non-empty array")
+        if not isinstance(row["roleScope"], dict):
+            sys.exit("write-persona-config: matrix-file row roleScope must be an object")
+        unknown = sorted(set(row["roleScope"].keys()) - persona_ids)
+        if unknown:
+            sys.exit(f"write-persona-config: matrix-file references unconfirmed persona id(s): {unknown}")
+        # roleScope VALUES are a closed enum. generating-qa-checklist emits a
+        # cross-role isolation probe ONLY when a value is "none"/"read-scoped"; an
+        # invalid/typo'd value silently reads as non-isolating ("owns"), disabling
+        # the isolation probe → fail-open leak. Reject anything off-enum.
+        bad_scope = sorted(set(row["roleScope"].values()) - {"owns", "read-scoped", "none"})
+        if bad_scope:
+            sys.exit(f"write-persona-config: matrix-file row roleScope has invalid value(s) {bad_scope} for entity {row.get('entity')!r} — allowed: owns | read-scoped | none (an invalid scope silently reads as non-isolating and disables the cross-role isolation probe)")
 
 with open(config_file) as f:
     config = json.load(f)
-config["personas"] = personas
+old_by_id = {}
+for op in (config.get("personas") or []):
+    if isinstance(op, dict) and "id" in op:
+        old_by_id[op["id"]] = op
+merged_personas = []
+for p in personas:
+    np = dict(p)
+    op = old_by_id.get(p["id"], {})
+    for k in preserve_keys:
+        if k in op and k not in np:
+            np[k] = op[k]
+    merged_personas.append(np)
+config["personas"] = merged_personas
 with open(config_file, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")

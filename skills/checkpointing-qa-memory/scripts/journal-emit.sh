@@ -127,6 +127,29 @@ validate_token() {
   return 0
 }
 
+# Appendix A (delimiter-in-id corruption, fail-closed): scenarioId/
+# criterionId are joined with ':' into the composite "key"
+# ("${run_id}:${scenario_id}:${criterion_id}") that cmd_act_intent/
+# cmd_act_commit journal, and later SPLIT back apart by qa-reconcile.sh's
+# join_openacts (ltrimstr($runId + ":") then index(":") on the remainder) to
+# recover scenarioId/criterionId. Unlike run-id (Fix 28's validate_token,
+# which guards a *path*), scenarioId/criterionId were never guarded against
+# containing the ':' delimiter itself — a criterionId like "evil:AC1" would
+# silently shift the split point and misattribute the writeSet/openAct to
+# the WRONG (scenarioId, criterionId) pair on read-back. Reject fail-closed,
+# with a clear error, before the value is ever used to build a key or an
+# event — applied uniformly to every subcommand that accepts these ids
+# (started/amend/act-intent/act-commit), not just the two that build the
+# composite key, so a run's journal can never end up in a state where one
+# command accepted a value another would later reject.
+validate_id_component() {
+  local value="$1" label="$2"
+  case "$value" in
+    *:*) die "${label} '${value}' contains ':' — reserved as qa-reconcile.sh's key delimiter (run_id:scenarioId:criterionId); choose an id without ':'." ;;
+  esac
+  return 0
+}
+
 # Locate journal.sh relative to THIS script without depending on external
 # `dirname` (pure bash parameter expansion — same trick checkpoint.sh uses,
 # so a restricted test PATH doesn't break self-location).
@@ -716,6 +739,8 @@ cmd_started() {
   validate_token "$run_id" "run-id"
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
   [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
+  validate_id_component "$scenario_id" "scenarioId"
+  validate_id_component "$criterion_id" "criterionId"
 
   local journal_path creating=0
   journal_path="$(journal_path_for "$run_id")"
@@ -783,6 +808,8 @@ cmd_amend() {
   validate_token "$run_id" "run-id"
   [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
+  validate_id_component "$scenario_id" "scenarioId"
+  validate_id_component "$criterion_id" "criterionId"
   local mutates_bool
   case "$mutates_raw" in
     true|false) mutates_bool="$mutates_raw" ;;
@@ -825,6 +852,8 @@ cmd_act_intent() {
   validate_token "$run_id" "run-id"
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
   [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
+  validate_id_component "$scenario_id" "scenarioId"
+  validate_id_component "$criterion_id" "criterionId"
   [[ -n "$criterion_json" ]] || die "act-intent requires --criterion <criterion-json>."
   [[ -n "$write_set_json" ]] || die "act-intent requires --write-set <json>."
   validate_write_set_json "$write_set_json"
@@ -893,6 +922,8 @@ cmd_act_commit() {
   validate_token "$run_id" "run-id"
   [[ -n "$scenario_id" ]] || die "scenarioId must not be empty."
   [[ -n "$criterion_id" ]] || die "criterionId must not be empty."
+  validate_id_component "$scenario_id" "scenarioId"
+  validate_id_component "$criterion_id" "criterionId"
   case "$outcome" in
     landed|failed|unknown) ;;
     *) die "act-commit: --outcome must be one of landed|failed|unknown (got '${outcome}')." ;;

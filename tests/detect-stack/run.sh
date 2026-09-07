@@ -118,5 +118,131 @@ printf '%s' '{"baseUrl":"https://app.example.com","environment":"auto","seedable
 QA_CONFIG="$CFG13" bash "$ENGINE" --no-code --no-runtime --out "$OUT13" >/dev/null 2>&1
 check "custom marker still opts into disposable" "$(get "$OUT13" '.environment')" "disposable"
 
+# --- audit-2 W3-5c: runtime HTML-marker + bounded openapi/fingerprintPaths ---
+# probes. Hermetic: a python3 http.server against a fixture dir, started/stopped
+# by this suite. Skipped entirely (not silently vacuous-pass) when python3 or
+# curl is unavailable on this host.
+have() { command -v "$1" >/dev/null 2>&1; }
+SERVER_PIDS=()
+rt_cleanup() { local pid; for pid in "${SERVER_PIDS[@]:-}"; do [[ -n "$pid" ]] && kill "$pid" 2>/dev/null; done; }
+trap rt_cleanup EXIT
+
+start_server() { # <dir> -> echoes "port|logfile|pid"
+  local dir="$1" port log pid
+  port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  log="$(mktemp)"
+  python3 -m http.server "$port" --bind 127.0.0.1 --directory "$dir" >"$log" 2>&1 &
+  pid=$!
+  SERVER_PIDS+=("$pid")
+  local i=0
+  until curl -s -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null; do
+    sleep 0.2; i=$((i+1)); [[ "$i" -gt 25 ]] && break
+  done
+  printf '%s|%s|%s' "$port" "$log" "$pid"
+}
+
+# count GET requests logged against a NON-root path (excludes the base "GET / " fetch)
+count_subpath_gets() { # <logfile>
+  grep -oE '"GET [^"]+"' "$1" 2>/dev/null | awk '{print $2}' | grep -vc '^/$'
+}
+
+if have curl && have python3; then
+  FASTCFG="$(mktemp)"
+  printf '%s' '{"maxRequestsPerSecond": 1000}' > "$FASTCFG"
+
+  # Case R1: marker hit recorded — nextjs __NEXT_DATA__ marker in the served body
+  IFS='|' read -r R1_PORT R1_LOG R1_PID <<< "$(start_server "$FIX/runtime/marker")"
+  OUTR1="$(mktemp)"
+  QA_CONFIG="$FASTCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R1_PORT" --out "$OUTR1" >/dev/null 2>&1
+  check "marker hit: framework nextjs"  "$(get "$OUTR1" '.components[0].framework')" "nextjs"
+  check "marker hit: signal strong"     "$(get "$OUTR1" '.components[0].signal')"    "strong"
+  check "marker hit: evidence recorded" "$(get "$OUTR1" '.components[0].evidence | join(" ") | contains("html marker __NEXT_DATA__")')" "true"
+  kill "$R1_PID" 2>/dev/null
+
+  # Case R2: openapi probe hit recorded — /openapi.json served, no cookie/header signal at all.
+  # /openapi.json is SHARED by fastapi/nestjs/hono/go's openapiPaths (real
+  # stack-signatures.json), so this is also the "shared-path-only fixture"
+  # negative control: a bare probe hit on a multi-owner path, uncorroborated
+  # by any other signal, must NOT be reported as strong (array-order would
+  # otherwise always crown fastapi, the first-indexed owner, with false
+  # confidence for what could equally be a nestjs/hono/go backend).
+  IFS='|' read -r R2_PORT R2_LOG R2_PID <<< "$(start_server "$FIX/runtime/openapi")"
+  OUTR2="$(mktemp)"
+  QA_CONFIG="$FASTCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2_PORT" --out "$OUTR2" >/dev/null 2>&1
+  check "openapi hit: framework fastapi" "$(get "$OUTR2" '.components[0].framework')" "fastapi"
+  check "openapi hit (shared, uncorroborated): signal weak" "$(get "$OUTR2" '.components[0].signal')" "weak"
+  check "openapi hit: evidence recorded" "$(get "$OUTR2" '.components[0].evidence | join(" ") | contains("openapi probe hit /openapi.json")')" "true"
+  check "openapi hit: ambiguity note recorded" "$(get "$OUTR2" '.components[0].evidence | join(" ") | contains("ambiguous")')" "true"
+  check "openapi hit: request logged"    "$(grep -qc '"GET /openapi.json' "$R2_LOG" && echo yes)" "yes"
+  kill "$R2_PID" 2>/dev/null
+
+  # Case R2b: a probe hit on a path UNIQUE to one stack (spring's /v3/api-docs,
+  # not shared by any other signature) still gets full strong confidence —
+  # the ambiguity downgrade only applies to genuinely multi-owner paths.
+  IFS='|' read -r R2U_PORT R2U_LOG R2U_PID <<< "$(start_server "$FIX/runtime/openapi-unique")"
+  OUTR2U="$(mktemp)"
+  QA_CONFIG="$FASTCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2U_PORT" --out "$OUTR2U" >/dev/null 2>&1
+  check "openapi hit (unique path): framework spring" "$(get "$OUTR2U" '.components[0].framework')" "spring"
+  check "openapi hit (unique path): signal strong"    "$(get "$OUTR2U" '.components[0].signal')"    "strong"
+  kill "$R2U_PID" 2>/dev/null
+
+  # Case R2c: marker+openapi fixture stays strong — a stack matched by an
+  # independent html marker ALSO has an ambiguous (multi-owner, per this
+  # fixture's own signatures) openapi probe hit; the marker alone is
+  # sufficient, so the ambiguity downgrade must not pull the result to weak.
+  # Custom QA_SIGNATURES (stackA: html marker + openapiPaths; stackB: the
+  # SAME openapiPaths, no other signal — makes the path genuinely ambiguous
+  # within this fixture) keeps this isolated from the real signatures file.
+  MARKERAMBIG_SIG="$FIX/runtime-signatures/marker-ambig.json"
+  IFS='|' read -r R2C_PORT R2C_LOG R2C_PID <<< "$(start_server "$FIX/runtime/marker-ambig")"
+  OUTR2C="$(mktemp)"
+  QA_CONFIG="$FASTCFG" QA_SIGNATURES="$MARKERAMBIG_SIG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R2C_PORT" --out "$OUTR2C" >/dev/null 2>&1
+  check "marker+ambiguous-openapi: framework stackA" "$(get "$OUTR2C" '.components[0].framework')" "stackA"
+  check "marker+ambiguous-openapi: signal stays strong" "$(get "$OUTR2C" '.components[0].signal')" "strong"
+  check "marker+ambiguous-openapi: marker evidence present" "$(get "$OUTR2C" '.components[0].evidence | join(" ") | contains("html marker MARKER_A")')" "true"
+  check "marker+ambiguous-openapi: ambiguity note also present" "$(get "$OUTR2C" '.components[0].evidence | join(" ") | contains("ambiguous")')" "true"
+  kill "$R2C_PID" 2>/dev/null
+
+  # Case R3: noProbePaths excludes a path — /openapi.json exists on the server but
+  # is listed in noProbePaths, so it must never be requested and never match.
+  NOPROBECFG="$(mktemp)"
+  printf '%s' '{"maxRequestsPerSecond": 1000, "noProbePaths": ["/openapi.json"]}' > "$NOPROBECFG"
+  IFS='|' read -r R3_PORT R3_LOG R3_PID <<< "$(start_server "$FIX/runtime/noprobe")"
+  OUTR3="$(mktemp)"
+  QA_CONFIG="$NOPROBECFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R3_PORT" --out "$OUTR3" >/dev/null 2>&1
+  check "noProbePaths: excluded path never requested" "$(grep -qc '"GET /openapi.json' "$R3_LOG" && echo yes || echo no)" "no"
+  check "noProbePaths: no false match from excluded path" "$(get "$OUTR3" '.components[0].framework')" "generic"
+  kill "$R3_PID" 2>/dev/null
+
+  # Case R4: cap-at-4 enforced — 5 surviving candidates (6 unique signature
+  # openapiPaths minus 1 excluded via noProbePaths) -> exactly 4 GET requests.
+  CAPCFG="$(mktemp)"
+  printf '%s' '{"maxRequestsPerSecond": 1000, "noProbePaths": ["/api-json"]}' > "$CAPCFG"
+  IFS='|' read -r R4_PORT R4_LOG R4_PID <<< "$(start_server "$FIX/runtime/cap")"
+  OUTR4="$(mktemp)"
+  QA_CONFIG="$CAPCFG" bash "$ENGINE" --no-code --base-url "http://127.0.0.1:$R4_PORT" --out "$OUTR4" >/dev/null 2>&1
+  check "cap-at-4: exactly 4 probe requests" "$(count_subpath_gets "$R4_LOG")" "4"
+  kill "$R4_PID" 2>/dev/null
+
+  # Case R5: no-network / no-curl degrades cleanly — curl masked from PATH,
+  # jq (and the rest of the engine's toolchain) still present. Must still emit
+  # valid JSON with a weak/generic fallback, never a hard failure.
+  BASH_BIN="$(command -v bash)"
+  RTFAKEBIN="$(mktemp -d)"
+  for tool in jq python3 grep sed awk date find head paste seq cat dirname basename mkdir sort; do
+    tp="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$tp" ]] && ln -sf "$tp" "$RTFAKEBIN/$tool"
+  done
+  OUTR5="$(mktemp)"
+  RC5=0
+  PATH="$RTFAKEBIN" QA_CONFIG="$FASTCFG" "$BASH_BIN" "$ENGINE" --no-code --base-url "http://127.0.0.1:1" --out "$OUTR5" >/dev/null 2>&1 || RC5=$?
+  check "no-curl degrade: exit 0"      "$RC5" "0"
+  check "no-curl degrade: valid json"  "$(jq -e . "$OUTR5" >/dev/null 2>&1 && echo ok)" "ok"
+  check "no-curl degrade: framework generic" "$(get "$OUTR5" '.components[0].framework')" "generic"
+  check "no-curl degrade: signal weak"       "$(get "$OUTR5" '.components[0].signal')"    "weak"
+else
+  echo "SKIP - audit-2 W3-5c runtime probe suite: curl/python3 not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

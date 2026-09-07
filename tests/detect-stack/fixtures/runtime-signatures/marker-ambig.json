@@ -1,0 +1,35 @@
+{
+  "stacks": [
+    {
+      "id": "stackA", "language": "x", "role": "backend",
+      "manifest": "x.json", "packages": [],
+      "runtime": { "html": ["MARKER_A"], "openapiPaths": ["/shared.json"], "headers": {} },
+      "playbook": "generic",
+      "router": { "strategy": "live-nav", "rung1": "x" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "auth": { "scheme": "none", "csrf": null },
+      "commands": { "dev": "", "test": "", "build": "" }
+    },
+    {
+      "id": "stackB", "language": "x", "role": "backend",
+      "manifest": "x.json", "packages": [],
+      "runtime": { "openapiPaths": ["/shared.json"], "headers": {} },
+      "playbook": "generic",
+      "router": { "strategy": "live-nav", "rung1": "x" },
+      "frontendRouting": "black-box",
+      "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+      "auth": { "scheme": "none", "csrf": null },
+      "commands": { "dev": "", "test": "", "build": "" }
+    }
+  ],
+  "_fallback": {
+    "id": "generic", "language": "unknown", "role": "fullstack", "playbook": "generic",
+    "router": { "strategy": "live-nav", "rung1": "browse + snapshot" },
+    "frontendRouting": "black-box",
+    "orm": { "name": "unknown", "modelsPath": ".", "migrationsPath": "." },
+    "i18n": { "roots": [], "libraryPackages": [], "mechanism": "none" },
+    "auth": { "scheme": "none", "csrf": null },
+    "commands": { "dev": "", "test": "", "build": "" }
+  }
+}

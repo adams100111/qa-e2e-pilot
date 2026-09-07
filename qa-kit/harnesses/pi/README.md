@@ -1,7 +1,7 @@
 # qa-kit on Pi
 
-The step-gated QA process shell (`/qa-constitution → /qa-spec → /qa-scenarios → /qa-analyze → /qa-run`,
-plus `/qa-status`) generated for Pi from the shared `qa-kit/core/` (ADR-0024). Claude stays the reference
+The step-gated QA process shell (`/qa-constitution → /qa-spec → /qa-scenarios → /qa-analyze → /qa-run →
+/qa-verify`, plus `/qa-status`) generated for Pi from the shared `qa-kit/core/` (ADR-0024). Claude stays the reference
 build; Pi is generated to be behaviourally equivalent. Browser-driving and all verification are **deferred to
 the qa-e2e-pilot engine** — qa-kit only orchestrates the steps.
 

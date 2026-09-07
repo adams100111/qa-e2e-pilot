@@ -70,7 +70,9 @@ def well_formed(r):
     return True
 comp = [r for r in data if isinstance(r, dict) and computes(r)]
 missing = sorted(({"id": r.get("id"), "reason": "computed criterion missing a well-formed pinned expect"}
-                  for r in comp if not well_formed(r)), key=lambda m: (m["id"] is None, m["id"]))
+                  for r in comp if not well_formed(r)),
+                 # match jq sort_by(.id): null sorts BEFORE every string (jq type ordering).
+                 key=lambda m: (m["id"] is not None, m["id"]))
 def src(r): return ((r.get("fixture") or {}).get("expect") or {}).get("oracleSource")
 obj = {"ok": len(missing) == 0, "missing": missing,
        "sources": {"human": sum(1 for r in comp if src(r)=="human"),

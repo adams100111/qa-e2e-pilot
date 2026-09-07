@@ -23,7 +23,13 @@ check "codex agent toml"  "$(ls "$D/codex/agent")"    "qa-kit.toml"
 check "opencode agent md" "$(ls "$D/opencode/agent")" "qa-kit.md"
 
 # (b) skill refs render per harness (qa-spec references detecting-stack-profile)
-check "claude slug"  "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")" "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")"
+# The expected occurrence count is derived independently of the rendered output:
+# it's the number of {{SKILL_REF:detecting-stack-profile}} tokens in the CORE
+# template (the un-rendered source), not a re-grep of the very file under test
+# (that would be a tautology -- comparing a count to itself can never fail).
+core_slug_count="$(grep -c '{{SKILL_REF:detecting-stack-profile}}' "$REPO/qa-kit/core/commands/qa-spec.md")"
+check "claude slug count matches core template occurrences" \
+  "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")" "$core_slug_count"
 grep -q '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md"       ; check "claude slug present"  "$?" "0"
 grep -q 'the `detecting-stack-profile` skill'  "$D/pi/commands/qa-spec.md"            ; check "pi bare present"      "$?" "0"
 grep -q 'the `detecting-stack-profile` skill'  "$D/codex/commands/qa-spec.md"         ; check "codex bare present"   "$?" "0"
@@ -54,6 +60,15 @@ diff -q "$REPO/qa-kit/agents/qa-kit.md" "$D/claude/agent/qa-kit.md" >/dev/null; 
 # (f) every referenced engine skill exists (composition fragility guard)
 for s in detecting-stack-profile ingesting-spec-kit discovering-user-roles confirming-discovered-roles fanning-out-criteria generating-qa-checklist analyzing-feature-ui; do
   check "engine skill $s exists" "$([ -d "$REPO/skills/$s" ] && echo y)" "y"
+done
+
+# (g) repo-dev-only tooling never ships into a harness's scripts payload (audit-2 W3-7b):
+# run-qakit-ci.sh references $ROOT/tests/... paths that only exist inside this repo, so it
+# would be a broken command in an installed user project.
+for h in claude pi codex opencode; do
+  check "$h scripts exclude run-qakit-ci.sh" "$([ -f "$D/$h/scripts/run-qakit-ci.sh" ] && echo present || echo absent)" "absent"
+  check "$h scripts exclude build-qakit-adapter.sh" "$([ -f "$D/$h/scripts/build-qakit-adapter.sh" ] && echo present || echo absent)" "absent"
+  check "$h scripts exclude validate-qakit-adapters.sh" "$([ -f "$D/$h/scripts/validate-qakit-adapters.sh" ] && echo present || echo absent)" "absent"
 done
 
 echo "qakit-adapters: PASS=$pass FAIL=$fail"

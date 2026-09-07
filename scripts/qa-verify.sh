@@ -455,6 +455,27 @@ except Exception:
   fi
 }
 
+# config_persona_count -> stdout the number of entries in `.qa/config.json`'s
+# `personas[]` array, or "0" if the file is absent/invalid/has none. NEVER
+# dies (same posture as config_expected_subject_for) — used only to decide
+# whether persona-identity binding should have applied at all (Appendix A:
+# "missing --persona bypasses identity binding").
+config_persona_count() {
+  local file=".qa/config.json"
+  [[ -f "$file" ]] || { echo 0; return 0; }
+  json_is_valid "$file" || { echo 0; return 0; }
+  if has_jq; then
+    jq -r '(.personas // []) | length' "$file" 2>/dev/null || echo 0
+  else
+    python3 -c "import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(len(d.get('personas') or []))
+except Exception:
+    print(0)" "$file" 2>/dev/null || echo 0
+  fi
+}
+
 # artifact filename for a given kind — mirrors checkpoint.sh's kind_artifact.
 kind_artifact() {
   case "$1" in
@@ -1153,7 +1174,20 @@ process_criterion() {
   # PERSONA-SCOPED (non-empty, not the "__shared__" sentinel) HIGH-STAKES
   # criterion is checked; __shared__/empty-persona/read-only criteria are
   # exempt — skipped entirely, no reason recorded, override/confidence
-  # untouched. ------------------------------------------------------------
+  # untouched.
+  #
+  # Appendix A tighten ("missing --persona bypasses identity binding"): the
+  # exemption above is legitimate for a genuinely single-persona/no-role-
+  # sensitivity project (persona is ALWAYS "" there — checking would be
+  # meaningless noise). But when the project's OWN config declares MORE
+  # THAN ONE persona (`.qa/config.json`'s personas[] — i.e. role-sensitivity
+  # is real for this target) and a HIGH-STAKES pass was checkpointed with NO
+  # persona at all, that is not "shared/read-only", it is "acted as nobody
+  # verifiable" — the identity-binding check was silently bypassed by simply
+  # omitting `--persona` on the checkpoint.sh call. DEGRADE (never a hard
+  # override — no evidence of WRONG identity exists here, only of identity
+  # never having been captured at all; same "ambiguous -> confidence:low"
+  # doctrine as every other degrade in this function). ----------------------
   if [[ -n "$persona" ]] && [[ "$persona" != "__shared__" ]] && is_high_stakes "$kinds_csv" "$row"; then
     local identity_rel identity_full
     identity_rel="evidence/${persona}/identity.json"
@@ -1214,6 +1248,13 @@ process_criterion() {
           fi
         fi
       fi
+    fi
+  elif { [[ -z "$persona" ]] || [[ "$persona" == "__shared__" ]]; } && is_high_stakes "$kinds_csv" "$row"; then
+    local persona_count
+    persona_count="$(config_persona_count)"
+    if [[ "$persona_count" =~ ^[0-9]+$ ]] && [[ "$persona_count" -gt 1 ]]; then
+      confidence="low"
+      reasons+=("persona identity unverified: this run's .qa/config.json declares ${persona_count} personas (role-sensitivity is real for this target), but this high-stakes pass was checkpointed with NO --persona at all — identity-binding was never checked, not exempted (Appendix A tighten)")
     fi
   fi
 
@@ -1279,6 +1320,42 @@ rec_verdict() {
   fi
 }
 
+# build_error_record <crit-id> <persona> <detail> -> stdout ONE compact JSON
+# verification record with verifierVerdict "error" (Appendix A: die()-in-
+# subshell criterion loss). process_criterion is invoked inside a
+# `rec_json="$(process_criterion ...)"` command substitution — a `die()`
+# anywhere in its call chain (e.g. required-kinds.sh derive failing) only
+# exits THAT SUBSHELL (this script runs under `set -uo pipefail`, no `-e`),
+# so the assignment silently succeeds with an EMPTY rec_json and the
+# criterion was previously dropped from verification.json with no trace —
+# a run could report a false-clean exit even though one of its passes was
+# never actually re-checked. Recording it as verifierVerdict "error" instead
+# (a) makes it visible (report-to-junit.sh renders any non-"pass"
+# verifierVerdict as a <failure>) and (b) flips qa-verify's own exit code,
+# same as every other override — a lost criterion must never look like a
+# clean run.
+build_error_record() {
+  local crit_id="$1" persona="$2" detail="$3"
+  local reasons_json
+  reasons_json="$(json_array_from_args "qa-verify internal error while re-checking this criterion: ${detail} — recorded as error rather than silently dropped")"
+  if has_jq; then
+    jq -cn \
+      --arg critId "$crit_id" --arg persona "$persona" \
+      --arg inV "pass" --arg verV "error" --arg conf "high" \
+      --argjson reasons "$reasons_json" \
+      '{criterionId: $critId, persona: $persona, inRunVerdict: $inV, verifierVerdict: $verV, confidence: $conf, reasons: $reasons}'
+  else
+    python3 -c '
+import json, sys
+critId, persona, inV, verV, conf, reasonsJson = sys.argv[1:7]
+print(json.dumps({
+    "criterionId": critId, "persona": persona, "inRunVerdict": inV,
+    "verifierVerdict": verV, "confidence": conf, "reasons": json.loads(reasonsJson)
+}))
+' "$crit_id" "$persona" "pass" "error" "high" "$reasons_json"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -1300,7 +1377,7 @@ main() {
   trap 'rm -f "$results_tmp"' EXIT
 
   local run_failed=0 checked=0
-  local pass_rec crit_id persona confidence nonui_reason kinds_csv rec_json verdict
+  local pass_rec crit_id persona confidence nonui_reason kinds_csv rec_json verdict pc_rc
   local fields_out
   while IFS= read -r pass_rec; do
     [[ -z "$pass_rec" ]] && continue
@@ -1314,7 +1391,18 @@ main() {
     kinds_csv="${_qv_fields[4]:-}"
     [[ -z "$crit_id" ]] && continue
 
+    # Appendix A: die()-in-subshell criterion loss. process_criterion runs
+    # inside this command substitution — a die() anywhere in its call chain
+    # only exits the SUBSHELL (no `set -e` here), leaving rec_json empty
+    # with the assignment itself reporting success. Detect BOTH signals
+    # (nonzero exit code from the substitution AND/OR empty output) and
+    # synthesize an "error" record rather than silently dropping the
+    # criterion — see build_error_record's header comment.
     rec_json="$(process_criterion "$run_id" "$crit_id" "$persona" "$confidence" "$nonui_reason" "$kinds_csv")"
+    pc_rc=$?
+    if [[ "$pc_rc" -ne 0 || -z "$rec_json" ]]; then
+      rec_json="$(build_error_record "$crit_id" "$persona" "process_criterion exited ${pc_rc} or produced no output (see qa-verify's own stderr above for the underlying failure)")"
+    fi
     echo "$rec_json" >> "$results_tmp"
     checked=$((checked + 1))
     verdict="$(rec_verdict "$rec_json")"
@@ -1329,12 +1417,24 @@ main() {
   ps_rec="$(run_phase_surface_pass "$run_id")"
   [[ -n "$ps_rec" ]] && echo "$ps_rec" >> "$results_tmp"
 
-  local out_file
+  # Atomic write (Appendix A: verification.json non-atomic write): write to a
+  # temp file in the SAME directory as the destination, then rename over it.
+  # Temp-in-same-dir + rename is POSIX-atomic w.r.t. concurrent readers (e.g.
+  # report-to-junit.sh reading verification.json mid-run) on a single
+  # filesystem — matches the write_latest/atomic_write idiom used elsewhere
+  # in this codebase (checkpoint.sh, journal.sh). Trap-cleaned on failure so
+  # a `.tmp.$$` is never left behind.
+  local out_file out_tmp
   out_file="$(verification_file "$run_id")"
+  out_tmp="${out_file}.tmp.$$"
   if has_jq; then
-    jq -s '.' "$results_tmp" > "$out_file"
+    if ! jq -s '.' "$results_tmp" > "$out_tmp"; then
+      rm -f "$out_tmp"
+      echo "qa-verify: FATAL — failed to render verification.json for run ${run_id}" >&2
+      exit 1
+    fi
   else
-    python3 -c '
+    if ! python3 -c '
 import json, sys
 lines = []
 with open(sys.argv[1]) as f:
@@ -1344,7 +1444,16 @@ with open(sys.argv[1]) as f:
             lines.append(json.loads(line))
 with open(sys.argv[2], "w") as out:
     json.dump(lines, out, indent=2)
-' "$results_tmp" "$out_file"
+' "$results_tmp" "$out_tmp"; then
+      rm -f "$out_tmp"
+      echo "qa-verify: FATAL — failed to render verification.json for run ${run_id}" >&2
+      exit 1
+    fi
+  fi
+  if ! mv -f "$out_tmp" "$out_file"; then
+    rm -f "$out_tmp"
+    echo "qa-verify: FATAL — failed to atomically install verification.json for run ${run_id}" >&2
+    exit 1
   fi
 
   echo "qa-verify: run=${run_id} passes_checked=${checked} overridden=$( [[ "$run_failed" -eq 1 ]] && echo yes || echo no ) -> ${out_file}" >&2

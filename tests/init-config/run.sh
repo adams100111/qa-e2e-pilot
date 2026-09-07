@@ -43,5 +43,44 @@ check "production bootstrap: marker stays empty" "$(jq -r '.seedableEnvMarker' "
 bash "$GEN" --base-url http://localhost:3000 --seedable-marker MY_DISPOSABLE --out "$WORK/c-opt.json" >/dev/null
 check "explicit --seedable-marker is honored" "$(jq -r '.seedableEnvMarker' "$WORK/c-opt.json")" "MY_DISPOSABLE"
 
+# ---------------------------------------------------------------------------
+# Appendix A (audit-2 W3-7a, highest-value): init-config.sh:85 used to feed
+# --allow-writes/--allow-crawl straight into jq's --argjson (which requires
+# valid JSON), with jq's stdout redirected DIRECTLY to $OUT via `>`. Under
+# invalid input jq failed, but the shell's `>` had ALREADY truncated $OUT to
+# 0 bytes as part of setting up the redirection (before jq ran) — and since
+# this script has no `set -e`, it fell through to "Wrote $OUT" anyway,
+# silently DESTROYING a pre-existing config. Prove: (a) an invalid flag value
+# is rejected (nonzero exit, clear error), (b) a PRE-EXISTING config at $OUT
+# survives byte-for-byte when a later call passes a bad flag, (c) no stray
+# .tmp.$$ sibling is left behind either on the reject path or the atomic
+# success path.
+# ---------------------------------------------------------------------------
+TRUNC_OUT="$WORK/c-trunc.json"
+bash "$GEN" --base-url http://localhost:3000 --out "$TRUNC_OUT" >/dev/null
+PRE_EXISTING_CONTENT="$(cat "$TRUNC_OUT")"
+check "sanity: pre-existing config was written" "$(jq -e . "$TRUNC_OUT" >/dev/null 2>&1 && echo ok)" "ok"
+
+BAD_ALLOW_OUT="$( bash "$GEN" --base-url http://localhost:3000 --allow-writes yes --out "$TRUNC_OUT" 2>&1 )"
+BAD_ALLOW_RC=$?
+check "invalid --allow-writes value is rejected (nonzero exit)" "$([[ "$BAD_ALLOW_RC" -ne 0 ]] && echo yes)" "yes"
+check "invalid --allow-writes error names the flag" "$([[ "$BAD_ALLOW_OUT" == *"allow-writes"* ]] && echo yes || echo no)" "yes"
+check "invalid --allow-writes: pre-existing config is UNCHANGED, not truncated" \
+  "$(cat "$TRUNC_OUT")" "$PRE_EXISTING_CONTENT"
+
+BAD_CRAWL_OUT="$( bash "$GEN" --base-url http://localhost:3000 --allow-crawl 1 --out "$TRUNC_OUT" 2>&1 )"
+BAD_CRAWL_RC=$?
+check "invalid --allow-crawl value is rejected (nonzero exit)" "$([[ "$BAD_CRAWL_RC" -ne 0 ]] && echo yes)" "yes"
+check "invalid --allow-crawl: pre-existing config is UNCHANGED, not truncated" \
+  "$(cat "$TRUNC_OUT")" "$PRE_EXISTING_CONTENT"
+
+check "no stray .tmp.\$\$ sibling left after the reject path" \
+  "$(find "$WORK" -maxdepth 1 -name 'c-trunc.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+bash "$GEN" --base-url http://localhost:3000 --allow-writes true --out "$TRUNC_OUT" >/dev/null
+check "a valid --allow-writes call still succeeds after prior rejections" "$(jq -r '.allowApiWrites' "$TRUNC_OUT")" "true"
+check "no stray .tmp.\$\$ sibling left after a successful write" \
+  "$(find "$WORK" -maxdepth 1 -name 'c-trunc.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -88,7 +88,7 @@ After the forward walk, verify two behaviors in a second browser pass:
 3. Confirm advancing again from that step does not corrupt prior steps.
 
 **Idempotency:**
-1. Re-submit a completed step (or replay the save network request using `browser_network_request`).
+1. Re-submit a completed step via the same UI affordance used the first time (human-path tools, ADR-0015). `browser_network_request` is a read-only tool (returns one captured request/response's headers/body) — it has no re-issue capability, so it is never a substitute for this step.
 2. Bake the backend again. Confirm the record count did not change (no duplicate created) and the data was not corrupted.
 3. If re-submission duplicates a record, verdict is `fail`; name the step and multiplicity (`step 2 — re-submit creates duplicate share class`).
 
@@ -150,7 +150,7 @@ On `fail`, always name the suspected step and the suspected layer — one of the
 
 **Given:** The agent fills a business-area field in the wizard via a standard type call, the UI shows the value, and clicking Next triggers a POST that returns 422 (field required).
 
-**Catch it:** On the failing step, use `browser_evaluate` to inject `react-set-input.js` (see driving-browser-qa). Verify the script's returned `.value` matches the intended input. If the returned value was empty, the React-controlled input discarded the native keystroke — the 422 was caused by an empty field reaching the backend despite the visible text. Re-fill using the script, confirm the returned value, then re-submit. If 422 persists after confirmed value, re-observe and find the entry in `network[]`; read the response body via the separate `browser_network_request` call and record the exact failing field.
+**Catch it:** On the failing step, use `browser_evaluate` to inject `react-set-input.js` (see driving-browser-qa) — the script is **read-only** (ADR-0015): it reads the field's current `.value` back for assertion, it never sets one. Verify the returned `.value` matches the intended input. If the returned value was empty, the React-controlled input discarded the native keystroke — the 422 was caused by an empty field reaching the backend despite the visible text. **Re-fill via the human-path tools** (`browser_type`/`browser_fill_form`, never the script), then re-inject `react-set-input.js` to confirm the readback now matches, and re-submit. If 422 persists after a confirmed value, re-observe and find the entry in `network[]`; read the response body via the separate `browser_network_request` call and record the exact failing field.
 
 ### Eval 4 — Wrong route causes 500 on wizard init (bugs #5 and #10: `/init` vs `/initialize`)
 

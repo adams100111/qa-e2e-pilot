@@ -258,7 +258,7 @@ fi
 # audit-2 W1-4: a timed-out waiter must NOT delete the holder's lock -----
 # ---------------------------------------------------------------------------
 FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
-for b in bash sh mkdir rm rmdir sleep dirname basename cat mv cp date grep sed sort mktemp jq python3 node printf; do
+for b in bash sh mkdir rm rmdir sleep dirname basename cat mv cp date grep sed sort find mktemp jq python3 node printf; do
   p="$(command -v "$b" 2>/dev/null)" && ln -s "$p" "$FAKEBIN/$b" 2>/dev/null
 done
 LRUN="$WORK/.qa/runs/rlock"; mkdir -p "$LRUN"

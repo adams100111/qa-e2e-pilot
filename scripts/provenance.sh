@@ -477,6 +477,14 @@ PYEOF
 # ---------------------------------------------------------------------------
 # cmd_check <run-id> <artifact-json-or-path>
 # ---------------------------------------------------------------------------
+# warn_torn_write <raw_count> <parsed_count> <run-id>
+# One WARN string, used by both the jq leg and the python3 leg of cmd_check
+# below, so the two engines can never drift on wording (byte-parity test:
+# tests/provenance/run.sh "torn line: engines byte-identical").
+warn_torn_write() {
+  echo "WARN: provenance.sh skipped $(( $1 - $2 )) unparseable toolstream line(s) (torn write?) for run '$3'." >&2
+}
+
 cmd_check() {
   local run_id="$1" artifact_arg="$2"
   validate_run_id "$run_id"
@@ -518,7 +526,7 @@ cmd_check() {
     [[ -z "$events_json" ]] && events_json="[]"
     parsed_count="$(jq -r 'length' <<< "$events_json")"
     if (( raw_count > parsed_count )); then
-      echo "WARN: provenance.sh skipped $((raw_count - parsed_count)) unparseable toolstream line(s) (torn write?) for run '${run_id}'." >&2
+      warn_torn_write "$raw_count" "$parsed_count" "$run_id"
     fi
     check_jq "$artifact_json" "$events_json"
   elif has_py; then
@@ -537,7 +545,7 @@ print(json.dumps(events))
 ' <<< "$raw_events")"
     parsed_count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<< "$events_json")"
     if (( raw_count > parsed_count )); then
-      echo "WARN: provenance.sh skipped $((raw_count - parsed_count)) unparseable toolstream line(s) (torn write?) for run '${run_id}'." >&2
+      warn_torn_write "$raw_count" "$parsed_count" "$run_id"
     fi
     check_py "$artifact_json" "$events_json"
   else

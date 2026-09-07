@@ -35,9 +35,9 @@ Read `drivers` from `.qa/config.json`. Default driver is the **managed Playwrigh
 | Preset | CDP endpoint resolved |
 |---|---|
 | `managed` | Managed Playwright (no CDP) |
-| `windows+wsl` | `http://host.docker.internal:9222` |
+| `windows+wsl` | nameserver IP from `/etc/resolv.conf`:9222 (WSL2 NAT networking); falls back to `http://localhost:9222` if no nameserver is found (mirrored networking — set an explicit `cdpEndpoint` to override) |
 | `windows` | `http://localhost:9222` |
-| `wsl` | nameserver IP from `/etc/resolv.conf`:9222 |
+| `wsl` | `http://localhost:9222` (a CDP server running inside WSL itself) |
 | `linux` | `http://localhost:9222` |
 | `mac` | `http://localhost:9222` |
 
@@ -92,6 +92,32 @@ Because the file is per-run, not per-criterion, each criterion must be **sliced 
 For a **tagged-parallel fan-out criterion** (the rare non-sequential case, see
 `fanning-out-criteria`), launch that criterion with its OWN `--output-dir` so its
 `session.md` is naturally scoped instead of delta-sliced.
+
+### Mandatory before/after state fingerprints (Check 3)
+
+Independent of `--save-session`, **every `human-action` criterion also requires a before/after
+persisted-state fingerprint** — `checkpointing-qa-memory`'s `check-action-trace.js` Check 3 hard-dies
+on a `human-action` pass whose `action-trace.json` lacks a `{before, after}` `fingerprints` object
+(see `references/interaction-discipline.md` for the gate's role in the wider act-phase discipline).
+Capture it with the SAME read-only observe path the rest of this skill already teaches — never a
+one-off ad hoc read:
+
+1. **Before the act**, read the persisted state the criterion's `assertedState` names (its
+   `readBackPath`, e.g. the same entity/count the criterion's Baking assertion reads back) via a
+   read-only `browser_evaluate`/`__qaObserve` call or a read-only bake read-back (`verifying-backend-persistence`).
+   Capture the resulting value or shape as the before-fingerprint.
+2. **Perform the act** via the human-path tools per the Interaction Discipline above — unchanged.
+3. **After the act (and its wait)**, read the SAME `readBackPath` again the same way, for the
+   after-fingerprint.
+4. Pass both to the SAME `record-evidence.sh action-trace` call from the delta-slice recipe above,
+   as `--fingerprint-before <json-or-text> --fingerprint-after <json-or-text>`. When the criterion
+   declares `assertedState` (Step 8 of `generating-qa-checklist`), also pass
+   `--fingerprint-target <json>` (`{entity, readBackPath, expectChange}`) so Check 3's coverage
+   check (Check 3b) can confirm the fingerprint actually covers the asserted state, not an
+   irrelevant field. The writer stores both under `action-trace.json`'s `fingerprints`/
+   `fingerprintTarget` keys — this is what makes `record-evidence.sh action-trace` complete for a
+   `human-action` criterion; omitting `--fingerprint-before`/`--fingerprint-after` leaves Check 3
+   with nothing to reconcile and the checkpoint gate rejects the pass.
 
 ## Session Lifecycle
 

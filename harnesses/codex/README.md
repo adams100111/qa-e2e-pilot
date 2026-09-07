@@ -28,7 +28,7 @@ This builds `dist/codex/` (via `scripts/build-adapter.sh codex`) and copies:
   the skills, not the project's own root — the persona instructs the agent to read these, but
   the reference is unanchored, so see "Manual accuracy run" below)
 - the agent manifest → `<project>/.codex/agents/qa-e2e-pilot.toml`
-- the `/qa-run` and `/qa-roles` prompts → `<project>/.codex/prompts/`
+- the `/qa-run`, `/qa-roles`, and `/qa-resume` prompts → `<project>/.codex/prompts/`
 
 It then prints the `mcp_servers.playwright-qa` fragment (from `harnesses/codex/mcp.snippet`) —
 **add that block to `<project>/.codex/config.toml` yourself**. The installer never writes to

@@ -2,9 +2,11 @@
 # auto-seed.sh — qa-kit's opt-in auto-seed write GATE (pure, dual-engine, no exec).
 #
 # `decide <config.json>` answers ONE question: may qa-kit apply the declared `seeded` rows
-# (increment 6b) on this environment? It mirrors the qa-e2e-pilot engine's scripted write gate
-# BYTE-FOR-BYTE (skills/driving-browser-qa/scripts/preflight.sh:205-215 and
-# skills/detecting-stack-profile/scripts/detect-stack.sh:298-307):
+# (increment 6b) on this environment? It mirrors the SAME three-condition rule the qa-e2e-pilot
+# engine's scripted write gate applies — not a byte-for-byte code copy, but the identical
+# allowApiWrites/seedableEnvMarker/environment logic, including the QA_DISPOSABLE_ENV bootstrap-
+# sentinel carve-out (skills/driving-browser-qa/scripts/preflight.sh:205-220 and
+# skills/detecting-stack-profile/scripts/detect-stack.sh:440-468):
 #   seed = allowApiWrites == true
 #          AND seedableEnvMarker is a NON-EMPTY string   (a config STRING tested for
 #              non-emptiness — NOT an env-var name to look up; the real .qa/config.json
