@@ -31,7 +31,7 @@ This builds `dist/opencode/` (via `scripts/build-adapter.sh opencode`) and copie
   `CONTEXT.md`/`docs` — the persona instructs the agent to read these, but the reference is
   unanchored, so see "Manual accuracy run" in `docs/harness-adapters.md`)
 - the agent manifest → `<project>/.opencode/agent/qa-e2e-pilot.md`
-- the `/qa-run` and `/qa-roles` commands → `<project>/.opencode/command/`
+- the `/qa-run`, `/qa-roles`, and `/qa-resume` commands → `<project>/.opencode/command/`
 
 It then prints the `mcp` + `plugin` fragment (from `harnesses/opencode/mcp.snippet`) —
 **merge that into `<project>/opencode.json` yourself**. The installer never writes to any global

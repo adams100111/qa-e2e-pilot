@@ -74,6 +74,9 @@ pin the expected results, then assert — while keeping the qa-e2e-pilot **engin
   manual accuracy run's job. A seeded row with no readable surface is *assumed* → `confidence: low`. The 6b
   auto-seed **exec** (the actual `db:seed` write against a live disposable env) is a human-confirmed command
   step + manual smoke-test — the pure proposal and gate are unit-tested, but the exec itself is deliberately
-  not faked as a headless test. Non-Claude qa-kit remains deferred.
+  not faked as a headless test. Non-Claude qa-kit remains deferred. **Superseded note:** this line was
+  accurate as of this ADR's landing; [ADR-0024](./0024-qa-kit-multi-harness.md) (increment 7) later shipped
+  qa-kit on all four harnesses (Codex/Pi/opencode generated from `qa-kit/core/`, engine still untouched) —
+  "non-Claude qa-kit remains deferred" is superseded by that decision, recorded here rather than rewritten.
 - **Reversibility.** Additive: two qa-kit scripts + command prose + an additive `checklist.json` field + one
   config key. Reverting removes them; the engine and the qa-kit spine are unaffected.

@@ -215,7 +215,7 @@ bash harnesses/codex/install-codex.sh <path-to-your-project>
 
 This builds `dist/codex/` (via `scripts/build-adapter.sh codex`) and copies skills into
 `<project>/.agents/skills/`, the agent manifest into `<project>/.codex/agents/qa-e2e-pilot.toml`, and
-the `/qa-run` + `/qa-roles` prompts into `<project>/.codex/prompts/`.
+the `/qa-run` + `/qa-roles` + `/qa-resume` prompts into `<project>/.codex/prompts/`.
 
 **Project-local config to add:** the installer prints the `mcp_servers.playwright-qa` fragment (from
 `harnesses/codex/mcp.snippet`) — add it to `<project>/.codex/config.toml` yourself:
@@ -245,7 +245,7 @@ bash harnesses/pi/install-pi.sh <path-to-your-project>
 
 This builds `dist/pi/` (via `scripts/build-adapter.sh pi`) and copies skills into
 `<project>/.pi/agents/skills/`, the agent manifest into `<project>/.pi/agents/qa-e2e-pilot.md`, the
-`/qa-run` + `/qa-roles` prompts into `<project>/.pi/prompts/`, and the `mcpServers` fragment straight
+`/qa-run` + `/qa-roles` + `/qa-resume` prompts into `<project>/.pi/prompts/`, and the `mcpServers` fragment straight
 into `<project>/.pi/mcp.json`:
 
 ```json
@@ -289,7 +289,7 @@ bash harnesses/opencode/install-opencode.sh <path-to-your-project>
 
 This builds `dist/opencode/` (via `scripts/build-adapter.sh opencode`) and copies skills into
 `<project>/.opencode/skills/`, the agent manifest into `<project>/.opencode/agent/qa-e2e-pilot.md`, and
-the `/qa-run` + `/qa-roles` commands into `<project>/.opencode/command/`.
+the `/qa-run` + `/qa-roles` + `/qa-resume` commands into `<project>/.opencode/command/`.
 
 **Project-local config to add:** the installer prints the `mcp` + `plugin` fragment (from
 `harnesses/opencode/mcp.snippet`) — merge it into `<project>/opencode.json` yourself:

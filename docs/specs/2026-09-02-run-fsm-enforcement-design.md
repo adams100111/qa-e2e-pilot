@@ -1,5 +1,10 @@
 # Run FSM enforcement — statechart + guarded transitions + phase surface — design (DEFERRED)
 
+> **Post-status update (2026-09-03): SHIPPED.** The deferral below and its blocking contradiction were
+> resolved; this design was implemented as **[ADR-0021](../adr/0021-run-fsm-enforcement.md)** (Accepted).
+> The DEFERRED status and "not yet written" ADR-0021 line that follow are kept as the historical record
+> of this spec's original state — read ADR-0021 for the current, shipped design.
+
 **Status:** design — **DEFERRED / blocked** (2026-09-02). Split out of the durable-Run-state effort (`2026-09-02-durable-run-state-machine-design.md`, ADR-0020) per grilling Q12. **Do not implement until its dependency lands and its core contradiction is resolved** (below). Future record: **ADR-0021** (not yet written).
 
 ## Why this is a separate, deferred spec

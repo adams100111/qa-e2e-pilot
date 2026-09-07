@@ -47,16 +47,16 @@ Pre-flight enumerates and pings every configured driver. Verification still runs
 
 By default the **memory-spec** artifacts (`run-manifest`, `checkpoint`, `bug-log`, `traceability`) are plain files under `.qa/runs/<run-id>/` (ADR-0002). This is deliberate: per-criterion run state is transient and resumable, not a durable fact, so it does **not** belong in Claude Code's personal memory. The file backend has no dependencies and makes runs trivially inspectable and resumable.
 
-A **vector / long-term backend** (e.g. [Mem0](https://github.com/mem0ai/mem0)) is a *documented optional swap*, not a v1 dependency. It becomes interesting when you want cross-run recall ("what was flaky last month?", "have we seen this bug shape before?") rather than within-run resume.
+A **vector / long-term backend** (e.g. [Mem0](https://github.com/mem0ai/mem0)-shaped) is **shipped and config-gated, off by default** — [`scripts/memory-sync.sh`](../scripts/memory-sync.sh) — not a v1 dependency you have to build yourself. It becomes interesting when you want cross-run recall ("what was flaky last month?", "have we seen this bug shape before?") rather than within-run resume. The script does not implement the Mem0 SDK/API itself; it POSTs a JSON payload (bearer-token auth) to whatever endpoint you configure, so any Mem0-compatible or generic ingestion endpoint works.
 
-### How a swap slots in
+### How the swap slots in (shipped)
 
-The `checkpointing-qa-memory` skill is the only writer/reader of run state, and the **memory-spec schema is the contract**. To swap backends, keep the schema and replace *where* the artifacts live:
+The `checkpointing-qa-memory` skill is the only writer/reader of run state, and the **memory-spec schema is the contract**. `scripts/memory-sync.sh` replaces *where* durable artifacts additionally live, without touching that schema:
 
-1. **Keep the typed schema** — `run-manifest` / `checkpoint` / `bug-log` / `traceability` stay exactly as defined (the templates are the source of truth).
-2. **Write-through, don't replace resume.** Keep the file checkpoint as the authoritative resume cursor (cheap, local, crash-safe) and *additionally* upsert each resolved criterion + each bug into the vector store. Resume still reads the local checkpoint; the vector store is for cross-run queries.
-3. **Index the durable, not the transient.** Push `bug-log` entries and the one optional per-project pointer (latest run id + known-flaky areas) into the store; do **not** flood it with every per-criterion checkpoint — that's transient noise (same reasoning as ADR-0002).
-4. **Make it config-gated.** A future `memory.backend: "file" | "mem0"` field in `.qa/config.json` selects it; absent → file (the default). Until that's implemented, the file backend is the only one wired.
+1. **Keep the typed schema** — `run-manifest` / `checkpoint` / `bug-log` / `traceability` stay exactly as defined (the templates are the source of truth); `memory-sync.sh` only *reads* them.
+2. **Write-through, don't replace resume.** The file checkpoint stays the authoritative resume cursor (cheap, local, crash-safe); `memory-sync.sh` *additionally* upserts each bug + advisory finding + one per-project pointer into the vector store. Resume still reads the local checkpoint; the vector store is for cross-run queries.
+3. **Index the durable, not the transient.** It pushes `bug-log` entries (enriched with persona + a compact bake/computed/probe evidence excerpt), `advisory.json` items, and one per-project pointer (latest run id/status/known-flaky areas/personas exercised) into the store; it deliberately does **not** flood it with every per-criterion checkpoint — that's transient noise (same reasoning as ADR-0002).
+4. **Config-gated, shipped.** `.qa/config.json`'s `memory.backend: "file" | "mem0"` field selects it (`memory.mem0.{endpoint,apiKeyEnv,userId}` configures the target); absent → `"file"` (the default, and `memory-sync.sh` is then a no-op). Run it as `bash scripts/memory-sync.sh <run-id> [--dry-run]` — `--dry-run` prints the payload and the would-be request with the key redacted, sending nothing.
 
 ### What stays true regardless of backend
 

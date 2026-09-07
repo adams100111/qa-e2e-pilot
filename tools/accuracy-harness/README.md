@@ -6,7 +6,7 @@ It plants **known** bugs in a self-contained app, then scores any QA run's findi
 ## Layout
 
 ```
-fixture/index.html        self-contained app (no build) with 18 planted bugs; "backend" = localStorage
+fixture/index.html        self-contained app (no build) with 24 planted bugs; "backend" = localStorage
 seeds.json                ground-truth planted bugs + match rules + the acceptance gate thresholds
 scorer/score.js           matches a findings file to seeds -> recall per axis + gate check
 scorer/convert-buglog.js  converts a real run's bug-log.json -> a MEASURED findings file
@@ -29,9 +29,10 @@ node scorer/score.js findings/measured-<run>.json --gate   # exit 1 if the accep
 ## UI/UX taxonomy fixture (`fixture-ux/`) — the ADR-0019 measured gate
 
 A second, separate fixture backs ADR-0019 decision 7's "95% is a measured gate, honestly scoped."
-Note the "18 planted bugs" table above describes the *original* `fixture/` (functional/journey/UX
-Phase-1-4 work) — `fixture-ux/` is a distinct fixture for the UX detection engine (ADR-0019) and is
-scored by its own runner and seed file, not `run-baseline.sh`/`seeds.json`.
+Note the "24 planted bugs" table above describes the *original* `fixture/` (functional/journey/UX
+Phase-1-4 work, later hardened with extra negative controls + a UI-impossible case) — `fixture-ux/`
+is a distinct fixture for the UX detection engine (ADR-0019) and is scored by its own runner and
+seed file, not `run-baseline.sh`/`seeds.json`.
 
 ```
 fixture-ux/index.html     self-contained UI/UX taxonomy fixture: planted definite-oracle UX bugs
@@ -89,7 +90,7 @@ cannot measure recall on unseeded bugs.
 agent) on demand. Wiring it into `.github/workflows` so it runs automatically on every PR is a
 follow-up, not yet done.
 
-## The 18 planted bugs (axes)
+## The 24 planted bugs (axes)
 
 | id | axis | bug |
 |----|------|-----|
@@ -101,6 +102,8 @@ follow-up, not yet done.
 | J2 | broken-journey | Finalize flips status COMPLETE + redirects but creates no holdings |
 | J3 | broken-journey | every 3rd add silently drops the write (persists N-1) |
 | J4 | broken-journey | 0-share submit shows a false success toast but persists nothing |
+| H1 | broken-journey | Archive action has no working affordance — spec requires it; must be `fail@FE`, never evaluate-around |
+| H2 | broken-journey (negative control) | control correctly rejects invalid input per the oracle — a UI-reached pass, must NOT be flagged |
 | U1 | ux-objective | helper text contrast ~1.9:1 (< WCAG AA 4.5:1) |
 | U2 | ux-objective | amount cell clips the value (overflow:hidden) |
 | U3 | ux-objective | 16x16 icon button (< WCAG 2.2 AA 24x24 target-size) |
@@ -109,8 +112,15 @@ follow-up, not yet done.
 | N1 | functional (negative control) | whole-cent SAFE amount computes correctly — must NOT be flagged |
 | N2 | ux-objective (negative control) | primary button contrast ~17:1 passes AA — must NOT be flagged |
 | N3 | broken-journey (negative control) | editing a persisted founder does persist — must NOT be flagged as a silent drop |
+| N4 | ux-objective (negative control) | vertically-scrollable pane (`overflow-y:auto`, tall content) — must NOT be flagged as clipped |
+| N5 | ux-objective (negative control) | `text-overflow:ellipsis` truncated cell — intentional truncation, must NOT be flagged |
+| N6 | ux-objective (negative control) | icon-only link correctly labeled by a child `img[alt]` — must NOT be flagged missing-name |
+| N7 | ux-objective (negative control) | dark-theme section at ~12.6:1 contrast passes WCAG AA — must NOT be flagged low-contrast |
 | P1 | ux-perceptual (advisory-eligible) | Finalize CTA below the fold with no affordance — vision-pass only |
 | P2 | ux-perceptual (advisory-eligible) | amount column right-aligned vs. left-aligned labels — vision-pass only |
+
+(H2 and N4-N7 widen negative-control coverage — a UI-reached correct-rejection case and four more
+must-NOT-be-flagged UX cases — without changing the original seeds' ids or behavior.)
 
 ## MEASURED vs ESTIMATED
 
@@ -160,8 +170,10 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
   it did not yet move functional/UX recall (38% and 25% respectively, ux flat at 25%). Recall gains are
   **deferred to Phase 2 (coverage/roles) and Phase 3/4 (vision + detection layer)** — this harness is
   the regression tripwire each of those phases must clear without giving back the precision win.
-- Seed set = 18 (`F1`-`F4`, `J1`-`J4`, `U1`-`U4` functional/journey/UX-objective; `S1` subjective-advisory;
-  `N1`-`N3` negative controls that must stay silent; `P1`-`P2` perceptual, vision-pass-only and excluded
-  from the verdict-recall gate).
+- Seed set = 24: `F1`-`F4` functional; `J1`-`J4`, `H1` broken-journey; `U1`-`U4` ux-objective; `S1`
+  subjective-advisory; `N1`-`N7`, `H2` negative controls that must stay silent; `P1`-`P2` perceptual,
+  vision-pass-only and excluded from the verdict-recall gate. The `Gated run A/B` rows above are
+  labeled "18-seed set" because that was the true count at the time those specific runs were
+  measured — a historical label, not a current count.
 - **The gate is real**: `score.js --gate` exits non-zero below threshold; `pass-gate.js` rejects a
   toast-only `pass`.

@@ -43,10 +43,20 @@ Ask these, each **pre-filled** with the inference from Step 1. In Claude Code us
    - **None** — public pages only.
 4. **Allow API writes?** — default **no**. If environment resolves to
    `production`, do not offer this — writes stay off.
+5. **Seedable-env marker** (only if Q4 = yes) — `allowApiWrites` alone does
+   NOT unlock writes: `seedableEnvMarker` must also be a non-empty string
+   that is **not** the literal bootstrap sentinel `"QA_DISPOSABLE_ENV"`
+   (that verbatim value is treated as never-a-deliberate-opt-in — audit-2
+   W1-5). Ask for a short marker name identifying this disposable
+   environment (e.g. `"local-ddev"`, `"ci-ephemeral"`); pass it to Step 3's
+   `--seedable-marker`. If the user answered "no" to Q4, skip this question
+   entirely — leave the marker empty (the default).
 
 Do not ask about drivers (default = managed Playwright) or the stack (detected).
 
-The 4 questions above are independent, so one flat batch is correct here. For
+Q1-Q4 are independent, so one flat batch is correct for them; Q5 is a
+follow-up that only applies when Q4 = yes (still asked in the same batch
+round, not a separate tree-shaped round). For
 tree-shaped HITL confirmation instead (e.g. role/persona confirmation, where
 confirming/editing one decision changes the options for a later one), use
 [references/hitl-rounds.md](./references/hitl-rounds.md) instead of this flat
@@ -110,8 +120,11 @@ default for this round, never as a silent substitute for asking it.
 bash skills/bootstrapping-qa-config/scripts/init-config.sh \
   --base-url "<answer>" --environment "<answer>" --repos "." \
   --storage-state ".qa/auth/storageState.json" \
-  [--allow-writes true]
+  [--allow-writes true --seedable-marker "<Q5 answer>"]
 ```
+
+`--seedable-marker` is only passed when Q4 was answered yes (Q5 above); omit
+it otherwise so `seedableEnvMarker` stays `""` — the safe default.
 
 This writes `.qa/config.json`, creates `.qa/auth` and `.qa/runs`, and appends
 `.qa/` to `.gitignore`. **Never write the JSON yourself** — always call the script.
