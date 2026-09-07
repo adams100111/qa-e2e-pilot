@@ -158,6 +158,19 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
 | Truly-blind, BEFORE coverage fixes (browser-only, no source read) | 56% | 75% | 62% | 100% |
 | **Truly-blind, AFTER coverage fixes (v0.6.x)** — *same-fixture, post-tuning* | **78%** | **100%** | **85%** | **100%** |
 | **Truly-blind on `fixture2/` (generator-untuned, v0.6.x)** | **70%** | **50%** | **64%** | **90%** |
+| Pi harness, PARTIAL (10 criteria, session hung pre-UX-phase — see caveat) | 33% | 0% | 23% | 100% |
+
+> **Pi harness partial measurement (2026-09-07, `findings/measured-pi-run.json`) — GATE FAIL, published as-is.** The
+> first live non-Claude accuracy run: `pi -p` (headless, anthropic provider) driving the installed Pi adapter against
+> `fixture/` black-box. The run genuinely worked — skills resolved, the durable run substrate checkpointed 10 criteria
+> with evidence, and it caught F1 (ownership denominator), J2 (phantom finalize), and H1 (dead affordance) at **100%
+> precision** — but it completed only 10 of a 25-budget checklist before the session hung at ~2h (killed; artifacts
+> intact), never reaching the UX-detection phase (hence ux 0%). Operational frictions found and documented in
+> `docs/harness-adapters.md`: headless Pi cannot serve forwarded permission requests, so (a) subagent dispatch is
+> unusable headless (the run was re-driven with in-session persona adoption — a documented deviation from the canonical
+> `pi -p "/qa-run …"`), (b) a project-scoped `pi-permission-system` `yoloMode` config was required, and (c) the session
+> hung after writing its report. **The Pi adapter stays banner'd accuracy-unvalidated**: this partial run demonstrates
+> the pipeline executes on Pi, not that it meets the gate there.
 
 > **The honest blind number is 78% functional / 100% ux-objective / 85% overall / 100% precision — GATE PASS.** Reaching it took two corrections. (1) The served fixture used to leak its seeds (comments describing each bug, "planted bugs" title, "(N4)" labels) — stripping those + requiring browser-only interaction dropped the inflated 88–100% to a real **62% (gate FAIL)**. (2) That blind run exposed genuine coverage gaps — the checklist checked "was invalid input rejected" but not "did a false success toast fire" (J4/F4), and the icon-button was never click-probed (U4). Sharpening those assertions (toast-vs-persistence baked check; required icon click-probe) lifted blind recall to **85% (gate PASS)**. The only two remaining misses are the `Ghost` magic-name drop (J1 — nearly unfindable black-box, a contrived seed) and F4 (the fixture appears to *reject* negatives with a false toast, which is caught as the J4 class, so F4-as-specified may not reproduce). This is the trustworthy, defensible number **on the fixture the generator was tuned against** — the row is now labeled *same-fixture, post-tuning* because the 62%→85% lift came from fixing coverage gaps identified from this same fixture's misses.
 

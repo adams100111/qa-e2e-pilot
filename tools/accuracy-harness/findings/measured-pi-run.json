@@ -1,0 +1,35 @@
+{
+  "source": "20260907T171311-localhost-8099",
+  "estimated": false,
+  "findings": [
+    {
+      "verdict": "fail",
+      "text": "Founder ownership excludes the ESOP pool from fully-diluted percentage | Expected: Ownership should be 250,000 / (250,000 issued + 500,000 ESOP pool) × 100 = 33.33%. | Actual: Founder persisted, but UI displayed Alice QA ownership as 100.00%.",
+      "suspectedLayer": "service",
+      "judgedSeedId": "F1"
+    },
+    {
+      "verdict": "fail",
+      "text": "N-founder ownership continues to exclude ESOP pool from fully-diluted denominator | Expected: With 500,000 founder shares and 500,000 ESOP pool, each 250,000-share founder should display 25.00%. | Actual: Two founders persisted and totalIssued=500000, but both displayed 50.00%.",
+      "suspectedLayer": "service",
+      "judgedSeedId": "F1"
+    },
+    {
+      "verdict": "fail",
+      "text": "Archive founder button does not archive or remove any founder | Expected: A selected active founder is moved out of the active founders table and persisted in captable:archived. | Actual: After clicking Archive founder, captable:founders still contains Alice QA and Bob QA, captable:archived remains empty, and the UI exposes no selected-founder affordance.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "H1"
+    },
+    {
+      "verdict": "fail",
+      "text": "Finalize round flips UI status but does not persist status or holdings | Expected: Backend persisted state should flip to COMPLETE and holdings should contain one row per active founder with matching shares. | Actual: UI displayed status COMPLETE, but localStorage read-back still had status DRAFT and captable:holdings was empty; UI also showed No holdings persisted.",
+      "suspectedLayer": "DB",
+      "judgedSeedId": "J2"
+    },
+    {
+      "verdict": "fail",
+      "text": "Page 2 loads with an uncaught ReferenceError and failed probe request | Expected: Page 2 should load through the exposed link with no uncaught JavaScript exceptions and no unexpected 4xx/5xx requests. | Actual: Console reported ReferenceError: pageTwoLoadHandler is not defined. Network also showed GET /api/page2-load-probe => 404 File not found.",
+      "suspectedLayer": "FE"
+    }
+  ]
+}

@@ -51,6 +51,20 @@ plugin** enabled in `opencode.json` (else the skills are inert). See each
 accuracy run** — the generator + composition are unit-tested (`tests/qakit-adapters/run.sh`), the live
 agent behaviour is not.
 
+> **Pi engine-run field notes (2026-09-07, first live attempt — partial, published in
+> `tools/accuracy-harness/findings/measured-pi-run.json`).** A headless `pi -p "/qa-run <target>"`
+> engine run on this machine surfaced three operational facts future runs must plan around:
+> (1) with `@gotgenes/pi-permission-system` installed, a headless session cannot serve forwarded
+> permission requests, so **child-agent dispatch (pi-subagents) is unusable headless** — the run
+> only progressed when re-driven with in-session persona adoption ("read `.pi/agents/qa-e2e-pilot.md`
+> and adopt it; do not dispatch a subagent"); (2) that extension needs a **project-scoped
+> `.pi/extensions/pi-permission-system/config.json` with `"yoloMode": true`** plus `--approve`
+> (project trust) for headless tool calls at all; (3) the session **hung after writing its report**
+> (killed at ~2h idle; run artifacts were intact thanks to the durable run substrate). The partial
+> result — 10 criteria, 3 seeds caught at 100% precision, UX phase never reached — is honest
+> evidence the pipeline *executes* on Pi, not that it meets the accuracy gate there; the
+> accuracy-unvalidated banner stays until a complete run passes.
+
 ### The qa-kit manual accuracy run (per non-Claude harness)
 
 The structural gates (`qa-kit/scripts/run-qakit-ci.sh`: the byte-oracle + every qa-kit suite) prove the adapter
