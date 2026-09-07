@@ -254,4 +254,19 @@ else
   echo "SKIP - dual-equiv-anomalies: jq or python3 not present on this host, cannot exercise both engines"
 fi
 
+# ---------------------------------------------------------------------------
+# audit-2 W1-4: a timed-out waiter must NOT delete the holder's lock -----
+# ---------------------------------------------------------------------------
+FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
+for b in bash sh mkdir rm rmdir sleep dirname basename cat mv cp date grep sed sort mktemp jq python3 node printf; do
+  p="$(command -v "$b" 2>/dev/null)" && ln -s "$p" "$FAKEBIN/$b" 2>/dev/null
+done
+LRUN="$WORK/.qa/runs/rlock"; mkdir -p "$LRUN"
+LOCK_DIR="$LRUN/.journal.lock.d"      # journal-merge.sh:374 — mkdir_lock="${run_dir}/.journal.lock.d"
+mkdir -p "$LOCK_DIR"                  # simulate a live holder
+OUT="$(cd "$WORK" && PATH="$FAKEBIN" JM_LOCK_TIMEOUT_ITERS=3 bash "$M" rlock 2>&1; echo "rc=$?")"
+check "waiter times out (die, not hang)" "$(grep -c 'timed out waiting' <<< "$OUT")" "1"
+check "holder's lock dir survives the waiter's death" "$([[ -d "$LOCK_DIR" ]] && echo alive || echo gone)" "alive"
+rmdir "$LOCK_DIR"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
