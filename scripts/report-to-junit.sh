@@ -35,6 +35,13 @@
 # docs/harness-adapters.md's "Claude assurance tier" note and docs/running-in-ci.md's
 # QA_VERIFY_STRICT section for what "authoritative" does and does not guarantee.
 #
+# COST TELEMETRY (audit-2 W4-3): when a sibling run-manifest.json carries a non-null `cost`
+# object (checkpointing-qa-memory writes it from scripts/cost-summary.sh's output), ONE
+# additional <property name="qa.cost" .../> line is emitted on the <testsuite>, e.g.
+# `tool-calls=210 criteria=48 criteriaBudget=48/60 budgetWarn=true tokens=189234` (the `tokens`
+# segment only appears when cost.tokens is non-null). Absence of run-manifest.json or a still-null
+# `cost` field is a normal no-op — no property is fabricated.
+#
 # Each <testcase> ADDITIONALLY carries (attributes only — no reordering of the
 # existing elements, so older consumers that just read name/classname/verdict
 # child keep working unchanged):
@@ -139,6 +146,27 @@ def load_verification_records(checkpoint_file):
     return [r for r in raw if isinstance(r, dict)]
 
 verification_records = load_verification_records(checkpoint_path)
+
+# --- optional cost telemetry (audit-2 W4-3) ---------------------------------
+# Sibling run-manifest.json's `cost` object, written by checkpointing-qa-memory
+# from scripts/cost-summary.sh's output (see that script's own header for the
+# full field contract). Absence (no run-manifest.json, or its `cost` field
+# still null because cost-summary.sh was never run this Run) is a normal,
+# back-compat no-op — no qa.cost property is emitted at all rather than a
+# fabricated one.
+def load_cost_summary(checkpoint_file):
+    manifest_path = os.path.join(os.path.dirname(checkpoint_file) or ".", "run-manifest.json")
+    if not os.path.isfile(manifest_path):
+        return None
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    cost = manifest.get("cost")
+    return cost if isinstance(cost, dict) else None
+
+cost_summary = load_cost_summary(checkpoint_path)
 verification_by_key = {}
 if verification_records is not None:
     for rec in verification_records:
@@ -215,6 +243,31 @@ if phase_surface_rec:
     ps_text = "; ".join(str(r) for r in ps_reasons) or "phase-surface finding recorded with no reason text"
     lines.append(
         f'      <property name="qa.phaseSurfaceFindings" value={quoteattr(ps_text)}/>'
+    )
+
+# Cost telemetry (audit-2 W4-3): ONE properties line, honest tool-calls-as-proxy
+# label (spec W4-3's grill-Q7 decision) plus tokens only when the manifest's
+# cost.tokens is non-null (the Claude harness fills it when usage is exposed;
+# other harnesses leave it null rather than fabricate a count).
+if cost_summary is not None:
+    tc = cost_summary.get("toolCalls")
+    crit = cost_summary.get("criteria")
+    budget = cost_summary.get("criteriaBudget")
+    done = cost_summary.get("criteriaDone")
+    warn = cost_summary.get("budgetWarn")
+    tokens = cost_summary.get("tokens")
+    parts = [f"tool-calls={tc}", f"criteria={crit}"]
+    if done is not None and budget is not None:
+        parts.append(f"criteriaBudget={done}/{budget}")
+    if warn is True:
+        parts.append("budgetWarn=true")
+    elif warn is False:
+        parts.append("budgetWarn=false")
+    if tokens is not None:
+        parts.append(f"tokens={tokens}")
+    cost_text = " ".join(parts)
+    lines.append(
+        f'      <property name="qa.cost" value={quoteattr(cost_text)}/>'
     )
 lines.append('    </properties>')
 

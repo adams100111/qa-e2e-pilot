@@ -1,6 +1,6 @@
 # checkpointing-qa-memory — extended mini-evals
 
-Evals 4–8 (the full bug-class set). Evals 1–3 stay in [`../SKILL.md`](../SKILL.md); these are the remainder, moved out to keep the skill body under 500 lines. Behavior unchanged — reference-grade material only.
+Evals 4–9 (the full bug-class set). Evals 1–3 stay in [`../SKILL.md`](../SKILL.md); these are the remainder, moved out to keep the skill body under 500 lines. Behavior unchanged — reference-grade material only.
 
 ### Eval 4 — Traceability skipped when no spec-kit artifacts
 
@@ -104,3 +104,30 @@ the row's own `requiredKinds` field to decide the outcome.
 **Why this eval is not the whole story:** it shows the gate catching a *dropped* kind. It
 does not show the gate catching a *dishonest* `kind`/`tags` value in the row — see the
 honest-tier note above ("Evidence-Kind Gate (#2) and Fingerprint-Target (#4)").
+
+---
+
+### Eval 9 — Cost telemetry budget-warn at 80% (audit-2 W4-3)
+
+**Given:** `.qa/config.json` sets `criteriaBudget: 60`. Run `20241115T143022-founder-cap-table` has
+completed 47 criteria (`run-manifest.json.criteria_done: 47`) and is mid-Verify on `C-048`, which the
+agent has just journaled `criterion_started` for.
+
+**Do:**
+1. After checkpointing `C-047`'s verdict (Step 2), the agent runs
+   `bash scripts/cost-summary.sh 20241115T143022-founder-cap-table`. `criteriaDone` (47) / `criteriaBudget`
+   (60) = 78.3% → `budgetWarn: false` (under 80%) — the agent copies the printed object into
+   `run-manifest.json.cost` and continues normally, no warning surfaced.
+2. Two criteria later, `criteria_done` reaches 48. `48/60 = 80%` exactly → the SAME script now
+   reports `budgetWarn: true`. The agent surfaces one line to the operator ("cost note: 48/60
+   criteria — 80% of the configured criteriaBudget") and **continues the run** — `criteriaBudget` is
+   a soft cap (ADR-0008), never a coverage cut, so no criterion is skipped or downgraded because of it.
+3. Confirm `toolCallsByCriterion` in the printed object only ever contains criterion ids that have
+   an actual `criterion_started` entry in `journal.ndjson` — a criterion the agent hasn't reached yet
+   never appears as a key, and any tool calls issued before the FIRST `criterion_started` (e.g.
+   `detecting-stack-profile`'s own probing) land in `unattributedToolCalls`, not misattributed to `C-001`.
+
+**Must not do:** stop the run, skip a criterion, or silently reduce evidence collection because
+`budgetWarn` fired; treat `toolCallsByCriterion` as an exact per-call tag (it's a time-windowed
+proxy — see `cost-summary.sh`'s own header comment); or have the agent hand-compute/hand-adjust the
+`cost` object instead of copying the script's output verbatim.
