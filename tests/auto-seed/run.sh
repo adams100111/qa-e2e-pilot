@@ -13,9 +13,15 @@ run_engine() {
   # writes on + non-empty marker + environment auto (not production) -> seed true
   printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":".qa/DISPOSABLE","environment":"auto"}' > "$T/c.json"
   check "$E writes+marker+auto -> seed true" "$(QA_ENGINE=$E bash "$SH" decide "$T/c.json" | seedval)" "True"
-  # explicit disposable -> seed true
-  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"QA_DISPOSABLE_ENV","environment":"disposable"}' > "$T/cd.json"
+  # explicit disposable -> seed true (uses a real custom marker, not the never-opted-in bootstrap sentinel)
+  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"MY_DISPOSABLE","environment":"disposable"}' > "$T/cd.json"
   check "$E disposable -> seed true" "$(QA_ENGINE=$E bash "$SH" decide "$T/cd.json" | seedval)" "True"
+  # audit-2 W1-5: the verbatim bootstrap sentinel is never a deliberate opt-in -> seed false
+  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"QA_DISPOSABLE_ENV","environment":"auto"}' > "$T/csent.json"
+  check "$E bootstrap sentinel marker -> seed false" "$(QA_ENGINE=$E bash "$SH" decide "$T/csent.json" | seedval)" "False"
+  # sibling: a real custom marker still opts in (existing seed:true behavior)
+  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"MY_DISPOSABLE","environment":"auto"}' > "$T/ccust.json"
+  check "$E custom marker -> seed true" "$(QA_ENGINE=$E bash "$SH" decide "$T/ccust.json" | seedval)" "True"
   # empty marker -> seed false
   printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"","environment":"auto"}' > "$T/cm.json"
   check "$E empty marker -> seed false" "$(QA_ENGINE=$E bash "$SH" decide "$T/cm.json" | seedval)" "False"
