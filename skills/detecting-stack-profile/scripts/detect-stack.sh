@@ -264,6 +264,10 @@ probe_paths() {
   cfg_paths="$(cfg_arr '.fingerprintPaths')"
   noprobe="$(cfg_arr '.noProbePaths')"
 
+  # Documented residual: if awk is missing/broken, this dedup pipe silently
+  # yields no candidates (empty $candidates -> `return 0` below), which quietly
+  # disables probing rather than erroring — consistent with this function's
+  # overall "never fail, degrade to no runtime-probe evidence" contract.
   candidates="$(printf '%s\n%s\n' "$sig_paths" "$cfg_paths" | sed '/^$/d' 2>/dev/null | awk '!seen[$0]++')"
   if [[ -n "$noprobe" ]]; then
     candidates="$(printf '%s\n' "$candidates" | grep -vFxf <(printf '%s\n' "$noprobe") 2>/dev/null || true)"
@@ -300,13 +304,29 @@ detect_runtime_component() {
   [[ -n "$hdr" || -n "$body" || -n "$hits" ]] || return 0
   have jq || return 0
   local n; n="$(jq '.stacks | length' "$SIGNATURES")"
+  # Paths that appear in MORE THAN ONE stack's openapiPaths (e.g. /openapi.json
+  # is claimed by fastapi, nestjs, hono's implies, and go). A probe hit on one
+  # of these is not, by itself, distinguishing evidence for any single stack —
+  # array-order would otherwise always crown whichever stack happens to be
+  # listed first (fastapi), mislabeling a nestjs/hono/go backend. Computed once
+  # per run (static w.r.t. the signatures file), not per stack.
+  local shared_paths
+  shared_paths="$(jq -r '
+    [ .stacks[] as $s
+      | (($s.runtime.openapiPaths // []) + [($s.implies[]?.openapiPaths[]?)] | unique[])
+      | {path: ., id: $s.id}
+    ]
+    | group_by(.path)
+    | map(select((map(.id) | unique | length) > 1) | .[0].path)
+    | .[]
+  ' "$SIGNATURES" 2>/dev/null)"
   local i
   for i in $(seq 0 $((n-1))); do
-    local matched=0 strong=0 c hp hk hv hline m op evid="[]"
+    local matched=0 strong=0 ambig=0 ch_matched=0 c hp hk hv hline m op evid="[]"
     while IFS= read -r c; do
       [[ -z "$c" ]] && continue
       if [[ -n "$hdr" ]] && grep -qi -- "$c" <<< "$hdr"; then
-        matched=1
+        matched=1; ch_matched=1
         evid="$(jq -c '. + ["runtime: header/cookie match"]' <<< "$evid")"
       fi
     done < <(jq -r ".stacks[$i].runtime.cookies[]?" "$SIGNATURES")
@@ -322,7 +342,7 @@ detect_runtime_component() {
       hline="$(grep -i -- "^$hk:" <<< "$hdr" | head -1)"
       [[ -n "$hline" ]] || continue
       if [[ -z "$hv" ]] || grep -qi -- "$hv" <<< "$hline"; then
-        matched=1
+        matched=1; ch_matched=1
         evid="$(jq -c '. + ["runtime: header/cookie match"]' <<< "$evid")"
       fi
     done < <(jq -c ".stacks[$i].runtime.headers | to_entries[]?" "$SIGNATURES")
@@ -336,12 +356,27 @@ detect_runtime_component() {
     while IFS= read -r op; do
       [[ -z "$op" ]] && continue
       if [[ -n "$hits" ]] && grep -qFx -- "$op" <<< "$hits"; then
-        matched=1; strong=1
-        evid="$(jq -c --arg p "$op" '. + ["runtime: openapi probe hit " + $p]' <<< "$evid")"
+        matched=1
+        if [[ -n "$shared_paths" ]] && grep -qFx -- "$op" <<< "$shared_paths"; then
+          # shared by multiple stacks' openapiPaths: a hit here doesn't tell
+          # us WHICH one is actually running — stays weak unless corroborated
+          # by an independent cookie/header signal (see sig computation below).
+          ambig=1
+          evid="$(jq -c --arg p "$op" '. + ["runtime: openapi probe hit " + $p + " (ambiguous — path shared by multiple stacks)"]' <<< "$evid")"
+        else
+          strong=1
+          evid="$(jq -c --arg p "$op" '. + ["runtime: openapi probe hit " + $p]' <<< "$evid")"
+        fi
       fi
     done < <(jq -r ".stacks[$i].runtime.openapiPaths[]?, (.stacks[$i].implies[]?.openapiPaths[]?)" "$SIGNATURES")
     [[ "$matched" -eq 1 ]] || continue
-    local sig="weak"; [[ "$strong" -eq 1 ]] && sig="strong"
+    # strong: an html marker or a probe hit on a path UNIQUE to this stack; OR
+    # an otherwise-ambiguous shared-path probe hit corroborated by an
+    # independent cookie/header match. A shared-path hit alone stays weak.
+    local sig="weak"
+    if [[ "$strong" -eq 1 ]]; then sig="strong"
+    elif [[ "$ambig" -eq 1 && "$ch_matched" -eq 1 ]]; then sig="strong"
+    fi
     jq -n --argjson row "$(jq ".stacks[$i]" "$SIGNATURES")" \
           --argjson ev "$evid" --arg sig "$sig" \
           --argjson i18n "$(i18n_absent "runtime-only component — no repo scanned")" '{
