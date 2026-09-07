@@ -66,6 +66,22 @@ fi
 # ── write mode ────────────────────────────────────────────────────────────────
 [[ -n "$BASE_URL" ]] || { echo "init-config: --base-url is required (or use --suggest)" >&2; exit 2; }
 
+# Appendix A (audit-2 W3-7a, highest-value item): --allow-writes/--allow-crawl
+# are fed to jq's `--argjson` below, which REQUIRES valid JSON. An invalid
+# value (a typo like "yes"/"1"/"flase") used to make that jq call fail AFTER
+# the shell had already opened `> "$OUT"` in truncate mode — under this
+# script's `set -uo pipefail` (no `-e`), the script did not abort on jq's
+# failure, so it fell through to "Wrote $OUT" having silently TRUNCATED any
+# pre-existing config at $OUT to 0 bytes. Fail closed HERE, before any file
+# is touched, so a bad flag can never destroy an existing .qa/config.json.
+for _flag_pair in "allow-writes:$ALLOW_WRITES" "allow-crawl:$ALLOW_CRAWL"; do
+  _flag_name="${_flag_pair%%:*}"; _flag_val="${_flag_pair#*:}"
+  case "$_flag_val" in
+    true|false) ;;
+    *) echo "init-config: --${_flag_name} must be 'true' or 'false' (got '${_flag_val}') — refusing to touch ${OUT}" >&2; exit 2 ;;
+  esac
+done
+
 # repos CSV → array of {role, path}. First entry is the backend (monolith default).
 repos_json="$(jq -n '[]')"
 IFS=',' read -ra rps <<< "$REPOS"
@@ -118,7 +134,21 @@ jq -n \
     ],
     redactedKeys: []
   }
-}' > "$OUT"
+}' > "${OUT}.tmp.$$"; _jq_rc=$?
+
+# Defense-in-depth (belt-and-suspenders alongside the --allow-writes/
+# --allow-crawl validation above): write to a temp file, THEN check jq's
+# exit code and validate the result parses, THEN move it over $OUT. Never
+# redirect jq's stdout directly to $OUT — that truncates $OUT as part of the
+# shell's redirection setup regardless of whether jq itself then succeeds,
+# which is exactly how the flag-validation bug above was able to destroy a
+# pre-existing config on a jq failure.
+if [[ "$_jq_rc" -ne 0 ]] || ! jq -e . "${OUT}.tmp.$$" >/dev/null 2>&1; then
+  rm -f "${OUT}.tmp.$$"
+  echo "init-config: failed to render valid JSON for ${OUT} — nothing was written, existing file (if any) is untouched" >&2
+  exit 3
+fi
+mv -f "${OUT}.tmp.$$" "$OUT" || { rm -f "${OUT}.tmp.$$"; echo "init-config: failed to install ${OUT}" >&2; exit 3; }
 
 # Real-project side effects only when writing into an actual `.qa/` dir
 # (skipped when tests write to a temp file).

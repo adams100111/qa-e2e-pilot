@@ -71,7 +71,7 @@ There are **17 skills**: the 9 core verification skills (`analyzing-feature-ui`,
 
 ## Bundled scripts depend on jq OR python3
 
-`checkpoint.sh` and `preflight.sh` prefer `jq`, fall back to `python3`, and error clearly if neither is present; `report-to-junit.sh`, `memory-sync.sh`, and `find-spec-kit.sh` use `python3`/`jq` similarly (`memory-sync.sh` also needs `curl` for a real send). Browser-context JS (`react-set-input.js`, `click-by-text.js`, `backend-probe.js`) is injected via the evaluate tool — write it as dependency-free browser code (`document`/`window`/`fetch`).
+`checkpoint.sh` prefers `jq`, falls back to `python3`, and errors clearly if neither is present; `report-to-junit.sh`, `memory-sync.sh`, and `find-spec-kit.sh` use `python3`/`jq` similarly (`memory-sync.sh` also needs `curl` for a real send). `preflight.sh` has a DIFFERENT fallback chain — `jq` → `node` → `grep` (never `python3`; degrades gracefully, skipping driver enumeration rather than failing, if neither `jq` nor `node` is found). Browser-context JS (`react-set-input.js`, `click-by-text.js`, `backend-probe.js`) is injected via the evaluate tool — write it as dependency-free browser code (`document`/`window`/`fetch`).
 
 ## Validate before committing
 

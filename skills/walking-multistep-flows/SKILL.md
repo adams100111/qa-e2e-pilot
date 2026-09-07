@@ -88,7 +88,7 @@ After the forward walk, verify two behaviors in a second browser pass:
 3. Confirm advancing again from that step does not corrupt prior steps.
 
 **Idempotency:**
-1. Re-submit a completed step (or replay the save network request using `browser_network_request`).
+1. Re-submit a completed step via the same UI affordance used the first time (human-path tools, ADR-0015). `browser_network_request` is a read-only tool (returns one captured request/response's headers/body) — it has no re-issue capability, so it is never a substitute for this step.
 2. Bake the backend again. Confirm the record count did not change (no duplicate created) and the data was not corrupted.
 3. If re-submission duplicates a record, verdict is `fail`; name the step and multiplicity (`step 2 — re-submit creates duplicate share class`).
 

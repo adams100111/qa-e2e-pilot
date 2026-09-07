@@ -85,8 +85,22 @@ if ! eval "$AGENT_CMD"; then
 fi
 
 # 3. Locate the run produced --------------------------------------------------
+# Prefer .qa/runs/latest — the atomic-written pointer checkpoint.sh/journal-emit.sh
+# maintain on every checkpointed event (see qa-resume.sh's resolve_run_id). This is
+# authoritative: it names the run the agent actually checkpointed to, unlike `ls -t`
+# which is mtime-based and can pick the wrong directory (e.g. a resumed older run
+# whose files were touched more recently than a newer, still-open one). Fall back to
+# `ls -t` only when no pointer exists (e.g. a harness with no live capture-hook that
+# never wrote it) so qa-ci.sh still degrades gracefully instead of failing outright.
 [[ -d "$QA_BASE" ]] || { echo "qa-ci: no $QA_BASE/ produced — the agent did not start a run" >&2; exit 1; }
-RUN_ID="$(ls -t "$QA_BASE" 2>/dev/null | grep -v '^\.' | head -1 || true)"
+RUN_ID=""
+if [[ -f "$QA_BASE/latest" ]]; then
+  RUN_ID="$(tr -d '\n\r' < "$QA_BASE/latest" 2>/dev/null || true)"
+fi
+if [[ -z "$RUN_ID" || ! -f "$QA_BASE/$RUN_ID/checkpoint.json" ]]; then
+  log "qa-ci: $QA_BASE/latest missing/stale — falling back to mtime scan"
+  RUN_ID="$(ls -t "$QA_BASE" 2>/dev/null | grep -v '^\.' | head -1 || true)"
+fi
 [[ -n "$RUN_ID" && -f "$QA_BASE/$RUN_ID/checkpoint.json" ]] || {
   echo "qa-ci: no run with a checkpoint.json found under $QA_BASE/ — nothing to report" >&2; exit 1; }
 log "run: $RUN_ID"

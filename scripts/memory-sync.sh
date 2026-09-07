@@ -39,6 +39,28 @@ DRY_RUN="no"
 [[ "${2:-}" == "--dry-run" ]] && DRY_RUN="yes"
 [[ -n "$RUN_ID" ]] || { echo "Usage: memory-sync.sh <run-id> [--dry-run]" >&2; exit 2; }
 
+# Fix 28 (mirrors checkpoint.sh's/toolstream.sh's/qa-verify.sh's/provenance.sh's
+# validate_token/validate_run_id exactly): reject a run-id that could escape
+# QA_BASE via a path separator or `..` BEFORE it is ever interpolated into
+# RUN_DIR below — this script was the one caller in the Fix-28 lineage that
+# never got the guard (Appendix A).
+validate_run_id() {
+  local value="$1"
+  case "$value" in
+    */*|*\\*) echo "memory-sync.sh: run-id '${value}' contains a path separator — must be a simple token." >&2; exit 2 ;;
+  esac
+  case "$value" in
+    *..*) echo "memory-sync.sh: run-id '${value}' contains '..' — must be a simple token." >&2; exit 2 ;;
+  esac
+  if [[ "$value" =~ ^\.+$ ]]; then
+    echo "memory-sync.sh: run-id '${value}' is '.' or consists only of dots — must be a simple token." >&2; exit 2
+  fi
+  case "$value" in
+    -*) echo "memory-sync.sh: run-id '${value}' starts with '-' — must be a simple token." >&2; exit 2 ;;
+  esac
+}
+validate_run_id "$RUN_ID"
+
 command -v python3 >/dev/null 2>&1 || { echo "memory-sync.sh requires python3" >&2; exit 2; }
 [[ -f "$CONFIG_FILE" ]] || { echo "[memory-sync] no $CONFIG_FILE — nothing to sync (default backend is file)"; exit 0; }
 
