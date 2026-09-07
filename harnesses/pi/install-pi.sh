@@ -16,7 +16,10 @@ mkdir -p "$PROJ/.pi"
 if [ -f "$MCP_DEST" ]; then
   if command -v jq >/dev/null 2>&1; then
     cp "$MCP_DEST" "$MCP_DEST.bak-qa-e2e-pilot"
-    jq -s '.[0] * .[1]' "$MCP_DEST" "$SNIPPET" > "$MCP_DEST.tmp-qa-e2e-pilot" && mv "$MCP_DEST.tmp-qa-e2e-pilot" "$MCP_DEST"
+    # shallow-merge at the mcpServers level: each snippet key fully REPLACES its counterpart
+    # (matching the python3 leg's dict.update) rather than a recursive `*` deep-merge, which
+    # would let a stale pre-existing playwright-qa sub-key (e.g. "cwd") survive re-install.
+    jq -s '.[0] + {mcpServers: ((.[0].mcpServers // {}) + .[1].mcpServers)}' "$MCP_DEST" "$SNIPPET" > "$MCP_DEST.tmp-qa-e2e-pilot" && mv "$MCP_DEST.tmp-qa-e2e-pilot" "$MCP_DEST"
     echo "Merged qa-e2e-pilot's playwright-qa MCP server into existing $MCP_DEST (jq; backup at $MCP_DEST.bak-qa-e2e-pilot)."
   elif command -v python3 >/dev/null 2>&1; then
     cp "$MCP_DEST" "$MCP_DEST.bak-qa-e2e-pilot"
