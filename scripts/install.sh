@@ -43,9 +43,10 @@ echo
 # Agent
 link_one "$REPO_ROOT/agents/qa-e2e-pilot.md" "$CLAUDE_DIR/agents/qa-e2e-pilot.md"
 
-# Command
-link_one "$REPO_ROOT/commands/qa-run.md" "$CLAUDE_DIR/commands/qa-run.md"
-link_one "$REPO_ROOT/commands/qa-roles.md" "$CLAUDE_DIR/commands/qa-roles.md"
+# Commands (one symlink per command file)
+for cmd_file in "$REPO_ROOT"/commands/*.md; do
+  link_one "$cmd_file" "$CLAUDE_DIR/commands/$(basename "$cmd_file")"
+done
 
 # Skills (one symlink per skill directory)
 for skill_dir in "$REPO_ROOT"/skills/*/; do

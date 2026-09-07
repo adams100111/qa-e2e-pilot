@@ -16,6 +16,10 @@
     {
       "name": "qa-roles",
       "path": "commands/qa-roles.md"
+    },
+    {
+      "name": "qa-resume",
+      "path": "commands/qa-resume.md"
     }
   ],
   "skills": [
