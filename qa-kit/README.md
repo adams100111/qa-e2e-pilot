@@ -93,6 +93,10 @@ human confirms or edits it into `.qa/specs/<target>/seed.json`), and at pre-flig
 confirms — then falls through to the same declare-and-verify read-back to confirm the baseline landed. On a
 non-disposable env qa-kit never writes. See [ADR-0023](../docs/adr/0023-qa-kit-tdqa-data-layer.md).
 
+qa-kit inherits the engine's usage boundary as-is — see [the engine README's "When NOT to use
+this"](../README.md#when-not-to-use-this) (per-commit gating: no; shared staging: degraded; a green
+run is measured recall, never "verified correct").
+
 ## Invariants qa-kit inherits (does not redefine)
 
 Verdicts `pass|fail|blocked|deferred|error`; confidence `high|low`; the oracle is the spec/domain rule,
