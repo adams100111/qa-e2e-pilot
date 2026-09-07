@@ -12,6 +12,7 @@ PREFIX="$(read_field toolPrefix)"; SERVER_KEY="$(read_field serverKey)"
 GRANT="$(read_field grantStyle)"; MODEL_FIELD="$(read_field modelField)"
 TIER_DEFAULT="$(read_field tierDefault)"; TIER_HEAVY="$(read_field tierHeavy)"
 DISPATCH="$(read_field dispatch)"; ROLES_DIR="$(read_field globalRolesDir)"
+QA_ENGINE_SKILLS_DIR="$(read_field engineSkillsDir)"
 
 # --- render the browser-tools grant per grantStyle ---
 render_browser_tools() {
@@ -47,12 +48,13 @@ repl={
  "{{DISPATCH}}":      os.environ["DISPATCH"],
  "{{GLOBAL_ROLES_DIR}}": os.environ["ROLES_DIR"],
  "{{SERVER_KEY}}":    os.environ["SERVER_KEY"],
+ "{{ENGINE_SKILLS_DIR}}": os.environ["QA_ENGINE_SKILLS_DIR"],
 }
 for k,v in repl.items(): data=data.replace(k,v)
 sys.stdout.write(data)
 PY
 render() { python3 "$RENDER_PY"; }
-export BROWSER_TOOLS MODEL_FIELD_LINE TIER_DEFAULT TIER_HEAVY DISPATCH ROLES_DIR SERVER_KEY
+export BROWSER_TOOLS MODEL_FIELD_LINE TIER_DEFAULT TIER_HEAVY DISPATCH ROLES_DIR SERVER_KEY QA_ENGINE_SKILLS_DIR
 
 # --- persona body: detokenize tiers first, into a temp file the manifest render inlines ---
 PERSONA_BODY_FILE="$(mktemp)"; export PERSONA_BODY_FILE
