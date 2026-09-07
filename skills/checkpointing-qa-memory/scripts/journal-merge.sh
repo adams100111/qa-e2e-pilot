@@ -390,15 +390,19 @@ main() {
     # under a minimal PATH (masked by the `|| true`), leaving a stale lock
     # directory behind. rm -rf also tolerates the directory not being
     # perfectly empty, which rmdir would refuse.
-    trap 'rm -rf "'"$mkdir_lock"'" 2>/dev/null || true' EXIT
-    local waited=0
+    local waited=0 max_iters="${JM_LOCK_TIMEOUT_ITERS:-150}"
     until mkdir "$mkdir_lock" 2>/dev/null; do
       sleep 0.2
       waited=$((waited + 1))
-      if (( waited > 150 )); then
+      if (( waited > max_iters )); then
+        # No trap installed yet: dying here must NOT touch the holder's lock.
         die "journal-merge.sh: timed out waiting for mkdir-lock ${mkdir_lock}."
       fi
     done
+    # ONLY the acquirer cleans up — the trap is installed strictly AFTER
+    # acquisition so a timed-out/killed waiter can never rm the holder's
+    # live lock (audit-2 W1-4). rm -rf, not rmdir: see original rationale.
+    trap 'rm -rf "'"$mkdir_lock"'" 2>/dev/null || true' EXIT
   fi
 
   do_merge "$run_dir" "$main_file"
