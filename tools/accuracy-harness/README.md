@@ -177,3 +177,61 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
   measured — a historical label, not a current count.
 - **The gate is real**: `score.js --gate` exits non-zero below threshold; `pass-gate.js` rejects a
   toast-only `pass`.
+
+## Second fixture (`fixture2/`) — the generator-untuned measurement target
+
+The 85% blind number above is **same-fixture, post-tuning**: the 62%→85% lift came from fixing
+checklist-generation gaps that were themselves identified from `fixture/`'s own misses
+("MEASURED vs ESTIMATED" note above, and the 56%→85% callout). That is train-on-test, and it
+credibly inflates confidence in the number. `fixture2/` exists to answer the harder question:
+does the same recall hold on a fixture the checklist generator was never tuned against?
+
+```
+fixture2/index.html   self-contained app (no build, no network) — "InvoicePad Mini", a different
+                       domain (line items x unit price, a discount/tax pricing rule spelled out in
+                       on-page help text, tax-exempt items, a draft-to-finalize journey, and a
+                       finalized-invoices list/detail view); "backend" = localStorage
+seeds2.json            ground-truth planted bugs + match rules + the acceptance gate thresholds —
+                       same schema as seeds.json (22 seeds: 14 gated positive across functional/
+                       broken-journey/ux-objective + 8 negative controls)
+run-baseline2.sh       thin copy of run-baseline.sh pointed at fixture2/seeds2.json (default port
+                       8199, distinct from run-baseline.sh's 8099 so both can serve side by side)
+```
+
+**Firewall provenance (binding on how `fixture2/` was authored).** The agent that wrote
+`fixture2/index.html` and `seeds2.json` was explicitly forbidden from reading
+`skills/generating-qa-checklist/`, `skills/analyzing-feature-ui/`, or any `skills/*/SKILL.md` —
+its only repo inputs were this README, `fixture/index.html` (for house style), `seeds.json` (for
+schema), `scorer/*.js` (for the scoring contract), and `run-baseline.sh` (for the runner
+interface). It never saw what the checklist generator does or does not already cover, so
+`fixture2/` cannot be shaped — consciously or not — around the generator's known strengths. The
+seeds in `seeds2.json` stay sealed from whatever agent performs the measured run against
+`fixture2/` until that run's `bug-log.json` has already been written.
+
+**No self-leaking tells.** Per the historical leak documented above (comments describing each
+planted bug, a "planted bugs" title, "(N4)"-style labels naming the negative controls),
+`fixture2/index.html` was grepped for `planted`, bare `bug`, `seed`, and any seed-id-shaped
+identifier before being committed — none appear in the served HTML/JS/CSS. `seeds2.json` itself
+(the answer key) is expected to say "ground-truth planted bugs" — it is never served to the run
+agent.
+
+**Run it:**
+
+```bash
+./run-baseline2.sh --serve         # serve fixture2 at http://localhost:8199
+# then, from an agent session with Playwright MCP configured and WITHOUT showing it seeds2.json:
+#   point .qa/config.json baseUrl at http://localhost:8199 and dispatch qa-e2e-pilot
+node scorer/convert-buglog.js <run>/bug-log.json > findings/measured-fixture2-<run>.json
+node scorer/score.js findings/measured-fixture2-<run>.json --seeds seeds2.json --gate
+```
+
+The measured (not projected) fixture2 recall — published beside the fixture/ number above,
+whatever it turns out to be — is tracked separately; see `findings/` for the committed run once
+that blind measurement has been executed.
+
+**Future gold standard.** Both `fixture/` and `fixture2/` are still synthetic apps with a
+committed answer key, which is a weaker guarantee than an unseeded, real-world target. The
+strongest version of this measurement plants known bugs in a real open-source app with no
+harness-authored seeds file at all, so even the *shape* of the bugs isn't chosen by someone who
+also builds the detector. That is out of scope here but is the direction this harness should grow
+toward.

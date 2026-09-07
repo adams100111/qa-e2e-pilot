@@ -1,0 +1,135 @@
+{
+  "_doc": "Ground-truth planted bugs in fixture2/index.html (InvoicePad Mini — a second, generator-untuned fixture; see README.md's 'Second fixture (fixture2) — the generator-untuned measurement target' section). Same schema as seeds.json: the scorer matches a findings file against these seeds and prints true bug-recall PER AXIS. axis roll-ups: 'functional' = functional + broken-journey; 'ux' = ux-objective. A finding is credited to a seed ONLY via finding.seedId or finding.judgedSeedId (set by attribute.js's judge). seed.match keywords are a HINT the judge uses to pick candidate seeds — they are NEVER credited by the scorer directly (no keyword-only matching). This fixture and its seeds were authored under a firewall discipline (no read of skills/generating-qa-checklist, skills/analyzing-feature-ui, or any skills/*/SKILL.md) so the fixture is not tuned to the checklist generator's known coverage gaps.",
+  "fixture": "invoicepad-mini",
+  "gate": {
+    "functionalRecallMin": 0.70,
+    "uxObjectiveRecallMin": 0.75,
+    "overallVerdictRecallMin": 0.70,
+    "precisionMin": 0.80,
+    "_note": "Absolute per-axis recall + overall precision. Negative-control seeds (polarity:negative) must NOT be flagged; flagging one is a false positive. Mirrors seeds.json's gate exactly — no threshold was tuned to make fixture2 pass."
+  },
+  "seeds": [
+    {
+      "id": "F1", "axis": "functional", "kind": "wrong-computation",
+      "title": "Tax is computed on the pre-discount subtotal instead of the discounted subtotal (order-of-operations divergence from the on-page pricing rules)",
+      "oracle": "Add one line item: qty=100, unit price=$6.00 (not tax-exempt). subtotal = $600.00; subtotal > $500 so a 10% discount applies: discount = $60.00, discounted subtotal = $540.00. Per the visible pricing rules, tax = 8% of the DISCOUNTED subtotal = 8% x $540.00 = $43.20, and grand total = $540.00 + $43.20 = $583.20. The fixture instead computes tax = 8% of the undiscounted $600.00 subtotal = $48.00, so the displayed/persisted grand total reads $588.00 (wrong by $4.80).",
+      "suspectedLayer": "FE", "closes": "coverage+execution",
+      "match": ["tax", "discount", "order of operations", "pre-discount", "predates discount", "588", "583.20", "discounted subtotal", "undiscounted"]
+    },
+    {
+      "id": "F2", "axis": "functional", "kind": "wrong-computation",
+      "title": "Line total truncates qty x unit price to 2 decimals (floor) instead of rounding to the nearest cent",
+      "oracle": "Add a line item: qty=3, unit price=$0.335. Exact = 3 x 0.335 = $1.005, which rounds to the nearest cent as $1.01. The fixture floors instead of rounds, so the line total (and the subtotal built from it) reads $1.00 — a $0.01 loss.",
+      "suspectedLayer": "FE", "closes": "execution",
+      "match": ["line total", "truncat", "floor", "round", "sub-cent", "subcent", "1.01", "1.00", "0.335", "precision"]
+    },
+    {
+      "id": "F3", "axis": "functional", "kind": "stale-cached-aggregate", "polarity": "positive",
+      "title": "Cached 'Subtotal (cached)' summary updates on add/edit but is NOT re-derived when a line item is deleted (stale aggregate)",
+      "oracle": "invoicepad:subtotalCached (rendered at data-testid=\"subtotal-cached\") must always equal a fresh sum of line totals over the currently-persisted invoicepad:items array. Add two $50.00 line items (cached shows $100.00), then delete one: the fresh subtotal (data-testid=\"subtotal\") correctly drops to $50.00, but the cached value stays at $100.00 instead of recomputing.",
+      "suspectedLayer": "service", "closes": "coverage",
+      "match": ["subtotal cached", "cached subtotal", "stale", "not recomputed on delete", "stale aggregate", "stale summary", "stale total"]
+    },
+    {
+      "id": "F4", "axis": "functional", "kind": "no-input-validation", "polarity": "positive",
+      "title": "Add-item accepts a negative quantity with no validation; the line total and subtotal go negative",
+      "oracle": "Quantity must be a positive number; a negative value must be rejected before persist. The fixture accepts qty=-5 at $10.00/unit and persists a line total of -$50.00, dragging the subtotal negative.",
+      "suspectedLayer": "FE", "closes": "coverage+execution",
+      "match": ["negative qty", "negative quantity", "negative shares", "validation", "invalid input", "negative subtotal", "negative line total"]
+    },
+    {
+      "id": "F5", "axis": "functional", "kind": "wrong-computation", "polarity": "positive",
+      "title": "Tax-exempt line items are still taxed — the 'Tax-exempt' checkbox is stored but never excluded from the taxable amount actually charged",
+      "oracle": "Add item A: qty=10, price=$10.00 (not exempt) and item B: qty=5, price=$20.00 (Tax-exempt checked). subtotal = $200.00 (below the $500 discount threshold, so no discount). Per the visible pricing rules, the taxable amount excludes exempt items: $200.00 - $100.00(exempt) = $100.00, so tax = 8% x $100.00 = $8.00 and grand total = $208.00. The fixture's displayed 'Taxable' field correctly shows $100.00, but the tax actually charged is $16.00 (8% of the full $200.00, ignoring the exemption) — internally inconsistent with its own displayed taxable figure — and grand total reads $216.00.",
+      "suspectedLayer": "service", "closes": "coverage+execution",
+      "match": ["tax-exempt", "tax exempt", "exempt", "216", "208", "taxable", "still taxed", "ignored exemption"]
+    },
+    {
+      "id": "J1", "axis": "broken-journey", "kind": "silent-stall",
+      "title": "A line item named 'VOID' (case-insensitive) fires a green 'Item added' success toast but is NEVER persisted",
+      "oracle": "Baking: read localStorage invoicepad:items back; a line item with description 'VOID' must be present if the toast claims success. It is not — the array is left untouched (or empty).",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["void", "toast lied", "not persisted", "green toast", "baking", "read-back", "silent"]
+    },
+    {
+      "id": "J2", "axis": "broken-journey", "kind": "terminal-no-persist",
+      "title": "Finalize invoice flips status to FINALIZED and shows a success toast but creates NO new record in invoicepad:invoices",
+      "oracle": "Baking: clicking 'Finalize invoice' must persist a new invoice record (items snapshot + totals + status FINALIZED) into localStorage invoicepad:invoices. It does not — the invoices array is unchanged after finalize, even though the on-screen status and toast both claim success.",
+      "suspectedLayer": "DB", "closes": "execution",
+      "match": ["finalize", "invoices", "terminal", "not persisted", "no new invoice", "partial commit", "unchanged invoices"]
+    },
+    {
+      "id": "J3", "axis": "broken-journey", "kind": "silent-drop",
+      "title": "Every 4th Add-item click toasts success but silently drops the write (persists N-1 of N attempts)",
+      "oracle": "Multiplicity: on a fresh page load, add 4 distinct valid line items consecutively (each with a non-VOID description and qty>0) — read back exactly 3 in invoicepad:items even though all 4 clicks showed a success toast.",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["silent drop", "n-1", "multiplicity", "count", "dropped", "exactly 3", "fourth", "every 4th"]
+    },
+    {
+      "id": "J4", "axis": "broken-journey", "kind": "silent-stall", "polarity": "positive",
+      "title": "Adding a line item with 0 qty shows a false 'Item added' success toast but persists nothing",
+      "oracle": "Baking: read localStorage invoicepad:items back; a 0-qty submit must not add an entry, and the toast must not claim success.",
+      "suspectedLayer": "service", "closes": "execution",
+      "match": ["0 qty", "zero qty", "false success", "toast lied", "not persisted", "silently rejected"]
+    },
+    {
+      "id": "H1", "axis": "broken-journey", "kind": "ui-impossible", "polarity": "positive",
+      "title": "'Send invoice' has no working affordance — spec requires it; must be fail@FE, never evaluate-around",
+      "oracle": "Spec: clicking 'Send invoice' (data-testid=\"send-invoice\") must email the finalized invoice to the customer and mark it sent; the button is present and correctly labeled but has NO click handler wired anywhere — clicking it does nothing at all (no error, no toast, no persist, no DOM change); this must be caught by directly exercising the affordance and recorded fail@FE, never worked around (e.g. by writing a 'sent' flag to localStorage directly to fake success).",
+      "suspectedLayer": "FE", "closes": "execution",
+      "match": ["send invoice", "no handler", "not wired", "no affordance", "does nothing", "ui-impossible", "silent no-op", "evaluate-around", "worked around", "no click handler"]
+    },
+    {
+      "id": "H2", "axis": "broken-journey", "polarity": "negative",
+      "title": "Control correctly rejects invalid input per the oracle — a UI-reached pass, MUST NOT be flagged",
+      "oracle": "Spec: default reorder qty (data-testid=\"reorder-qty\") must be a whole number in [1,99]; entering an out-of-range value (e.g. 0 or 150) correctly shows an inline error (data-testid=\"reorder-error\") and persists NOTHING (invoicepad:reorderQty stays unset) — this control is genuinely correct and UI-reachable; flagging it as broken, unresponsive, or a silent-drop is a false positive.",
+      "match": ["reorder", "reorder qty", "inline error", "correctly rejects", "validation works", "out of range", "99", "not persisted", "silent drop"]
+    },
+    {
+      "id": "U1", "axis": "ux-objective", "kind": "contrast",
+      "title": "Helper text #b9b9b9 on white ~1.96:1 fails WCAG AA 4.5:1 (SC 1.4.3)",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["contrast", "1.4.3", "4.5", "helper", "low-contrast", "low contrast", "b9b9b9"]
+    },
+    {
+      "id": "U2", "axis": "ux-objective", "kind": "overflow",
+      "title": "Grand total cell (table-layout:fixed, 46px column, overflow:hidden, no ellipsis) clips the computed value",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["overflow", "clip", "clipped", "truncated display", "scrollwidth", "cut off", "grand total"]
+    },
+    {
+      "id": "U3", "axis": "ux-objective", "kind": "target-size",
+      "title": "16x16 remove-item icon button below WCAG 2.2 AA 24x24 target-size (SC 2.5.8)",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["target size", "target-size", "2.5.8", "24x24", "24 x 24", "touch target", "too small", "16x16", "remove"]
+    },
+    {
+      "id": "U4", "axis": "ux-objective", "kind": "a11y-name-and-console",
+      "title": "Icon-only '?' help button has no accessible name (axe button-name — its visible glyph is aria-hidden) AND throws a console error on click",
+      "suspectedLayer": "FE", "closes": "detection",
+      "match": ["accessible name", "button-name", "aria-label", "referenceerror", "console error", "uncaught", "not defined", "a11y", "help button"]
+    },
+    { "id": "N1", "axis": "functional", "polarity": "negative",
+      "title": "Line item for qty=2 @ $5.00/unit computes AND persists exactly $10.00 — MUST NOT be flagged",
+      "oracle": "line total = qty * price = 2 * $5.00 = $10.00 exactly; a whole-cent product, so F2's floor-to-cent truncation causes zero loss on this specific input; invoicepad:items reads back $10.00 exactly",
+      "match": ["10.00 wrong", "line total incorrect", "amount not persisted", "10 mismatch"] },
+    { "id": "N2", "axis": "ux-objective", "polarity": "negative",
+      "title": "Primary 'Add item' button label #1a1a1a on #ffffff (~17.4:1) passes AA — MUST NOT be flagged",
+      "match": ["primary button contrast", "label unreadable", "add item contrast"] },
+    { "id": "N3", "axis": "broken-journey", "polarity": "negative",
+      "title": "Editing a persisted line item DOES persist — MUST NOT be flagged as a silent drop",
+      "match": ["edit not persisted", "edit silent drop", "edit item"] },
+    { "id": "N4", "axis": "ux-objective", "polarity": "negative",
+      "title": "Vertically-scrollable notes pane (#scroll-pane, overflow-y:auto, tall content) — MUST NOT be flagged as clipped",
+      "match": ["clipped", "overflow-y", "scrollable pane", "vertical clip", "scroll-pane", "notes pane"] },
+    { "id": "N5", "axis": "ux-objective", "polarity": "negative",
+      "title": "text-overflow:ellipsis truncated memo cell (#ellipsis-cell) — intentional truncation, MUST NOT be flagged",
+      "match": ["ellipsis", "truncated", "clipped", "ellipsis-cell", "long memo"] },
+    { "id": "N6", "axis": "ux-objective", "polarity": "negative",
+      "title": "Icon-only link (#icon-link) correctly labeled by a CHILD img[alt=\"Home\"] — MUST NOT be flagged missing-name",
+      "match": ["accessible name", "missing name", "no accessible name", "icon-link", "img alt"] },
+    { "id": "N7", "axis": "ux-objective", "polarity": "negative",
+      "title": "Dark-theme panel (#dark-panel, #e0e0e0 on #1a1a1a, ~13.18:1) passes WCAG AA — MUST NOT be flagged low-contrast",
+      "match": ["contrast", "dark theme", "dark-theme", "dark-panel", "low contrast"] }
+  ]
+}

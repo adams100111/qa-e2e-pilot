@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InvoicePad Mini</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#555; --line:#e2e2e2; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; color: var(--fg); margin: 0; padding: 24px; max-width: 900px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  section { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display:block; font-size: 13px; margin: 8px 0 3px; }
+  input, select { padding: 6px 8px; font-size: 14px; border:1px solid var(--line); border-radius:5px; width: 200px; }
+  input[type=checkbox] { width:auto; }
+  button { background: var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button.secondary { background:#eee; color:#222; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 6px 8px; }
+  .toast { position: fixed; right: 20px; bottom: 20px; background:#16a34a; color:#fff; padding:10px 16px; border-radius:6px; display:none; }
+  .empty { color: var(--muted); font-style: italic; font-size: 13px; }
+  .rules { font-size: 13px; line-height: 1.5; background:#f8f9fb; border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
+
+  .helper { color:#b9b9b9; font-size:12px; }
+
+  #totals table { table-layout: fixed; width: 320px; }
+  #totals th:nth-child(5) { width: 46px; }
+
+  td.amount { width: 46px; max-width: 46px; overflow: hidden; white-space: nowrap; text-align: right; }
+
+  button.tiny { width:16px; height:16px; padding:0; font-size:10px; line-height:16px; }
+
+  #i-add.btn-primary-clean { background:#ffffff; color:#1a1a1a; border:1px solid #1a1a1a; }
+
+  #scroll-pane { height: 80px; overflow-y: auto; border: 1px solid var(--line); padding: 6px 8px; font-size: 13px; }
+
+  #ellipsis-cell { max-width: 150px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+  #dark-panel { background: #1a1a1a; color: #e0e0e0; padding: 12px; border-radius: 6px; }
+
+  section#finalize { background: #fdf0ff; }
+  section#finalize h2 { color: #e11d9b; letter-spacing: 3px; }
+  section#finalize button { background: #ff7a00; margin-top: 2px; }
+
+  section#finalize #fin-help { background:#fff; color:#333; border:1px solid #ccc; box-shadow:none; font-weight:normal; }
+</style>
+</head>
+<body>
+  <h1>InvoicePad Mini</h1>
+  <div class="sub">"Backend" = localStorage (namespace <code>invoicepad</code>). Baking = read localStorage back after a write.</div>
+
+  <!-- ================= Line items: create + multiplicity ================= -->
+  <section id="items">
+    <h2>Line items</h2>
+    <label for="i-desc">Description</label>
+    <input id="i-desc" data-testid="item-desc" autocomplete="off">
+    <label for="i-qty">Qty</label>
+    <input id="i-qty" data-testid="item-qty" type="number" value="3">
+    <label for="i-price">Unit price ($)</label>
+    <input id="i-price" data-testid="item-price" type="number" step="0.001" value="0.335">
+    <label for="i-exempt" style="display:inline-block;margin-top:8px">
+      <input id="i-exempt" data-testid="item-exempt" type="checkbox"> Tax-exempt item
+    </label>
+    <div style="margin-top:10px">
+      <button id="i-add" class="btn-primary-clean" data-testid="add-item">Add item</button>
+      <span class="helper">Tax-exempt items still count toward the subtotal, just not toward tax.</span>
+    </div>
+
+    <table id="i-table" data-testid="items-table">
+      <thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Exempt</th><th>Line total</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="i-empty">No line items yet.</p>
+    <p class="sub" data-testid="subtotal-cached">Subtotal (cached): <span id="subtotal-cached-val">$0.00</span></p>
+  </section>
+
+  <!-- ================= Invoice totals: qty x price, discount, tax ================= -->
+  <section id="totals">
+    <h2>Invoice totals</h2>
+    <div class="rules" data-testid="pricing-rules">
+      Pricing rules: (1) each line total = qty &times; unit price. (2) Subtotal = sum of all line
+      totals. (3) A 10% discount applies to the subtotal when it exceeds $500; tax is calculated on
+      the <strong>discounted</strong> subtotal, never the pre-discount subtotal. (4) Sales tax is 8%
+      of the taxable subtotal &mdash; items marked "Tax-exempt" are excluded from the taxable
+      subtotal (their value still counts toward the subtotal and grand total, just not toward tax).
+      (5) Grand total = discounted subtotal + tax.
+    </div>
+    <table>
+      <thead><tr><th>Subtotal</th><th>Discount</th><th>Taxable</th><th>Tax</th><th>Grand total</th></tr></thead>
+      <tbody><tr>
+        <td id="t-subtotal" data-testid="subtotal">$0.00</td>
+        <td id="t-discount" data-testid="discount">$0.00</td>
+        <td id="t-taxable" data-testid="taxable">$0.00</td>
+        <td id="t-tax" data-testid="tax">$0.00</td>
+        <td class="amount" id="t-grand" data-testid="grand-total">$0.00</td>
+      </tr></tbody>
+    </table>
+  </section>
+
+  <!-- ================= Reorder settings ================= -->
+  <section id="reorder">
+    <h2>Reorder settings</h2>
+    <label for="r-qty">Default reorder qty (1-99 per spec)</label>
+    <input id="r-qty" data-testid="reorder-qty" type="number" value="12">
+    <div style="margin-top:10px">
+      <button id="r-save" data-testid="save-reorder">Save reorder qty</button>
+      <span class="helper">Rejects anything outside 1-99; nothing is saved on rejection.</span>
+    </div>
+    <p class="empty" id="r-error" data-testid="reorder-error" style="display:none;color:#dc2626"></p>
+    <p class="sub" data-testid="reorder-saved">Saved reorder qty: <span id="r-saved">&mdash;</span></p>
+  </section>
+
+  <!-- ================= Utility widgets ================= -->
+  <section id="widgets">
+    <h2>Utility widgets</h2>
+
+    <label for="scroll-pane">Notes pane</label>
+    <div id="scroll-pane" data-testid="scroll-pane">
+      <p>Line one of a tall panel.</p>
+      <p>Line two of a tall panel.</p>
+      <p>Line three of a tall panel.</p>
+      <p>Line four of a tall panel.</p>
+      <p>Line five of a tall panel.</p>
+      <p>Line six of a tall panel.</p>
+      <p>Line seven of a tall panel.</p>
+    </div>
+
+    <label for="ellipsis-cell">Long memo</label>
+    <div id="ellipsis-cell" data-testid="ellipsis-cell">A very long memo that intentionally truncates with an ellipsis instead of wrapping</div>
+
+    <a href="#" data-testid="icon-link" style="display:inline-block;padding:6px"><img alt="Home" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="></a>
+
+    <div id="dark-panel" data-testid="dark-panel">
+      <p>Dark-theme body copy that passes WCAG AA against its own backdrop.</p>
+    </div>
+  </section>
+
+  <!-- ================= Finalize + list/detail ================= -->
+  <section id="finalize">
+    <h2>FINALIZE INVOICE</h2>
+    <div class="sub" id="fin-status" data-testid="invoice-status">status: DRAFT</div>
+
+    <button class="tiny" id="fin-help" data-testid="fin-help"><span aria-hidden="true">?</span></button>
+    <div style="margin-top:10px">
+      <button id="fin-go" data-testid="finalize-invoice">Finalize invoice</button>
+      <span class="helper">Persists the current draft as a new invoice and flips status to FINALIZED.</span>
+    </div>
+    <div style="margin-top:10px">
+      <button id="fin-send" data-testid="send-invoice">Send invoice</button>
+      <span class="helper">Spec: emails the finalized invoice to the customer and marks it sent.</span>
+    </div>
+
+    <table id="inv-table" data-testid="invoices-table">
+      <thead><tr><th>Invoice</th><th>Date</th><th>Grand total</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="empty" id="inv-empty">No invoices yet.</p>
+
+    <div id="inv-detail" data-testid="invoice-detail" style="display:none;margin-top:12px">
+      <h2 style="font-size:13px">Invoice detail</h2>
+      <table id="inv-detail-table"><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Line total</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <div class="toast" id="toast">Saved</div>
+
+<script>
+// ---- "Backend": localStorage namespace. Reading these keys back == baking. ----
+const DB = {
+  get(k, d){ try { return JSON.parse(localStorage.getItem('invoicepad:'+k)) ?? d; } catch { return d; } },
+  set(k, v){ localStorage.setItem('invoicepad:'+k, JSON.stringify(v)); },
+};
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 1200); }
+function fmt(n){ return '$' + Number(n).toFixed(2); }
+function round2(n){ return Math.round(n * 100) / 100; }
+
+const TAX_RATE = 0.08;
+const DISCOUNT_THRESHOLD = 500;
+const DISCOUNT_RATE = 0.10;
+
+function lineTotal(item){ return Math.floor(Number(item.qty) * Number(item.price) * 100) / 100; }
+
+function computeTotals(items){
+  const subtotal = items.reduce((a,i)=>a + lineTotal(i), 0);
+  const discount = subtotal > DISCOUNT_THRESHOLD ? round2(subtotal * DISCOUNT_RATE) : 0;
+  const discountedSubtotal = round2(subtotal - discount);
+  const exemptTotal = round2(items.filter(i=>i.exempt).reduce((a,i)=>a + lineTotal(i), 0));
+  const taxableDisplay = round2(discountedSubtotal - exemptTotal);
+  const tax = round2(subtotal * TAX_RATE);
+  const grandTotal = round2(discountedSubtotal + tax);
+  return { subtotal: round2(subtotal), discount, discountedSubtotal, exemptTotal, taxableDisplay, tax, grandTotal };
+}
+
+// pre-populate one demo invoice so the list/detail views have something to show on first load
+if (DB.get('invoices', null) === null) {
+  DB.set('invoices', [{
+    id: 'INV-1001', date: '2026-01-15', status: 'FINALIZED',
+    items: [{ desc: 'Setup fee', qty: 3, price: 50.00, exempt: false }],
+    subtotal: 150.00, discount: 0, tax: 12.00, grandTotal: 162.00
+  }]);
+}
+
+// ===== Line items =====
+function renderTotals(items){
+  const t = computeTotals(items);
+  document.getElementById('t-subtotal').textContent = fmt(t.subtotal);
+  document.getElementById('t-discount').textContent = fmt(t.discount);
+  document.getElementById('t-taxable').textContent = fmt(t.taxableDisplay);
+  document.getElementById('t-tax').textContent = fmt(t.tax);
+  document.getElementById('t-grand').textContent = fmt(t.grandTotal);
+}
+function renderSubtotalCached(){
+  document.getElementById('subtotal-cached-val').textContent = fmt(DB.get('subtotalCached', 0));
+}
+function renderItems(){
+  const items = DB.get('items', []);
+  const tb = document.querySelector('#i-table tbody');
+  document.getElementById('i-empty').style.display = items.length ? 'none' : 'block';
+  tb.innerHTML = items.map(i => {
+    return `<tr><td>${i.desc}</td><td>${i.qty}</td><td>${fmt(i.price)}</td><td>${i.exempt ? 'yes' : 'no'}</td>
+            <td class="amount" data-testid="line-total">${fmt(lineTotal(i))}</td>
+            <td><button class="secondary" data-edit="${i.id}" data-testid="edit-item">edit</button>
+            <button class="tiny" data-del="${i.id}" data-testid="remove-item">x</button></td></tr>`;
+  }).join('');
+  renderSubtotalCached();
+  renderTotals(items);
+}
+let addClicks = 0;
+document.getElementById('i-add').addEventListener('click', () => {
+  const desc = document.getElementById('i-desc').value.trim();
+  const qty = Number(document.getElementById('i-qty').value);
+  const price = Number(document.getElementById('i-price').value);
+  const exempt = document.getElementById('i-exempt').checked;
+  if(!desc){ return; }
+  addClicks++;
+  const items = DB.get('items', []);
+  const isVoidName = (desc.toUpperCase() === 'VOID');
+  const isZeroQty = (qty === 0);
+  const isDropped = (addClicks % 4 === 0);
+  if(!isVoidName && !isZeroQty && !isDropped){
+    items.push({ id: 'i'+Date.now()+Math.random().toString(36).slice(2,6), desc, qty, price, exempt });
+    DB.set('items', items);
+    DB.set('subtotalCached', computeTotals(items).subtotal);
+  }
+  toast('Item added');
+  renderItems();
+  document.getElementById('i-desc').value = '';
+  document.getElementById('i-exempt').checked = false;
+});
+document.querySelector('#i-table').addEventListener('click', (e)=>{
+  const editId = e.target.getAttribute('data-edit');
+  if(editId){
+    const items = DB.get('items', []);
+    const it = items.find(x=>x.id===editId);
+    if(it){
+      it.qty = Number(it.qty) + 1;
+      DB.set('items', items);
+      DB.set('subtotalCached', computeTotals(items).subtotal);
+      toast('Item updated');
+      renderItems();
+    }
+    return;
+  }
+  const id = e.target.getAttribute('data-del'); if(!id) return;
+  DB.set('items', DB.get('items', []).filter(i=>i.id!==id));
+  renderItems();
+});
+
+// ===== Reorder settings =====
+function renderReorder(){
+  const saved = DB.get('reorderQty', null);
+  document.getElementById('r-saved').textContent = saved == null ? '—' : saved;
+}
+document.getElementById('r-save').addEventListener('click', () => {
+  const raw = document.getElementById('r-qty').value;
+  const n = Number(raw);
+  const err = document.getElementById('r-error');
+  const valid = Number.isInteger(n) && n >= 1 && n <= 99;
+  if(!valid){
+    err.textContent = 'Reorder qty must be a whole number between 1 and 99.';
+    err.style.display = 'block';
+    return;
+  }
+  err.style.display = 'none';
+  DB.set('reorderQty', n);
+  toast('Reorder qty saved');
+  renderReorder();
+});
+
+// ===== Finalize + list/detail =====
+function renderFinalize(){
+  document.getElementById('fin-status').textContent = 'status: ' + DB.get('invoiceStatus', 'DRAFT');
+  const invoices = DB.get('invoices', []);
+  const tb = document.querySelector('#inv-table tbody');
+  document.getElementById('inv-empty').style.display = invoices.length ? 'none' : 'block';
+  tb.innerHTML = invoices.map(inv => {
+    return `<tr><td>${inv.id}</td><td>${inv.date}</td><td>${fmt(inv.grandTotal)}</td><td>${inv.status}</td>
+            <td><button class="secondary" data-view="${inv.id}" data-testid="view-invoice">view</button></td></tr>`;
+  }).join('');
+}
+document.querySelector('#inv-table').addEventListener('click', (e)=>{
+  const id = e.target.getAttribute('data-view'); if(!id) return;
+  const inv = DB.get('invoices', []).find(x=>x.id===id);
+  const panel = document.getElementById('inv-detail');
+  if(!inv){ panel.style.display='none'; return; }
+  panel.style.display = 'block';
+  document.querySelector('#inv-detail-table tbody').innerHTML = inv.items.map(i =>
+    `<tr><td>${i.desc}</td><td>${i.qty}</td><td>${fmt(i.price)}</td><td>${fmt(lineTotal(i))}</td></tr>`
+  ).join('');
+});
+document.getElementById('fin-go').addEventListener('click', () => {
+  DB.set('invoiceStatus', 'FINALIZED');
+  toast('Invoice finalized');
+  renderFinalize();
+});
+document.getElementById('fin-help').addEventListener('click', () => {
+  undefinedInvoiceHelp();
+});
+
+renderItems(); renderFinalize(); renderReorder();
+</script>
+</body>
+</html>
