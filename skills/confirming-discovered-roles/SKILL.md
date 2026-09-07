@@ -356,6 +356,17 @@ JSON files, then call the writer script:
     --config .qa/config.json --matrix-out .qa/authz-matrix.json
   ```
 
+  `confirmed-authz-matrix.json` must be non-empty UNLESS Round 3 found no
+  protected entities to scope at all (the degrade path, Eval 2) — then pass
+  `--allow-empty` on this same call so the script accepts the deliberate
+  `[]`; without the flag an empty matrix is always rejected (exit 4,
+  negative control). `--allow-empty` never relaxes `confirmed-personas.json`'s
+  own non-empty requirement. The writer also merges forward any operator-set
+  `personas[].expectedSubject` per persona id — regenerated fields
+  (`role`/`plane`/`auth`) always come from `confirmed-personas.json`, but an
+  operator's identity ground truth for a persona that still exists survives
+  the wholesale regeneration; a dropped persona id disappears from the config.
+
   The script (a) validates every persona has `id`/`role`/`plane`/`auth` with
   `plane` in `global|contextual`; (b) validates every matrix row has
   `entity`/`owningChain` (non-empty array)/`roleScope` (object) and that
@@ -445,12 +456,15 @@ FK-ownership evidence for either (a single-user app has nothing to scope),
 so it emits a single `owningChain: []`-free note rather than a fabricated
 row — Step 5 still writes a valid (2-persona) `confirmed-personas.json`, but
 `confirmed-authz-matrix.json` is written as an empty array `[]` (not
-omitted — the writer script's non-empty-array validation applies only when
-a matrix is expected; here Step 4 explicitly records "no protected entities
-found to scope" so the empty result is a deliberate, cited outcome, not a
-silent gap). `generating-qa-checklist`'s cross-role row for this project
-correctly defers with reason "single-role app — no second role/tenant to
-probe," per that skill's own existing rule.
+omitted). Step 4 explicitly recorded "no protected entities found to scope,"
+so Step 5 calls `write-persona-config.sh` with `--allow-empty` — the ONLY
+sanctioned way past the script's non-empty-array validation, which otherwise
+rejects an empty matrix outright (exit 4, negative control) precisely so an
+agent can't silently skip Round 3's work. Passing the flag here makes the
+empty result a deliberate, cited outcome, not a silent gap.
+`generating-qa-checklist`'s cross-role row for this project correctly defers
+with reason "single-role app — no second role/tenant to probe," per that
+skill's own existing rule.
 
 **Eval 3 — All-defaults-accepted pass-through**
 *Given* `discovered-roles.json` proposes 3 clean, strong-signal global roles
