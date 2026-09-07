@@ -216,10 +216,12 @@ workflow it isn't built for.
 
 **What a green run actually means.** A `pass` verdict means *this run, against this checklist, found
 no divergence between what the UI showed, what the backend persisted, and the independently
-recomputed oracle* — measured, on the seeded accuracy-harness fixture, at **78% functional / 100%
-ux-objective / 85% overall recall, 100% precision** (truly-blind, browser-only, no source read — see
-[`tools/accuracy-harness/README.md`](./tools/accuracy-harness/README.md)). That is **not** "verified
-correct," and it is not a promise about bugs the checklist never thought to ask about. Treat a green
+recomputed oracle* — measured truly-blind (browser-only, no source read) at **78% functional / 85%
+overall recall, 100% precision** on the fixture its checklist heuristics were tuned against, and at
+**70% functional / 64% overall recall, 90% precision** on a second, generator-untuned fixture (the
+honest cold-surface expectation — see
+[`tools/accuracy-harness/README.md`](./tools/accuracy-harness/README.md) for both numbers and the
+gap analysis). That is **not** "verified correct," and it is not a promise about bugs the checklist never thought to ask about. Treat a green
 run the way you'd treat any test suite with known, measured recall below 100%: strong evidence, not
 proof.
 
