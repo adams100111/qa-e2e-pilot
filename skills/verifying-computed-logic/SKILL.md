@@ -30,6 +30,7 @@ Pair with **driving-browser-qa** (to read the screen) and **verifying-backend-pe
   - **Money / exact decimals**: tolerance `0` on the exact decimal. Compute exact (`4000000 * 0.001 = 4000.000`); never pre-round inputs. A sub-cent truncation is a real bug, not noise.
   - **Floats / %**: a small absolute or relative tolerance (e.g. `abs(diff) <= 1e-6`, or ≤ 0.01 percentage points for displayed %). Justify the tolerance from the spec's stated precision.
 - [ ] Compare recomputed-expected vs FE display vs API value. All agree → likely pass (still do step 4). Any disagree → step 3.
+- [ ] Record the comparison via `checkpointing-qa-memory`'s `record-evidence.sh <run-id> <criterion-id> computed --oracle <expected> --observed <actual> --match <true|false>`, which writes `evidence/<criterion-id>/recompute.json` — the artifact `checkpoint.sh --kinds computed` and `qa-verify.sh` actually require (`match:false` is qa-verify's own override signal; a comparison never written here is invisible to the gate).
 
 ### 3. Localize (only on divergence — read backend by role)
 Reconciliation: walk the **same quantity** across layers to pin where it breaks. Read the backend repo (`.qa/config.json` → role `backend`) ONLY to localize, never as the oracle.

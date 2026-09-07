@@ -35,9 +35,9 @@ Read `drivers` from `.qa/config.json`. Default driver is the **managed Playwrigh
 | Preset | CDP endpoint resolved |
 |---|---|
 | `managed` | Managed Playwright (no CDP) |
-| `windows+wsl` | `http://host.docker.internal:9222` |
+| `windows+wsl` | nameserver IP from `/etc/resolv.conf`:9222 (WSL2 NAT networking); falls back to `http://localhost:9222` if no nameserver is found (mirrored networking — set an explicit `cdpEndpoint` to override) |
 | `windows` | `http://localhost:9222` |
-| `wsl` | nameserver IP from `/etc/resolv.conf`:9222 |
+| `wsl` | `http://localhost:9222` (a CDP server running inside WSL itself) |
 | `linux` | `http://localhost:9222` |
 | `mac` | `http://localhost:9222` |
 

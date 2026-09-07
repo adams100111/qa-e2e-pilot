@@ -46,10 +46,12 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 QAVERIFY="$HERE/../../scripts/qa-verify.sh"
+JUNIT="$HERE/../../scripts/report-to-junit.sh"
 FIXTURES="$HERE/fixtures"
 PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 check_contains() { if [[ "$2" == *"$3"* ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' does not contain '$3')"; FAIL=$((FAIL+1)); fi; }
+check_not_contains() { if [[ "$2" != *"$3"* ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' unexpectedly contains '$3')"; FAIL=$((FAIL+1)); fi; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
@@ -156,5 +158,28 @@ for ENGINE in "" python3; do
   check_contains "[$LABEL] undeterminable: reason says the phase could not be determined" \
     "$(jq -r '.[0].reasons | join("; ")' "$(vf undeterminable)")" "undeterminable"
 done
+
+# ===========================================================================
+# report-to-junit.sh (Appendix A: __phase-surface__ omission) — the
+# synthetic phase-surface record has no matching criterion in checkpoint.json
+# (criteria: []), so report-to-junit's per-criterion loop never looks it up;
+# it must still be surfaced (never silently dropped) via a testsuite-level
+# property, and must NEVER affect the failures/errors counts (record-only).
+# ===========================================================================
+JUNIT_OUT="$WORK/mixed.xml"
+( cd "$WORK" && bash "$JUNIT" mixed "$JUNIT_OUT" >"$WORK/junit-mixed.stderr" 2>&1 )
+JRC=$?
+check "report-to-junit: mixed run (0 criteria, 1 phase-surface finding) exits 0" "$JRC" "0"
+XML="$(cat "$JUNIT_OUT")"
+check_contains "report-to-junit: qa.phaseSurfaceFindings property is present" "$XML" 'name="qa.phaseSurfaceFindings"'
+check_contains "report-to-junit: phase-surface property carries the phase name (Report)" "$XML" "Report"
+check_contains "report-to-junit: phase-surface property carries the tool name (browser_evaluate)" "$XML" "browser_evaluate"
+check_contains "report-to-junit: testsuite failures count unaffected by the finding (record-only)" "$XML" 'failures="0"'
+
+# --- clean run: no phase-surface record at all -> no property rendered. ---
+CLEAN_XML="$WORK/clean.xml"
+( cd "$WORK" && bash "$JUNIT" clean "$CLEAN_XML" >/dev/null 2>&1 )
+CLEAN_CONTENT="$(cat "$CLEAN_XML")"
+check_not_contains "report-to-junit: clean run (no phase-surface finding) omits the property" "$CLEAN_CONTENT" "qa.phaseSurfaceFindings"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

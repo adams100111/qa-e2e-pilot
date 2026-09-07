@@ -14,6 +14,7 @@ PASS=0; FAIL=0
 
 get() { jq -r "$2" "$1" 2>/dev/null; }
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
+check_contains() { if [[ "$2" == *"$3"* ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' does not contain '$3')"; FAIL=$((FAIL+1)); fi; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
@@ -507,5 +508,53 @@ check "Task4(f): data-driven -- nothing appended by the declined call" \
 
 ( cd "$WORK" && bash "$EMIT" act-intent r24 admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null ); rc_real_sm=$?
 check "Task4(f): sanity -- the REAL (unedited) state-machine.json allows the SAME call" "$rc_real_sm" "0"
+
+# ---------------------------------------------------------------------------
+# Appendix A: journal-emit rejects delimiter chars in ids (fail-closed).
+# scenarioId/criterionId are joined with ':' into the composite key
+# ("${run_id}:${scenario_id}:${criterion_id}") cmd_act_intent/cmd_act_commit
+# journal and qa-reconcile.sh later SPLITS back apart on ':' — an id
+# containing ':' would silently shift the split point. Every subcommand that
+# accepts these ids must reject one containing ':' BEFORE anything is
+# appended (fail-closed, clear error), not just the two that build the key.
+# ---------------------------------------------------------------------------
+DELIM_RUN="rdelim"
+
+( cd "$WORK" && bash "$EMIT" started "$DELIM_RUN" "admin:evil" AC1 admin >/dev/null 2>"$WORK/err-started-scn" ); rc_started_scn=$?
+check "delimiter-in-id: started rejects a scenarioId containing ':'" "$([[ $rc_started_scn -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "delimiter-in-id: started's error names scenarioId" "$(cat "$WORK/err-started-scn")" "scenarioId"
+check_contains "delimiter-in-id: started's error names the delimiter" "$(cat "$WORK/err-started-scn")" "':'"
+
+( cd "$WORK" && bash "$EMIT" started "$DELIM_RUN" admin "AC:1" admin >/dev/null 2>"$WORK/err-started-crit" ); rc_started_crit=$?
+check "delimiter-in-id: started rejects a criterionId containing ':'" "$([[ $rc_started_crit -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "delimiter-in-id: started's error names criterionId" "$(cat "$WORK/err-started-crit")" "criterionId"
+
+check "delimiter-in-id: neither declined started call appended anything" \
+  "$([[ -f "$WORK/.qa/runs/$DELIM_RUN/journal.ndjson" ]] && echo exists || echo absent)" "absent"
+
+( cd "$WORK" && bash "$EMIT" amend "$DELIM_RUN" "AC:1" admin admin false >/dev/null 2>"$WORK/err-amend" ); rc_amend=$?
+check "delimiter-in-id: amend rejects a criterionId containing ':'" "$([[ $rc_amend -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+( cd "$WORK" && bash "$EMIT" started "$DELIM_RUN" admin AC1 admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent "$DELIM_RUN" "admin:evil" AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null 2>"$WORK/err-ai-scn" ); rc_ai_scn=$?
+check "delimiter-in-id: act-intent rejects a scenarioId containing ':'" "$([[ $rc_ai_scn -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "delimiter-in-id: declined act-intent appended no act_intent event" \
+  "$(jq -s -r '[.[] | select(.event=="act_intent")] | length' "$WORK/.qa/runs/$DELIM_RUN/journal.ndjson")" "0"
+
+( cd "$WORK" && bash "$EMIT" act-intent "$DELIM_RUN" admin "AC:1" admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null 2>"$WORK/err-ai-crit" ); rc_ai_crit=$?
+check "delimiter-in-id: act-intent rejects a criterionId containing ':'" "$([[ $rc_ai_crit -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+( cd "$WORK" && bash "$EMIT" act-intent "$DELIM_RUN" admin AC1 admin --criterion "$MUT_CRIT" --write-set "$WRITE_SET" >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-commit "$DELIM_RUN" "admin:evil" AC1 admin --outcome landed >/dev/null 2>"$WORK/err-ac-scn" ); rc_ac_scn=$?
+check "delimiter-in-id: act-commit rejects a scenarioId containing ':'" "$([[ $rc_ac_scn -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check "delimiter-in-id: declined act-commit appended no act_committed event" \
+  "$(jq -s -r '[.[] | select(.event=="act_committed")] | length' "$WORK/.qa/runs/$DELIM_RUN/journal.ndjson")" "0"
+
+( cd "$WORK" && bash "$EMIT" act-commit "$DELIM_RUN" admin "AC:1" admin --outcome landed >/dev/null 2>"$WORK/err-ac-crit" ); rc_ac_crit=$?
+check "delimiter-in-id: act-commit rejects a criterionId containing ':'" "$([[ $rc_ac_crit -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+# Positive control: a legitimate ':'-free id set is entirely unaffected.
+( cd "$WORK" && bash "$EMIT" act-commit "$DELIM_RUN" admin AC1 admin --outcome landed >/dev/null ); rc_ac_ok=$?
+check "delimiter-in-id: a legitimate (no ':') id set is unaffected by the guard" "$rc_ac_ok" "0"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

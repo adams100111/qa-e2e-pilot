@@ -74,7 +74,8 @@ cross-reference, not a duplicate.
 click/type/fill_form/press_key/select_option/hover/drag/file_upload) — following
 a real link is a `browser_click` side effect, so an **act-phase `browser_navigate`
 is an address-bar URL-skip** and is fail-closed by default (`check-action-trace.js`
-Check 1/3). Five named exceptions **LOOSEN** that gate. Each is **tag-required**:
+Check 1/3). Four named exceptions (`check-action-trace.js`'s `NAV_CARVEOUTS` Set)
+**LOOSEN** that gate. Each is **tag-required**:
 the step must carry `carveout:"<name>"` naming one of these exact values, checked
 by Set membership — an untagged act-phase navigate, or one tagged with anything
 NOT in this list (a typo, `"bogus"`, an old/retired name), stays fail-closed and

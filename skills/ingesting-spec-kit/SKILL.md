@@ -169,7 +169,7 @@ The discovery script covers these; listed here for manual inspection:
 | `.specify/` | spec-kit default output dir |
 | `specs/` | Common alternative |
 | `docs/` | Occasional |
-| Separate `specs` repo (`repos[].role == "specs"` in config) | Multi-repo setups |
+| Separate spec repo listed in `repos[]` | Multi-repo setups — `find-spec-kit.sh` searches every configured `repos[].path`/`.root` unconditionally, it does NOT filter or special-case by `role` (there is no dedicated `"specs"` role value); give the spec repo any `role` label, its path is searched either way |
 
 ---
 
@@ -221,7 +221,7 @@ The discovery script covers these; listed here for manual inspection:
    - confidence: `low` (expected value only derivable from backend code).
 3. Record `confidence: low` in traceability. Add note: "Accrual formula not stated in spec — oracle derived from backend service. Can catch propagation/display bugs, not formula correctness."
 4. Additionally: this run's env has no vesting events triggered (cliff not reached). Verdict: `deferred`, reason: "Vesting cliff requires 12 months elapsed — not reproducible in this env. Verify in staging with a backdated grant."
-5. `traceability.json` row: `confidence: low`, `verdict: deferred`, `deferred_reason: "cliff not reachable in test env"`.
+5. `traceability.json` row: `confidence: low`, `verdict: deferred` (the row schema is exactly `criterion_id`/`criterion_label`/`spec_refs`/`constitution_refs`/`task_refs`/`verdict`/`confidence` — see `templates/traceability.md`; there is no `deferred_reason` field on the row). The deferred reason itself is recorded where checkpoint.sh already carries it: `checkpoint.sh <run-id> GOV-07b deferred --last-action "cliff not reachable in test env"`.
 
 **Must not do:** elevate confidence to `high` by reading the backend formula. Must not skip the deferred entry from the report.
 

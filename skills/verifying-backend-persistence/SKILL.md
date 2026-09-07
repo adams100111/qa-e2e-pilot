@@ -39,7 +39,7 @@ Rule of thumb: if the bytes you are reading never left the browser, it is not ba
   - **VIEW:** navigate to the list/detail route and `browser_snapshot` (forces a fresh page load + GET).
   - **API body:** read the list/detail GET response (`browser_network_request` to read a response body) — catches a UI that hides what the API actually returned.
   - **In-page read:** `browser_evaluate` to `fetch()` the read endpoint with the session's cookies (`credentials: 'include'`), READ-ONLY. Never use a write verb here. Cross-origin reads need the CORS/credentials capability detected at preflight; if unavailable, fall back to the VIEW path.
-- [ ] Capture the read-back as evidence (snapshot ref or response JSON). This is the proof, not the toast.
+- [ ] Capture the read-back as evidence via `checkpointing-qa-memory`'s `record-evidence.sh <run-id> <criterion-id> bake --read-back <json-or-text> --multiplicity <0|1|N> [--source-ref <selector>]`, which writes `evidence/<criterion-id>/bake-read-back.json` (the artifact `checkpoint.sh --kinds bake` and `qa-verify.sh` actually require) — a snapshot ref or response JSON alone, without this call, is not evidence the gate can see. This is the proof, not the toast.
 
 ### 3. Reconcile (judge against the oracle)
 - [ ] **Shape:** the entity exists AND every required field is non-null and well-typed. A row that exists but has a NULL in a NOT-NULL column is the exact way **bug #7** hid. Check each required field explicitly, not just "a row came back."

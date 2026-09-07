@@ -199,6 +199,23 @@ lines.append(
 lines.append(
     f'      <property name="qa.verified" value={quoteattr("true" if verification_records is not None else "false")}/>'
 )
+
+# Phase-surface finding (Appendix A: __phase-surface__ omission). qa-verify's
+# phase-surface pass writes AT MOST one synthetic run-level record with
+# criterionId "__phase-surface__" (see qa-verify.sh's header) — it is
+# deliberately NOT a criterion (no checkpoint.json row has that id), so the
+# per-criterion loop below never looks it up and the finding was previously
+# dropped on the floor with no rendering anywhere. It never overrides a
+# verdict (record-only -> authority, confidence:low always) so it MUST NOT
+# affect tests/failures/errors counts here either — surfaced as an
+# informational property only, same posture as qa.assuranceTier.
+phase_surface_rec = verification_by_key.get(("__phase-surface__", ""))
+if phase_surface_rec:
+    ps_reasons = phase_surface_rec.get("reasons") or []
+    ps_text = "; ".join(str(r) for r in ps_reasons) or "phase-surface finding recorded with no reason text"
+    lines.append(
+        f'      <property name="qa.phaseSurfaceFindings" value={quoteattr(ps_text)}/>'
+    )
 lines.append('    </properties>')
 
 for c in criteria:

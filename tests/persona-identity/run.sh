@@ -309,6 +309,48 @@ for ENGINE in "" python3; do
   check "[$LABEL] shared/no-persona: confidence stays high (not degraded)" \
     "$(jq -r '.[] | select(.criterionId=="CTS") | .confidence' "$(vf "$RUN")")" "high"
 
+  # --- Appendix A tighten: MULTI-PERSONA project + a high-stakes pass ------
+  # checkpointed with NO --persona at all -> identity-binding was never
+  # checked (no --persona was ever given, unlike the shared/no-persona case
+  # above which is legitimate on a project with 0/1 personas). DEGRADE,
+  # never override. -----------------------------------------------------
+  RUN="nopersonabypass_${ENGINE:-jq}"
+  ( cd "$WORK" && bash "$TOOLSTREAM" append "$RUN" \
+    "$(printf '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"np1"},"responseBody":"{\\"marker\\":\\"NOPERSONA-%s-42\\"}"}' "${ENGINE:-jq}")" >/dev/null )
+  NPREF="$( cd "$WORK" && bash "$REC" "$RUN" CTN probe --status 403 --shape "{\"marker\":\"NOPERSONA-${ENGINE:-jq}-42\"}" --ok true )"
+  ( cd "$WORK" && bash "$CKPT" "$RUN" CTN pass --kinds probe --evidence-refs "$NPREF" >/dev/null )
+  write_checklist "$RUN" '[{"id":"CTN","surface":"/x","kind":"error-state","tags":["cross-tenant"],"action":"View another tenant'"'"'s record (expect isolation), no persona given"}]'
+  mkdir -p "$WORK/.qa"
+  printf '%s' '{"personas":[{"id":"alice","role":"user","plane":"global","auth":"seeded"},{"id":"bob","role":"admin","plane":"global","auth":"seeded"}]}' \
+    > "$WORK/.qa/config.json"
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  RC=$?
+  check "[$LABEL] multi-persona project, no --persona on a high-stakes pass: qa-verify exits 0 (degrade, never override)" "$RC" "0"
+  check "[$LABEL] multi-persona project, no --persona: CTN stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="CTN") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] multi-persona project, no --persona: confidence degrades to low (was previously silently exempt)" \
+    "$(jq -r '.[] | select(.criterionId=="CTN") | .confidence' "$(vf "$RUN")")" "low"
+  check_contains "[$LABEL] multi-persona project, no --persona: reason names the persona count" \
+    "$(jq -r '.[] | select(.criterionId=="CTN") | .reasons | join("; ")' "$(vf "$RUN")")" "2 personas"
+  rm -f "$WORK/.qa/config.json"
+
+  # --- Positive control: SAME shape, but the project config declares only
+  # ONE persona -> no role-sensitivity signal, exemption still applies
+  # (never a false-positive degrade on a genuinely single-persona target).
+  RUN="singlepersonaok_${ENGINE:-jq}"
+  ( cd "$WORK" && bash "$TOOLSTREAM" append "$RUN" \
+    "$(printf '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"sp1"},"responseBody":"{\\"marker\\":\\"SINGLEP-%s-42\\"}"}' "${ENGINE:-jq}")" >/dev/null )
+  SPREF="$( cd "$WORK" && bash "$REC" "$RUN" CTP probe --status 403 --shape "{\"marker\":\"SINGLEP-${ENGINE:-jq}-42\"}" --ok true )"
+  ( cd "$WORK" && bash "$CKPT" "$RUN" CTP pass --kinds probe --evidence-refs "$SPREF" >/dev/null )
+  write_checklist "$RUN" '[{"id":"CTP","surface":"/x","kind":"error-state","tags":["cross-tenant"],"action":"View another tenant'"'"'s record (expect isolation), single-persona project"}]'
+  mkdir -p "$WORK/.qa"
+  printf '%s' '{"personas":[{"id":"alice","role":"user","plane":"global","auth":"seeded"}]}' \
+    > "$WORK/.qa/config.json"
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] single-persona project, no --persona: confidence stays high (exemption still applies)" \
+    "$(jq -r '.[] | select(.criterionId=="CTP") | .confidence' "$(vf "$RUN")")" "high"
+  rm -f "$WORK/.qa/config.json"
+
   # --- read-only, non-high-stakes: identity NOT checked even though a ------
   # mismatching identity.json exists for the same persona/run. A real
   # toolstream capture backs the bake read-back so provenance resolves

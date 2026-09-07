@@ -372,4 +372,37 @@ else
   echo "SKIP - dual-engine sub-case: jq or python3 not present on this host"
 fi
 
+# ---------------------------------------------------------------------------
+# apply: Fix-27 class (Appendix A) — a criterionId containing JSON metachars
+# (a double-quote) must NOT corrupt the single-key JSON array `apply` builds
+# internally to join openActs. journal-emit.sh only requires scenarioId/
+# criterionId to be non-empty (no Fix-28-style token guard on those, unlike
+# run-id) — so a criterionId like `AC"1` is a genuinely reachable value, not
+# a hypothetical. Before the fix this was string-interpolated as
+# "[\"${key}\"]"; a key containing `", "` would have silently GROWN the
+# array (JSON injection), and one containing a bare `"` would have produced
+# invalid JSON the join would choke on. Proves apply resolves the SAME key
+# cleanly under both engines.
+# ---------------------------------------------------------------------------
+QUOTEY_CRIT_ID='AC"1'
+QUOTEY_KEY="qa6:admin:${QUOTEY_CRIT_ID}"
+( cd "$WORK" && bash "$EMIT" started qa6 admin "$QUOTEY_CRIT_ID" admin >/dev/null )
+( cd "$WORK" && bash "$EMIT" act-intent qa6 admin "$QUOTEY_CRIT_ID" admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+APPLY_QUOTEY="$( cd "$WORK" && bash "$RECON" apply qa6 "$QUOTEY_KEY" --readbacks "$RB_ALL" 2>"$WORK/qa6.stderr" )"
+RC_QUOTEY=$?
+check "apply (quote-in-key): exits 0, not corrupted/rejected by malformed JSON" "$RC_QUOTEY" "0"
+check "apply (quote-in-key): resolves to done" "$(tail -n1 <<< "$APPLY_QUOTEY")" "done"
+check "apply (quote-in-key): act_committed journaled for exactly this key" \
+  "$(jq -s -r --arg k "$QUOTEY_KEY" '[.[] | select(.event=="act_committed" and .key==$k)] | length' "$WORK/.qa/runs/qa6/journal.ndjson")" "1"
+
+# Same scenario under QA_ENGINE=python3, in an isolated run-id, proving the
+# python3 leg's json.dumps([key]) is equally immune (dual-engine parity for
+# this specific fix — the string-interpolation bug pre-dated engine choice).
+( cd "$WORK" && QA_ENGINE=python3 bash "$EMIT" started qa7 admin "$QUOTEY_CRIT_ID" admin >/dev/null )
+( cd "$WORK" && QA_ENGINE=python3 bash "$EMIT" act-intent qa7 admin "$QUOTEY_CRIT_ID" admin --criterion "$MUT_CRIT" --write-set "$WS_ALL" >/dev/null )
+APPLY_QUOTEY_PY="$( cd "$WORK" && QA_ENGINE=python3 bash "$RECON" apply qa7 "qa7:admin:${QUOTEY_CRIT_ID}" --readbacks "$RB_ALL" 2>"$WORK/qa7.stderr" )"
+RC_QUOTEY_PY=$?
+check "apply (quote-in-key, python3 engine): exits 0" "$RC_QUOTEY_PY" "0"
+check "apply (quote-in-key, python3 engine): resolves to done" "$(tail -n1 <<< "$APPLY_QUOTEY_PY")" "done"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

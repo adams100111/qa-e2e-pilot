@@ -183,4 +183,57 @@ check_contains "qa-ci Case C: the skip is LOGGED, not silent" "$(cat "$DIR_C/std
 check_contains "qa-ci Case C: the log names the reason (QA_SKIP_VERIFY=1)" "$(cat "$DIR_C/stdout.log")" "QA_SKIP_VERIFY=1"
 check_contains "qa-ci Case C: the log states the run is UNVERIFIED" "$(cat "$DIR_C/stdout.log")" "UNVERIFIED"
 
+# ===========================================================================
+# PART 4 — qa-ci.sh locates the run via .qa/runs/latest (Appendix A: qa-ci.sh
+# `ls -t` vs `.qa/runs/latest`), not an mtime scan, and still degrades
+# gracefully via the mtime fallback when the pointer is stale/absent.
+# ===========================================================================
+DIR_D="$WORK/ci-d"; mkdir -p "$DIR_D/.qa/runs/older-run" "$DIR_D/.qa/runs/pointer-target"
+cat > "$DIR_D/.qa/runs/older-run/checkpoint.json" <<'EOF'
+{"runId":"older-run","criteria":[]}
+EOF
+cat > "$DIR_D/.qa/runs/pointer-target/checkpoint.json" <<'EOF'
+{"runId":"pointer-target","criteria":[]}
+EOF
+printf 'pointer-target\n' > "$DIR_D/.qa/runs/latest"
+# older-run is touched LAST so it is the mtime-newest directory — proves an
+# mtime scan alone would pick the wrong run; the `latest` pointer must win.
+sleep 1.1
+touch "$DIR_D/.qa/runs/older-run/checkpoint.json"
+cat > "$DIR_D/agent-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$DIR_D/agent-stub.sh"
+cat > "$DIR_D/verify-ok.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$DIR_D/verify-ok.sh"
+( cd "$DIR_D" && QA_SKIP_PREFLIGHT=1 QA_AGENT_CMD="bash ./agent-stub.sh" \
+    QA_VERIFY_CMD="$DIR_D/verify-ok.sh" QA_JUNIT_OUT="$DIR_D/out.xml" \
+    bash "$QACI" "some target" >"$DIR_D/stdout.log" 2>&1 )
+RC_D=$?
+check "qa-ci Case D: latest-pointer run resolved even when mtime order disagrees" "$RC_D" "0"
+check_contains "qa-ci Case D: the resolved run is the latest-pointer target, not the mtime-newest dir" \
+  "$(cat "$DIR_D/stdout.log")" "run: pointer-target"
+
+# --- Case E: .qa/runs/latest missing entirely -> fall back to mtime scan. ---
+DIR_E="$WORK/ci-e"; mkdir -p "$DIR_E/.qa/runs/onlyrun"
+cat > "$DIR_E/.qa/runs/onlyrun/checkpoint.json" <<'EOF'
+{"runId":"onlyrun","criteria":[]}
+EOF
+cat > "$DIR_E/agent-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$DIR_E/agent-stub.sh"
+( cd "$DIR_E" && QA_SKIP_PREFLIGHT=1 QA_AGENT_CMD="bash ./agent-stub.sh" \
+    QA_VERIFY_CMD="$DIR_D/verify-ok.sh" QA_JUNIT_OUT="$DIR_E/out.xml" \
+    bash "$QACI" "some target" >"$DIR_E/stdout.log" 2>&1 )
+check_contains "qa-ci Case E: no latest pointer -> falls back to mtime scan and still finds the run" \
+  "$(cat "$DIR_E/stdout.log")" "run: onlyrun"
+check_contains "qa-ci Case E: fallback path is logged, not silent" \
+  "$(cat "$DIR_E/stdout.log")" "falling back to mtime scan"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

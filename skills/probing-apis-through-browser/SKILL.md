@@ -93,7 +93,7 @@ Prerequisites:
    ```js
    return await probe({ url: '/api/trpc/governance.templateList' });
    ```
-3. Pass the combined text to **browser_evaluate** (or **browser_run_code_unsafe** if evaluate is unavailable).
+3. Pass the combined text to **browser_evaluate**. Never `browser_run_code_unsafe` — `scripts/block-hook.sh` denies it unconditionally on every phase, any payload (RCE-equivalent); if `browser_evaluate` is genuinely unavailable on the configured driver, record the probe step `blocked` instead of substituting it.
 4. Capture the returned object: `{ ok, status, url, body, durationMs }`.
 
 The script uses `credentials:'include'` so the existing session cookies authenticate the call automatically. It refuses any non-GET unless `allowWrite:true` is explicitly passed. It strips auth headers from anything it echoes and truncates body to 8 000 chars.
@@ -230,5 +230,5 @@ These are concrete "given X → catch Y" cases drawn from the real governance mo
 ## Reference
 
 - `scripts/backend-probe.js` — inject via browser_evaluate; returns `{ ok, status, url, body, durationMs }`; refuses non-GET without `allowWrite:true`; strips auth headers.
-- Browser tools used: **browser_network_requests** (list captured traffic), **browser_network_request** (read one response body), **browser_evaluate** / **browser_run_code_unsafe** (inject probe script).
+- Browser tools used: **browser_network_requests** (list captured traffic), **browser_network_request** (read one response body), **browser_evaluate** (inject probe script) — never `browser_run_code_unsafe`, which `scripts/block-hook.sh` denies unconditionally.
 - Config flags: `allowApiWrites`, `seedableEnvMarker` — both required for any write; see `.qa/config.json` (ADR-0004).

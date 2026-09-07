@@ -156,4 +156,42 @@ else
   echo "SKIP - poisoned-jq sub-case: python3 not present on this host"
 fi
 
+# ---------------------------------------------------------------------------
+# Appendix A: ensure_ascii byte divergence. jq (no -a/--ascii-output flag)
+# emits non-ASCII characters as raw UTF-8 bytes; python3's json.dumps
+# defaults to ensure_ascii=True, which \uXXXX-escapes them instead — a real
+# byte-parity break for any run whose action/title text is non-ASCII (this
+# repo explicitly supports Arabic/RTL — driving-browser-qa's SKILL). Proves
+# both append and atomic_write/canonical produce byte-IDENTICAL output
+# across engines for Arabic + emoji content, and that the python3 leg never
+# falls back to \u-escaping.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  NONASCII_JSON='{"event":"criterion_started","criterionId":"AC1","note":"مرحبا 👋 café"}'
+
+  ( cd "$WORK" && bash "$J" append nonascii-jq '{"event":"run_started","runId":"nonascii-jq"}' >/dev/null )
+  ( cd "$WORK" && bash "$J" append nonascii-jq "$NONASCII_JSON" >/dev/null )
+  ( cd "$WORK" && QA_ENGINE=python3 bash "$J" append nonascii-py '{"event":"run_started","runId":"nonascii-py"}' >/dev/null )
+  ( cd "$WORK" && QA_ENGINE=python3 bash "$J" append nonascii-py "$NONASCII_JSON" >/dev/null )
+
+  JQ_LINE="$(sed -n 2p "$WORK/.qa/runs/nonascii-jq/journal.ndjson" | jq -Sc 'del(.t)')"
+  PY_LINE="$(sed -n 2p "$WORK/.qa/runs/nonascii-py/journal.ndjson" | jq -Sc 'del(.t)')"
+  check "ensure_ascii: jq-engine append preserves raw UTF-8 (no \\u escape)" \
+    "$(sed -n 2p "$WORK/.qa/runs/nonascii-jq/journal.ndjson" | grep -c '\\u')" "0"
+  check "ensure_ascii: python3-engine append preserves raw UTF-8 (no \\u escape)" \
+    "$(sed -n 2p "$WORK/.qa/runs/nonascii-py/journal.ndjson" | grep -c '\\u')" "0"
+  check "ensure_ascii: jq vs python3 append is byte-identical (timestamps stripped)" "$JQ_LINE" "$PY_LINE"
+  check "ensure_ascii: python3-engine line contains the raw Arabic text" \
+    "$(sed -n 2p "$WORK/.qa/runs/nonascii-py/journal.ndjson" | grep -c 'مرحبا')" "1"
+
+  NONASCII_JQ_CANON="$(echo "$NONASCII_JSON" | ( cd "$WORK" && bash "$J" canonical ))"
+  NONASCII_PY_CANON="$(echo "$NONASCII_JSON" | ( cd "$WORK" && QA_ENGINE=python3 bash "$J" canonical ))"
+  check "ensure_ascii: canonical (atomic_write path) byte-identical across engines" "$NONASCII_JQ_CANON" "$NONASCII_PY_CANON"
+  check "ensure_ascii: canonical python3 leg has no \\u escape" "$(grep -c '\\u' <<< "$NONASCII_PY_CANON")" "0"
+
+  echo "note - ensure_ascii byte-divergence sub-case: RAN"
+else
+  echo "SKIP - ensure_ascii byte-divergence sub-case: jq or python3 not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

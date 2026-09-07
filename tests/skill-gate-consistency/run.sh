@@ -123,8 +123,50 @@ else
   bad "found a 'using the script' set-instruction in: ${SET_VIA_SCRIPT_HITS[*]} (react-set-input.js is read-only per ADR-0015)"
 fi
 
+# Appendix A (audit-2 W3-7a): generating-qa-checklist's Eval 5 F4 case used
+# to read "entered via `scripts/react-set-input.js`" — a SECOND wording of
+# the same defect the check above catches, phrased as "entered via
+# <script>" rather than "using the script", so it slipped past that grep.
+# Catch it precisely: "entered via" immediately followed by the script name.
+mapfile -t ENTERED_VIA_HITS < <(grep -rlinE "entered via \`?(scripts/)?react-set-input\.js" "$ROOT/skills" 2>/dev/null || true)
+if [[ "${#ENTERED_VIA_HITS[@]}" -eq 0 ]]; then
+  ok "no skill instructs entering a value 'entered via react-set-input.js' (read-only per ADR-0015)"
+else
+  bad "found an 'entered via react-set-input.js' set-instruction in: ${ENTERED_VIA_HITS[*]} (react-set-input.js is read-only per ADR-0015)"
+fi
+
 # ---------------------------------------------------------------------------
-# 5. Skill bodies stay under 500 lines (move overflow to references/).
+# 5. No skill RECOMMENDS browser_run_code_unsafe as a usable fallback tool —
+#    scripts/block-hook.sh denies it unconditionally on every phase, any
+#    payload (RCE-equivalent). Appendix A: probing-apis-through-browser used
+#    to suggest it as an "if evaluate is unavailable" fallback, directly
+#    contradicting the hook. Every mention across skills/ must describe it
+#    as forbidden/denied, never as something to actually invoke — catch a
+#    reintroduced "or browser_run_code_unsafe" / "browser_run_code_unsafe if"
+#    suggestion pattern.
+# ---------------------------------------------------------------------------
+mapfile -t RCU_RECOMMEND_HITS < <(grep -rlinE "(or |use )[\`*]*browser_run_code_unsafe[\`*]* if| browser_run_code_unsafe[\`*]* \(inject" "$ROOT/skills" 2>/dev/null || true)
+if [[ "${#RCU_RECOMMEND_HITS[@]}" -eq 0 ]]; then
+  ok "no skill recommends browser_run_code_unsafe as a usable fallback (block-hook.sh denies it unconditionally)"
+else
+  bad "found a browser_run_code_unsafe recommendation in: ${RCU_RECOMMEND_HITS[*]} (block-hook.sh denies it on every phase)"
+fi
+
+# Appendix A: browser_network_request is a READ-only tool (headers/body of one
+# captured request) — it cannot re-issue/replay a request. walking-multistep-
+# flows used to suggest "replay ... using browser_network_request" as an
+# idempotency-check shortcut, a factually wrong capability claim that could
+# nudge an agent toward an ungated write path. Catch "replay" co-occurring
+# with browser_network_request on the same line.
+mapfile -t REPLAY_HITS < <(grep -rliE "replay.*browser_network_request|browser_network_request.*replay" "$ROOT/skills" 2>/dev/null || true)
+if [[ "${#REPLAY_HITS[@]}" -eq 0 ]]; then
+  ok "no skill suggests 'replaying' a request via browser_network_request (it is read-only)"
+else
+  bad "found a browser_network_request replay suggestion in: ${REPLAY_HITS[*]} (the tool only reads a captured request/response)"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Skill bodies stay under 500 lines (move overflow to references/).
 # ---------------------------------------------------------------------------
 BODIES=(
   "skills/driving-browser-qa/SKILL.md"

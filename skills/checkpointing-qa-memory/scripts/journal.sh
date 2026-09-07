@@ -308,7 +308,7 @@ obj = json.loads(sys.stdin.read())
 obj["t"] = sys.argv[1]
 obj["childId"] = sys.argv[2]
 obj["childSeq"] = int(sys.argv[3])
-print(json.dumps(obj, separators=(",", ":")))
+print(json.dumps(obj, separators=(",", ":"), ensure_ascii=False))
 ' "$now" "$child" "$child_seq" <<< "$event_json")" \
         || die "journal_append: python3 failed to stamp t/childId/childSeq onto the event."
     fi
@@ -324,7 +324,7 @@ import json, sys
 obj = json.loads(sys.stdin.read())
 obj["seq"] = int(sys.argv[1])
 obj["t"] = sys.argv[2]
-print(json.dumps(obj, separators=(",", ":")))
+print(json.dumps(obj, separators=(",", ":"), ensure_ascii=False))
 ' "$seq" "$now" <<< "$event_json")" \
         || die "journal_append: python3 failed to stamp seq/t onto the event."
     fi
@@ -379,7 +379,7 @@ atomic_write() {
     if ! canon="$(python3 -c '
 import json, sys
 obj = json.loads(sys.stdin.read())
-print(json.dumps(obj, sort_keys=True, separators=(",", ":")))
+print(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
 ' <<< "$input" 2>/dev/null)"; then
       die "atomic_write: input on stdin is not valid JSON."
     fi
@@ -450,7 +450,7 @@ canonical() {
     python3 -c '
 import json, sys
 obj = json.load(sys.stdin)
-print(json.dumps(obj, sort_keys=True, separators=(",", ":")))
+print(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
 ' || die "canonical: python3 failed to parse/serialize stdin as JSON."
   else
     die "journal.sh needs either 'jq' or 'python3' to canonicalize JSON."
