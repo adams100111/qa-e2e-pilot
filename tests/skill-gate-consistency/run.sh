@@ -188,5 +188,34 @@ for rel in "${BODIES[@]}"; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# 7. Live cross-check: generating-qa-checklist/SKILL.md's Eval 5 EDGE-03
+#    line ("add founders 1, 2, 3 ...") states a `Kinds` value for a
+#    `multiplicity-N` criterion whose action text contains a mutating verb
+#    ("add"). Actually CALL required-kinds.sh on that exact criterion shape
+#    and assert the SKILL.md line names its real output — catches the
+#    eval-vs-deriver drift class fixed in audit-2 W3 (Kinds lines that
+#    quietly stopped matching required-kinds.sh's actual rules).
+# ---------------------------------------------------------------------------
+REQUIRED_KINDS="$ROOT/skills/checkpointing-qa-memory/scripts/required-kinds.sh"
+if [[ -f "$REQUIRED_KINDS" ]]; then
+  EDGE03_JSON='{"kind":"multiplicity-N","tags":[],"action":"add founders 1, 2, 3 in sequence"}'
+  EDGE03_DERIVED="$(bash "$REQUIRED_KINDS" derive "$EDGE03_JSON" 2>/dev/null)"
+  if [[ -z "$EDGE03_DERIVED" ]]; then
+    bad "required-kinds.sh derive produced no output for the EDGE-03 criterion shape (script broken?)"
+  else
+    EDGE03_LINE="$(grep -F 'C-FOUNDERS-EDGE-03' "$CHECKLIST_SKILL" || true)"
+    if [[ -z "$EDGE03_LINE" ]]; then
+      bad "C-FOUNDERS-EDGE-03 line not found in generating-qa-checklist/SKILL.md (eval renamed/removed?)"
+    elif grep -qF "Kinds: ${EDGE03_DERIVED}" <<< "$EDGE03_LINE"; then
+      ok "generating-qa-checklist/SKILL.md EDGE-03 Kinds line matches a live required-kinds.sh derive (${EDGE03_DERIVED})"
+    else
+      bad "generating-qa-checklist/SKILL.md EDGE-03 Kinds line does NOT match required-kinds.sh's live output (expected 'Kinds: ${EDGE03_DERIVED}' in: ${EDGE03_LINE})"
+    fi
+  fi
+else
+  bad "required-kinds.sh not found at $REQUIRED_KINDS"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
