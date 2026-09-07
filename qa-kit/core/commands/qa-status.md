@@ -21,18 +21,20 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    - `scenarios.md` + `checklist.json` → scenarios done. If absent (but spec present) → next step:
      **`/qa-scenarios`**.
    - `analysis.md` → analyze done. If absent (but scenarios present) → next step: **`/qa-analyze`**.
-   - a `runs.json` entry or `.qa/runs/<id>/` for this spec → at least one run happened. If none (but
-     scenarios present) → next step: **`/qa-run "<target>"`**.
+   - a `.qa/runs/<id>/run-manifest.json` whose `target_feature` matches this spec's target (the same
+     resolution `/qa-verify` uses) → at least one run happened. If none (but scenarios present) →
+     next step: **`/qa-run "<target>"`**.
    - `.qa/specs/<t>/verification.md` → post-run verify done. If absent (but a run exists) → next step:
      **`/qa-verify "<target>"`**.
 
 3. **Drift advisory (per spec).** For each spec with a `spec-roles.json`, compare its stamped
-   `constitutionVersion` to the current `.qa/constitution.state.json` `version`:
+   `constitutionVersion` to the current `.qa/constitution.state.json` `version`. Use qa-kit's
+   `spec-snapshot.sh drift <spec-roles.json> <current-constitution-version>` helper for this
+   comparison (it prints `{stale, stamped, current}`):
    - equal → in sync.
    - different → **advisory** (not a block): "spec `<target>` was snapshotted from constitution
      `<stamped>`, but the constitution is now `<current>` — its frozen roles may be stale; re-run
-     `/qa-spec` for `<target>` if you want the current roles." *(Once qa-kit's `spec-snapshot.sh drift`
-     helper ships, use it for this comparison; until then compare the two `version` strings directly.)*
+     `/qa-spec` for `<target>` if you want the current roles."
 
 4. **Print a compact summary:** one line for the constitution (version + role count, or "none"), then
    one line per spec — `<target>: spec ✓ / scenarios ✓ / analyze ✗ / runs 0 · next: /qa-analyze

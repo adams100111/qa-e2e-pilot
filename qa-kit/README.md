@@ -40,6 +40,7 @@ end-to-end run per non-Claude harness is the **manual accuracy run**.
 | 3 | `/qa-scenarios <target>` | `scenarios.md` + `checklist.json` | Compiles the frozen plan (reusing the engine's checklist writer) scoped to the spec's snapshot roles; every scenario role must be in the snapshot. **This `checklist.json` is the enforcement contract.** |
 | 4 | `/qa-analyze <target>` | `analysis.md` | Read-only, **advisory** coverage/consistency gate. Never blocks. |
 | 5 | `/qa-e2e-pilot:qa-run "<target>" .qa/specs/<target>/checklist.json` | `.qa/runs/<id>/…` | The engine's existing run — ingests the frozen `checklist.json` (it already accepts a checklist/spec path), freezes it (`plan_frozen`, ADR-0020), drives/bakes/verifies/reports. |
+| 6 | `/qa-verify <target> [<run-id>]` | `.qa/specs/<target>/verification.md` | Post-run verification: the out-of-plan-act check (`verify-plan.sh` — the one enforcement seam below) plus a qa-kit-flow-native restatement of the engine's deterministic overrides (`verification.json`). Reports; the script results are the gate. |
 
 `/qa-status [<target>]` shows where you are + any constitution drift.
 
