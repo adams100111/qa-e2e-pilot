@@ -60,9 +60,19 @@ The agent-level `permission`/`tools` deny map in `harnesses/opencode/manifest.tm
 top of that — it bounds what the agent process itself can reach — not the primary safety
 mechanism. Do not rely on a skill's `allowed-tools` line to constrain behavior under opencode.
 
+**accuracy-unvalidated on this harness — see docs/harness-adapters.md (manual accuracy run
+required).** No `measured-opencode` findings file exists yet under
+`tools/accuracy-harness/findings/`; treat this adapter's output as unverified until that run
+lands.
+
 See `docs/harness-adapters.md` for the full cross-harness comparison and the manual accuracy-run
 procedure (serve `tools/accuracy-harness/fixture/`, point `.qa/config.json` at it, run the agent
-end-to-end, convert + score the bug-log against the 85%/100% gate).
+end-to-end, convert + score the bug-log against the acceptance gate). The enforced gate
+(`tools/accuracy-harness/seeds.json`'s `gate` block) is **functional recall ≥ 70%, ux-objective
+recall ≥ 75%, overall verdict recall ≥ 70%, precision ≥ 80%** — the "78% functional / 100%
+ux-objective / 85% overall / 100% precision" figure quoted in `tools/accuracy-harness/README.md`
+is the *measured* reference number from the Claude harness run, not the enforced threshold; a
+harness only needs to clear the gate above, not match that number.
 
 ## Grounding files are unanchored — confirm resolution during the manual accuracy run
 

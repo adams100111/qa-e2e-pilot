@@ -243,6 +243,12 @@ to add, and the manual accuracy-run procedure each adapter must clear (Pi first)
 [ADR-0017](./docs/adr/0017-multi-harness-portability.md) for the design decision (shared core + generated
 adapters + a Claude byte-oracle enforced in CI).
 
+**accuracy-unvalidated on these harnesses — see docs/harness-adapters.md (manual accuracy run
+required).** Only the Claude Code path has a committed `measured-*` findings file under
+`tools/accuracy-harness/findings/`; each installer above prints this same caveat at the end of a
+successful install, and it comes down for a given harness only once that harness has its own
+measured run committed.
+
 ---
 
 ## qa-kit — the optional step-gated process shell
