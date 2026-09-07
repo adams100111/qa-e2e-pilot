@@ -510,9 +510,16 @@ cmd_check() {
   local raw_events events_json
   raw_events="$(bash "$TOOLSTREAM" read "$run_id" 2>/dev/null)"
 
+  local raw_count parsed_count
+  raw_count="$(printf '%s\n' "$raw_events" | grep -c . || true)"
+
   if has_jq; then
-    events_json="$(printf '%s\n' "$raw_events" | jq -s -c '.' 2>/dev/null)"
+    events_json="$(printf '%s\n' "$raw_events" | jq -Rn -c '[inputs | fromjson?]' 2>/dev/null)"
     [[ -z "$events_json" ]] && events_json="[]"
+    parsed_count="$(jq -r 'length' <<< "$events_json")"
+    if (( raw_count > parsed_count )); then
+      echo "WARN: provenance.sh skipped $((raw_count - parsed_count)) unparseable toolstream line(s) (torn write?) for run '${run_id}'." >&2
+    fi
     check_jq "$artifact_json" "$events_json"
   elif has_py; then
     events_json="$(python3 -c '
@@ -528,6 +535,10 @@ for line in sys.stdin.read().splitlines():
         continue
 print(json.dumps(events))
 ' <<< "$raw_events")"
+    parsed_count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<< "$events_json")"
+    if (( raw_count > parsed_count )); then
+      echo "WARN: provenance.sh skipped $((raw_count - parsed_count)) unparseable toolstream line(s) (torn write?) for run '${run_id}'." >&2
+    fi
     check_py "$artifact_json" "$events_json"
   else
     die "provenance.sh needs either 'jq' or 'python3'."

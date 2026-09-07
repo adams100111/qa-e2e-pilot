@@ -202,4 +202,22 @@ for ENGINE in "" python3; do
     "$(run_check "$ENGINE" "r4" "$ACTION_LEGIT_EVALUATE")" "bound"
 done
 
+# --- audit-2 W1-3: one torn line must not blank the whole toolstream --------
+# The suite's existing `run_check <engine> <run> <artifact>` helper returns the
+# binding string and its engine loop is `for ENGINE in "" python3` ("" = jq
+# default) — reuse both, plus a full-JSON byte-parity capture:
+printf '%s' '{"tool":"Bash","args"' >> "$WORK/.qa/runs/r1/toolstream.jsonl"   # torn, no newline term
+for ENGINE in "" python3; do
+  LABEL="${ENGINE:-jq(default)}"
+  check "[$LABEL] torn line: genuine bake still binds" \
+    "$(run_check "$ENGINE" "r1" "$BAKE_BOUND")" "bound"
+done
+TORN_J="$( cd "$WORK" && QA_ENGINE=""      bash "$PROV" check r1 ".qa/runs/r1/$BAKE_BOUND" 2>"$WORK/torn-j.err" )"
+TORN_P="$( cd "$WORK" && QA_ENGINE=python3 bash "$PROV" check r1 ".qa/runs/r1/$BAKE_BOUND" 2>"$WORK/torn-p.err" )"
+check "torn line: engines byte-identical" "$TORN_J" "$TORN_P"
+check "torn line: jq leg warns with skipped count" \
+  "$(grep -c 'skipped 1 unparseable' "$WORK/torn-j.err" || true)" "1"
+check "torn line: python leg warns with skipped count" \
+  "$(grep -c 'skipped 1 unparseable' "$WORK/torn-p.err" || true)" "1"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
