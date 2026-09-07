@@ -100,7 +100,8 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    is NOT a change to the engine. BEFORE the read-back verify above, iff a confirmed `.qa/specs/<target>/seed.json`
    exists, the run consults the pure gate
    `bash "{{PLUGIN_ROOT}}/scripts/auto-seed.sh" decide .qa/config.json`:
-   - `seed:true` (⇔ `allowApiWrites==true` AND `seedableEnvMarker` non-empty AND `environment != "production"` —
+   - `seed:true` (⇔ `allowApiWrites==true` AND `seedableEnvMarker` non-empty and not the literal bootstrap
+     sentinel `"QA_DISPOSABLE_ENV"` (never a deliberate opt-in) AND `environment != "production"` —
      the engine's own write gate) **AND** a human confirmed the exec → run `seed.json`'s `command` in its `cwd`
      (a `Bash` exec — the one write), then fall through to the declare-and-verify read-back to confirm the
      baseline actually landed.

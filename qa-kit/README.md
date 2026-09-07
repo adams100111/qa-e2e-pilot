@@ -60,7 +60,7 @@ from the plan (increment-4 finding — see ADR-0022). qa-kit closes that with a 
 - `data-baseline.sh` — validate `data-baseline.json` (origin/identity/scope) + `expected-count` (measured + delta).
 - `check-fixtures.sh` — computing criteria (`kind ∈ {computed-logic, business-rule}`) must carry a well-formed pinned expect.
 - `detect-seed.sh` — (6b) propose the stack's seed command by READING the engine's `stack-profile.json` (backend component's `framework`/`orm.name`); never modifies `detecting-stack-profile`.
-- `auto-seed.sh` — (6b) `decide` the opt-in write gate: `allowApiWrites` + non-empty `seedableEnvMarker` + `environment != production` (mirrors the engine's write gate). Decides only; never execs.
+- `auto-seed.sh` — (6b) `decide` the opt-in write gate: `allowApiWrites` + non-empty `seedableEnvMarker` (excluding the literal bootstrap sentinel `"QA_DISPOSABLE_ENV"`, never a deliberate opt-in) + `environment != production` (mirrors the engine's write gate). Decides only; never execs.
 
 All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases}/run.sh`
 (cross-engine byte-identity + malformed-input symmetry). The full **phased ≡ one-shot** verdict

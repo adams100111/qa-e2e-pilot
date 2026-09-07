@@ -60,7 +60,7 @@ Never fan 0/1/N across drivers/sessions — a parallel create destroys the 0-sta
 - **deferred** — you deliberately did not perform a read-back you'd planned (e.g. no API read route this run, cross-tenant session unavailable, allowApiWrites off so you couldn't set up the N case). State the reason. **deferred ≠ blocked ≠ error.** Never fake a pass from a toast — defer honestly instead.
 
 ## Writes for setup are gated
-You bake by READING. If you must seed the N case via a direct API write, that is gated behind `allowApiWrites: true` AND the `seedableEnvMarker` (disposable env). Default OFF — prefer creating through the UI. Probing/baking itself is read-only.
+You bake by READING. If you must seed the N case via a direct API write, that is gated behind `allowApiWrites: true` AND a non-empty `seedableEnvMarker` that is **not** the literal bootstrap sentinel `"QA_DISPOSABLE_ENV"` (that verbatim default was never a deliberate opt-in — audit-2 W1-5; disposable env). Default OFF — prefer creating through the UI. Probing/baking itself is read-only.
 
 ## Worked micro-examples
 

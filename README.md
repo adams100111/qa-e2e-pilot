@@ -42,11 +42,13 @@ Browser **mechanics** are delegated to the Playwright/CDP MCP — not rebuilt.
 ```
 .claude-plugin/   plugin.json + marketplace.json (2 plugins: qa-e2e-pilot engine + qa-kit shell)
 agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-and-committed, see below)
-commands/         qa-run.md   — /qa-run <target> [checklist|spec]
-                  qa-roles.md — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
+commands/         qa-run.md    — /qa-run <target> [checklist|spec]
+                  qa-roles.md  — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
+                  qa-resume.md — /qa-resume [run-id] (resume an interrupted Run at its frozen cursor)
 skills/           17 skills (see below)
-scripts/          install.sh · skills.json · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
-                  build-adapter.sh · validate-adapters.sh (multi-harness, see below)
+scripts/          install.sh · skills.json · qa-verify.sh · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
+                  build-adapter.sh · validate-adapters.sh · run-engine-ci.sh · check-suite-coverage.sh
+                  (+ the hook scripts wired via .claude-plugin/plugin.json; multi-harness, see below)
 .qa/              config.json.example + per-run output
 qa-kit/           the optional step-gated process shell — 2nd plugin (own manifest, commands,
                   scripts, agent, README); depends on the engine, reuses its skills by qualified slug

@@ -10,12 +10,16 @@
 ### CI / gate (config, but the highest-value gap)
 - [x] **`.github/workflows/adapters.yml` only ran `scripts/validate-adapters.sh`** (engine byte-oracle) — no
       qa-kit gate. **DONE (PR #63):** added a dedicated `qa-kit` job running `validate-qakit-adapters.sh` + the
-      10 qa-kit dual-engine suites.
-- [ ] **Broader finding (out of this session's scope):** the **entire `tests/` corpus (44 suites)** — including
-      all the *engine* tests — is likewise **ungated in CI** (adapters.yml never ran them). The new `qa-kit` job
-      covers the qa-kit subset; wiring the engine suites (some need node) is a separate maintainer decision — a
-      blanket `for d in tests/*/run.sh` loop is the obvious move but needs each suite confirmed green in a clean
-      CI image first.
+      qa-kit dual-engine suites (list lives in `qa-kit/scripts/run-qakit-ci.sh`).
+- [x] **RESOLVED — superseded by the "Engine suites now gated" entry below** (was: "the entire `tests/`
+      corpus, including engine tests, is likewise ungated in CI"). That is no longer true: `adapters.yml` runs
+      four jobs — `validate` (engine byte-oracle), `qa-kit` (`run-qakit-ci.sh`), `engine`
+      (`scripts/run-engine-ci.sh`, self-contained engine suites), and `suite-coverage`
+      (`scripts/check-suite-coverage.sh`, a meta-gate enforcing every `tests/<suite>/` dir is enrolled in
+      exactly one of the two suite lists — currently green). This bullet was left un-ticked after that work
+      landed, contradicting the later entry; ticked here to remove the self-contradiction. A blanket
+      `tests/*/run.sh` glob is still deliberately avoided (some suites need a live app / hang) — the two
+      curated lists plus the coverage meta-gate is the durable answer to that gap, not a future TODO.
 
 ### Root `README.md` — DONE (PR #64)
 - [x] **~239:** "v1 Claude-only" flipped to: TDQA data layer (ADR-0023) + all-four-harnesses (ADR-0024).
@@ -51,6 +55,13 @@
       guard's `criterion_started` requirement — a latent bug the ungated corpus was hiding) — **fixed** in
       `fix/reconcile-rebake-fsm-guard` and now enrolled. A blanket `tests/*/run.sh` glob is still avoided
       (some suites need a live app / hang).
+
+## 🟠 Wave 3 (audit-2 W3-7c) — tracked debt found during this pass, not fixed here
+- [ ] `scripts/run-engine-ci.sh`'s header comment says "All 38 self-contained engine suites are
+      enrolled" but the `SUITES=(...)` array currently has **39** entries (confirmed by counting the
+      array at HEAD). Out of this task's file scope (`scripts/run-engine-ci.sh` is T7's file, which
+      also owns the deferred `bash32-safety`-before-`block-hook` alphabetical-ordering minor); logged
+      here rather than edited so T7's own commit doesn't collide with this doc-only one.
 
 ## ✅ Already updated inline this session (for traceability — verify, don't redo)
 - ADR-0023 — 6b landing + §7 correction (detect-seed reads `stack-profile.json`).
