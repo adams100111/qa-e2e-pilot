@@ -74,7 +74,34 @@ Keep verification **sequential** (the default) in CI — most criteria are order
 
 ## Honest status: what actually runs in CI today
 
-Be precise about this, because it's easy to overclaim: **this repository's own CI does not run a full QA pass against anything.** [`.github/workflows/adapters.yml`](../.github/workflows/adapters.yml) runs four jobs: `validate` (`scripts/validate-adapters.sh` — the four generated harness adapters build correctly and stay byte-identical where required), `qa-kit` (`qa-kit/scripts/run-qakit-ci.sh` — the qa-kit byte-oracle + its dual-engine suites), `engine` (`scripts/run-engine-ci.sh` — the engine's self-contained `tests/<suite>/run.sh` suites), and `suite-coverage` (`scripts/check-suite-coverage.sh` — every `tests/` dir is enrolled in exactly one of the two suite lists). The `engine` job's suites **do** invoke `qa-ci.sh` and `qa-verify.sh` (see `tests/qa-ci-verify/` and `tests/qa-verify/`) — but only against synthetic fixture checkpoints the suites construct themselves, never a live browser or a real target application. So the precise claim is: **no workflow in this repo drives a browser, checks out a target application under test, or runs `qa-ci.sh`/`qa-verify.sh` against a real Run** — it only runs their own unit/functional test suites plus the adapter/byte-oracle/coverage gates.
+Be precise about this, because it's easy to overclaim: **this repository's own CI does not run a full QA pass against anything.** [`.github/workflows/adapters.yml`](../.github/workflows/adapters.yml) runs five jobs: `validate` (`scripts/validate-adapters.sh` — the four generated harness adapters build correctly and stay byte-identical where required), `qa-kit` (`qa-kit/scripts/run-qakit-ci.sh` — the qa-kit byte-oracle + its dual-engine suites), `engine` (`scripts/run-engine-ci.sh` — the engine's self-contained `tests/<suite>/run.sh` suites), `suite-coverage` (`scripts/check-suite-coverage.sh` — every `tests/` dir is enrolled in exactly one of the two suite lists), and `accuracy` (the accuracy-harness gates, see below). The `engine` job's suites **do** invoke `qa-ci.sh` and `qa-verify.sh` (see `tests/qa-ci-verify/` and `tests/qa-verify/`) — but only against synthetic fixture checkpoints the suites construct themselves, never a live browser or a real target application. So the precise claim is: **no workflow in this repo drives a browser, checks out a target application under test, or runs `qa-ci.sh`/`qa-verify.sh` against a real Run** — it only runs their own unit/functional test suites plus the adapter/byte-oracle/coverage/accuracy gates.
+
+### Accuracy-harness gates (`accuracy` job)
+
+[`tools/accuracy-harness/`](../tools/accuracy-harness/README.md) proves the QA pipeline actually
+catches planted bugs, not just that it runs. Two gates from that harness run on every PR, both
+headless and deterministic — no browser, no live agent dispatch:
+
+- **UX measured gate** (`bash tools/accuracy-harness/run-ux-measure.sh`) — dispatches the real
+  shipped UX detector cores (`skills/detecting-visual-ux/scripts/ux-detectors.js`,
+  `skills/detecting-interaction-ux/scripts/overlay-stack.js`) and the real
+  `skills/detecting-visual-ux/scripts/adjudicate.js` over the committed DOM snapshot
+  (`tools/accuracy-harness/fixture-ux/snapshot.json`), then scores the result against
+  `seeds-ux.json`'s gate (≥95% ux-objective/overall recall, ≥90% precision, 100% held-out recall).
+- **Scorer-regression gate** (`node tools/accuracy-harness/scorer/score.js
+  tools/accuracy-harness/findings/measured-blind-v2.json --gate`) — re-scores the committed,
+  already-measured blind-reference findings file (the harness README's "Truly-blind, AFTER coverage
+  fixes (v0.6.x)" row: 78% functional / 100% ux-objective / 85% overall recall, 100% precision, GATE
+  PASS) against the current `seeds.json` + `score.js`. It proves the scorer and seed thresholds
+  themselves haven't regressed — it does **not** re-run the QA agent, so it can't catch a regression
+  in the agent's actual recall against a live target. Re-measuring that (a fresh black-box run against
+  the fixture, converted with `scorer/convert-buglog.js`) stays a manual/local step — see the harness
+  README's "MEASURED vs ESTIMATED" section for the full procedure.
+
+Either gate failing turns the `accuracy` job red. If you touch `seeds.json`, `seeds-ux.json`, or
+`scorer/score.js`, mutation-check locally first — temporarily corrupt a seed's match/expected value,
+re-run the affected gate command above and confirm it goes red, then revert — to prove the gate is
+still load-bearing, not vacuous.
 
 `qa-ci.sh` (and, within it, `qa-verify.sh`) is a **turnkey chain you or your project's own CI invokes** against *your* target application — it is documented and tested (see `tests/qa-ci-verify/`), but nothing in this repo calls it against a real app automatically today. If you want `qa-verify` enforced on every PR, wire the "Example — GitHub Actions" step below into your own project's workflow; don't assume it already runs anywhere by default.
 

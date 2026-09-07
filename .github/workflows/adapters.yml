@@ -50,3 +50,23 @@ jobs:
         with: { python-version: "3.12" }
       - name: engine self-contained test suites
         run: bash scripts/run-engine-ci.sh
+
+  accuracy:
+    # Accuracy-harness gates (spec W4-5). Both legs are headless/deterministic — no browser, no live
+    # agent dispatch — so they run on every PR while the real black-box agent run against the fixture
+    # (tools/accuracy-harness/README.md's "MEASURED vs ESTIMATED") stays a manual/local step.
+    #   (a) UX measured gate: the real detector cores + adjudicator scored against a committed DOM
+    #       snapshot (tools/accuracy-harness/fixture-ux/snapshot.json).
+    #   (b) Scorer-regression gate: re-scores the committed blind-reference findings file
+    #       (findings/measured-blind-v2.json — the "Truly-blind, AFTER coverage fixes" row in the
+    #       harness README, 78%/100%/85% recall at 100% precision, GATE PASS) with --gate, so a
+    #       scorer/seed regression turns this red even though no new findings were measured.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: UX measured gate (headless, deterministic)
+        run: bash tools/accuracy-harness/run-ux-measure.sh
+      - name: Scorer-regression gate (committed blind reference)
+        run: node tools/accuracy-harness/scorer/score.js tools/accuracy-harness/findings/measured-blind-v2.json --gate
