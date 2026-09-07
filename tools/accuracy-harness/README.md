@@ -86,9 +86,9 @@ from a committed snapshot. It is **not** a guarantee about unknown, in-the-wild 
 generative-critic layer 3 (sub-plan C2) remains estimated, not measured, for exactly that reason — you
 cannot measure recall on unseeded bugs.
 
-**CI-wiring follow-up.** The gate is manual/local today: `run-ux-measure.sh` is run by hand (or by an
-agent) on demand. Wiring it into `.github/workflows` so it runs automatically on every PR is a
-follow-up, not yet done.
+**CI wiring (done).** `run-ux-measure.sh` runs automatically on every PR via
+`.github/workflows/adapters.yml`'s `accuracy` job, alongside a scorer-regression gate over the
+committed blind reference findings (`measured-blind-v2.json` — see `docs/running-in-ci.md`).
 
 ## The 24 planted bugs (axes)
 

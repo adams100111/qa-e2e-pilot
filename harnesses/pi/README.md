@@ -68,10 +68,12 @@ independent verification as unavailable, rather than failing the run — see
 ## Manual accuracy run
 
 **accuracy-unvalidated on this harness — see docs/harness-adapters.md (manual accuracy run
-required).** No `measured-pi` findings file exists yet under
-`tools/accuracy-harness/findings/`; treat this adapter's output as unverified until that run
-lands (see `docs/harness-adapters.md`'s manual-accuracy-run section for status — Pi is named
-first in that procedure).
+required).** A first, PARTIAL measured run exists
+(`tools/accuracy-harness/findings/measured-pi-run.json`, 2026-09-07: 10 criteria before a headless
+session hang, 23% overall recall at 100% precision — GATE FAIL); it proves the pipeline *executes*
+on Pi, not that it meets the gate. Treat this adapter's output as unverified until a complete run
+passes (see `docs/harness-adapters.md`'s manual-accuracy-run section for the field notes —
+headless permission handling and the in-session-persona workaround).
 
 Before trusting this adapter on your project, run it once against the bundled fixture and score
 it — see `docs/harness-adapters.md` for the full procedure (serve
