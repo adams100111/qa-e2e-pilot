@@ -204,7 +204,7 @@ modal_backdrop_scenario() {
     };
     global.getComputedStyle = function (el) { return el.style || {}; };
     const findings = m.DETECT();
-    const hit = findings.some(function (f) { return f.detector === "overlap-modal-behind-backdrop"; });
+    const hit = findings.some(function (f) { return f.detector === "modal-behind-backdrop"; });
     process.stdout.write(hit ? "found" : "none");
   ' "$MOD" "$1" "$1" 2>/dev/null
 }
@@ -212,6 +212,35 @@ check "overlap: closed modal (display:none) behind backdrop -> no finding" \
   "$(modal_backdrop_scenario none)" "none"
 check "overlap: visible modal behind backdrop -> still fires (regression guard)" \
   "$(modal_backdrop_scenario block)" "found"
+
+# --- W3-2: broken-image DOM block emits detector id 'broken-image' (definite-dom), not the
+# family-prefixed 'asset-broken-image' -- adjudicate.js's ORACLE_GRADES keys the definite-dom
+# grade on the 'broken-image' prefix (position 0); the old family-prefixed id fell through to
+# the 'heuristic' default and silently downgraded a promised fail@FE/high to advisory. Exercised
+# at the DOM-block level since the DOM walk is what builds the suspicion id.
+broken_image_scenario() {
+  node -e '
+    const m = require(process.argv[1]);
+    const img = {
+      tagName: "IMG", className: "", id: "",
+      getAttribute: function (n) { return n === "src" ? "./missing-deliverable-icon-404.png" : null; },
+      complete: true, naturalWidth: 0, currentSrc: "",
+      childNodes: [], children: [], textContent: ""
+    };
+    global.document = {
+      documentElement: { getAttribute: function () { return null; } },
+      querySelectorAll: function (sel) { return sel === "img" ? [img] : []; },
+      querySelector: function () { return null; },
+      getElementById: function () { return null; }
+    };
+    global.getComputedStyle = function () { return {}; };
+    const findings = m.DETECT();
+    const hit = findings.filter(function (f) { return f.detector === "broken-image"; });
+    process.stdout.write(hit.length ? "found" : "none");
+  ' "$MOD" 2>/dev/null
+}
+check "asset: broken <img> DOM walk emits detector id 'broken-image' (not 'asset-broken-image')" \
+  "$(broken_image_scenario)" "found"
 
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
