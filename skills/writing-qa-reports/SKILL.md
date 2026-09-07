@@ -31,7 +31,7 @@ All output lives under `.qa/runs/<run-id>/`. One run dir per invocation (ADR-000
       screenshot-after.png
       bake-read-back.json
       network-response.json
-      recompute.md
+      recompute.json
 ```
 
 Reference evidence files by relative path from the run dir (`evidence/<criterion-id>/screenshot-after.png`). Never embed binary content in the report text.

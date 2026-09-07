@@ -23,7 +23,7 @@
 
 <!-- One block per criterion. Duplicate this block as needed.
      ID format: C-<surface-short>-<sequence>  e.g. C-FINALIZE-01
-     Tags: independent | read-only | race | cross-tenant | probe-needed
+     Tags: independent | read-only | race | cross-tenant | probe-needed | human-action
      (probe-needed: set when the expected state can't be confirmed via the visible UI alone —
       see generating-qa-checklist Step 7. probe-needed OR cross-tenant derives Kinds: probe.
      Edge-case criteria (0-value, negative, every-Nth, named/boundary, delete-reconcile,
@@ -43,7 +43,7 @@
 | Surface | <!-- route + sub-tab, e.g. /governance/setup → Finalize step --> |
 | Kind | <!-- happy-path / multiplicity-0 / multiplicity-1 / multiplicity-N / empty-state / loading-state / error-state / computed-logic / business-rule / downstream-cascade / cross-tenant / race --> |
 | Tags | <!-- independent / read-only / race / cross-tenant / probe-needed — or "sequential (default)" --> |
-| Kinds | <!-- derived: bake / computed / probe (csv), per the Kind+Tags mapping table in generating-qa-checklist Step 7 — `probe` comes ONLY from Tag: cross-tenant or Tag: probe-needed (never guessed); read-only/pure-display with neither tag → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
+| Kinds | <!-- derived: bake / computed / human-action / probe (csv, fixed order bake,computed,human-action,probe), per the Kind+Tags mapping table in generating-qa-checklist Step 7 — `human-action` comes ONLY from a mutating Act phase (Tag: human-action); `probe` comes ONLY from Tag: cross-tenant or Tag: probe-needed (never guessed); read-only/pure-display with neither tag → none. Fed straight into `checkpoint.sh --kinds` at pass time. --> |
 | probeNeeded | <!-- INPUT tag: set true when the oracle is server-only OR the UI could mask the real state (per Step 7 rule); Kinds: probe is DERIVED from it. Do NOT read this back from Kinds. --> |
 | Confidence hint | <!-- high — oracle from spec/domain rule; OR low — oracle derived from backend code only --> |
 | Source | <!-- generated / ingested / hand-authored --> |

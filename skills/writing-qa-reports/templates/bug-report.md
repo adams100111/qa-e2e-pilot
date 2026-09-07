@@ -79,6 +79,6 @@ title: Bug Report
 - Screenshot after:  `evidence/{{CRITERION_ID}}/screenshot-after.png`
 - Bake read-back:    `evidence/{{CRITERION_ID}}/bake-read-back.json`
 - Network response:  `evidence/{{CRITERION_ID}}/network-response.json`
-- Recompute notes:   `evidence/{{CRITERION_ID}}/recompute.md`
+- Recompute notes:   `evidence/{{CRITERION_ID}}/recompute.json`
 
 > Remove lines for evidence files that do not exist for this criterion.

@@ -241,21 +241,22 @@ If neither holds, leave `probe-needed` unset — the criterion is confirmable fr
 
 **Derive `Kinds` — the evidence the gate will require**
 
-Every criterion also carries a derived **`Kinds`** field: a CSV subset of `bake|computed|probe`, computed deterministically from its `Kind` + `Tags` above. This is not optional metadata — `checkpoint.sh ... --kinds <csv>` refuses to record a `pass` unless each listed kind's artifact (written by `record-evidence.sh`) exists and validates (see `checkpointing-qa-memory`). Derive it with this table:
+Every criterion also carries a derived **`Kinds`** field: a CSV subset of the FOUR-kind evidence vocabulary `bake|computed|human-action|probe`, computed deterministically from its `Kind` + `Tags` above — the exact same vocabulary and derivation rules `checkpointing-qa-memory`'s `required-kinds.sh` uses to independently re-derive the required set at verification time (see Step 8 below). This is not optional metadata — `checkpoint.sh ... --kinds <csv>` refuses to record a `pass` unless each listed kind's artifact (written by `record-evidence.sh`) exists and validates (see `checkpointing-qa-memory`). Derive it with this table:
 
 | Criterion `Kind` / `Tag` | Required evidence kind(s) | Artifact |
 |---|---|---|
+| Act phase mutates state or drives a control (i.e. `Tag: human-action`, set per the rule above) | `human-action` | `evidence/<crit>/action-trace.json` (carries the before/after state `fingerprints` Check 3 requires) |
 | `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
 | `multiplicity-0/1/N`, `happy-path`, `downstream-cascade`, or any criterion NOT tagged `read-only` | `bake` | `evidence/<crit>/bake-read-back.json` |
 | `Tag: cross-tenant` OR `Tag: cross-role-fk-chain` OR `Tag: probe-needed` | `probe` | `evidence/<crit>/network-response.json` |
 
-A criterion may match several rows — union the kinds (e.g. a computed write is `bake,computed`). A criterion tagged `read-only` with no computed logic and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
+A criterion may match several rows — union the kinds (e.g. a mutating computed write is `bake,computed,human-action`). A criterion tagged `read-only` with no mutating act, no computed logic, and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
 
 Probe evidence carries an `--ok <true|false>` judgment (the verifier's confirm-vs-refute call against the criterion's expectation, not a raw status code — an absence probe correctly getting 403/404 is `--ok true`), recorded by `record-evidence.sh ... probe --ok <true|false>`; the gate consumes `probe.ok` and rejects a checkpointed `pass` when it is `false` or missing.
 
 `Kinds` is always **derived from tags**, never the reverse: `probe-needed` (set at generation time, per the rule above) is the INPUT; `Kinds: probe` is the OUTPUT the table derives from it. The same direction applies to `cross-tenant`/`cross-role-fk-chain`. Do not treat `Kinds` as something you inspect to decide whether probing was needed — decide `probe-needed` first, from the criterion itself, then let the table derive `Kinds`.
 
-- [ ] Set `Kinds` to the union of matched rows, as CSV, in the order `bake,computed,probe`.
+- [ ] Set `Kinds` to the union of matched rows, as CSV, in the fixed order `bake,computed,human-action,probe` (matching `required-kinds.sh`'s own sorted output — omit any kind not matched, but never reorder the ones present).
 - [ ] Set `probeNeeded: true` whenever `Tag: probe-needed`, `Tag: cross-tenant`, or `Tag: cross-role-fk-chain` is set (i.e. whenever the `probe` kind was derived), so the verifier knows to invoke `probing-apis-through-browser` rather than relying on the UI alone.
 - [ ] Record both fields in the criterion's summary row — the verifier reads `Kinds` straight into `checkpoint.sh --kinds` at pass time; do not leave it to be inferred later.
 

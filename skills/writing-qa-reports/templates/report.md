@@ -57,7 +57,7 @@
 - Screenshot after:  `evidence/{{CRITERION_ID}}/screenshot-after.png`
 - Bake read-back:    `evidence/{{CRITERION_ID}}/bake-read-back.json`
 - Network response:  `evidence/{{CRITERION_ID}}/network-response.json`
-- Recompute notes:   `evidence/{{CRITERION_ID}}/recompute.md`
+- Recompute notes:   `evidence/{{CRITERION_ID}}/recompute.json`
 
 Remove rows that do not apply (suspected layer / bug-ref on a pass; recompute when no math is involved).
 -->
