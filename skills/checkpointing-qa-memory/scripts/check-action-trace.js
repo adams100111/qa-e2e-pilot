@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 // Reuse the ONE classifier so act-payloads and session code are judged identically.
 const { mutates } = require(path.join(__dirname, '..', '..', 'driving-browser-qa', 'scripts', 'parse-session-log.js'));
-const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_file_upload']);
+const HUMAN_PATH_TOOLS = new Set(['browser_click','browser_type','browser_fill_form','browser_press_key','browser_select_option','browser_hover','browser_drag','browser_drop','browser_file_upload','browser_handle_dialog']);
 // browser_navigate is NOT a human-path act tool: following a real link is a
 // browser_click side effect, so an act-phase browser_navigate is an address-bar
 // URL-skip (gap A) — fail-closed unless the step is carve-out-tagged. Five
