@@ -17,6 +17,7 @@
       "dispatch": "via the Agent/Task tool, `subagent_type: qa-e2e-pilot`",
       "globalRolesDir": "~/.claude/qa-e2e-pilot/roles",
       "engineSkillsDir": "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills",
+      "commandAgentLine": "",
       "agentCmd": "claude -p \"/qa-run \\\"$QA_TARGET\\\" $QA_CHECKLIST\"",
       "vision": {"capable": true, "read": "Read"}
     },
@@ -27,9 +28,10 @@
       "modelField": "",
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
-      "dispatch": "with `$qa-run` (skill) or the `/qa-run` prompt",
+      "dispatch": "as the qa-e2e-pilot agent profile (.codex/agents/qa-e2e-pilot.toml) — you are that persona when this prompt runs; proceed directly",
       "globalRolesDir": "~/.codex/qa-e2e-pilot/roles",
       "engineSkillsDir": ".agents/skills",
+      "commandAgentLine": "",
       "agentCmd": "codex exec \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
       "vision": {"capable": true, "read": "localImage"}
     },
@@ -40,9 +42,10 @@
       "modelField": "",
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
-      "dispatch": "with the `/qa-run` prompt-template",
+      "dispatch": "as the qa-e2e-pilot persona (.pi/agents/) — you are that persona when this prompt-template runs; proceed directly",
       "globalRolesDir": "~/.pi/qa-e2e-pilot/roles",
       "engineSkillsDir": ".pi/agents/skills",
+      "commandAgentLine": "",
       "agentCmd": "pi -p \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
       "vision": {"capable": true, "read": "adapter"}
     },
@@ -53,9 +56,10 @@
       "modelField": "",
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
-      "dispatch": "via the `/qa-run` command (`agent: qa-e2e-pilot`)",
+      "dispatch": "under the `qa-e2e-pilot` agent (bound by this command's `agent:` frontmatter)",
       "globalRolesDir": "~/.config/opencode/qa-e2e-pilot/roles",
       "engineSkillsDir": ".opencode/skills",
+      "commandAgentLine": "agent: qa-e2e-pilot\n",
       "agentCmd": "opencode run \"/qa-run $QA_TARGET $QA_CHECKLIST\"",
       "vision": {"capable": true, "read": "Read"}
     }

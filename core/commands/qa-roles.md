@@ -2,7 +2,7 @@
 description: Discover, confirm, and save the tested project's user roles/personas + authz-matrix — standalone, without running a full QA pass. Optionally seed from / save to a reusable global role store.
 argument-hint: [--refresh] [--global] [--from-global]
 disable-model-invocation: false
----
+{{COMMAND_AGENT_LINE}}---
 
 Run role/persona discovery + confirmation **on its own** (no verify/report phases), so a user can
 define or refresh the project's roles after an RBAC change without a full `/qa-run`. This is pure

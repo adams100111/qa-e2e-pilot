@@ -11,4 +11,10 @@ assert 'mode: primary' in fm
 assert '"playwright-qa*": true' in fm, "opencode agent must glob-allow the playwright-qa server"
 PY
 bash -n harnesses/opencode/install-opencode.sh
+# opencode commands must bind the qa-e2e-pilot agent via frontmatter (not just prose)
+grep -q '^agent: qa-e2e-pilot$' "$root/dist/opencode/commands/qa-run.md"
+grep -q '^agent: qa-e2e-pilot$' "$root/dist/opencode/commands/qa-resume.md"
+# claude render must NOT carry the opencode-only key
+bash scripts/build-adapter.sh claude
+! grep -q '^agent:' "$root/dist/claude/commands/qa-run.md"
 echo "OK"

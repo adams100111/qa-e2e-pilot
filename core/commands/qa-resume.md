@@ -2,7 +2,7 @@
 description: Resume an interrupted QA Run — read the resume briefing, reconcile any open acts by re-baking the write-set, then continue Verify at the frozen cursor with no re-observation.
 argument-hint: [run-id]
 disable-model-invocation: false
----
+{{COMMAND_AGENT_LINE}}---
 
 Resume a QA Run by dispatching the **qa-e2e-pilot** agent with the portable resume briefing.
 
