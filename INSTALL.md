@@ -117,6 +117,10 @@ bundled helper scripts need a small, portable toolset:
 |---|---|---|
 | `bash` | runs the helper scripts | Linux/macOS native; **Windows** via Git Bash (bundled with Git for Windows) or WSL |
 | `jq` | JSON read/write (detector, config writer) | `brew install jq` (macOS) · `apt install jq` (Linux) · `winget install jqlang.jq` or `choco install jq` (Windows) |
+
+> **macOS note (temporary):** the verification gates currently require bash ≥ 4
+> (`brew install bash`); stock /bin/bash 3.2 is refused fail-closed. Being removed
+> by the in-progress bash-3.2-safe rewrite.
 | `curl` | runtime fingerprint / liveness | preinstalled on macOS, Git Bash, most Linux |
 | `perl` **or** GNU `grep -P` | route/selector extraction | Linux & Git Bash ship GNU grep (`-P` works); **macOS** uses BSD grep (no `-P`) so the scripts fall back to `perl`, which ships with macOS — no action needed |
 | `python3` | fallback for some config reads | optional; `jq` is preferred |
