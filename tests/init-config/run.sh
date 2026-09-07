@@ -34,5 +34,14 @@ SJSON="$(cd "$SUG" && bash "$GEN" --suggest 2>/dev/null)"
 check "suggest ddev url" "$(echo "$SJSON" | jq -r '.baseUrl')"               "https://mayocrm.ddev.site"
 check "suggest repos"    "$(echo "$SJSON" | jq -r '.repos')"                 "."
 
+# --- audit-2 W1-5: marker defaults EMPTY; only explicit opt-in writes one ---
+WORK="$(mktemp -d)"
+bash "$GEN" --base-url http://localhost:3000 --out "$WORK/c-default.json" >/dev/null
+check "default seedableEnvMarker is empty" "$(jq -r '.seedableEnvMarker' "$WORK/c-default.json")" ""
+bash "$GEN" --base-url http://localhost:3000 --environment production --out "$WORK/c-prod.json" >/dev/null
+check "production bootstrap: marker stays empty" "$(jq -r '.seedableEnvMarker' "$WORK/c-prod.json")" ""
+bash "$GEN" --base-url http://localhost:3000 --seedable-marker MY_DISPOSABLE --out "$WORK/c-opt.json" >/dev/null
+check "explicit --seedable-marker is honored" "$(jq -r '.seedableEnvMarker' "$WORK/c-opt.json")" "MY_DISPOSABLE"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

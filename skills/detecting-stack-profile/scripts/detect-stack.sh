@@ -304,7 +304,7 @@ main() {
   elif [[ -n "$BASE_URL" ]]; then
     case "$BASE_URL" in
       *localhost*|*127.0.0.1*|*.ddev.site*) env="disposable" ;;
-      *) [[ -z "$(cfg '.seedableEnvMarker' '')" ]] && env="production" ;;
+      *) { _m="$(cfg '.seedableEnvMarker' '')"; [[ -z "$_m" || "$_m" == "QA_DISPOSABLE_ENV" ]] && env="production"; } ;;
     esac
   fi
 
