@@ -34,6 +34,18 @@ check "dead-end (empty after close) -> interaction-dead-end" \
   "$(fieldc checkNoDeadEnd '[[]]' detector)" "interaction-dead-end"
 check "base context present after close -> null" \
   "$(callc checkNoDeadEnd "[$BEFORE]")" "null"
+# W3-5a: extractOverlayStack() appends a base-context descriptor (baseContext:true) to every
+# captured stack. Clean-close fixture: all overlays correctly closed AND the base context is
+# healthy -> NOT a dead-end (this used to false-fail: an empty overlay stack alone tripped the
+# check, indistinguishable from a true dead-end).
+BASE_HEALTHY='[{"id":"__base-context__","role":"base-context","baseContext":true,"present":true}]'
+check "clean close: overlays empty, base context healthy -> null (no false dead-end)" \
+  "$(callc checkNoDeadEnd "[$BASE_HEALTHY]")" "null"
+# Negative control: overlays empty AND the base context is itself missing/inert -> still a
+# true dead-end, suspicion stands.
+BASE_INERT='[{"id":"__base-context__","role":"base-context","baseContext":true,"present":false}]'
+check "true dead-end: overlays empty, base context missing/inert -> interaction-dead-end" \
+  "$(fieldc checkNoDeadEnd "[$BASE_INERT]" detector)" "interaction-dead-end"
 
 # --- invariant 4: focus-trap ---
 UNTRAPPED='[{"id":"dialog:New Deliverable","role":"dialog","ariaModal":true,"zIndex":110,"position":"fixed","focusTrapped":false,"parentId":null,"present":true}]'
