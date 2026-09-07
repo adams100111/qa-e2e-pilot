@@ -53,16 +53,19 @@ resolve_from_config() {
     BACKEND_PATH=$(jq -r '.repos[]? | select(.role=="backend") | .path' \
                    "$CONFIG_FILE" 2>/dev/null | head -1 || true)
   elif command -v node &>/dev/null; then
-    FRONTEND_PATH=$(node -e \
+    local _cfg_err
+    _cfg_err="$(mktemp 2>/dev/null || printf '/tmp/index-routes-cfgerr.%s' "$$")"
+    FRONTEND_PATH=$(QA_CFG="$CONFIG_FILE" node -e \
       'const c=JSON.parse(require("fs").readFileSync(process.env.QA_CFG,"utf8"));
        const r=(c.repos||[]).find(x=>x.role==="frontend");
        process.stdout.write(r?r.path:"")' \
-      QA_CFG="$CONFIG_FILE" 2>/dev/null || true)
-    BACKEND_PATH=$(node -e \
+      2>"$_cfg_err") || { warn "config resolution (frontend, node) failed: $(head -1 "$_cfg_err" 2>/dev/null)"; FRONTEND_PATH=""; }
+    BACKEND_PATH=$(QA_CFG="$CONFIG_FILE" node -e \
       'const c=JSON.parse(require("fs").readFileSync(process.env.QA_CFG,"utf8"));
        const r=(c.repos||[]).find(x=>x.role==="backend");
        process.stdout.write(r?r.path:"")' \
-      QA_CFG="$CONFIG_FILE" 2>/dev/null || true)
+      2>"$_cfg_err") || { warn "config resolution (backend, node) failed: $(head -1 "$_cfg_err" 2>/dev/null)"; BACKEND_PATH=""; }
+    rm -f "$_cfg_err"
   else
     # grep/sed fallback — naive, best-effort
     FRONTEND_PATH=$(grep -A2 '"frontend"' "$CONFIG_FILE" 2>/dev/null \
