@@ -482,7 +482,10 @@ function DETECT() {
   // ---- Asset (broken-image) suspicions ----
   Array.prototype.slice.call(document.querySelectorAll('img')).forEach(function (img) {
     if (isBrokenImage(img)) {
-      findings.push(suspicion('asset-broken-image', img,
+      // W3-2: detector id must equal adjudicate.js's ORACLE_GRADES 'broken-image' prefix
+      // (position-0 prefix match) so this resolves to definite-dom, not the 'heuristic'
+      // default -- the family-prefixed 'asset-broken-image' silently fell through.
+      findings.push(suspicion('broken-image', img,
         (img.getAttribute('src') || img.currentSrc || '(no src)'),
         'naturalWidth=0 (failed to load)'));
     }
@@ -522,7 +525,11 @@ function DETECT() {
         if (sibStyle.visibility === 'hidden' || sibStyle.display === 'none' || parseFloat(sibStyle.opacity) === 0) return;
         const bz = parseInt(sibStyle.zIndex, 10);
         if (modalBehindBackdrop(mz, bz)) {
-          findings.push(suspicion('overlap-modal-behind-backdrop', modal,
+          // W3-2: detector id must equal adjudicate.js's ORACLE_GRADES 'modal-behind-backdrop'
+          // prefix so this resolves to definite-dom -- the family-prefixed
+          // 'overlap-modal-behind-backdrop' matched the generic 'overlap' heuristic prefix
+          // BEFORE 'modal-behind-backdrop' could ever be considered.
+          findings.push(suspicion('modal-behind-backdrop', modal,
             'modal z-index ' + mz + ' below backdrop z-index ' + bz, String(mz)));
         }
       });
