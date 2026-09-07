@@ -23,7 +23,13 @@ check "codex agent toml"  "$(ls "$D/codex/agent")"    "qa-kit.toml"
 check "opencode agent md" "$(ls "$D/opencode/agent")" "qa-kit.md"
 
 # (b) skill refs render per harness (qa-spec references detecting-stack-profile)
-check "claude slug"  "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")" "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")"
+# The expected occurrence count is derived independently of the rendered output:
+# it's the number of {{SKILL_REF:detecting-stack-profile}} tokens in the CORE
+# template (the un-rendered source), not a re-grep of the very file under test
+# (that would be a tautology -- comparing a count to itself can never fail).
+core_slug_count="$(grep -c '{{SKILL_REF:detecting-stack-profile}}' "$REPO/qa-kit/core/commands/qa-spec.md")"
+check "claude slug count matches core template occurrences" \
+  "$(grep -c '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md")" "$core_slug_count"
 grep -q '/qa-e2e-pilot:detecting-stack-profile' "$D/claude/commands/qa-spec.md"       ; check "claude slug present"  "$?" "0"
 grep -q 'the `detecting-stack-profile` skill'  "$D/pi/commands/qa-spec.md"            ; check "pi bare present"      "$?" "0"
 grep -q 'the `detecting-stack-profile` skill'  "$D/codex/commands/qa-spec.md"         ; check "codex bare present"   "$?" "0"

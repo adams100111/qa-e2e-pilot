@@ -15,6 +15,35 @@ sorted_basenames() { # <dir>
   if [ -d "$1" ]; then ls "$1" 2>/dev/null | sort | tr '\n' ' '; else echo ""; fi
 }
 
+# jbool/jcanon: jq-guarded JSON assertions with a python3 fallback -- mirrors
+# the "command -v jq guard / python3-fallback" idiom sibling suites use (e.g.
+# tests/critic-coverage/run.sh's `command -v jq >/dev/null 2>&1 && jq ... ||
+# python3 -c ...`), so this suite doesn't hard-require jq on the test-runner.
+jbool() { # <file> <jq-boolean-filter> <python3-bool-expr-on-d>
+  local file="$1" jqf="$2" pyexpr="$3"
+  if command -v jq >/dev/null 2>&1; then
+    jq -e "$jqf" "$file" >/dev/null 2>&1 && echo true || echo false
+  else
+    python3 -c "
+import json
+d = json.load(open('$file'))
+print('true' if ($pyexpr) else 'false')
+" 2>/dev/null
+  fi
+}
+jcanon() { # <file> <jq-path-filter> <python3-expr-on-d>
+  local file="$1" jqf="$2" pyexpr="$3"
+  if command -v jq >/dev/null 2>&1; then
+    jq -S "$jqf" "$file" 2>/dev/null
+  else
+    python3 -c "
+import json
+d = json.load(open('$file'))
+print(json.dumps($pyexpr, sort_keys=True))
+" 2>/dev/null
+  fi
+}
+
 # --- build all three non-Claude dist adapters once, so dist/<h>/commands/*.md reflects
 # whatever core/commands/*.md currently contains (today: qa-run, qa-roles, qa-resume). ---
 bash "$REPO/scripts/build-adapter.sh" codex    >/dev/null
@@ -68,13 +97,13 @@ cat > "$T5/.pi/mcp.json" <<'JSON'
 JSON
 bash "$REPO/harnesses/pi/install-pi.sh" "$T5" >/dev/null 2>&1
 check "pi-merge case1: foreign key 'foo' preserved" \
-  "$(jq -e '.mcpServers|has("foo")' "$T5/.pi/mcp.json" 2>/dev/null)" "true"
+  "$(jbool "$T5/.pi/mcp.json" '.mcpServers|has("foo")' '"foo" in d["mcpServers"]')" "true"
 check "pi-merge case1: 'playwright-qa' added" \
-  "$(jq -e '.mcpServers|has("playwright-qa")' "$T5/.pi/mcp.json" 2>/dev/null)" "true"
+  "$(jbool "$T5/.pi/mcp.json" '.mcpServers|has("playwright-qa")' '"playwright-qa" in d["mcpServers"]')" "true"
 check "pi-merge case1: backup written" \
   "$([ -f "$T5/.pi/mcp.json.bak-qa-e2e-pilot" ] && echo yes || echo no)" "yes"
 check "pi-merge case1: backup has the original foreign-only content" \
-  "$(jq -e '.mcpServers|has("foo") and (has("playwright-qa")|not)' "$T5/.pi/mcp.json.bak-qa-e2e-pilot" 2>/dev/null)" "true"
+  "$(jbool "$T5/.pi/mcp.json.bak-qa-e2e-pilot" '.mcpServers|has("foo") and (has("playwright-qa")|not)' '"foo" in d["mcpServers"] and "playwright-qa" not in d["mcpServers"]')" "true"
 rm -rf "$T5"
 
 # case 2: no pre-existing mcp.json -> file equals the snippet content
@@ -137,10 +166,10 @@ JSON
     bash "$REPO/harnesses/pi/install-pi.sh" "$T" >/dev/null 2>&1
   fi
   check "$label: foreign key 'foo' intact" \
-    "$(jq -e '.mcpServers|has("foo")' "$T/.pi/mcp.json" 2>/dev/null)" "true"
+    "$(jbool "$T/.pi/mcp.json" '.mcpServers|has("foo")' '"foo" in d["mcpServers"]')" "true"
   check "$label: playwright-qa equals snippet entry exactly (stale sub-key gone)" \
-    "$(jq -S '.mcpServers."playwright-qa"' "$T/.pi/mcp.json" 2>/dev/null)" \
-    "$(jq -S '.mcpServers."playwright-qa"' "$REPO/harnesses/pi/mcp.snippet")"
+    "$(jcanon "$T/.pi/mcp.json" '.mcpServers."playwright-qa"' 'd["mcpServers"]["playwright-qa"]')" \
+    "$(jcanon "$REPO/harnesses/pi/mcp.snippet" '.mcpServers."playwright-qa"' 'd["mcpServers"]["playwright-qa"]')"
   rm -rf "$T"
 }
 

@@ -11,12 +11,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUITES=(
-  action-trace block-hook bash32-safety capture-hook checkpoint critic-coverage detect-stack fold frontier
+  action-trace bash32-safety block-hook capture-hook checkpoint critic-coverage detect-stack fold frontier
   index-routes init-config installers interaction-ux journal journal-emit journal-merge mutation-flag persona-identity
   portability provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
   required-kinds resume-idempotency session-preflight session-to-toolstream skill-gate-consistency
   state-machine toolstream
-  ux-adjudicate ux-conventions ux-detectors validate-checklist-json vision-binding
+  ux-adjudicate ux-conventions ux-detectors validate-adapters validate-checklist-json vision-binding
   write-persona-config
 )
 # Each suite is self-contained and finishes in seconds; the 120s cap is a hang
