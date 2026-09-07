@@ -59,15 +59,6 @@
 
 set -uo pipefail
 
-# TEMPORARY fail-closed gate (audit-2 W1-1 step 1; removed by the 3.2-safe
-# rewrite in the same wave): on bash <4 this script's mapfile calls silently
-# yield empty fields and the gate verifies nothing while exiting 0 (fail
-# open). Refuse instead.
-if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-  echo "FATAL: mutation-flag.sh requires bash >= 4 (found ${BASH_VERSION:-unknown}) — refusing to run rather than fail open. On macOS: brew install bash." >&2
-  exit 90
-fi
-
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 has_jq() { command -v jq >/dev/null 2>&1; }
@@ -140,7 +131,8 @@ derive() {
 
   local out kinds_csv method action title
   out="$(read_criterion "$json")" || exit 1
-  mapfile -t _mf_lines <<< "$out"
+  _mf_lines=()
+  while IFS= read -r _mf_line; do _mf_lines+=("$_mf_line"); done <<< "$out"
   kinds_csv="${_mf_lines[0]:-}"
   method="${_mf_lines[1]:-}"
   action="${_mf_lines[2]:-}"

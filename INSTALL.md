@@ -121,10 +121,6 @@ bundled helper scripts need a small, portable toolset:
 | `perl` **or** GNU `grep -P` | route/selector extraction | Linux & Git Bash ship GNU grep (`-P` works); **macOS** uses BSD grep (no `-P`) so the scripts fall back to `perl`, which ships with macOS — no action needed |
 | `python3` | fallback for some config reads | optional; `jq` is preferred |
 
-> **macOS note (temporary):** the verification gates currently require bash ≥ 4
-> (`brew install bash`); stock /bin/bash 3.2 is refused fail-closed. Being removed
-> by the in-progress bash-3.2-safe rewrite.
-
 The scripts auto-detect `grep -P` and fall back to `perl` on macOS, and prefer
 `jq` with a `python3`/`node` fallback for config parsing — so a stock macOS or
 Git-Bash-on-Windows works once `jq` is installed. The portability of the PCRE

@@ -271,10 +271,6 @@ Credit and thanks to the authors of each. None of these are plugin-to-plugin dep
 
 A [`SessionStart` preflight](./scripts/check-prereqs.sh) checks Node / `jq`-or-`python3` / `bash` / `curl` each session and blocks with a fix message if any are missing.
 
-> **macOS note (temporary):** the verification gates currently require bash ≥ 4
-> (`brew install bash`); stock /bin/bash 3.2 is refused fail-closed. Being removed
-> by the in-progress bash-3.2-safe rewrite.
-
 ## License
 
 MIT — see [LICENSE](./LICENSE).
