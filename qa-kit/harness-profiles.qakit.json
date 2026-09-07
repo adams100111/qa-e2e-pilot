@@ -3,12 +3,14 @@
   "harnesses": {
     "claude": {
       "skillRef": "/qa-e2e-pilot:{name}",
+      "skillRefGeneric": "its qualified slug (`/qa-e2e-pilot:<skill>`)",
       "engineRun": "/qa-e2e-pilot:qa-run",
       "pluginRoot": "${CLAUDE_PLUGIN_ROOT}",
       "agentExt": "md"
     },
     "pi": {
       "skillRef": "the `{name}` skill",
+      "skillRefGeneric": "its bare name (read the `<skill>` skill from the engine's skills dir)",
       "engineRun": "the `/qa-run` prompt",
       "pluginRoot": ".pi/qa-kit",
       "agentExt": "md",
@@ -18,6 +20,7 @@
     },
     "codex": {
       "skillRef": "the `{name}` skill",
+      "skillRefGeneric": "its bare name (the `<skill>` skill)",
       "engineRun": "the `/qa-run` prompt",
       "pluginRoot": ".codex/qa-kit",
       "agentExt": "toml",
@@ -27,6 +30,7 @@
     },
     "opencode": {
       "skillRef": "the `skills_{name}` tool",
+      "skillRefGeneric": "its `skills_<skill>` tool",
       "engineRun": "the `/qa-run` command",
       "pluginRoot": ".opencode/qa-kit",
       "agentExt": "md",

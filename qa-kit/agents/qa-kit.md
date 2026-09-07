@@ -25,5 +25,5 @@ The spine (each step is a slash command; each writes one human-reviewable artifa
 `/qa-status` prints which step is next (and any constitution drift advisory).
 
 All seven steps exist (constitution → spec → scenarios → analyze → run → verify → status). When a
-step needs a role flow, stack detection, or any verification skill, invoke the engine's skill by its
-qualified slug (`/qa-e2e-pilot:<skill>`) — never reimplement it here.
+step needs a role flow, stack detection, or any verification skill, invoke the engine's skill by
+its qualified slug (`/qa-e2e-pilot:<skill>`) — never reimplement it here.

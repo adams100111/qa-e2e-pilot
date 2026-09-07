@@ -35,6 +35,13 @@ grep -q '.pi/qa-kit/scripts'            "$D/pi/commands/qa-spec.md"     ; check 
 grep -q '.codex/qa-kit/scripts'         "$D/codex/commands/qa-spec.md"  ; check "codex plugin-root"  "$?" "0"
 grep -q '.opencode/qa-kit/scripts'      "$D/opencode/commands/qa-spec.md"; check "opencode plugin-root" "$?" "0"
 
+# (d0) the Claude-only qualified slug must not leak into non-Claude agent renders (persona
+# skill-invocation instruction must speak each harness's dialect, not hardcode the Claude slug)
+for h in pi codex opencode; do
+  check "no /qa-e2e-pilot: literal in $h agent" "$(grep -c '/qa-e2e-pilot:' "$D/$h/agent/"* || true)" "0"
+done
+check "claude agent keeps the qualified slug" "$(grep -c '/qa-e2e-pilot:<skill>' "$D/claude/agent/qa-kit.md")" "1"
+
 # (d) no residual tokens anywhere in rendered agent/commands
 for h in claude pi codex opencode; do
   if grep -rq '{{' "$D/$h/commands" "$D/$h/agent"; then check "$h no residual" residual none; else check "$h no residual" none none; fi
