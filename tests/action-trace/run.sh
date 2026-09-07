@@ -425,5 +425,26 @@ RID6="ht-6"
 check "record: fingerprintTarget threaded into action-trace.json" "$(get "$WORK/.qa/runs/$RID6/evidence/C9/action-trace.json" '.fingerprintTarget.readBackPath')" "count"
 ( cd "$WORK" && bash "$CKPT" "$RID6" C9 pass --kinds human-action --evidence-refs evidence/C9/action-trace.json >/dev/null 2>&1 ); check "checkpoint: pass with covered+changed fingerprintTarget accepted" "$?" "0"
 
+# --- audit-2 W1-2: dialog/drop are sanctioned human-path act tools ----------
+cat > "$WORK/at-dialog.json" <<'JSON'
+{"actionUnderTest":"delete founder (confirm dialog)","steps":[{"tool":"browser_click","target":"#delete","phase":"act"},{"tool":"browser_handle_dialog","target":"accept","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#delete').click();"}],"fingerprints":{"before":0,"after":1}}
+JSON
+cat > "$WORK/at-drop.json" <<'JSON'
+{"actionUnderTest":"reorder via drag-drop","steps":[{"tool":"browser_drag","target":"#row1","phase":"act"},{"tool":"browser_drop","target":"#slot2","phase":"act"}],"sessionCalls":[{"class":"human-path","mutating":true,"code":"await page.locator('#row1').dragTo(page.locator('#slot2'));"}],"fingerprints":{"before":"a","after":"b"}}
+JSON
+node "$CHECK" "$WORK/at-dialog.json" 2>/dev/null; check "check: dialog act accepted (not a workaround)" "$?" "0"
+node "$CHECK" "$WORK/at-drop.json"   2>/dev/null; check "check: drop act accepted (not a workaround)"   "$?" "0"
+
+# Cross-authority consistency: act-lint and provenance must sanction the SAME set.
+CAT_TOOLS="$(grep -m1 'HUMAN_PATH_TOOLS' "$CHECK" | grep -o 'browser_[a-z_]*' | sort | tr '\n' ',')"
+PROV_TOOLS="$(grep -m1 'def human_interaction_tools' "$HERE/../../scripts/provenance.sh" | grep -o 'browser_[a-z_]*' | sort | tr '\n' ',')"
+check "act-lint tool set == provenance human_interaction_tools" "$CAT_TOOLS" "$PROV_TOOLS"
+
+# Negative control (gate NOT weakened): an unknown tool on the act path still rejects.
+cat > "$WORK/at-unknown.json" <<'JSON'
+{"actionUnderTest":"add via unknown tool","steps":[{"tool":"browser_run_code_unsafe","target":"x","phase":"act"}],"sessionCalls":[],"fingerprints":{"before":0,"after":1}}
+JSON
+node "$CHECK" "$WORK/at-unknown.json" 2>/dev/null; check "check: unknown act tool still rejected" "$?" "1"
+
 echo; echo "action-trace tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

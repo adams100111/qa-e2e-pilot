@@ -11,7 +11,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUITES=(
-  action-trace block-hook capture-hook checkpoint critic-coverage detect-stack fold frontier
+  action-trace block-hook bash32-safety capture-hook checkpoint critic-coverage detect-stack fold frontier
   init-config interaction-ux journal journal-emit journal-merge mutation-flag persona-identity
   portability provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
   required-kinds resume-idempotency session-preflight session-to-toolstream state-machine toolstream

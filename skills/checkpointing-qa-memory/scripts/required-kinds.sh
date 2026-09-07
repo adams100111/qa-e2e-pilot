@@ -141,7 +141,8 @@ derive() {
 
   local out kind tags_csv
   out="$(read_criterion "$json")" || exit 1
-  mapfile -t _rk_lines <<< "$out"
+  _rk_lines=()
+  while IFS= read -r _rk_line; do _rk_lines+=("$_rk_line"); done <<< "$out"
   kind="${_rk_lines[0]:-}"
   tags_csv="${_rk_lines[1]:-}"
 
@@ -171,10 +172,10 @@ derive() {
 
   local -a sorted=()
   if [[ ${#kinds[@]} -gt 0 ]]; then
-    mapfile -t sorted < <(printf '%s\n' "${kinds[@]}" | sort -u)
+    while IFS= read -r _rk_s; do sorted+=("$_rk_s"); done < <(printf '%s\n' "${kinds[@]}" | sort -u)
   fi
 
-  (IFS=,; echo "${sorted[*]}")
+  (IFS=,; echo "${sorted[*]-}")
 }
 
 # ---------------------------------------------------------------------------

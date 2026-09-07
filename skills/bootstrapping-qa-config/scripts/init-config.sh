@@ -18,7 +18,7 @@ DETECT="$SELF_DIR/../../detecting-stack-profile/scripts/detect-stack.sh"
 
 BASE_URL=""; ENVIRONMENT="auto"; REPOS="."; API_ORIGIN=""
 STORAGE_STATE=".qa/auth/storageState.json"; ALLOW_WRITES="false"; ALLOW_CRAWL="false"
-SEEDABLE_MARKER="QA_DISPOSABLE_ENV"; OUT=".qa/config.json"; SUGGEST=0
+SEEDABLE_MARKER=""; OUT=".qa/config.json"; SUGGEST=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

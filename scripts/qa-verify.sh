@@ -525,23 +525,23 @@ missing_required_kinds() {
   IFS=',' read -ra rec_arr <<< "$recorded_csv"
 
   local r
-  for r in "${rec_arr[@]}"; do
+  for r in ${rec_arr[@]+"${rec_arr[@]}"}; do
     r="$(trim "$r")"
     [[ -n "$r" ]] && rec_trimmed+=("$r")
   done
 
   local rk item found
-  for rk in "${req_arr[@]}"; do
+  for rk in ${req_arr[@]+"${req_arr[@]}"}; do
     rk="$(trim "$rk")"
     [[ -z "$rk" ]] && continue
     found=""
-    for item in "${rec_trimmed[@]}"; do
+    for item in ${rec_trimmed[@]+"${rec_trimmed[@]}"}; do
       [[ "$item" == "$rk" ]] && { found="yes"; break; }
     done
     [[ -z "$found" ]] && missing+=("$rk")
   done
 
-  (IFS=,; echo "${missing[*]}")
+  (IFS=,; echo "${missing[*]-}")
 }
 
 # json_array_from_args <str> [<str> ...] -> a JSON array of the given strings
@@ -1049,7 +1049,7 @@ process_criterion() {
   local -a kinds_arr=()
   IFS=',' read -ra kinds_arr <<< "$kinds_csv"
   local kind artifact rel_path full_path structural_ok key required_keys
-  for kind in "${kinds_arr[@]}"; do
+  for kind in ${kinds_arr[@]+"${kinds_arr[@]}"}; do
     kind="$(trim "$kind")"
     [[ -z "$kind" ]] && continue
 
@@ -1113,7 +1113,7 @@ process_criterion() {
         human-action)
           local allow=() node_out node_rc
           [[ -n "$nonui_reason" ]] && allow=(--allow-nonui)
-          node_out="$(node "$CHECK_ACTION_TRACE_JS" "$full_path" "${allow[@]}" 2>&1)"
+          node_out="$(node "$CHECK_ACTION_TRACE_JS" "$full_path" ${allow[@]+"${allow[@]}"} 2>&1)"
           node_rc=$?
           if [[ "$node_rc" -ne 0 ]]; then
             local first_line="${node_out%%$'\n'*}"
@@ -1249,7 +1249,7 @@ process_criterion() {
   maybe_redrive "$run_id" "$crit_id" "$persona" "$kinds_csv"
 
   local reasons_json
-  reasons_json="$(json_array_from_args "${reasons[@]}")"
+  reasons_json="$(json_array_from_args ${reasons[@]+"${reasons[@]}"})"
 
   if has_jq; then
     jq -cn \
@@ -1305,7 +1305,8 @@ main() {
   while IFS= read -r pass_rec; do
     [[ -z "$pass_rec" ]] && continue
     fields_out="$(read_pass_record "$pass_rec")"
-    mapfile -t _qv_fields <<< "$fields_out"
+    _qv_fields=()
+    while IFS= read -r _qv_line; do _qv_fields+=("$_qv_line"); done <<< "$fields_out"
     crit_id="${_qv_fields[0]:-}"
     persona="${_qv_fields[1]:-}"
     confidence="${_qv_fields[2]:-}"

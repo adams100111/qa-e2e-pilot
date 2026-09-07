@@ -131,7 +131,8 @@ derive() {
 
   local out kinds_csv method action title
   out="$(read_criterion "$json")" || exit 1
-  mapfile -t _mf_lines <<< "$out"
+  _mf_lines=()
+  while IFS= read -r _mf_line; do _mf_lines+=("$_mf_line"); done <<< "$out"
   kinds_csv="${_mf_lines[0]:-}"
   method="${_mf_lines[1]:-}"
   action="${_mf_lines[2]:-}"
