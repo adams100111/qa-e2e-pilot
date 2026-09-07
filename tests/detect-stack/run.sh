@@ -103,5 +103,20 @@ QA_REPOS="$FIX/nolocale" bash "$ENGINE" --no-runtime --out "$OUT11" >/dev/null 2
 check "negctrl present"  "$(get "$OUT11" '.components[0].i18n.present')"                                        "false"
 check "negctrl reason"   "$(get "$OUT11" '.components[0].i18n.evidence | join(" ") | contains("directory present")')" "true"
 
+# --- audit-2 W1-5: the verbatim bootstrap sentinel never marks disposable ---
+# remote baseUrl + environment auto + marker == the old default sentinel -> production
+OUT12="$(mktemp)"
+CFG12="$(mktemp)"
+printf '%s' '{"baseUrl":"https://app.example.com","environment":"auto","seedableEnvMarker":"QA_DISPOSABLE_ENV"}' > "$CFG12"
+QA_CONFIG="$CFG12" bash "$ENGINE" --no-code --no-runtime --out "$OUT12" >/dev/null 2>&1
+check "bootstrap sentinel marker forces production" "$(get "$OUT12" '.environment')" "production"
+
+# sibling: remote baseUrl + environment auto + a real custom marker -> disposable (custom markers still work)
+OUT13="$(mktemp)"
+CFG13="$(mktemp)"
+printf '%s' '{"baseUrl":"https://app.example.com","environment":"auto","seedableEnvMarker":"MY_DISPOSABLE"}' > "$CFG13"
+QA_CONFIG="$CFG13" bash "$ENGINE" --no-code --no-runtime --out "$OUT13" >/dev/null 2>&1
+check "custom marker still opts into disposable" "$(get "$OUT13" '.environment')" "disposable"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

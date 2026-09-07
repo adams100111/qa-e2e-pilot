@@ -204,6 +204,10 @@ fi
 # production from a non-localhost baseUrl with no seedable-env marker.
 ENV_CFG=$(jq_get '.environment' 'auto')
 SEED_MARKER=$(jq_get '.seedableEnvMarker' '')
+if [[ "$SEED_MARKER" == "QA_DISPOSABLE_ENV" ]]; then
+  warn "seedableEnvMarker is the historical bootstrap default sentinel 'QA_DISPOSABLE_ENV' — treated as NOT disposable (it was never a deliberate opt-in). Set a custom marker string to mark this environment disposable."
+  SEED_MARKER=""
+fi
 IS_PROD=0
 if [[ "$ENV_CFG" == "production" ]]; then
   IS_PROD=1

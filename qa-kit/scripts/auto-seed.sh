@@ -37,10 +37,12 @@ cmd_decide() {
   if has_jq; then
     jq -Sc '
       (.allowApiWrites == true) as $w
-      | (((.seedableEnvMarker | type) == "string") and ((.seedableEnvMarker | length) > 0)) as $m
+      | (((.seedableEnvMarker | type) == "string") and (.seedableEnvMarker == "QA_DISPOSABLE_ENV")) as $sentinel
+      | (((.seedableEnvMarker | type) == "string") and ((.seedableEnvMarker | length) > 0) and ($sentinel | not)) as $m
       | (((.environment // "auto")) != "production") as $e
       | ( if ($w and $m and $e) then {seed:true,  reason:"ok"}
           elif ($w | not)       then {seed:false, reason:"allowApiWrites:false"}
+          elif $sentinel        then {seed:false, reason:"seedableEnvMarker is the historical bootstrap sentinel QA_DISPOSABLE_ENV (never a deliberate opt-in)"}
           elif ($m | not)       then {seed:false, reason:"seedableEnvMarker empty (env not marked disposable)"}
           else                       {seed:false, reason:"environment:production"} end )
     ' "$file" 2>/dev/null || die "auto-seed decide: invalid JSON in $file"
@@ -53,12 +55,15 @@ except Exception:
     sys.stderr.write("ERROR: auto-seed decide: invalid JSON in %s\n" % sys.argv[1]); sys.exit(1)
 w = c.get("allowApiWrites") is True
 mk = c.get("seedableEnvMarker")
-m = isinstance(mk, str) and len(mk) > 0
+sentinel = isinstance(mk, str) and mk == "QA_DISPOSABLE_ENV"
+m = isinstance(mk, str) and len(mk) > 0 and not sentinel
 e = (c.get("environment") or "auto") != "production"
 if w and m and e:
     out = {"seed": True, "reason": "ok"}
 elif not w:
     out = {"seed": False, "reason": "allowApiWrites:false"}
+elif sentinel:
+    out = {"seed": False, "reason": "seedableEnvMarker is the historical bootstrap sentinel QA_DISPOSABLE_ENV (never a deliberate opt-in)"}
 elif not m:
     out = {"seed": False, "reason": "seedableEnvMarker empty (env not marked disposable)"}
 else:
