@@ -55,6 +55,12 @@ Copy `templates/report.md` into the run dir and fill every placeholder:
 - `{{FEATURE}}` — feature/target label from the run manifest.
 - `{{BUILD_ID}}` — build/deploy id captured at pre-flight.
 - `{{TALLY_*}}` — per-verdict counts.
+- `{{COST_*}}` (audit-2 W4-3) — fill the `## Cost` block from `run-manifest.json`'s `cost` object
+  (`scripts/cost-summary.sh`'s output; `checkpointing-qa-memory` wrote it, this skill never
+  recomputes it). If `cost` is still `null`, replace the whole section with `_Cost telemetry
+  unavailable for this run._` rather than leaving placeholders unfilled — see the template's own
+  comment for the exact per-field rendering rules (including the `budgetWarn` callout and the
+  optional `tokens` row, rendered only when non-null).
 - One `## Criterion` section per criterion using the verdict-card fields below.
 - A `## Deferred` section for every deferred criterion (never omit).
 - A `## Bugs` appendix with one filled `templates/bug-report.md` block per failing criterion.
@@ -109,7 +115,7 @@ Show the recomputed-expected vs actual side-by-side whenever computed logic is i
 
 ### 7. Write report.html
 
-Copy `templates/report.html` into the run dir and replace all `{{…}}` tokens. Embed screenshots as `<img src="evidence/<criterion-id>/screenshot-after.png">` (relative paths). The file must open standalone in a browser with no network requests — all CSS is inline in the template.
+Copy `templates/report.html` into the run dir and replace all `{{…}}` tokens, including `{{COST_SECTION}}` (same source and same-null-handling as report.md's `## Cost` block above — see the template's own comment for the exact HTML to fill in). Embed screenshots as `<img src="evidence/<criterion-id>/screenshot-after.png">` (relative paths). The file must open standalone in a browser with no network requests — all CSS is inline in the template.
 
 Verdict card colors:
 - `pass` → green (`#16a34a` background, white text)

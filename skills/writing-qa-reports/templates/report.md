@@ -35,6 +35,34 @@
 
 ---
 
+## Cost
+
+| Field | Value |
+|---|---|
+| Started | {{COST_STARTED_AT}} |
+| Finished | {{COST_FINISHED_AT}} |
+| Criteria | {{COST_CRITERIA}} |
+| tool-calls | {{COST_TOOL_CALLS}} |
+| tool-calls by criterion | {{COST_TOOL_CALLS_BY_CRITERION}} |
+| Budget | {{COST_BUDGET_NOTE}} |
+
+{{COST_TOKENS_ROW}}
+
+> Fill from `run-manifest.json`'s `cost` object (`scripts/cost-summary.sh`'s output — audit-2
+> W4-3; never hand-computed). `{{COST_TOOL_CALLS_BY_CRITERION}}` renders the
+> `toolCallsByCriterion` map as `id: N, id: N, …` plus, when `unattributedToolCalls > 0`, a
+> trailing `unattributed: N`; when `attribution` is `"unavailable"` (no `journal.ndjson` yet)
+> replace the whole row's value with `not derivable this run — see cost-summary.sh's ATTRIBUTION
+> note`. `{{COST_BUDGET_NOTE}}` reads `criteriaDone/criteriaBudget` (e.g. "48 / 60") plus
+> `⚠ ≥80% consumed (soft cap — not a coverage cut)` appended only when `budgetWarn` is `true`.
+> `{{COST_TOKENS_ROW}}` is `| tokens | {{COST_TOKENS}} |` when the manifest's `cost.tokens` is
+> non-null (the Claude harness fills it when usage is exposed), otherwise remove the row
+> entirely — never render a fabricated token count. If `run-manifest.json.cost` is still `null`
+> (cost-summary.sh was never run), replace this whole section with `_Cost telemetry unavailable
+> for this run._` rather than leaving placeholders unfilled.
+
+---
+
 ## Criteria
 
 <!-- One section per criterion. Replace placeholders and remove this comment. -->

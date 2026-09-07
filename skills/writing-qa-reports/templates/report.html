@@ -147,6 +147,37 @@
     </div>
   -->
 
+  <!-- ── Cost ── -->
+  <h2>Cost</h2>
+  {{COST_SECTION}}
+  <!--
+    Fill from run-manifest.json's `cost` object (scripts/cost-summary.sh's output — audit-2 W4-3;
+    never hand-computed). Replace {{COST_SECTION}} with:
+
+    <table class="field-table">
+      <tr><td>Started</td><td>{{COST_STARTED_AT}}</td></tr>
+      <tr><td>Finished</td><td>{{COST_FINISHED_AT}}</td></tr>
+      <tr><td>Criteria</td><td>{{COST_CRITERIA}}</td></tr>
+      <tr><td>tool-calls</td><td>{{COST_TOOL_CALLS}}</td></tr>
+      <tr><td>tool-calls by criterion</td><td>{{COST_TOOL_CALLS_BY_CRITERION}}</td></tr>
+      <tr><td>Budget</td><td>{{COST_BUDGET_NOTE}}</td></tr>
+      {{COST_TOKENS_ROW}}
+      <!-- {{COST_TOKENS_ROW}} = <tr><td>tokens</td><td>{{COST_TOKENS}}</td></tr> only when
+           cost.tokens is non-null; omit the row entirely otherwise. -->
+    </table>
+
+    {{COST_TOOL_CALLS_BY_CRITERION}} renders the toolCallsByCriterion map as "id: N, id: N, …"
+    plus, when unattributedToolCalls > 0, a trailing "unattributed: N"; when attribution is
+    "unavailable" (no journal.ndjson yet) render "not derivable this run" instead.
+    {{COST_BUDGET_NOTE}} reads criteriaDone/criteriaBudget (e.g. "48 / 60") and, only when
+    budgetWarn is true, appends a callout span:
+      <span class="conf-badge conf-low">⚠ ≥80% consumed — soft cap, not a coverage cut</span>
+
+    If run-manifest.json.cost is still null (cost-summary.sh never ran this run), replace the
+    whole {{COST_SECTION}} with:
+      <p><em>Cost telemetry unavailable for this run.</em></p>
+  -->
+
   <!-- ── Verdict cards ── -->
   <h2>Criteria</h2>
   <div class="cards">

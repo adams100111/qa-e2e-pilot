@@ -24,5 +24,6 @@
     }
   ],
   "spec_kit_present": {{SPEC_KIT_PRESENT}},
-  "notes": "{{NOTES_OR_EMPTY_STRING}}"
+  "notes": "{{NOTES_OR_EMPTY_STRING}}",
+  "cost": {{COST_SUMMARY_OR_NULL}}
 }
