@@ -1,0 +1,66 @@
+{
+  "source": "run-20260907-180352",
+  "estimated": false,
+  "findings": [
+    {
+      "verdict": "fail",
+      "text": "'Subtotal (cached)' label + its localStorage backing are not invalidated when a line item is deleted | Expected: Per on-page rule (2) 'Subtotal = sum of all line totals', after removing Widget A ($21.00) the subtotal is 47.25-21.00=26.25. Every subtotal-derived display, including the 'Subtotal (cached)' label, should reflect 26.25. | Actual: The Line items table and the authoritative 'Invoice totals' table both correctly show Subtotal $26.25 / Taxable $26.25 / Tax $2.10 / Grand $28.35. However the 'Subtotal (cached)' paragraph directly under the line-items table still reads '$47.25' -- the stale, pre-delete value. localStorage 'invoicepad:subtotalCached' also still holds '47.25', confirming the cache invalidation is missing specifically on the delete path (the add-item path DOES update this cache correctly, verified in C1/C2/C3). A user relying on that on-screen number after any delete sees an incorrect subtotal.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "F3"
+    },
+    {
+      "verdict": "fail",
+      "text": "Tax is computed on the raw/pre-discount subtotal, not the taxable (exemption+discount-adjusted) subtotal -- both tax-exempt flag and the 10% discount are ignored by the actual Tax/Grand figures | Expected: Per on-page rule (4): 'Sales tax is 8% of the taxable subtotal -- items marked Tax-exempt are excluded from the taxable subtotal.' Taxable subtotal = 126.25-100.00 = 26.25, so Tax = 8%*26.25 = $2.10 and Grand total (rule 5, discounted subtotal + tax; no discount since <$500) = 126.25+2.10 = $128.35. | Actual: The Taxable column itself is computed correctly ($26.25, excluding the exempt $100 item). But the Tax figure shown is $10.10, which equals 8% of the FULL subtotal ($126.25 x 0.08 = 10.10) -- NOT 8% of the displayed Taxable figure. Grand total ($136.35) is consequently wrong too (126.25+10.10). The tax-exempt checkbox therefore has zero effect on the actual amount of tax charged, even though the UI's own 'Taxable' column claims otherwise -- silently overcharging tax on every invoice containing an exempt item. The same bug also reproduces on the discount path: with subtotal $500.01 (10% discount applies), the 'Taxable' column correctly shows the discounted subtotal ($450.01), but Tax is 8% of the undiscounted $500.01 ($40.00) instead of 8% of $450.01 ($36.00). In both cases (exemption and discount) the 'Taxable' column is computed correctly but the actual Tax/Grand total figures always use the raw, pre-adjustment subtotal.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "F5"
+    },
+    {
+      "verdict": "fail",
+      "text": "Line total truncates (floors) to cents instead of rounding -- systematic 1-cent-per-line undercharge on fractional pricing | Expected: Per rule (1) 'each line total = qty x unit price', rounded to the nearest cent using standard round-half-up (the same rounding the app itself already applies to the displayed unit-price column): 3*0.335=1.005 -> $1.01; 1*0.999=0.999 -> $1.00. | Actual: Both line totals are truncated (floored) to cents rather than rounded: 1.005 -> $1.00 (should be $1.01), 0.999 -> $0.99 (should be $1.00). The unit-price display column rounds correctly (0.335->$0.34, 0.999->$1.00), but the Line-total computation drops the fractional cent instead of rounding it -- a systematic undercharge on any fractional-cent line, which also propagates into Subtotal/Grand total.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "F2"
+    },
+    {
+      "verdict": "fail",
+      "text": "Add item silently drops the item (with no error/toast) when 'Add item' is clicked in quick succession after a prior add -- intermittent race condition | Expected: Either the item is added (appears in the table and in localStorage 'invoicepad:items'), or the add is rejected with a visible reason and the fields are NOT cleared. | Actual: The new item did not appear in the Line items table or in localStorage 'invoicepad:items' at all -- it was silently dropped. No console error, no toast, no validation message. Yet the Description field was cleared exactly as it is on a SUCCESSFUL add, making the failure invisible to the user (the form looks like it just accepted the item). Retrying the identical add (same qty/price, just retyping description) succeeded immediately after. Reproduced 2 times out of roughly 7 adds during this run -- looks like a stale-closure/race condition in the add handler reading the description state before a very recent prior re-render has committed.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "J3"
+    },
+    {
+      "verdict": "fail",
+      "text": "Negative quantity is accepted and persisted (producing a negative line total that silently reduces the invoice), while negative price and zero quantity are correctly rejected -- asymmetric/incomplete input validation | Expected: Since qty=0 is already rejected by this app's own validation (verified in C9), a negative quantity (an even more nonsensical value for a line item) should be rejected too, consistently with negative price also being rejected. | Actual: qty=-2/price=10 was ACCEPTED and persisted to localStorage, rendering a line total of -$20.00 in the table and reducing the invoice Subtotal by $20.00 (502.00 -> 482.00), with Tax/Grand recalculated around the negative value. qty=2/price=-5 was correctly rejected (nothing persisted, same silent-clear-description behavior as the qty=0 case). Quantity has no lower-bound / sign validation at all, while price does -- a user (or a scripted attacker) can silently discount an invoice to any degree, or drive it negative, just by entering a negative quantity.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "F4"
+    },
+    {
+      "verdict": "fail",
+      "text": "'Finalize invoice' flips the status label to FINALIZED but never persists the new invoice or clears the draft -- a purely cosmetic state change | Expected: Per the app's own on-page text next to the button: 'Persists the current draft as a new invoice and flips status to FINALIZED.' A new invoice record (new id, the draft's items/subtotal/discount/tax/grandTotal snapshot, status FINALIZED) should be appended to invoicepad:invoices, the invoice history table should show a 2nd row, and the draft (invoicepad:items / the Line items table) should presumably reset for the next invoice. | Actual: localStorage 'invoicepad:invoices' is completely unchanged (still just the original INV-1001 record from before this run started). The invoice history table still shows exactly 1 row. The draft (Consulting hours, qty 5, $135.00 grand total) is still sitting in the Line items table / invoicepad:items, completely untouched. The ONLY thing that changed anywhere is the 'status: DRAFT' -> 'status: FINALIZED' text label -- a purely cosmetic flip with no underlying persistence at all. A user finalizing an invoice believes it was saved (the status says FINALIZED) but it was never written anywhere; refreshing the page or building a new invoice would lose it entirely.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "J2"
+    },
+    {
+      "verdict": "fail",
+      "text": "'Send invoice' is a complete no-op -- does not mark the invoice sent, fire any request, or give any user feedback | Expected: Per the on-page spec text right next to the button: 'Spec: emails the finalized invoice to the customer and marks it sent.' At minimum, given this is a localStorage-only demo with no real email backend, SOME persisted marker (a 'sent' flag/timestamp) or visible UI feedback should appear. | Actual: Nothing changed at all: 0 network requests fired, 0 console messages, and every localStorage key (invoicepad:invoiceStatus, invoicepad:items, invoicepad:invoices, invoicepad:reorderQty, invoicepad:subtotalCached) is byte-identical before and after the click. The status label still reads 'FINALIZED', never 'SENT'. There is no user-visible confirmation, error, or any other observable effect of clicking this button -- it is entirely non-functional.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "H1"
+    },
+    {
+      "verdict": "fail",
+      "text": "The '?' help button next to FINALIZE INVOICE throws an uncaught ReferenceError and does nothing | Expected: Clicking a rendered, enabled button should either show help content or, at minimum, not throw a JS error. | Actual: Console shows: 'ReferenceError: undefinedInvoiceHelp is not defined at HTMLButtonElement.<anonymous> (http://localhost:8199/:319:3)'. No dialog, tooltip, or any visible content appears -- the button is entirely broken.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "U4"
+    },
+    {
+      "verdict": "fail",
+      "text": "'Long memo' widget clips ~75% of its text with no way for a sighted user to read the rest (no title tooltip, no expand control) | Expected: CSS truncation (overflow:hidden; text-overflow:ellipsis; white-space:nowrap) is a reasonable visual pattern, but truncated content should remain reachable by sighted/pointer users -- typically via a 'title' attribute (native tooltip) or a click-to-expand affordance. | Actual: The element's scrollWidth (613px) is more than 4x its clientWidth (150px) -- roughly 75% of the text is visually clipped -- and it has no 'title' attribute, no aria-label, and no expand control. A screen reader would still announce the full textContent (so this is not a strict WCAG name/role/value failure), but a sighted mouse user has absolutely no way to read the hidden ~75% of the memo.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "N5"
+    },
+    {
+      "verdict": "fail",
+      "text": "The line-item 'x' (remove) button is only 16x16 CSS px, well under the WCAG 2.5.8 AA 24x24 target-size minimum, with insufficient spacing to qualify for the spacing exception | Expected: Per WCAG 2.1 SC 2.5.8 (Target Size, Minimum, AA), each target should be at least 24x24 CSS px, OR have enough spacing from neighboring targets that a 24px circle centered on it doesn't intersect them. | Actual: 'edit' (51x32) and 'view' (56x32) both comfortably pass. The 'x' (remove-item) button measures only 16x16 CSS px, and sits only ~3.4px away from the neighboring 'edit' button -- far too close to qualify for the spacing exception either. This is a small, easy-to-mis-tap destructive (delete) action, which makes the undersized target especially risky for motor-impaired or imprecise-pointer users.",
+      "suspectedLayer": "FE",
+      "judgedSeedId": "U3"
+    }
+  ]
+}

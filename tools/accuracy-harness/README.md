@@ -86,9 +86,9 @@ from a committed snapshot. It is **not** a guarantee about unknown, in-the-wild 
 generative-critic layer 3 (sub-plan C2) remains estimated, not measured, for exactly that reason — you
 cannot measure recall on unseeded bugs.
 
-**CI-wiring follow-up.** The gate is manual/local today: `run-ux-measure.sh` is run by hand (or by an
-agent) on demand. Wiring it into `.github/workflows` so it runs automatically on every PR is a
-follow-up, not yet done.
+**CI wiring (done).** `run-ux-measure.sh` runs automatically on every PR via
+`.github/workflows/adapters.yml`'s `accuracy` job, alongside a scorer-regression gate over the
+committed blind reference findings (`measured-blind-v2.json` — see `docs/running-in-ci.md`).
 
 ## The 24 planted bugs (axes)
 
@@ -156,9 +156,25 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
 | Gated run B (general-purpose agent, gated flow) | 25% | 25% | 25% | 100% |
 | Post-fix full pipeline (fixture-ASSISTED — see caveat) | 88% | 100% | 92% | 100% |
 | Truly-blind, BEFORE coverage fixes (browser-only, no source read) | 56% | 75% | 62% | 100% |
-| **Truly-blind, AFTER coverage fixes (v0.6.x)** | **78%** | **100%** | **85%** | **100%** |
+| **Truly-blind, AFTER coverage fixes (v0.6.x)** — *same-fixture, post-tuning* | **78%** | **100%** | **85%** | **100%** |
+| **Truly-blind on `fixture2/` (generator-untuned, v0.6.x)** | **70%** | **50%** | **64%** | **90%** |
+| Pi harness, PARTIAL (10 criteria, session hung pre-UX-phase — see caveat) | 33% | 0% | 23% | 100% |
 
-> **The honest blind number is 78% functional / 100% ux-objective / 85% overall / 100% precision — GATE PASS.** Reaching it took two corrections. (1) The served fixture used to leak its seeds (comments describing each bug, "planted bugs" title, "(N4)" labels) — stripping those + requiring browser-only interaction dropped the inflated 88–100% to a real **62% (gate FAIL)**. (2) That blind run exposed genuine coverage gaps — the checklist checked "was invalid input rejected" but not "did a false success toast fire" (J4/F4), and the icon-button was never click-probed (U4). Sharpening those assertions (toast-vs-persistence baked check; required icon click-probe) lifted blind recall to **85% (gate PASS)**. The only two remaining misses are the `Ghost` magic-name drop (J1 — nearly unfindable black-box, a contrived seed) and F4 (the fixture appears to *reject* negatives with a false toast, which is caught as the J4 class, so F4-as-specified may not reproduce). This is the trustworthy, defensible number.
+> **Pi harness partial measurement (2026-09-07, `findings/measured-pi-run.json`) — GATE FAIL, published as-is.** The
+> first live non-Claude accuracy run: `pi -p` (headless, anthropic provider) driving the installed Pi adapter against
+> `fixture/` black-box. The run genuinely worked — skills resolved, the durable run substrate checkpointed 10 criteria
+> with evidence, and it caught F1 (ownership denominator), J2 (phantom finalize), and H1 (dead affordance) at **100%
+> precision** — but it completed only 10 of a 25-budget checklist before the session hung at ~2h (killed; artifacts
+> intact), never reaching the UX-detection phase (hence ux 0%). Operational frictions found and documented in
+> `docs/harness-adapters.md`: headless Pi cannot serve forwarded permission requests, so (a) subagent dispatch is
+> unusable headless (the run was re-driven with in-session persona adoption — a documented deviation from the canonical
+> `pi -p "/qa-run …"`), (b) a project-scoped `pi-permission-system` `yoloMode` config was required, and (c) the session
+> hung after writing its report. **The Pi adapter stays banner'd accuracy-unvalidated**: this partial run demonstrates
+> the pipeline executes on Pi, not that it meets the gate there.
+
+> **The honest blind number is 78% functional / 100% ux-objective / 85% overall / 100% precision — GATE PASS.** Reaching it took two corrections. (1) The served fixture used to leak its seeds (comments describing each bug, "planted bugs" title, "(N4)" labels) — stripping those + requiring browser-only interaction dropped the inflated 88–100% to a real **62% (gate FAIL)**. (2) That blind run exposed genuine coverage gaps — the checklist checked "was invalid input rejected" but not "did a false success toast fire" (J4/F4), and the icon-button was never click-probed (U4). Sharpening those assertions (toast-vs-persistence baked check; required icon click-probe) lifted blind recall to **85% (gate PASS)**. The only two remaining misses are the `Ghost` magic-name drop (J1 — nearly unfindable black-box, a contrived seed) and F4 (the fixture appears to *reject* negatives with a false toast, which is caught as the J4 class, so F4-as-specified may not reproduce). This is the trustworthy, defensible number **on the fixture the generator was tuned against** — the row is now labeled *same-fixture, post-tuning* because the 62%→85% lift came from fixing coverage gaps identified from this same fixture's misses.
+
+> **The generator-untuned number is 70% functional / 50% ux-objective / 64% overall / 90% precision — GATE FAIL (measured 2026-09-07, `findings/measured-fixture2-blind.json`).** A truly-blind run against `fixture2/` (invoicing — authored under the firewall below, never seen by the checklist generator's tuning loop; 14 gated positives, 8 negative controls) caught 9/14: stale cached aggregate (F3), floor-vs-round (F2), negative-qty acceptance (F4), exempt-still-taxed (F5), phantom finalize (J2), every-4th silent drop (J3), no-op send (H1), undersized remove button (U3), help-button console error (U4). Missed: F1 (an attribution split — the run *did* find "tax computed on pre-discount subtotal" but the judge attributed that finding to F5, its other half; one-seed-per-finding costs the pair), J1 (`VOID` magic-name drop — same nearly-unfindable class as fixture 1's Ghost), J4 (0-qty false toast — found on fixture 1 after tuning, missed cold here: the sharpened toast-vs-persistence assertion generalized to the every-Nth class but not the invalid-input class), U1 (contrast — a plain detector miss on an un-tuned page), U2 (grand-total clip — the run flagged a *different*, deliberate truncation instead, the N5 negative control, which is also the run's one false positive at 90% precision). **Read together: ~85% is what this tool measures on a surface its checklist heuristics were sharpened against; ~64% overall (70% functional) at 90% precision is the honest expectation on a cold surface.** Both numbers are real, both are published, and closing the cold-surface gap without giving back precision is the standing improvement target — using `fixture2/`'s misses to tune would just convert it into another same-fixture number, so any tuning motivated by this run must be validated against a future `fixture3/`.
 
 > **⚠️ (historical) The 88–100% rows are fixture-ASSISTED, not blind.** The served fixture used to leak its own seeds — HTML/CSS/JS comments described each planted bug, the `<title>` said "planted bugs", a "Negative controls" heading + `(N4)` labels named the controls. Any agent that `curl`-ed the page saw those hints, inflating recall to 88–100%. After stripping the tells AND requiring the agent to interact **browser-only (no source read)**, the honest recall is **56% functional / 62% overall (gate FAIL)** at 100% precision. Caught blind: ownership/precision/stale-total (F1/F2/F3), finalize (J2), UI-impossible archive (H1), contrast/target-size/clip (U1/U2/U3). Missed blind: the `Ghost` magic-name drop (J1 — nearly unfindable black-box, a contrived seed), the intermittent every-3rd drop (J3), the 0-share/negative-share **toast-vs-persistence** discrepancy (J4/F4 — a real coverage gap: the checklist checked "was it rejected" but not "did a false success toast fire"), and the `?` icon-button's click-time console error + missing name (U4 — caught its contrast/size but never clicked it). This is the trustworthy number; the coverage gaps (toast-vs-persistence on invalid input, icon-button click-probes) are the improvement target.
 
@@ -177,3 +193,61 @@ All numbers below are **MEASURED** (`findings/measured-*.json`, `"estimated": fa
   measured — a historical label, not a current count.
 - **The gate is real**: `score.js --gate` exits non-zero below threshold; `pass-gate.js` rejects a
   toast-only `pass`.
+
+## Second fixture (`fixture2/`) — the generator-untuned measurement target
+
+The 85% blind number above is **same-fixture, post-tuning**: the 62%→85% lift came from fixing
+checklist-generation gaps that were themselves identified from `fixture/`'s own misses
+("MEASURED vs ESTIMATED" note above, and the 56%→85% callout). That is train-on-test, and it
+credibly inflates confidence in the number. `fixture2/` exists to answer the harder question:
+does the same recall hold on a fixture the checklist generator was never tuned against?
+
+```
+fixture2/index.html   self-contained app (no build, no network) — "InvoicePad Mini", a different
+                       domain (line items x unit price, a discount/tax pricing rule spelled out in
+                       on-page help text, tax-exempt items, a draft-to-finalize journey, and a
+                       finalized-invoices list/detail view); "backend" = localStorage
+seeds2.json            ground-truth planted bugs + match rules + the acceptance gate thresholds —
+                       same schema as seeds.json (22 seeds: 14 gated positive across functional/
+                       broken-journey/ux-objective + 8 negative controls)
+run-baseline2.sh       thin copy of run-baseline.sh pointed at fixture2/seeds2.json (default port
+                       8199, distinct from run-baseline.sh's 8099 so both can serve side by side)
+```
+
+**Firewall provenance (binding on how `fixture2/` was authored).** The agent that wrote
+`fixture2/index.html` and `seeds2.json` was explicitly forbidden from reading
+`skills/generating-qa-checklist/`, `skills/analyzing-feature-ui/`, or any `skills/*/SKILL.md` —
+its only repo inputs were this README, `fixture/index.html` (for house style), `seeds.json` (for
+schema), `scorer/*.js` (for the scoring contract), and `run-baseline.sh` (for the runner
+interface). It never saw what the checklist generator does or does not already cover, so
+`fixture2/` cannot be shaped — consciously or not — around the generator's known strengths. The
+seeds in `seeds2.json` stay sealed from whatever agent performs the measured run against
+`fixture2/` until that run's `bug-log.json` has already been written.
+
+**No self-leaking tells.** Per the historical leak documented above (comments describing each
+planted bug, a "planted bugs" title, "(N4)"-style labels naming the negative controls),
+`fixture2/index.html` was grepped for `planted`, bare `bug`, `seed`, and any seed-id-shaped
+identifier before being committed — none appear in the served HTML/JS/CSS. `seeds2.json` itself
+(the answer key) is expected to say "ground-truth planted bugs" — it is never served to the run
+agent.
+
+**Run it:**
+
+```bash
+./run-baseline2.sh --serve         # serve fixture2 at http://localhost:8199
+# then, from an agent session with Playwright MCP configured and WITHOUT showing it seeds2.json:
+#   point .qa/config.json baseUrl at http://localhost:8199 and dispatch qa-e2e-pilot
+node scorer/convert-buglog.js <run>/bug-log.json > findings/measured-fixture2-<run>.json
+node scorer/score.js findings/measured-fixture2-<run>.json --seeds seeds2.json --gate
+```
+
+The measured (not projected) fixture2 recall — published beside the fixture/ number above,
+whatever it turns out to be — is tracked separately; see `findings/` for the committed run once
+that blind measurement has been executed.
+
+**Future gold standard.** Both `fixture/` and `fixture2/` are still synthetic apps with a
+committed answer key, which is a weaker guarantee than an unseeded, real-world target. The
+strongest version of this measurement plants known bugs in a real open-source app with no
+harness-authored seeds file at all, so even the *shape* of the bugs isn't chosen by someone who
+also builds the detector. That is out of scope here but is the direction this harness should grow
+toward.

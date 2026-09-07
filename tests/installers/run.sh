@@ -52,25 +52,33 @@ bash "$REPO/scripts/build-adapter.sh" opencode >/dev/null
 
 # === command-set cases: installed set must equal the rendered/source set (glob compare) ===
 
+BANNER="accuracy-unvalidated on this harness — see docs/harness-adapters.md (manual accuracy run required)"
+
 T1="$(mktemp -d)"
-bash "$REPO/harnesses/codex/install-codex.sh" "$T1" >/dev/null 2>&1
+T1OUT="$(bash "$REPO/harnesses/codex/install-codex.sh" "$T1" 2>&1)"
 check "codex ships full command set" \
   "$(sorted_basenames "$T1/.codex/prompts")" \
   "$(sorted_basenames "$REPO/dist/codex/commands")"
+check "codex install prints the accuracy-unvalidated banner" \
+  "$(printf '%s\n' "$T1OUT" | grep -qF "$BANNER" && echo yes || echo no)" "yes"
 rm -rf "$T1"
 
 T2="$(mktemp -d)"
-bash "$REPO/harnesses/pi/install-pi.sh" "$T2" >/dev/null 2>&1
+T2OUT="$(bash "$REPO/harnesses/pi/install-pi.sh" "$T2" 2>&1)"
 check "pi ships full command set" \
   "$(sorted_basenames "$T2/.pi/prompts")" \
   "$(sorted_basenames "$REPO/dist/pi/commands")"
+check "pi install prints the accuracy-unvalidated banner" \
+  "$(printf '%s\n' "$T2OUT" | grep -qF "$BANNER" && echo yes || echo no)" "yes"
 rm -rf "$T2"
 
 T3="$(mktemp -d)"
-bash "$REPO/harnesses/opencode/install-opencode.sh" "$T3" >/dev/null 2>&1
+T3OUT="$(bash "$REPO/harnesses/opencode/install-opencode.sh" "$T3" 2>&1)"
 check "opencode ships full command set" \
   "$(sorted_basenames "$T3/.opencode/command")" \
   "$(sorted_basenames "$REPO/dist/opencode/commands")"
+check "opencode install prints the accuracy-unvalidated banner" \
+  "$(printf '%s\n' "$T3OUT" | grep -qF "$BANNER" && echo yes || echo no)" "yes"
 rm -rf "$T3"
 
 # manual install.sh: HOME/CLAUDE_CONFIG_DIR override kept hermetic (install.sh already reads

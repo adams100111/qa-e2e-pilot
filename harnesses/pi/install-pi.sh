@@ -57,3 +57,4 @@ echo "Grounding files (CONTEXT.md, docs/adr/) placed under $PROJ/.pi/agents/ alo
 echo "confirming the agent can read them is part of the manual accuracy-acceptance step (see"
 echo "harnesses/pi/README.md and docs/harness-adapters.md)."
 echo "Automatic enforcement floor: --save-session -> session-preflight -> qa-verify (high-confidence). Optional live-hook hardening: see harnesses/pi/hooks.md (verify on your build)."
+echo "accuracy-unvalidated on this harness — see docs/harness-adapters.md (manual accuracy run required)"

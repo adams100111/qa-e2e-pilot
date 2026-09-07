@@ -201,6 +201,32 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 
 ---
 
+## When NOT to use this
+
+Every capability above has a shape it doesn't fit. Read this before wiring `qa-e2e-pilot` into a
+workflow it isn't built for.
+
+| Use case | Fit | Why |
+|---|---|---|
+| First-pass exploratory QA on a new feature | **Yes** | this is the core loop — analyze → checklist → drive/bake/recompute → report |
+| Periodic deep passes (pre-release, after a big refactor) | **Yes** | resumable memory + checkpointing ([ADR-0002](./docs/adr/0002-run-state-in-dot-qa-not-agent-memory.md)) are built for a long, thorough campaign, not a quick smoke test |
+| Per-commit / per-PR regression gating | **No** | an LLM agent driving a real browser costs tool-call round-trips and wall-clock minutes per criterion; a compiled Playwright/Cypress/unit suite runs the same assertion in milliseconds for near-zero marginal cost once written. This repo's own CI makes the same call: `.github/workflows/adapters.yml` runs deterministic self-tests on every PR and does **not** drive a browser against a real target ([running-in-ci.md](./docs/running-in-ci.md#honest-status-what-actually-runs-in-ci-today) is explicit about this) — deterministic suites are the right per-commit gate; qa-e2e-pilot is how you *find* the regressions worth writing those suites for, not a replacement for them |
+| Shared staging (multiple people/jobs against the same backend) | **Degraded, not off** | `allowApiWrites` + `seedableEnvMarker` + `environment` gate every direct write/seed behind an explicit disposable-env opt-in (see [Configuration](#configuration-qaconfigjson) above) — on shared staging leave that gate closed and you get read-only bake/verify, not the full write-gated feature set |
+| Intermittent / timing-dependent bugs | **Structurally out of scope** | verification is **sequential by default** ([ADR-0003](./docs/adr/0003-sequential-verification-narrow-pool.md)) — one deterministic pass, not a fuzzer or a race hunter. The narrow opt-in parallel path (`fanning-out-criteria`) is for tagged independent/read-only criteria and deliberate race *tests* you write yourself, not general flakiness hunting |
+
+**What a green run actually means.** A `pass` verdict means *this run, against this checklist, found
+no divergence between what the UI showed, what the backend persisted, and the independently
+recomputed oracle* — measured truly-blind (browser-only, no source read) at **78% functional / 85%
+overall recall, 100% precision** on the fixture its checklist heuristics were tuned against, and at
+**70% functional / 64% overall recall, 90% precision** on a second, generator-untuned fixture (the
+honest cold-surface expectation — see
+[`tools/accuracy-harness/README.md`](./tools/accuracy-harness/README.md) for both numbers and the
+gap analysis). That is **not** "verified correct," and it is not a promise about bugs the checklist never thought to ask about. Treat a green
+run the way you'd treat any test suite with known, measured recall below 100%: strong evidence, not
+proof.
+
+---
+
 ## Running on other harnesses
 
 `qa-e2e-pilot` also runs on **Codex**, **Pi**, and **opencode**, generated from the same shared core
@@ -218,6 +244,12 @@ See [`docs/harness-adapters.md`](./docs/harness-adapters.md) for prerequisites, 
 to add, and the manual accuracy-run procedure each adapter must clear (Pi first) — and
 [ADR-0017](./docs/adr/0017-multi-harness-portability.md) for the design decision (shared core + generated
 adapters + a Claude byte-oracle enforced in CI).
+
+**accuracy-unvalidated on these harnesses — see docs/harness-adapters.md (manual accuracy run
+required).** Only the Claude Code path has a committed `measured-*` findings file under
+`tools/accuracy-harness/findings/`; each installer above prints this same caveat at the end of a
+successful install, and it comes down for a given harness only once that harness has its own
+measured run committed.
 
 ---
 

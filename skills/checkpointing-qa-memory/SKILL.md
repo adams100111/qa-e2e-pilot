@@ -213,7 +213,7 @@ Four honesty fast-follows ride on the Plan H2 core; all logic is in `scripts/`/`
 
 1. Generate a run-id: `<YYYYMMDDTHHMMSS>-<slug>` where slug is a short kebab-case feature label (e.g. `20241115T143022-founder-cap-table`).
 2. Create `.qa/runs/<run-id>/`.
-3. Copy `templates/run-manifest.md` into `.qa/runs/<run-id>/run-manifest.json` and fill every `{{TOKEN}}`.
+3. Copy `templates/run-manifest.md` into `.qa/runs/<run-id>/run-manifest.json` and fill every `{{TOKEN}}` — set `{{COST_SUMMARY_OR_NULL}}` to `null` (no cost telemetry exists yet; Step 2 populates it as the run progresses).
 4. Copy `templates/bug-log.md` into `.qa/runs/<run-id>/bug-log.json` and set `entries: []`.
 5. If spec-kit artifacts (spec, constitution, tasks files) exist in the project, also copy `templates/traceability.md` → `traceability.json` and populate the criterion rows from the checklist. Skip this file entirely if no spec-kit artifacts exist.
 6. Set `run-manifest.status` to `in-progress`.
@@ -234,6 +234,21 @@ After completing each criterion (any verdict: pass/fail/blocked/deferred/error):
 4. If verdict is `fail` or `error`: append a new entry to `bug-log.json` (copy the entry shape from `templates/bug-log.md`). Fill `title`, `steps`, `expected`, `actual`, `severity`, `suspected_layer`, `fix`.
 5. If `traceability.json` exists: update the row for this criterion with `verdict` and `confidence`.
 6. Update `run-manifest.json` — increment `criteria_done`, update `status` if all criteria are resolved.
+7. **Cost telemetry (audit-2 W4-3):** run `bash scripts/cost-summary.sh <run-id>` and copy its printed
+   JSON object verbatim into `run-manifest.json`'s `cost` field (replacing whatever was there — the
+   script's own numbers are the derivation of record; never hand-adjust them). The script is
+   read-only (it never writes `run-manifest.json` itself, matching `fold.sh`'s own boundary — see
+   the Run Directory Layout note above) and safe to call after every criterion; on a long run it's
+   fine to call it every few criteria instead if the per-criterion overhead matters more than
+   telemetry freshness. **If the printed object's `budgetWarn` is `true`, say so out loud in your
+   next message to the operator** (name the current `criteriaDone`/`criteriaBudget`, e.g. "cost
+   note: 48/60 criteria — 80% of the configured criteriaBudget") — this is a SOFT, advisory
+   signal (ADR-0008: "soft cost cap, not a coverage cut"), never a reason to stop, skip criteria, or
+   silently degrade evidence quality. Read `cost-summary.sh`'s own header comment before trusting
+   `toolCallsByCriterion` — it's a time-windowed proxy derived from `journal.ndjson`'s
+   `criterion_started` markers, not an exact per-call tag (see the ATTRIBUTION note there for the
+   honest caveats: second-resolution timestamp ties, and reduced precision under fanning-out-criteria's
+   opt-in parallel execution).
 
 **Severity scale:** `critical` | `high` | `medium` | `low`
 **Suspected layer:** `FE` | `route` | `service` | `migration` | `DB` (the canonical set from CONTEXT.md)
@@ -303,8 +318,12 @@ agent re-reads the fold on every resume and jumps straight to the first unverdic
 
 1. Set `run-manifest.status` to `complete` (or `aborted` if stopped early).
 2. Record `ended_at` (ISO-8601).
-3. Hand off to `writing-qa-reports` for `report.md` / `report.html`.
-4. (Optional) Write ONE durable entry to personal memory:
+3. Run `bash scripts/cost-summary.sh <run-id>` ONE FINAL TIME (now that `ended_at` is set, its
+   `finishedAt` field reflects the real close time) and write the result into `run-manifest.json`'s
+   `cost` field — this is the number `writing-qa-reports` renders into the report's cost block and
+   `report-to-junit.sh` exports as a properties line.
+4. Hand off to `writing-qa-reports` for `report.md` / `report.html`.
+5. (Optional) Write ONE durable entry to personal memory:
    ```
    Project: <project-name>
    Latest run: <run-id>
@@ -377,7 +396,7 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 
 ---
 
-> Further worked mini-evals — Evals 4–8 (traceability-skip, bug-found-mid-run, torn-journal-tail, kill-mid-act full-write-set reconcile, dropped-required-kind rejection) — live in [`references/mini-evals-extended.md`](references/mini-evals-extended.md).
+> Further worked mini-evals — Evals 4–9 (traceability-skip, bug-found-mid-run, torn-journal-tail, kill-mid-act full-write-set reconcile, dropped-required-kind rejection, cost-telemetry budget-warn) — live in [`references/mini-evals-extended.md`](references/mini-evals-extended.md).
 
 ## Templates Reference
 
@@ -412,3 +431,4 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 | `scripts/qa-verify.sh <run-id>` | The out-of-agent authority: re-derives required-kinds, re-validates evidence, binds provenance for every recorded `pass`; writes `verification.json`, exits non-zero on any override |
 | `scripts/record-evidence.sh <run-id> <crit-id> identity --persona <id> --subject <captured-subject> --method <whoami\|storageState\|none>` | Plan H3 #6: record a persona's observed identity → `evidence/<persona>/identity.json`; consumed by `qa-verify`'s persona-identity binding (override needs `personas[].expectedSubject`, else best-effort degrade) |
 | `scripts/validate-state-machine.sh <path-to-state-machine.json>` | ADR-0021: structural validator for the FSM statechart — every legal edge/guard/phaseToolSurface entry cross-references a declared phase/sub-state/tool class; see `references/fsm-enforcement.md` |
+| `scripts/cost-summary.sh <run-id> [--tokens <n>]` | Audit-2 W4-3: READ-ONLY per-run cost telemetry — `{runId, startedAt, finishedAt, criteria, toolCalls, toolCallsByCriterion, unattributedToolCalls, attribution, tokens, criteriaBudget, criteriaDone, budgetWarn, asOf}` derived from `toolstream.jsonl` (total calls) time-windowed against `journal.ndjson`'s `criterion_started` markers (per-criterion attribution — `attribution:"unavailable"` when no journal exists yet, an honest degrade rather than a fabricated number); `budgetWarn` fires at ≥80% of `.qa/config.json`'s `criteriaBudget` (default 60). Never writes any file — the caller copies its output into `run-manifest.json`'s `cost` field (Step 2/Step 4) |

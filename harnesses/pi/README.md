@@ -67,10 +67,23 @@ independent verification as unavailable, rather than failing the run — see
 
 ## Manual accuracy run
 
+**accuracy-unvalidated on this harness — see docs/harness-adapters.md (manual accuracy run
+required).** A first, PARTIAL measured run exists
+(`tools/accuracy-harness/findings/measured-pi-run.json`, 2026-09-07: 10 criteria before a headless
+session hang, 23% overall recall at 100% precision — GATE FAIL); it proves the pipeline *executes*
+on Pi, not that it meets the gate. Treat this adapter's output as unverified until a complete run
+passes (see `docs/harness-adapters.md`'s manual-accuracy-run section for the field notes —
+headless permission handling and the in-session-persona workaround).
+
 Before trusting this adapter on your project, run it once against the bundled fixture and score
 it — see `docs/harness-adapters.md` for the full procedure (serve
 `tools/accuracy-harness/fixture/`, point `.qa/config.json` at it, run the agent end-to-end,
-convert + score the bug-log against the 85%/100% gate).
+convert + score the bug-log against the acceptance gate). The enforced gate
+(`tools/accuracy-harness/seeds.json`'s `gate` block) is **functional recall ≥ 70%, ux-objective
+recall ≥ 75%, overall verdict recall ≥ 70%, precision ≥ 80%** — the "78% functional / 100%
+ux-objective / 85% overall / 100% precision" figure quoted in `tools/accuracy-harness/README.md`
+is the *measured* reference number from the Claude harness run, not the enforced threshold; a
+harness only needs to clear the gate above, not match that number.
 
 The installer places `CONTEXT.md` and `docs/adr/` alongside the installed skills (see "Install"
 above) because the persona instructs the agent to read them — but that reference is unanchored,
