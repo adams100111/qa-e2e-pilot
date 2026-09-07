@@ -33,18 +33,19 @@ run's spec, not here.
 
 ## Enabled optional gates
 
-Which of qa-kit's optional gates this project turns on for its runs. Each gate reads the
-completed run's evidence under `.qa/runs/<run-id>/` — none of them re-drive the browser. This is a
-plain human-edited table, not a render placeholder — fill in "yes"/"no" (and any project-specific
-notes, e.g. a perf budget or a security scope exclusion) directly.
+Which of qa-kit's optional gates this project turns on for its runs. **None of these gates ship as
+commands yet** — the table below is a roadmap placeholder for this project's future policy, not a
+list of runnable `/qa-*` commands today. This is a plain human-edited table, not a render
+placeholder — fill in "yes"/"no" (and any project-specific notes, e.g. a perf budget or a security
+scope exclusion) directly, so the intent is recorded before the gate exists.
 
-| Gate | Enabled | Notes |
-|------|---------|-------|
-| `/qa-sanitize` | no | |
-| `/qa-assure` | no | |
-| `/qa-perf` | no | |
-| `/qa-security` | no | |
-| `/qa-uiux` | no | |
+| Gate (future) | Enabled | Notes |
+|---------------|---------|-------|
+| sanitize | no | |
+| assure | no | |
+| perf | no | |
+| security | no | |
+| uiux | no | |
 
 ---
 

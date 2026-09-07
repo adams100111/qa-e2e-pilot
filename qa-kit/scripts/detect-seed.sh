@@ -45,6 +45,10 @@ cmd_propose() {
     cfg_json="$(cat "$cfg_file")"
   fi
   if has_jq; then
+    jq -e . "$profile" >/dev/null 2>&1 || die "detect-seed propose: invalid JSON in $profile"
+    if [ -n "$cfg_file" ]; then
+      printf '%s' "$cfg_json" | jq -e . >/dev/null 2>&1 || die "detect-seed propose: invalid JSON in $cfg_file"
+    fi
     jq -Sc --argjson cfg "$cfg_json" '
       (.components // []) as $comps
       | ( if (.primary.backend | type) == "number"
@@ -65,7 +69,7 @@ cmd_propose() {
           // ([ $repos[] | select(.role == "fullstack") ][0] | .path?)
           // "." ) as $cwd
       | {mechanism: $m.mechanism, command: $m.command, cwd: $cwd}
-    ' "$profile" 2>/dev/null || die "detect-seed propose: invalid JSON in $profile"
+    ' "$profile" || die "detect-seed propose: jq transform failed for $profile"
   elif has_py; then
     python3 -c '
 import json, sys
@@ -73,7 +77,11 @@ try:
     profile = json.load(open(sys.argv[1]))
 except Exception:
     sys.stderr.write("ERROR: detect-seed propose: invalid JSON in %s\n" % sys.argv[1]); sys.exit(1)
-cfg = json.loads(sys.argv[2])
+cfg_file = sys.argv[3] if len(sys.argv) > 3 else ""
+try:
+    cfg = json.loads(sys.argv[2])
+except Exception:
+    sys.stderr.write("ERROR: detect-seed propose: invalid JSON in %s\n" % (cfg_file or "<config>")); sys.exit(1)
 comps = profile.get("components") or []
 bc = None
 pb = (profile.get("primary") or {}).get("backend")
@@ -97,11 +105,11 @@ elif orm == "prisma":
 else:
     mech, cmd = None, None
 repos = ((cfg or {}).get("repos")) or []
-be = [r.get("path") for r in repos if isinstance(r, dict) and r.get("role") == "backend"]
-fs = [r.get("path") for r in repos if isinstance(r, dict) and r.get("role") == "fullstack"]
+be = [r.get("path") for r in repos if isinstance(r, dict) and r.get("role") == "backend" and r.get("path")]
+fs = [r.get("path") for r in repos if isinstance(r, dict) and r.get("role") == "fullstack" and r.get("path")]
 cwd = be[0] if be else (fs[0] if fs else ".")
 print(json.dumps({"mechanism": mech, "command": cmd, "cwd": cwd}, sort_keys=True, separators=(",", ":")))
-' "$profile" "$cfg_json"
+' "$profile" "$cfg_json" "$cfg_file"
   else
     die "detect-seed.sh needs either 'jq' or 'python3'."
   fi

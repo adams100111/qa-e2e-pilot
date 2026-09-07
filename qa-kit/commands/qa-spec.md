@@ -76,7 +76,7 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
    `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
    machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
-   (`{}` if none), so the run can compute its effective config deterministically (see step 7).
+   (`{}` if none), so the run can compute its effective config deterministically (see step 8).
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
    applied, the drift result, the data-baseline entity count (seeded vs created), and the next step

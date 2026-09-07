@@ -2,10 +2,14 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/constitution.sh"   # qa-kit-owned (dependencies model)
+command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: constitution: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
+TMPDIRS=()
+cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 run_engine() {
-  local E="$1" T; T="$(mktemp -d)"
+  local E="$1" T; T="$(mktemp -d)"; TMPDIRS+=("$T")
   printf '%s' '[{"id":"admin","role":"admin","plane":"global","auth":"a@x (seeded)"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v@x (seeded)"}]' > "$T/p.json"
   printf '%s' '[{"entity":"submission","owningChain":["team_id"],"roleScope":{"admin":"owns","viewer":"read-scoped"}}]' > "$T/m.json"
   # version is deterministic + engine-stable + auth-independent
@@ -40,7 +44,6 @@ run_engine() {
   local st; st="$(QA_ENGINE=$E bash "$SH" state "$T/p.json" "abc123")"
   check "$E state has version" "$(printf '%s' "$st" | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])')" "abc123"
   check "$E state has admin role" "$(printf '%s' "$st" | python3 -c 'import json,sys;print(any(r["id"]=="admin" for r in json.load(sys.stdin)["roles"]))')" "True"
-  rm -rf "$T"
 }
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
@@ -52,13 +55,12 @@ command -v python3 >/dev/null 2>&1 && run_engine python3
 # (where "|" == 0x7C sorts after letters/digits/_/-) diverges from sorting by
 # the structured field first — this check catches that divergence directly.
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-  T="$(mktemp -d)"
+  T="$(mktemp -d)"; TMPDIRS+=("$T")
   printf '%s' '[{"id":"admin_ro","role":"viewer","plane":"global","auth":"a@x (seeded)"},{"id":"admin","role":"admin","plane":"global","auth":"a@x (seeded)"}]' > "$T/p.json"
   printf '%s' '[{"entity":"team_member","owningChain":["team_id"],"roleScope":{"viewer":"read-scoped"}},{"entity":"team","owningChain":[],"roleScope":{"admin":"owns"}}]' > "$T/m.json"
   V_JQ="$(QA_ENGINE=jq bash "$SH" version "$T/p.json" "$T/m.json")"
   V_PY="$(QA_ENGINE=python3 bash "$SH" version "$T/p.json" "$T/m.json")"
   check "cross-engine version identical (prefix-colliding ids)" "$V_JQ" "$V_PY"
-  rm -rf "$T"
 fi
 
 # Cross-engine regression: malformed personas/authz must be rejected
@@ -71,7 +73,7 @@ malformed_check() {
   QA_ENGINE=$E bash "$SH" version "$pfile" "$mfile" >/dev/null 2>&1; rc=$?
   check "$E $name rejected (nonzero exit)" "$([ "$rc" -ne 0 ] && echo y)" "y"
 }
-T="$(mktemp -d)"
+T="$(mktemp -d)"; TMPDIRS+=("$T")
 # persona missing `plane`
 printf '%s' '[{"id":"a","role":"r"}]' > "$T/p_missing_plane.json"
 printf '%s' '[{"entity":"e","owningChain":[],"roleScope":{}}]' > "$T/m_valid.json"
@@ -90,7 +92,6 @@ if command -v python3 >/dev/null 2>&1; then
   # control: existing valid fixture still succeeds
   check "python3 valid fixture still succeeds" "$([ -n "$(QA_ENGINE=python3 bash "$SH" version "$T/p_valid.json" "$T/m_valid.json" 2>/dev/null)" ] && echo y)" "y"
 fi
-rm -rf "$T"
 
 echo "constitution: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

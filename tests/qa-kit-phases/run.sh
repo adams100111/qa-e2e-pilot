@@ -23,6 +23,7 @@ pass=0; fail=0
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
 T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 # 1. constitution: personas+authz -> version + state
 printf '%s' '[{"id":"admin","role":"admin","plane":"global","auth":"a"},{"id":"viewer","role":"viewer","plane":"contextual","auth":"v"}]' > "$T/personas.json"
 printf '%s' '[{"entity":"doc","owningChain":["team_id"],"roleScope":{"admin":"owns","viewer":"read-scoped"}}]' > "$T/authz.json"
@@ -98,8 +99,6 @@ check "auto-seed writes off -> seed false" "$(bash "$AS" decide "$T/as_nowrite.j
 printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":".qa/DISPOSABLE","environment":"production"}' > "$T/as_prod.json"
 check "auto-seed production -> seed false" "$(bash "$AS" decide "$T/as_prod.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["seed"])')" "False"
 
-rm -rf "$T"
-
 # A3: /qa-verify command exists and wires verify-plan + verification.json
 QV="$ROOT/qa-kit/commands/qa-verify.md"
 check "qa-verify command exists" "$([ -f "$QV" ] && echo y)" "y"
@@ -116,6 +115,17 @@ check "qa-verify template has three states" \
 # status ladder and agent flow name the new step
 grep -q '/qa-verify' "$ROOT/qa-kit/commands/qa-status.md"; check "status names /qa-verify" "$?" "0"
 grep -q 'qa-verify'  "$ROOT/qa-kit/agents/qa-kit.md";      check "agent flow names /qa-verify" "$?" "0"
+# audit-2 W3-7b: qa-status.md must not claim a phantom `runs.json` artifact the engine never
+# writes, and its drift-advisory text must point at the now-shipped spec-snapshot.sh drift helper.
+grep -q 'runs\.json' "$ROOT/qa-kit/core/commands/qa-status.md"; check "status.md no longer claims runs.json" "$?" "1"
+grep -q 'spec-snapshot\.sh drift' "$ROOT/qa-kit/core/commands/qa-status.md"; check "status.md points at the shipped drift helper" "$?" "0"
+# spine docs (hand-authored: qa-kit README + harness READMEs) name /qa-verify as a real step
+grep -qE '/qa-verify' "$ROOT/qa-kit/README.md"; check "qa-kit README spine names /qa-verify" "$?" "0"
+grep -qE '/qa-verify' "$ROOT/qa-kit/harnesses/pi/README.md"; check "pi README spine names /qa-verify" "$?" "0"
+# constitution template no longer implies five nonexistent /qa-* gate commands
+for cmd in qa-sanitize qa-assure qa-perf qa-security qa-uiux; do
+  grep -q "/$cmd" "$ROOT/qa-kit/templates/constitution-template.md"; check "constitution template drops fictional /$cmd" "$?" "1"
+done
 
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

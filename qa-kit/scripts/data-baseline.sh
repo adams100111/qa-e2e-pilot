@@ -84,7 +84,19 @@ sys.exit(0 if not errors else 1)
   fi
 }
 
-is_int() { case "$1" in ''|*[!0-9-]*) return 1 ;; -) return 1 ;; *) return 0 ;; esac; }
+is_int() {
+  # strict integer: optional single leading '-', then one or more digits only.
+  # (the old `*[!0-9-]*` char-class check let ANY digit/hyphen mix through, e.g. "1-2".)
+  case "$1" in
+    '') return 1 ;;
+    -*)
+      local rest="${1#-}"
+      case "$rest" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac
+      ;;
+    *[!0-9]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 cmd_expected_count() {
   local measured="$1" delta="$2"

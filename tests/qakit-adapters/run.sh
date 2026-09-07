@@ -56,5 +56,14 @@ for s in detecting-stack-profile ingesting-spec-kit discovering-user-roles confi
   check "engine skill $s exists" "$([ -d "$REPO/skills/$s" ] && echo y)" "y"
 done
 
+# (g) repo-dev-only tooling never ships into a harness's scripts payload (audit-2 W3-7b):
+# run-qakit-ci.sh references $ROOT/tests/... paths that only exist inside this repo, so it
+# would be a broken command in an installed user project.
+for h in claude pi codex opencode; do
+  check "$h scripts exclude run-qakit-ci.sh" "$([ -f "$D/$h/scripts/run-qakit-ci.sh" ] && echo present || echo absent)" "absent"
+  check "$h scripts exclude build-qakit-adapter.sh" "$([ -f "$D/$h/scripts/build-qakit-adapter.sh" ] && echo present || echo absent)" "absent"
+  check "$h scripts exclude validate-qakit-adapters.sh" "$([ -f "$D/$h/scripts/validate-qakit-adapters.sh" ] && echo present || echo absent)" "absent"
+done
+
 echo "qakit-adapters: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

@@ -5,13 +5,17 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/runconfig-merge.sh"
+command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: runconfig-merge: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
+TMPDIRS=()
+cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
 CONFIG='{"baseUrl":"http://localhost","maxParallel":1,"criteriaBudget":50,"viewport":"desktop","allowApiWrites":false}'
 
 run_engine() {
-  local E="$1" T; T="$(mktemp -d)"
+  local E="$1" T; T="$(mktemp -d)"; TMPDIRS+=("$T")
   printf '%s' "$CONFIG" > "$T/config.json"
 
   # a delta overrides its key; untouched keys keep defaults
@@ -37,7 +41,6 @@ run_engine() {
   printf '%s' '[1,2]' > "$T/bad.json"
   QA_ENGINE=$E bash "$SH" "$T/config.json" "$T/bad.json" >/dev/null 2>&1
   check "$E malformed delta dies" "$?" "1"
-  rm -rf "$T"
 }
 
 command -v jq >/dev/null 2>&1 && run_engine jq
@@ -45,12 +48,12 @@ command -v python3 >/dev/null 2>&1 && run_engine python3
 
 # cross-engine byte-identity
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-  X="$(mktemp -d)"; printf '%s' "$CONFIG" > "$X/config.json"
+  X="$(mktemp -d)"; TMPDIRS+=("$X")
+  printf '%s' "$CONFIG" > "$X/config.json"
   printf '%s' '{"maxParallel":8,"criteriaBudget":10,"newKey":"z"}' > "$X/d.json"
   vj="$(QA_ENGINE=jq bash "$SH" "$X/config.json" "$X/d.json")"
   vp="$(QA_ENGINE=python3 bash "$SH" "$X/config.json" "$X/d.json")"
   check "cross-engine effective config identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
-  rm -rf "$X"
 fi
 
 echo "runconfig-merge: PASS=$pass FAIL=$fail"

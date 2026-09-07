@@ -57,8 +57,10 @@ render < "$QAKIT/harnesses/$H/manifest.tmpl" > "$OUT/agent/qa-kit.$EXT"
 # qa-kit's own scripts + templates copied verbatim (reached via {{PLUGIN_ROOT}} at run time)
 cp -R "$QAKIT/scripts" "$OUT/scripts"
 [ -d "$QAKIT/templates" ] && cp -R "$QAKIT/templates" "$OUT/templates"
-# do not ship the generator/validator/profile into the adapter
-rm -f "$OUT/scripts/build-qakit-adapter.sh" "$OUT/scripts/validate-qakit-adapters.sh"
+# do not ship repo-dev-only tooling into the adapter: the generator/validator/profile, and
+# run-qakit-ci.sh (references $ROOT/tests/... paths that only exist inside this repo — it
+# would be a broken command in an installed user project; audit-2 W3-7b).
+rm -f "$OUT/scripts/build-qakit-adapter.sh" "$OUT/scripts/validate-qakit-adapters.sh" "$OUT/scripts/run-qakit-ci.sh"
 
 # --- fail on any residual token in the rendered agent/commands ---
 if grep -rn '{{' "$OUT/agent" "$OUT/commands"; then

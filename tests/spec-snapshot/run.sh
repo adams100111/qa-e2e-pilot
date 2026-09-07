@@ -5,14 +5,18 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/spec-snapshot.sh"
+command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: spec-snapshot: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
+TMPDIRS=()
+cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
 # constitution state: two roles + a version (the shape constitution.sh `state` emits)
 STATE='{"roles":[{"id":"admin","role":"admin","plane":"global"},{"id":"viewer","role":"viewer","plane":"contextual"}],"version":"cver1"}'
 
 run_engine() {
-  local E="$1" T; T="$(mktemp -d)"
+  local E="$1" T; T="$(mktemp -d)"; TMPDIRS+=("$T")
   printf '%s' "$STATE" > "$T/state.json"
 
   # create, no overrides -> spec-roles.json copies the state's roles + stamps its version
@@ -61,7 +65,22 @@ run_engine() {
   mkdir -p "$T/sc"; printf '%s' '{"add":[{"id":"x","role":"r"}]}' > "$T/ov_bad.json"
   QA_ENGINE=$E bash "$SH" create "$T/state.json" "$T/sc" "$T/ov_bad.json" >/dev/null 2>&1
   check "$E add missing plane dies" "$?" "1"
-  rm -rf "$T"
+
+  # modify with an extra, non-schema key -> ignored (only role/plane ever applied),
+  # matching the python leg (audit-2 W3-7b: jq's `.+(del(.id))` used to leak stray keys)
+  mkdir -p "$T/sd"; printf '%s' '{"modify":[{"id":"admin","plane":"contextual","extra":"zzz"}]}' > "$T/ov_extra.json"
+  QA_ENGINE=$E bash "$SH" create "$T/state.json" "$T/sd" "$T/ov_extra.json" >/dev/null
+  check "$E modify ignores extra keys" \
+    "$(python3 -c 'import json,sys;a=[x for x in json.load(open(sys.argv[1]))["roles"] if x["id"]=="admin"][0];print(sorted(a.keys()))' "$T/sd/spec-roles.json")" \
+    "['id', 'plane', 'role']"
+
+  # atomic create: an existing spec-roles.json survives a failing create (bad overrides)
+  # untouched — the die() path must not truncate/corrupt it via a non-atomic write.
+  mkdir -p "$T/se"; printf '%s' '{"placeholder":true}' > "$T/se/spec-roles.json"
+  printf '%s' '{"add":[{"id":"admin","role":"x","plane":"global"}]}' > "$T/ov_clash.json"
+  QA_ENGINE=$E bash "$SH" create "$T/state.json" "$T/se" "$T/ov_clash.json" >/dev/null 2>&1
+  check "$E failed create leaves existing file untouched" "$(cat "$T/se/spec-roles.json")" '{"placeholder":true}'
+  check "$E failed create leaves no stray temp files" "$(find "$T/se" -maxdepth 1 -type f | wc -l | tr -d ' ')" "1"
 }
 
 command -v jq >/dev/null 2>&1 && run_engine jq
@@ -69,7 +88,7 @@ command -v python3 >/dev/null 2>&1 && run_engine python3
 
 # cross-engine byte-identity: same inputs -> identical spec-roles.json under jq and python3
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-  X="$(mktemp -d)"; printf '%s' "$STATE" > "$X/state.json"
+  X="$(mktemp -d)"; TMPDIRS+=("$X"); printf '%s' "$STATE" > "$X/state.json"
   printf '%s' '{"add":[{"id":"zeta","role":"z","plane":"global"}],"modify":[{"id":"viewer","role":"reader"}]}' > "$X/ov.json"
   mkdir -p "$X/j" "$X/p"
   QA_ENGINE=jq      bash "$SH" create "$X/state.json" "$X/j" "$X/ov.json" >/dev/null

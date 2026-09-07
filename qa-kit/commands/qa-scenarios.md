@@ -37,7 +37,10 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      `[{entity, scope}]` objects.
    - **multiplicity/empty-state** (derives `bake`, not `computed`): `fixture.expect = {path:"count",
      baselineOf:{entity,scope}, delta}` — empty-state `delta:0`, N-create `delta:N`. The concrete count is
-     resolved at run start from the measured baseline (never hard-coded to 0).
+     resolved at run start from the measured baseline (never hard-coded to 0). Unlike the computed shape
+     above, `check-fixtures.sh` does **not** validate this shape (by design — its header documents that
+     multiplicity criteria derive `bake`, not `computed`, so they fall outside its gate); a malformed
+     `baselineOf`/`delta` is only caught later, when the run resolves it. Author it carefully.
    Do NOT set `requiredKinds` — the gate keys on `kind`, and the engine derives kinds itself.
 
 5. **HITL — confirm BOTH input and expected (for computed criteria).** For each `computed-logic`/`business-rule`

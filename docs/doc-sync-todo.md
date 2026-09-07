@@ -33,6 +33,36 @@
       increment-7 landing (ADR-0024) — generator, per-harness skill-ref rendering, co-install contract, engine
       untouched. (Lives outside the repo, so not in any PR.)
 
+### qa-kit Claude marketplace payload — dev-only scripts still ship (audit-2 W3-7b, design-risk, logged not fixed)
+- [ ] **`build-qakit-adapter.sh` now excludes `run-qakit-ci.sh`/`build-qakit-adapter.sh`/`validate-qakit-adapters.sh`
+      from `qa-kit/dist/<h>/scripts/`** (fixed this session — covers the codex/pi/opencode install path, which
+      copies from `dist/`). The **Claude** install is different: per ADR-0024 Claude ships as the
+      dependencies-model plugin straight from `marketplace.json`'s `"source": "./qa-kit"`, i.e. the **entire**
+      `qa-kit/` directory (including `qa-kit/scripts/run-qakit-ci.sh`, `build-qakit-adapter.sh`,
+      `validate-qakit-adapters.sh`, and `qa-kit/harnesses/`) becomes the installed Claude plugin payload — there is
+      no plugin-level ignore/allow-list mechanism (checked: no `.claudeignore` or equivalent). `run-qakit-ci.sh`
+      hard-references `$ROOT/tests/...`, which does not exist in an installed user project, so it would be a
+      broken/dead command there (harmless — nothing invokes it — but shipped dead weight, and a nonzero find/audit
+      hit). **Not fixed this session:** genuinely separating "repo-dev tooling" from "plugin payload" for the
+      Claude path needs either (a) a real plugin-packaging exclude mechanism, or (b) relocating dev-only scripts
+      out of `qa-kit/scripts/` into a repo-root `tools/`-style directory referenced by CI instead — both are
+      structural decisions beyond a verify-then-fix script tweak. Revisit alongside any future plugin-packaging
+      work.
+
+### Relative multiplicity fixtures have no script-level validation (audit-2 W3-7b, design-risk, logged not fixed)
+- [ ] **Verified true:** `check-fixtures.sh` only gates the **computed** `fixture.expect` shape
+      (`{path,value,tolerance,oracleSource}`) — the header explicitly says multiplicity/empty-state
+      criteria "derive `bake`, not `computed`... are NOT gated here." Their shape
+      (`{path:"count",baselineOf:{entity,scope},delta}`) is entirely operator-authored with no script
+      checking `baselineOf.entity`/`scope` reference a real `data-baseline.json` row or that `delta` is
+      a sane integer — a malformed one is only caught late, at run resolution
+      (`data-baseline.sh expected-count`), not at authoring time. **Not fixed this session:** this is a
+      real gate gap, but closing it is a new validation feature (a second check-fixtures-style script
+      pass, or extending `check-fixtures.sh`'s scope to multiplicity rows) rather than a verify-then-fix
+      minor. `qa-kit/core/commands/qa-scenarios.md` now documents the gap explicitly at the point the
+      shape is introduced, so at least it is no longer a silent gap. Revisit as its own increment if
+      malformed multiplicity fixtures turn out to be a recurring authoring mistake in practice.
+
 ## 🟡 Optional / lower priority
 - [x] **DONE (2026-09-06, audit-remediation C3):** the per-harness *engine* adapter READMEs
       (`harnesses/{pi,codex,opencode}/README.md`) + `docs/harness-adapters.md` now say "17 skills"
