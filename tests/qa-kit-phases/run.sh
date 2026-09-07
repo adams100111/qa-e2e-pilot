@@ -105,6 +105,11 @@ QV="$ROOT/qa-kit/commands/qa-verify.md"
 check "qa-verify command exists" "$([ -f "$QV" ] && echo y)" "y"
 grep -q 'verify-plan.sh'    "$QV"; check "qa-verify references verify-plan.sh" "$?" "0"
 grep -q 'verification.json' "$QV"; check "qa-verify reads verification.json"   "$?" "0"
+# audit-2 W2-4: the out-of-plan gate must be pointed at the frozen SPEC plan (never the
+# agent-amendable run copy) whenever one is resolvable, and the run-local fallback must banner
+# its weaker guarantee.
+grep -q 'verify-plan.sh".*\.qa/specs/' "$QV"; check "qa-verify invokes verify-plan.sh with the frozen spec plan as 2nd arg" "$?" "0"
+grep -q 'run-local plan only' "$QV"; check "qa-verify carries the weaker-mode banner text" "$?" "0"
 QVT="$ROOT/qa-kit/templates/qa-verify-template.md"
 check "qa-verify template has three states" \
   "$(grep -Eic 'VERIFIED|OVERRIDDEN|NOT VERIFIED' "$QVT")" "3"

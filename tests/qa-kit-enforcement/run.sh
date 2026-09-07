@@ -54,6 +54,26 @@ run_engine() {
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
 
+# laundering scenario (audit-2 W2-4): a run-local checklist.json is agent-amendable, so passing
+# it as the 2nd arg lets an out-of-plan act slip through undetected if the act was ALSO added to
+# the run copy. Proves that passing the frozen SPEC plan instead (never the run copy) still
+# catches it: checkpoint acted C1,C3; SPEC checklist (frozen) has only C1; a run-local checklist
+# beside it contains C1,C3 (i.e. was amended to legitimize C3) but is NOT passed to verify-plan.sh.
+run_engine_laundering() {
+  local E="$1" T; T="$(mktemp -d)"
+  printf '%s' '[{"id":"C1","surface":"s","kind":"happy-path","tags":[]}]' > "$T/spec_checklist.json"
+  printf '%s' '[{"id":"C1","surface":"s","kind":"happy-path","tags":[]},{"id":"C3","surface":"s","kind":"happy-path","tags":[]}]' > "$T/run_checklist.json"
+  printf '%s' '{"criteria":[{"criterion_id":"C1","verdict":"pass"},{"criterion_id":"C3","verdict":"pass"}]}' > "$T/cp.json"
+  local out rc
+  out="$(QA_ENGINE=$E bash "$SH" "$T/cp.json" "$T/spec_checklist.json")"; rc=$?
+  check "$E laundering (spec plan) exit 1" "$rc" "1"
+  check "$E laundering (spec plan) outOfPlan==[C3]" \
+    "$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(sorted(json.load(sys.stdin)["outOfPlan"])))')" "C3"
+  rm -rf "$T"
+}
+command -v jq >/dev/null 2>&1 && run_engine_laundering jq
+command -v python3 >/dev/null 2>&1 && run_engine_laundering python3
+
 # cross-engine byte-identity of the report
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   X="$(mktemp -d)"; printf '%s' "$PLAN" > "$X/checklist.json"

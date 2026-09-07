@@ -25,8 +25,21 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
    Require `checkpoint.json` + `checklist.json` in the resolved dir; if no run exists at all, error
    and point at `/qa-run "<target>"`.
 
-2. **Out-of-plan acts (verify-plan — THIS command's primary job; the engine never checks this).** Run
-   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/runs/<id>/checklist.json`.
+2. **Out-of-plan acts (verify-plan — THIS command's primary job; the engine never checks this).**
+   The plan argument depends on whether this run resolved to a `<target>` with a frozen spec plan:
+   - **Frozen spec plan resolved** (`.qa/specs/<target>/checklist.json` exists — resolution ladder
+     tiers 1-3): run
+     `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/specs/<target>/checklist.json`
+     — the FROZEN plan, never the run copy (the run copy is agent-amendable and would let a
+     laundered out-of-plan act slip through undetected). Additionally, diff the id sets of the
+     frozen plan vs `.qa/runs/<id>/checklist.json`: any id present in the run copy but absent from
+     the frozen plan is a **plan-divergence finding** — list the ids and the criteria added
+     in-run; never silently accepted.
+   - **No spec plan resolvable** (engine-solo run, ladder tier 4): run
+     `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/runs/<id>/checklist.json`
+     — the run-local copy, and the report MUST carry the banner: `⚠ out-of-plan check ran against
+     the run-local plan only (no frozen spec plan resolved) — weaker guarantee: an amended in-run
+     checklist cannot be detected.`
    Parse its JSON (`{ok, outOfPlan, planned, acted}`). A non-empty `outOfPlan[]` is a **process
    violation** — a criterion was acted that the frozen plan never authorized. List every offending
    id first; do not bury it. (The script's non-zero exit on a non-empty `outOfPlan` is the gate CI
