@@ -5,6 +5,7 @@
 #   {{SKILL_REF:<name>}} -> the profile's skillRef template ({name} substituted)  (the 7 engine skills)
 #   {{ENGINE_RUN}}       -> the profile's engineRun string                        (the engine's qa-run command)
 #   {{PLUGIN_ROOT}}      -> the profile's pluginRoot                              (qa-kit's OWN scripts/templates root)
+#   {{SKILL_REF_GENERIC}}-> the profile's skillRefGeneric string (literal replace) (generic "invoke an engine skill" instruction, per harness dialect)
 #   {{PERSONA_BODY}}     -> qa-kit/core/persona-body.md (agent manifest only)
 # Bare /qa-<step> command refs are intentionally NOT tokenized (they read fine on every harness).
 # NEVER modifies the engine. Output qa-kit/dist/<h>/ is git-ignored.
@@ -30,6 +31,7 @@ data = re.sub(r"\{\{SKILL_REF:([a-z0-9-]+)\}\}",
               lambda m: prof["skillRef"].replace("{name}", m.group(1)), data)
 data = data.replace("{{ENGINE_RUN}}", prof["engineRun"])
 data = data.replace("{{PLUGIN_ROOT}}", prof["pluginRoot"])
+data = data.replace("{{SKILL_REF_GENERIC}}", prof["skillRefGeneric"])
 pbf = os.environ.get("PERSONA_BODY_FILE")
 if pbf:
     data = data.replace("{{PERSONA_BODY}}", open(pbf).read().rstrip("\n"))

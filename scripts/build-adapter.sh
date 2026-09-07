@@ -12,6 +12,7 @@ PREFIX="$(read_field toolPrefix)"; SERVER_KEY="$(read_field serverKey)"
 GRANT="$(read_field grantStyle)"; MODEL_FIELD="$(read_field modelField)"
 TIER_DEFAULT="$(read_field tierDefault)"; TIER_HEAVY="$(read_field tierHeavy)"
 DISPATCH="$(read_field dispatch)"; ROLES_DIR="$(read_field globalRolesDir)"
+QA_ENGINE_SKILLS_DIR="$(read_field engineSkillsDir)"
 
 # --- render the browser-tools grant per grantStyle ---
 render_browser_tools() {
@@ -36,8 +37,12 @@ if [ -n "$MODEL_FIELD" ]; then MODEL_FIELD_LINE="model: $MODEL_FIELD"$'\n'; else
 # what was piped in via `render < file`.
 RENDER_PY="$(mktemp)"
 cat > "$RENDER_PY" <<'PY'
-import sys,os
+import sys,os,json
 data=sys.stdin.read()
+# read commandAgentLine directly from the profile JSON (not via a $(...) bash round-trip,
+# which strips the trailing newline its value carries — see MODEL_FIELD_LINE's sibling idiom
+# above, which instead builds its own newline in bash because its source value has none).
+_profile=json.load(open(os.environ["PROFILES"]))["harnesses"][os.environ["H"]]
 repl={
  "{{PERSONA_BODY}}":  open(os.environ["PERSONA_BODY_FILE"]).read().rstrip("\n"),
  "{{BROWSER_TOOLS}}": os.environ["BROWSER_TOOLS"],
@@ -47,12 +52,14 @@ repl={
  "{{DISPATCH}}":      os.environ["DISPATCH"],
  "{{GLOBAL_ROLES_DIR}}": os.environ["ROLES_DIR"],
  "{{SERVER_KEY}}":    os.environ["SERVER_KEY"],
+ "{{ENGINE_SKILLS_DIR}}": os.environ["QA_ENGINE_SKILLS_DIR"],
+ "{{COMMAND_AGENT_LINE}}": _profile["commandAgentLine"],
 }
 for k,v in repl.items(): data=data.replace(k,v)
 sys.stdout.write(data)
 PY
 render() { python3 "$RENDER_PY"; }
-export BROWSER_TOOLS MODEL_FIELD_LINE TIER_DEFAULT TIER_HEAVY DISPATCH ROLES_DIR SERVER_KEY
+export BROWSER_TOOLS MODEL_FIELD_LINE TIER_DEFAULT TIER_HEAVY DISPATCH ROLES_DIR SERVER_KEY QA_ENGINE_SKILLS_DIR PROFILES H
 
 # --- persona body: detokenize tiers first, into a temp file the manifest render inlines ---
 PERSONA_BODY_FILE="$(mktemp)"; export PERSONA_BODY_FILE

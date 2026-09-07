@@ -2,7 +2,7 @@
 description: Run a full-stack browser QA pass against a feature — drive the UI, bake (read persisted state back), recompute the logic, and write an evidence-backed, resumable report.
 argument-hint: <target> [checklist-or-spec-path]
 disable-model-invocation: false
----
+{{COMMAND_AGENT_LINE}}---
 
 Run a full-stack QA pass by dispatching the **qa-e2e-pilot** agent.
 
