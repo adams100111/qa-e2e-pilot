@@ -53,10 +53,23 @@
   }
 
   // Invariant 3: after closing the child, the surface must not be an empty dead-end.
+  // extractOverlayStack() appends a base-context descriptor (baseContext: true, see below) to
+  // every captured stack. An empty OVERLAY stack alone is not proof of a dead-end — a
+  // correctly, fully-closed flow leaves a healthy base page underneath. Suspicion only stands
+  // when the overlay stack is empty AND that base context is also missing/inert. Fixtures
+  // captured before this descriptor existed (plain overlay arrays with no baseContext entry at
+  // all) still resolve correctly: no base entry found == base absent == dead-end when the
+  // overlay stack is also empty, matching the prior behavior.
   function checkNoDeadEnd(afterClose) {
-    if (present(afterClose).length > 0) return null;
+    var overlays = present(afterClose).filter(function (n) { return !n.baseContext; });
+    if (overlays.length > 0) return null;
+    var base = null;
+    for (var i = 0; i < afterClose.length; i++) {
+      if (afterClose[i] && afterClose[i].baseContext) { base = afterClose[i]; break; }
+    }
+    if (base && base.present !== false) return null; // healthy base context -> clean close, not a dead-end
     return overlaySuspicion('interaction-dead-end', { id: null, role: null },
-      'after closing the child overlay, no overlay or base context is present — dead-end',
+      'after closing the child overlay, no overlay is present and the base context is missing or inert — dead-end',
       'dead-end:empty-stack');
   }
 
@@ -90,11 +103,35 @@
     return null;
   }
 
+  // Browser-only: assess whether the underlying base page (what's left once every overlay
+  // closes) is itself present and healthy. Used only by checkNoDeadEnd to tell "all overlays
+  // correctly closed, healthy base page" apart from a true dead-end (blank/inert surface).
+  // Healthy = <body> exists, the <main> landmark (or body, if no <main>) is not
+  // display:none/visibility:hidden, has layout size, and is not empty of content.
+  function extractBaseContext() {
+    var descriptor = { id: '__base-context__', role: 'base-context', baseContext: true, present: false };
+    if (typeof document === 'undefined' || !document.body) return descriptor;
+    var target = document.querySelector('main,[role="main"]') || document.body;
+    var cs = (typeof getComputedStyle !== 'undefined') ? getComputedStyle(target) : {};
+    var hidden = !!(cs && (cs.display === 'none' || cs.visibility === 'hidden'));
+    var hasSize = true;
+    if (typeof target.getBoundingClientRect === 'function') {
+      var rect = target.getBoundingClientRect();
+      hasSize = !!(rect && (rect.width > 0 || rect.height > 0));
+    }
+    var hasContent = !!((target.children && target.children.length > 0) || (target.textContent || '').trim().length > 0);
+    descriptor.present = !hidden && hasSize && hasContent;
+    return descriptor;
+  }
+
   // Browser-only: extract the current overlay stack from the live DOM/accessibility tree.
   // Overlay = [role=dialog] / [aria-modal=true] / a position:fixed|absolute panel with a
   // high z-index. focusTrapped ~ the overlay contains the active element AND declares
   // aria-modal or a focus-trap sentinel. May MISS non-semantic overlays (plain divs) —
   // those fall through to the generative critic (layer 3, deferred sub-plan C).
+  // The returned array ends with a base-context descriptor (extractBaseContext(), marked
+  // baseContext: true) so checkNoDeadEnd can tell a clean close from a true dead-end — the
+  // other four invariant checks ignore it naturally (they match by specific overlay id).
   function extractOverlayStack() {
     var out = [];
     if (typeof document === 'undefined') return out;
@@ -117,6 +154,7 @@
         present: true
       });
     }
+    out.push(extractBaseContext());
     return out;
   }
 
@@ -127,7 +165,8 @@
     checkNoDeadEnd: checkNoDeadEnd,
     checkFocusTrap: checkFocusTrap,
     checkNoDestructiveOnOpen: checkNoDestructiveOnOpen,
-    extractOverlayStack: extractOverlayStack
+    extractOverlayStack: extractOverlayStack,
+    extractBaseContext: extractBaseContext
   };
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
   else if (typeof window !== 'undefined') { window.__overlayStack = api; }
