@@ -54,6 +54,8 @@ qa-kit/           the optional step-gated process shell — 2nd plugin (own mani
                   scripts, agent, README); depends on the engine, reuses its skills by qualified slug
 docs/adr/         0001–0024 architecture decisions (0022 = qa-kit, 0023 = TDQA data layer, 0024 = qa-kit multi-harness)
 docs/             running-in-ci.md · extending-drivers.md · harness-adapters.md · superpowers/{specs,plans}/
+tools/            accuracy-harness/ — the recall/precision measurement harness backing the numbers
+                  in "What a green run actually means" below (fixtures, scorer, measured findings)
 CONTEXT.md        the ubiquitous language (read this first)
 harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sources + per-harness glue
                   (see "Running on other harnesses" below; dist/ is generated, git-ignored)
@@ -66,7 +68,7 @@ harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sou
 | 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config`, `discovering-user-roles`, `confirming-discovered-roles` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one.** Discover the project's roles and confirm each persona + its authz scope (3-round HITL → `personas[]` + `authz-matrix.json`); each run selects which personas/scenarios run |
 | 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep) |
 | 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle; state-mutating criteria are tagged `human-action` |
-| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
+| 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `detecting-interaction-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects (incl. overlay/modal interaction sequences that dead-end or destroy their parent) → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
 | 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
 | 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/`; the evidence gate rejects an unevidenced/contradicted `pass` |
 
@@ -176,6 +178,11 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
    /qa-run "governance wizard" .qa/checklist.md       # ingest a hand-authored checklist (v1)
    ```
 3. Read the result: `.qa/runs/<run-id>/report.html` (+ `report.md` + per-criterion `evidence/`). The run is resumable — re-run the same target and it skips completed criteria.
+4. **Interrupted mid-run?** Two ways to continue, both safe: re-run `/qa-run "<target>"` — it detects the in-progress run, reconciles any open (attempted-but-unconfirmed) writes, and skips completed criteria; or run `/qa-resume [run-id]` directly — it resolves the run (defaulting to the most recent), reconciles open acts the same way, then dispatches the agent straight into Verify at the frozen cursor, skipping Pre-flight/Analyze/Generate entirely. Omit `run-id` to resume the latest run.
+
+### Cost telemetry
+
+Every run tracks its own cost as it goes: `cost-summary.sh` derives `{toolCalls, criteria, criteriaBudget, criteriaDone, budgetWarn, tokens}` from the run's own toolstream (never trusted from the agent's self-report), folded into `run-manifest.json`'s `cost` field. **"Tool-calls"** is the portable proxy metric across harnesses (wall-clock/token counts aren't uniformly available); `tokens` is filled in only when the harness exposes usage. You'll see it in three places: the `report.md`/`report.html` cost block (per-run tool-call + budget summary), the agent's own status update once `criteriaDone` crosses **80% of `criteriaBudget`** (a soft, advisory warning — never a hard stop, see `criteriaBudget` below), and JUnit exports via a `qa.cost` `<property>` on the `<testsuite>` element (e.g. `tool-calls=210 criteria=48 criteriaBudget=48/60 budgetWarn=true`) — see [running-in-ci.md](./docs/running-in-ci.md).
 
 ### Configuration (`.qa/config.json`)
 
@@ -185,6 +192,7 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 - `maxParallel` — cap on the narrow parallel path (most verification is **sequential by default** — see [ADR-0003](./docs/adr/0003-sequential-verification-narrow-pool.md)).
 - `allowApiWrites` (default **off**) + `seedableEnvMarker` — gate any direct API write/seed behind both.
 - `environment` (`auto`|`disposable`|`production`) + `allowBlackboxCrawl` — production targets force writes off, keep fingerprinting to a tiny serialized allowlist, and require opt-in before any black-box crawl. `fingerprintPaths` / `noProbePaths` / `crawlDenyPatterns` / `maxRequestsPerSecond` tune the prod-safety behavior.
+- `criteriaBudget` (default **60**) — soft cap on criteria generated/run in one pass; a cost lever, not a coverage cut. Exceeding it during generation stops the checklist for a prioritized confirm/trim prompt rather than silently emitting everything; during a run it triggers an advisory warning at 80% consumption (see "Cost telemetry" above).
 
 ---
 
