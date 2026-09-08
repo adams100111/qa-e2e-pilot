@@ -84,3 +84,16 @@ for f in $(find . -name '*.js'); do node --check "$f"; done
 ```
 
 End commit messages with the required `Co-Authored-By` trailer. Only push when asked.
+
+## Releasing (both plugins)
+
+Marketplace installs track `main`, but the **official release artifact is the git tag**
+`{plugin-name}--v{version}` — Claude Code resolves plugin dependency **version constraints only
+against these tags** (an unversioned dependency works untagged; a `~x.y.z` constraint fails without
+one). Per release: (1) bump the version in ALL its sites — engine: `.claude-plugin/plugin.json`,
+`.claude-plugin/marketplace.json` (metadata + entry), `scripts/skills.json`; qa-kit:
+`qa-kit/.claude-plugin/plugin.json` + its marketplace entry; (2) merge to `main`; (3) tag the merge
+commit `qa-e2e-pilot--v<X>` / `qa-kit--v<Y>` (`claude plugin tag --push`, or plain
+`git tag` + `git push origin <tag>`) — the tagged tree's plugin.json MUST carry the same version.
+Tags exist for every release since 0.6.3/0.1.1. GitHub Releases are not consumed by the plugin
+system (optional, human-facing only).
