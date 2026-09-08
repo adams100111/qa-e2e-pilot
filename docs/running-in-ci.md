@@ -44,17 +44,24 @@ Verdict → JUnit mapping:
 
 **`QA_VERIFY_STRICT`** (opt-in, unset by default): without it, a `human-action`/cross-tenant `pass` with no captured toolstream degrades to `confidence: low` rather than failing outright (capture-hook is opt-in, so most runs today have no toolstream at all — hard-failing all of them would break normal usage). That default has a known residual: an adversary can fabricate evidence *and* delete `toolstream.jsonl` to land on that same degrade path. Setting `QA_VERIFY_STRICT=1` closes that hole for the high-stakes subset (`human-action`, or a checklist row tagged `cross-tenant`/`cross-role-fk-chain`) by overriding those to `fail` instead of degrading — at the cost of also failing legitimate no-capture-hook runs in that mode. Turn it on in CI once your project has the capture-hook enabled; leave it off for a project that hasn't adopted the hooks yet. See `scripts/qa-verify.sh`'s header comment for the full residual writeup.
 
-### Wiring `qa-verify` into `qa-ci.sh`
+### `qa-ci.sh` — the turnkey chain, and its env vars
 
-`qa-ci.sh` (below) runs `qa-verify` automatically as part of its turnkey chain, between locating the run and exporting JUnit, so the JUnit export already reflects any override. Relevant env:
+`qa-ci.sh <target> [checklist-path]` chains: pre-flight → drive the agent headless → `qa-verify` (out-of-agent re-check) → export JUnit XML → exit code. It's designed for the managed (zero-config) driver and a checklist already committed to the repo. Every step is overridable via env, so this works across different Claude Code CI setups and non-Claude harnesses alike:
 
 | env | default | purpose |
 |---|---|---|
+| `QA_HARNESS` | `claude` | harness key into [`harness-profiles.json`](../harness-profiles.json)'s `agentCmd` map — selects the default agent-dispatch command for Codex/Pi/opencode instead of Claude |
+| `QA_PREFLIGHT_CMD` | the bundled `skills/driving-browser-qa/scripts/preflight.sh` | command to run pre-flight |
+| `QA_AGENT_CMD` | the `$QA_HARNESS` profile's `agentCmd` | command to drive the agent headless; `QA_TARGET` and `QA_CHECKLIST` are exported for a custom command to read |
+| `QA_PRINT_AGENT_CMD` | unset | set `1` to print the resolved `AGENT_CMD` and exit — no target required, useful for debugging harness wiring |
 | `QA_VERIFY_CMD` | `scripts/qa-verify.sh` | script to run for the out-of-agent re-check, invoked as `bash "$QA_VERIFY_CMD" "$RUN_ID"` |
 | `QA_SKIP_VERIFY` | `0` | set `1` to skip `qa-verify` entirely — **always logged**, never silent; a skipped run is reported as unverified, not "verified clean" |
 | `QA_VERIFY_STRICT` | unset | forwarded to `qa-verify.sh` via ordinary env inheritance (see above) |
+| `QA_SKIP_SESSION_PREFLIGHT` | `0` | set `1` to skip `scripts/session-preflight.sh` — the step that derives a toolstream from a `--save-session` log on harnesses with no live capture-hook, run just before `qa-verify`; non-fatal either way, this only controls whether it runs |
+| `QA_JUNIT_OUT` | `qa-results.xml` | JUnit XML output path |
+| `QA_SKIP_PREFLIGHT` | `0` | set `1` to skip pre-flight (when CI already handles app/auth liveness itself) |
 
-A `qa-verify` override makes `qa-ci.sh`'s **final exit code non-zero** — independently of whatever `report-to-junit.sh`'s own exit code would have been — unless you explicitly opted out with `QA_SKIP_VERIFY=1`. Skipping it is always visible in the job log (`qa-verify SKIPPED (QA_SKIP_VERIFY=1) ... UNVERIFIED`); it is never a quiet no-op.
+A `qa-verify` override makes `qa-ci.sh`'s **final exit code non-zero** — independently of whatever `report-to-junit.sh`'s own exit code would have been — unless you explicitly opted out with `QA_SKIP_VERIFY=1`. Skipping it is always visible in the job log (`qa-verify SKIPPED (QA_SKIP_VERIFY=1) ... UNVERIFIED`); it is never a quiet no-op. `qa-ci.sh` exits non-zero if pre-flight fails, the agent command fails, no run is produced, `qa-verify` overrides at least one recorded pass (and wasn't explicitly skipped), or the run has any `fail`/`error` criterion — `0` only on a clean, verified pass.
 
 ### The assurance tier — what "verified" actually means today
 
@@ -63,6 +70,8 @@ A `qa-verify` override makes `qa-ci.sh`'s **final exit code non-zero** — indep
 - **No `verification.json` at all** (`qa-verify` never ran against this run) → `qa.verified="false"`, and the property text says so explicitly: these are the in-run agent's own self-reported verdicts, unverified.
 - **`verification.json` present, 0 overrides** → `qa.verified="true"`, every recorded pass survived independent re-checking.
 - **`verification.json` present, N overrides** → `qa.verified="true"` but the property names the override count; check each overridden testcase's `<failure>` for the specific reason.
+
+**Cost telemetry (`qa.cost`).** When the run's `run-manifest.json` carries a non-null `cost` object (written by `checkpointing-qa-memory` from `scripts/cost-summary.sh`'s output — a read-only derivation from the toolstream, never the agent's self-report), `report-to-junit.sh` emits one additional `<property name="qa.cost" value="..."/>` on the `<testsuite>`, e.g. `tool-calls=210 criteria=48 criteriaBudget=48/60 budgetWarn=true tokens=189234` (the `tokens` segment appears only when `cost.tokens` is non-null — most harnesses never fill it). Absence of `run-manifest.json` or a still-`null` `cost` field is a normal no-op: no `qa.cost` property is emitted, never a fabricated one.
 
 On Claude Code today this sits at what the project calls **assurance Tier A**: the `PostToolUse`/`PreToolUse` capture and block hooks are **best-effort and tamper-evident**, not tamper-*proof* — an agent with `Bash` access could, in principle, edit the hook scripts or the toolstream on an unhardened install. `qa-verify` is the piece that's actually authoritative: it runs out-of-agent (by the operator or CI, not by the run's own agent process) and its verdict wins on any disagreement. See [`docs/harness-adapters.md`](./harness-adapters.md#the-claude-assurance-tier) for the full tier writeup, including why the other three harness adapters (Codex/Pi/opencode) don't have live hooks yet.
 

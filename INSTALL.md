@@ -128,16 +128,19 @@ bundled helper scripts need a small, portable toolset:
 
 | Dependency | Why | Per-OS |
 |---|---|---|
-| `bash` | runs the helper scripts | Linux/macOS native; **Windows** via Git Bash (bundled with Git for Windows) or WSL |
-| `jq` | JSON read/write (detector, config writer) | `brew install jq` (macOS) · `apt install jq` (Linux) · `winget install jqlang.jq` or `choco install jq` (Windows) |
-| `curl` | runtime fingerprint / liveness | preinstalled on macOS, Git Bash, most Linux |
+| `bash` **≥ 4** | runs the helper scripts; spec-kit ingestion (`find-spec-kit.sh`) uses associative arrays, a bash-4+ feature | Linux native (bash ≥4 by default); **Windows** via Git Bash (bundled with Git for Windows, ≥4) or WSL; **macOS ships bash 3.2** (Apple stopped updating it) — `brew install bash` and ensure the Homebrew bash is first on `PATH` (or invoke scripts explicitly with the Homebrew bash) if you hit an associative-array error |
+| `node` | runs bundled browser-context helper scripts; checked by the `SessionStart` prereq hook (`check-prereqs.sh`) | `brew install node` (macOS) · `apt install nodejs` (Linux) · [nodejs.org](https://nodejs.org) or `winget install OpenJS.NodeJS` (Windows) |
+| `jq` **or** `python3` | JSON read/write (detector, config writer, `checkpoint.sh`/`preflight.sh`/`report-to-junit.sh`) | `brew install jq` (macOS) · `apt install jq` (Linux) · `winget install jqlang.jq` or `choco install jq` (Windows) — either `jq` or `python3` satisfies this, `jq` is preferred |
+| `curl` | runtime fingerprint / liveness / `memory-sync.sh` | preinstalled on macOS, Git Bash, most Linux |
 | `perl` **or** GNU `grep -P` | route/selector extraction | Linux & Git Bash ship GNU grep (`-P` works); **macOS** uses BSD grep (no `-P`) so the scripts fall back to `perl`, which ships with macOS — no action needed |
-| `python3` | fallback for some config reads | optional; `jq` is preferred |
 
-The scripts auto-detect `grep -P` and fall back to `perl` on macOS, and prefer
-`jq` with a `python3`/`node` fallback for config parsing — so a stock macOS or
-Git-Bash-on-Windows works once `jq` is installed. The portability of the PCRE
-patterns is regression-tested in `tests/portability/run.sh`.
+The scripts auto-detect `grep -P` and fall back to `perl` on macOS, and every
+script that reads/writes JSON prefers `jq` with a fallback (`checkpoint.sh`/
+`report-to-junit.sh`/`memory-sync.sh` fall back to `python3`; `preflight.sh`
+falls back to `node`, then degrades gracefully to `grep` rather than
+`python3`) — so a stock macOS or Git-Bash-on-Windows works once `jq` is
+installed. The portability of the PCRE patterns is regression-tested in
+`tests/portability/run.sh`.
 
 ## Verifying the install
 
