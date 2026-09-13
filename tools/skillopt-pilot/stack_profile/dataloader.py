@@ -9,6 +9,8 @@ from typing import Any
 
 from skillopt.datasets.base import SplitDataLoader
 
+from .models import BenchmarkItemModel
+
 
 class StackProfileDataLoader(SplitDataLoader):
     """Load benchmark items and reject split contamination before training."""
@@ -36,25 +38,15 @@ class StackProfileDataLoader(SplitDataLoader):
         return [self._normalize_item(item, path) for item in raw]
 
     def _normalize_item(self, item: Any, source: Path) -> dict:
-        if not isinstance(item, dict):
-            raise ValueError(f"Every item in {source} must be an object")
-        normalized = dict(item)
-        item_id = str(normalized.get("id") or "").strip()
-        fixture = str(normalized.get("fixture") or "").strip()
-        prompt = str(normalized.get("prompt") or "").strip()
-        assertions = normalized.get("assertions")
-        if not item_id or not fixture or not prompt:
-            raise ValueError(f"Item in {source} requires non-empty id, fixture, and prompt")
-        if not isinstance(assertions, list) or not assertions:
-            raise ValueError(f"Item '{item_id}' requires non-empty assertions")
-        for assertion in assertions:
-            if not isinstance(assertion, dict) or not str(assertion.get("path") or "").strip():
-                raise ValueError(f"Item '{item_id}' has malformed assertion")
-            operators = [name for name in ("equals", "not_equals") if name in assertion]
-            if len(operators) != 1:
-                raise ValueError(
-                    f"Item '{item_id}' assertion must contain exactly one of equals or not_equals"
-                )
+        model = BenchmarkItemModel.model_validate(item)
+        normalized = model.model_dump(exclude_none=False)
+        item_id = model.id
+        fixture = model.fixture
+        assertions = [
+            assertion.model_dump(exclude_unset=True)
+            for assertion in model.assertions
+        ]
+        normalized["assertions"] = assertions
         fixture_path = (Path(self.fixtures_dir) / fixture).resolve()
         try:
             fixture_path.relative_to(Path(self.fixtures_dir))

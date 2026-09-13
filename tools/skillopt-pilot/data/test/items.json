@@ -1,0 +1,26 @@
+[
+  {
+    "id": "test-fastapi-openapi",
+    "fixture": "fastapi",
+    "task_type": "backend-playbook",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "fastapi"},
+      {"path": "components.0.router.strategy", "equals": "runtime-openapi"},
+      {"path": "components.0.orm.name", "equals": "sqlalchemy"},
+      {"path": "components.0.signal", "equals": "strong"}
+    ]
+  },
+  {
+    "id": "test-fullstack-i18n",
+    "fixture": "fullstack",
+    "task_type": "localization-map",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile, including its localization map, as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "laravel"},
+      {"path": "components.0.frontend.routing", "equals": "server-bridge"},
+      {"path": "components.0.i18n.present", "equals": true},
+      {"path": "components.0.i18n.signal", "equals": "strong"}
+    ]
+  }
+]

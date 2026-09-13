@@ -140,6 +140,16 @@ class LoaderValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fixture does not exist"):
             self.make_loader()
 
+    def test_rejects_unknown_item_fields(self) -> None:
+        item = self.item("train-1", "train prompt")
+        item["typo_field"] = True
+        self.write_split("train", [item])
+        self.write_split("val", [self.item("val-1", "validation prompt")])
+        self.write_split("test", [self.item("test-1", "test prompt")])
+
+        with self.assertRaisesRegex(ValueError, "Extra inputs are not permitted"):
+            self.make_loader()
+
     def test_rejects_semantically_identical_items_across_splits(self) -> None:
         self.write_split("train", [self.item("train-1")])
         self.write_split("val", [self.item("val-1")])

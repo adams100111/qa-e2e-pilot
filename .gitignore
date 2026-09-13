@@ -19,3 +19,4 @@ __pycache__/
 dist/
 qa-kit/dist/
 .superpowers/
+outputs/skillopt/
