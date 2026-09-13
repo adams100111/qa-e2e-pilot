@@ -14,6 +14,7 @@ class StackProfileAdapter(EnvAdapter):
         self,
         split_dir: str = "",
         fixtures_dir: str = "",
+        runtime_dir: str = "",
         split_mode: str = "split_dir",
         workers: int = 1,
         analyst_workers: int = 1,
@@ -29,6 +30,7 @@ class StackProfileAdapter(EnvAdapter):
         self.failure_only = failure_only
         self.minibatch_size = minibatch_size
         self.edit_budget = edit_budget
+        self.runtime_dir = runtime_dir
         self.dataloader = StackProfileDataLoader(
             split_dir=split_dir,
             split_mode=split_mode,
@@ -39,7 +41,18 @@ class StackProfileAdapter(EnvAdapter):
 
     def setup(self, cfg: dict) -> None:
         super().setup(cfg)
+        if not self.runtime_dir:
+            self.runtime_dir = str(cfg.get("runtime_dir") or "")
         self.dataloader.setup(cfg)
+        if self.runtime_dir:
+            from pathlib import Path
+
+            runtime = Path(self.runtime_dir).resolve()
+            if not (runtime / "scripts" / "detect-stack.sh").is_file():
+                raise ValueError(f"invalid stack-profile runtime_dir: {runtime}")
+            for split in (self.dataloader.train_items, self.dataloader.val_items, self.dataloader.test_items):
+                for item in split:
+                    item["runtime_path"] = str(runtime)
 
     def get_dataloader(self) -> StackProfileDataLoader:
         return self.dataloader
@@ -72,4 +85,3 @@ class StackProfileAdapter(EnvAdapter):
             if task_type not in seen:
                 seen.append(task_type)
         return seen or ["stack-profile"]
-

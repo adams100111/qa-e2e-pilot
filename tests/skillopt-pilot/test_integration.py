@@ -76,6 +76,25 @@ class RolloutTests(unittest.TestCase):
         self.assertEqual((result["hard"], result["soft"]), (0, 0.0))
         self.assertIn("invalid or missing JSON", result["fail_reason"])
 
+    def test_process_one_copies_detector_runtime_when_configured(self) -> None:
+        runtime = self.root / "runtime"
+        (runtime / "scripts").mkdir(parents=True)
+        (runtime / "scripts" / "detect-stack.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        item = dict(self.item, runtime_path=str(runtime))
+
+        def fake_target(work_dir: Path, _skill_md: str, _task_text: str) -> str:
+            copied = work_dir / "skills" / "detecting-stack-profile" / "scripts" / "detect-stack.sh"
+            self.assertTrue(copied.is_file())
+            return '{"framework":"nextjs","signal":"strong"}'
+
+        result = process_one(
+            item,
+            out_root=str(self.root / "out"),
+            skill_content="# Detect stacks",
+            target_runner=fake_target,
+        )
+        self.assertEqual(result["hard"], 1)
+
     def test_run_batch_raises_when_every_target_call_crashes(self) -> None:
         def crashing_target(*_args) -> str:
             raise RuntimeError("target unavailable")

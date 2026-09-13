@@ -104,6 +104,11 @@ def process_one(
     try:
         _prepare_workspace(work_dir, skill_md, task_text)
         shutil.copytree(item["fixture_path"], work_dir / "project")
+        if item.get("runtime_path"):
+            shutil.copytree(
+                item["runtime_path"],
+                work_dir / "skills" / "detecting-stack-profile",
+            )
         runner = target_runner or _default_target_runner
         response = runner(work_dir, skill_md, task_text)
         parsed = extract_result(response)
