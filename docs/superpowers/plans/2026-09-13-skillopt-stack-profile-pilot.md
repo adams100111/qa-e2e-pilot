@@ -6,7 +6,7 @@
 
 **Architecture:** A repository-local adapter and dataset are injected into SkillOpt's existing CLI registries by thin launchers. Codex executes fixture tasks in isolated workspaces; a pure deterministic scorer gates structured results, and the final test split is invoked only after training.
 
-**Tech Stack:** Python 3.12 standard library, SkillOpt `main`, Codex CLI, Bash, JSON, YAML.
+**Tech Stack:** Python 3.12, Pydantic v2, SkillOpt `main`, Codex CLI, a thin Bash lifecycle dispatcher, JSON, YAML.
 
 **Spec:** `docs/superpowers/specs/2026-09-13-skillopt-stack-profile-pilot-design.md`
 
@@ -98,4 +98,3 @@
 - [ ] Inspect the exact canonical-to-candidate diff and final per-item results; do not adopt.
 - [ ] Run all repository gates and record results in the comparison report.
 - [ ] Commit only reproducible harness/docs changes; keep model outputs ignored.
-

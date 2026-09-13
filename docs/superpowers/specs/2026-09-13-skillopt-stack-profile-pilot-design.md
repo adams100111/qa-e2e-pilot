@@ -39,7 +39,7 @@ Every item ID is globally unique. The loader rejects duplicate IDs, malformed as
 
 ## Commands
 
-`bash tools/skillopt-pilot/run.sh baseline` evaluates the canonical skill on validation and test before training. `bash tools/skillopt-pilot/run.sh train` runs the bounded optimization with Codex and does not evaluate test. `bash tools/skillopt-pilot/run.sh final` evaluates the selected best skill once on the sealed test split and generates a comparison report. `bash tools/skillopt-pilot/run.sh verify` runs harness unit/integration tests without model calls.
+`bash tools/skillopt-pilot/run.sh baseline` evaluates the canonical skill on validation and test before training. `bash tools/skillopt-pilot/run.sh train` runs the bounded optimization with Codex and does not evaluate test. `bash tools/skillopt-pilot/run.sh final` evaluates the selected best skill once on the sealed test split; the operator records the baseline, gate decision, and final result in a comparison report. `bash tools/skillopt-pilot/run.sh verify` runs harness unit/integration tests without model calls.
 
 ## Acceptance criteria
 
@@ -50,4 +50,3 @@ Every item ID is globally unique. The loader rejects duplicate IDs, malformed as
 5. Training cannot read the test split through configuration or reflection artifacts.
 6. No command edits the canonical skill or generated `dist/` files.
 7. A candidate is recommended only when validation improves, no validation item regresses, final test does not regress, and repository tests remain green.
-
