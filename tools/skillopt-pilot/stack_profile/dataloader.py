@@ -65,6 +65,9 @@ class StackProfileDataLoader(SplitDataLoader):
         normalized["id"] = item_id
         normalized["fixture_path"] = str(fixture_path)
         normalized["task_type"] = str(normalized.get("task_type") or "stack-profile")
+        normalized["reference_text"] = json.dumps(
+            {"assertions": assertions}, ensure_ascii=False, sort_keys=True
+        )
         return normalized
 
     @staticmethod
