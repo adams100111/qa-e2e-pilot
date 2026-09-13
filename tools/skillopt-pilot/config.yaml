@@ -1,0 +1,51 @@
+model:
+  backend: codex
+  optimizer: gpt-5.5
+  target: gpt-5.5
+  optimizer_backend: codex_exec
+  target_backend: codex_exec
+  reasoning_effort: medium
+  codex_exec_sandbox: workspace-write
+  codex_exec_network_access: false
+  codex_exec_web_search: false
+  codex_exec_approval_policy: never
+  codex_trace_to_optimizer: true
+
+train:
+  num_epochs: 1
+  train_size: 0
+  batch_size: 2
+  accumulation: 1
+  seed: 42
+
+gradient:
+  minibatch_size: 2
+  merge_batch_size: 2
+  analyst_workers: 1
+  failure_only: false
+
+optimizer:
+  learning_rate: 2
+  min_learning_rate: 1
+  lr_scheduler: constant
+  lr_control_mode: fixed
+  skill_update_mode: patch
+  use_slow_update: false
+  use_meta_skill: false
+  use_skill_aware_reflection: true
+
+evaluation:
+  use_gate: true
+  sel_env_num: 0
+  test_env_num: 0
+  eval_test: false
+
+env:
+  name: qa_stack_profile
+  skill_init: ""
+  split_mode: split_dir
+  split_dir: ""
+  fixtures_dir: ""
+  runtime_dir: ""
+  exec_timeout: 180
+  out_root: ""

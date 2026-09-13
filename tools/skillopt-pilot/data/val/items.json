@@ -1,0 +1,26 @@
+[
+  {
+    "id": "val-nextjs-routing",
+    "fixture": "nextjs",
+    "task_type": "manifest-routing",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "nextjs"},
+      {"path": "components.0.frontend.routing", "equals": "file-based"},
+      {"path": "components.0.router.strategy", "equals": "static-parse"},
+      {"path": "components.0.signal", "equals": "strong"}
+    ]
+  },
+  {
+    "id": "val-aspnet-openapi",
+    "fixture": "aspnet",
+    "task_type": "backend-playbook",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "aspnet"},
+      {"path": "components.0.playbook", "equals": "openapi-generic"},
+      {"path": "components.0.orm.name", "equals": "ef-core"},
+      {"path": "components.0.auth.scheme", "equals": "bearer"}
+    ]
+  }
+]

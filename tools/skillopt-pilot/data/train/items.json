@@ -1,0 +1,27 @@
+[
+  {
+    "id": "train-laravel-inertia",
+    "fixture": "laravel",
+    "task_type": "manifest-routing",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "laravel"},
+      {"path": "components.0.playbook", "equals": "laravel"},
+      {"path": "components.0.frontend.routing", "equals": "server-bridge"},
+      {"path": "components.0.orm.name", "equals": "eloquent"},
+      {"path": "components.0.signal", "equals": "strong"}
+    ]
+  },
+  {
+    "id": "train-unknown-fallback",
+    "fixture": "unknown",
+    "task_type": "graceful-fallback",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Unknown stacks must still produce a valid conservative stack profile in result.json; return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "generic"},
+      {"path": "components.0.playbook", "equals": "generic"},
+      {"path": "components.0.signal", "equals": "weak"},
+      {"path": "components.0.i18n.present", "equals": false}
+    ]
+  }
+]
