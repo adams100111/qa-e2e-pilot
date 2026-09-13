@@ -71,25 +71,25 @@ Commit message: `fix: support jq 1.6 in cost summary`
 - Consumes: the canonical detector's `detect-stack.sh --repo <path>` JSON contract.
 - Produces: 8–12 train items and 4–6 validation items with unique IDs, semantic hashes, fixtures, and dotted-path assertions.
 
-- [ ] **Step 1: Add failing corpus-size and uniqueness tests**
+- [x] **Step 1: Add failing corpus-size and uniqueness tests**
 
 Assert at least 8 train cases and 4 validation cases, while retaining duplicate-ID, fixture-existence, and cross-split semantic-overlap checks.
 
-- [ ] **Step 2: Verify the corpus-size test is red**
+- [x] **Step 2: Verify the corpus-size test is red**
 
 Run: `python3 -m unittest tests/skillopt-pilot/test_core.py -v`
 Expected: FAIL because train has 2 items and validation has 2.
 
-- [ ] **Step 3: Add synthetic framework fixtures and assertions**
+- [x] **Step 3: Add synthetic framework fixtures and assertions**
 
 Add code-only fixtures spanning Python, Java, Node, Ruby, client-only, and static/unknown shapes. Derive expected values by running the canonical detector, then encode only stable semantic assertions such as framework, playbook, signal, routing strategy, ORM, auth, and i18n presence.
 
-- [ ] **Step 4: Verify deterministic data validation**
+- [x] **Step 4: Verify deterministic data validation**
 
 Run: `python3 -m unittest tests/skillopt-pilot/test_core.py tests/skillopt-pilot/test_integration.py -v`
 Expected: all tests pass and no test fixture appears in train or validation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit message: `test(skillopt): expand stack-profile benchmark corpus`
 

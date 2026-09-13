@@ -22,5 +22,31 @@
       {"path": "components.0.orm.name", "equals": "ef-core"},
       {"path": "components.0.auth.scheme", "equals": "bearer"}
     ]
+  },
+  {
+    "id": "val-nestjs-openapi",
+    "fixture": "nestjs",
+    "task_type": "backend-playbook",
+    "prompt": "Inspect project/ offline using the provided stack detector. Save the authoritative detector result to result.json and return the identical JSON object.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "nestjs"},
+      {"path": "components.0.playbook", "equals": "openapi-generic"},
+      {"path": "components.0.router.strategy", "equals": "runtime-openapi"},
+      {"path": "components.0.orm.name", "equals": "typeorm"},
+      {"path": "components.0.auth.scheme", "equals": "bearer"}
+    ]
+  },
+  {
+    "id": "val-hono-openapi",
+    "fixture": "hono",
+    "task_type": "backend-playbook",
+    "prompt": "Follow the installed code-only stack-profile procedure for project/. Persist the complete detector output as result.json and return that JSON without reshaping it.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "hono"},
+      {"path": "components.0.playbook", "equals": "openapi-generic"},
+      {"path": "components.0.router.strategy", "equals": "runtime-openapi"},
+      {"path": "components.0.orm.name", "equals": "drizzle"},
+      {"path": "components.0.i18n.present", "equals": false}
+    ]
   }
 ]
