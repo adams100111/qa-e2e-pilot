@@ -106,25 +106,25 @@ Commit message: `test(skillopt): expand stack-profile benchmark corpus`
 - Consumes: fixed seeds, training summaries, selection rollout score files, and ignored output roots.
 - Produces: one isolated run per seed plus `iteration-summary.json` containing scores, gate decisions, candidate hashes, and eligibility.
 
-- [ ] **Step 1: Write failing summary and dispatch tests**
+- [x] **Step 1: Write failing summary and dispatch tests**
 
 Test that only candidates with improved validation hard score and no per-item regression are eligible, that missing/corrupt artifacts fail closed, and that `run.sh experiment` dispatches without invoking `final`.
 
-- [ ] **Step 2: Verify the tests are red**
+- [x] **Step 2: Verify the tests are red**
 
 Run the Python integration and shell acceptance suites.
 Expected: FAIL because the experiment module and mode do not exist.
 
-- [ ] **Step 3: Implement the minimal Python experiment driver**
+- [x] **Step 3: Implement the minimal Python experiment driver**
 
 Use Pydantic models to validate run summaries. Run seeds `42`, `314`, and `2718` in isolated output directories, compare each candidate against its own baseline selection results, and emit an atomic JSON summary. Never invoke the final mode.
 
-- [ ] **Step 4: Verify the tests are green**
+- [x] **Step 4: Verify the tests are green**
 
 Run the Python integration, shell acceptance, and suite-coverage checks.
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit message: `feat(skillopt): add multi-seed experiment tracking`
 

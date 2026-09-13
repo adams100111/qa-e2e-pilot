@@ -53,6 +53,11 @@ case "$mode" in
     "$PYTHON" "$PILOT/train.py" "${common[@]}" \
       "env.skill_init=$SEED_SKILL" "env.out_root=$OUTPUT/train"
     ;;
+  experiment)
+    exec "$PYTHON" "$PILOT/experiment.py" \
+      --python "$PYTHON" --root "$ROOT" --pilot "$PILOT" \
+      --output "$OUTPUT/iteration-2"
+    ;;
   final)
     candidate="$OUTPUT/train/best_skill.md"
     if [[ ! -f "$candidate" ]]; then
@@ -64,7 +69,7 @@ case "$mode" in
       --skill "$candidate" --split valid_unseen --out_root "$OUTPUT/final/test"
     ;;
   *)
-    echo "Usage: $0 {verify|baseline|train|final}" >&2
+    echo "Usage: $0 {verify|baseline|train|experiment|final}" >&2
     exit 2
     ;;
 esac
