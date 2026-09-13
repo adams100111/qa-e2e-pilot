@@ -163,4 +163,22 @@ else
   echo "SKIP - python3-fallback sub-case: jq or python3 not present on this host"
 fi
 
+# Optional cross-version contract. CI currently provides jq 1.6 while some
+# development machines provide newer parsers; point JQ_COMPAT_BIN at another
+# jq executable to exercise the real script with that parser first on PATH.
+if [[ -n "${JQ_COMPAT_BIN:-}" ]]; then
+  COMPAT_BIN="$WORK/compatbin"
+  mkdir -p "$COMPAT_BIN"
+  ln -s "$JQ_COMPAT_BIN" "$COMPAT_BIN/jq"
+  COMPAT_OUT="$(PATH="$COMPAT_BIN:$PATH" QA_ENGINE=jq bash "$S" r1)"
+  check "jq-compat: exits with valid summary" \
+    "$(jq -e . >/dev/null 2>&1 <<< "$COMPAT_OUT" && echo valid || echo invalid)" "valid"
+  check "jq-compat: toolCalls" "$(jget "$COMPAT_OUT" .toolCalls)" "7"
+  check "jq-compat: C1 count" "$(jget "$COMPAT_OUT" '.toolCallsByCriterion.C1')" "3"
+  check "jq-compat: C2 count" "$(jget "$COMPAT_OUT" '.toolCallsByCriterion.C2')" "2"
+  echo "note - jq compatibility sub-case: RAN ($("$JQ_COMPAT_BIN" --version))"
+else
+  echo "SKIP - jq compatibility sub-case (set JQ_COMPAT_BIN to enable)"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

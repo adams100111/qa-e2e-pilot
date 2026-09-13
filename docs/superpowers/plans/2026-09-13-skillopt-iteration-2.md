@@ -32,30 +32,30 @@
 - Consumes: sorted boundary and timestamp JSON arrays.
 - Produces: `attribute_jq(bounds_json, ts_json)` with byte-equivalent jq 1.6+, jq 1.8, and Python behavior.
 
-- [ ] **Step 1: Reproduce the failure with jq 1.6**
+- [x] **Step 1: Reproduce the failure with jq 1.6**
 
 Run the existing cost-summary suite with an isolated jq 1.6 binary first on `PATH`.
 Expected: the reducer fails to parse at `) as $acc`, reproducing the GitHub job.
 
-- [ ] **Step 2: Add a jq compatibility regression check**
+- [x] **Step 2: Add a jq compatibility regression check**
 
 Extend the test runner so an optional `JQ_COMPAT_BIN` runs the full fixture through that executable and asserts `toolCalls == 7`, `C1 == 3`, and `C2 == 2`.
 
-- [ ] **Step 3: Verify the new check is red**
+- [x] **Step 3: Verify the new check is red**
 
 Run: `JQ_COMPAT_BIN=/tmp/jq-1.6 bash tests/cost-summary/run.sh`
 Expected: FAIL in the compatibility case before production code changes.
 
-- [ ] **Step 4: Parenthesize the reduce expression**
+- [x] **Step 4: Parenthesize the reduce expression**
 
 Change the jq program from `reduce ... ) as $acc` to `(reduce ... )) as $acc`; this is accepted by jq 1.6 and retains the same accumulator value.
 
-- [ ] **Step 5: Verify both engines**
+- [x] **Step 5: Verify both engines**
 
 Run: `JQ_COMPAT_BIN=/tmp/jq-1.6 bash tests/cost-summary/run.sh`
 Expected: `FAIL=0`, including the existing Python fallback checks.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit message: `fix: support jq 1.6 in cost summary`
 
