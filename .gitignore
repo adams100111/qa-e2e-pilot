@@ -6,6 +6,8 @@
 # Node / npx installer
 node_modules/
 *.log
+__pycache__/
+*.py[cod]
 
 # OS
 .DS_Store
