@@ -11,10 +11,11 @@ bash tools/skillopt-pilot/run.sh detect-baseline   # zero-spend: no codex/venv/m
 bash tools/skillopt-pilot/run.sh verify
 bash tools/skillopt-pilot/run.sh baseline
 bash tools/skillopt-pilot/run.sh train
+bash tools/skillopt-pilot/run.sh experiment
 bash tools/skillopt-pilot/run.sh final
 ```
 
-`baseline` intentionally evaluates validation and test before optimization to establish the initial score. `train` can access only train and validation because `evaluation.eval_test` is false. Run `final` once, only after a validation-gated candidate exists. Outputs are isolated under ignored `outputs/skillopt/`.
+`baseline` intentionally evaluates validation and test before optimization to establish the initial score. `train` can access only train and validation because `evaluation.eval_test` is false. `experiment` runs seeds 42, 314, and 2718 with one bounded eight-item batch per seed, writes a strict `iteration-summary.json`, and never invokes the final evaluator. Run `final` once, only after a validation-gated candidate exists. Outputs are isolated under ignored `outputs/skillopt/`.
 
 The candidate is never adopted automatically. Review its exact diff, per-item scores, and full repository gates before changing the canonical skill.
 

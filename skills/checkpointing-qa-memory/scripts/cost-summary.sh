@@ -260,13 +260,13 @@ attribute_jq() {
   jq -n --argjson bounds "$bounds_json" --argjson timestamps "$ts_json" '
     ($bounds | map(.criterionId) | unique | length) as $criteria
     | ($timestamps | length) as $toolCalls
-    | reduce $timestamps[] as $t
+    | (reduce $timestamps[] as $t
         ({byCrit: {}, unattributed: 0};
           ( [$bounds[] | select(.t <= $t)] | last ) as $b
           | if $b == null then .unattributed += 1
             else .byCrit[$b.criterionId] = ((.byCrit[$b.criterionId] // 0) + 1)
             end
-        ) as $acc
+        )) as $acc
     | {criteria: $criteria, toolCalls: $toolCalls,
        toolCallsByCriterion: $acc.byCrit, unattributedToolCalls: $acc.unattributed}
   '

@@ -159,5 +159,29 @@ class LoaderValidationTests(unittest.TestCase):
             self.make_loader()
 
 
+class CommittedCorpusTests(unittest.TestCase):
+    def test_has_enough_distinct_training_and_validation_cases(self) -> None:
+        loader = StackProfileDataLoader(
+            split_dir=str(PILOT / "data"),
+            split_mode="split_dir",
+            fixtures_dir=str(PILOT / "fixtures"),
+        )
+        loader.setup({})
+
+        self.assertGreaterEqual(len(loader.train_items), 8)
+        self.assertGreaterEqual(len(loader.val_items), 4)
+        split_fixtures = {
+            split: {item["fixture"] for item in items}
+            for split, items in (
+                ("train", loader.train_items),
+                ("val", loader.val_items),
+                ("test", loader.test_items),
+            )
+        }
+        self.assertFalse(split_fixtures["train"] & split_fixtures["val"])
+        self.assertFalse(split_fixtures["train"] & split_fixtures["test"])
+        self.assertFalse(split_fixtures["val"] & split_fixtures["test"])
+
+
 if __name__ == "__main__":
     unittest.main()

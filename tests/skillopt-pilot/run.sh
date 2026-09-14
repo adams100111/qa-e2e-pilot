@@ -48,6 +48,11 @@ bash "$RUNNER" train
 check "train dispatches one training command" "$(grep -c 'train.py' "$log")" "1"
 check "train uses committed config" "$(grep -c -- '--config .*tools/skillopt-pilot/config.yaml' "$log")" "1"
 
+: >"$log"
+bash "$RUNNER" experiment
+check "experiment dispatches Python driver once" "$(grep -c 'experiment.py' "$log")" "1"
+check "experiment does not dispatch final evaluation" "$(grep -c 'eval.py' "$log")" "0"
+
 mkdir -p "$SKILLOPT_OUTPUT_ROOT/train"
 printf '%s\n' '# candidate' >"$SKILLOPT_OUTPUT_ROOT/train/best_skill.md"
 : >"$log"

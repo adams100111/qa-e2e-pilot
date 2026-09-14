@@ -152,5 +152,71 @@ class RegistryTests(unittest.TestCase):
         self.assertIs(eval_module._ENV_REGISTRY["qa_stack_profile"], StackProfileAdapter)
 
 
+class ExperimentGateTests(unittest.TestCase):
+    def test_eligible_candidate_improves_hard_without_item_regression(self) -> None:
+        from experiment import assess_run
+
+        assessment = assess_run(
+            seed=42,
+            summary={
+                "baseline_selection_hard": 0.25,
+                "best_selection_hard": 0.75,
+                "best_step": 1,
+            },
+            baseline_rollouts=[
+                {"id": "a", "hard": 0, "soft": 0.25},
+                {"id": "b", "hard": 1, "soft": 1.0},
+            ],
+            candidate_rollouts=[
+                {"id": "a", "hard": 1, "soft": 1.0},
+                {"id": "b", "hard": 1, "soft": 1.0},
+            ],
+            candidate_hash="abc123",
+        )
+
+        self.assertTrue(assessment.eligible)
+        self.assertEqual(assessment.regressed_items, [])
+
+    def test_candidate_with_per_item_regression_is_ineligible(self) -> None:
+        from experiment import assess_run
+
+        assessment = assess_run(
+            seed=314,
+            summary={
+                "baseline_selection_hard": 0.5,
+                "best_selection_hard": 0.75,
+                "best_step": 2,
+            },
+            baseline_rollouts=[
+                {"id": "stable", "hard": 1, "soft": 1.0},
+                {"id": "gain", "hard": 0, "soft": 0.0},
+            ],
+            candidate_rollouts=[
+                {"id": "stable", "hard": 0, "soft": 0.5},
+                {"id": "gain", "hard": 1, "soft": 1.0},
+            ],
+            candidate_hash="def456",
+        )
+
+        self.assertFalse(assessment.eligible)
+        self.assertEqual(assessment.regressed_items, ["stable"])
+
+    def test_missing_candidate_rollout_fails_closed(self) -> None:
+        from experiment import assess_run
+
+        with self.assertRaisesRegex(ValueError, "candidate rollout IDs differ"):
+            assess_run(
+                seed=2718,
+                summary={
+                    "baseline_selection_hard": 0.0,
+                    "best_selection_hard": 1.0,
+                    "best_step": 1,
+                },
+                baseline_rollouts=[{"id": "a", "hard": 0, "soft": 0.0}],
+                candidate_rollouts=[],
+                candidate_hash="ghi789",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
