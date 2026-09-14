@@ -8,6 +8,14 @@ OUTPUT="${SKILLOPT_OUTPUT_ROOT:-$ROOT/outputs/skillopt/stack-profile}"
 CONFIG="$PILOT/config.yaml"
 SEED_SKILL="$ROOT/skills/detecting-stack-profile/SKILL.md"
 
+# Zero-spend deterministic baseline / consistency gate. Dispatched BEFORE the
+# codex + SkillOpt-venv guards below because it needs neither — only python3 +
+# the skill's own detect-stack.sh. Forwards remaining args (e.g. --gate).
+if [[ "${1:-}" == "detect-baseline" ]]; then
+  shift
+  exec python3 "$PILOT/baseline_offline.py" "$@"
+fi
+
 if [[ ! -f "$SOURCE/scripts/train.py" || ! -f "$SOURCE/scripts/eval_only.py" ]]; then
   echo "SkillOpt source checkout not found: $SOURCE" >&2
   exit 2
@@ -69,7 +77,7 @@ case "$mode" in
       --skill "$candidate" --split valid_unseen --out_root "$OUTPUT/final/test"
     ;;
   *)
-    echo "Usage: $0 {verify|baseline|train|experiment|final}" >&2
+    echo "Usage: $0 {verify|detect-baseline|baseline|train|experiment|final}" >&2
     exit 2
     ;;
 esac

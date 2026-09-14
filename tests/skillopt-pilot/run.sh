@@ -70,6 +70,15 @@ assert "codex_exec_web_search: false" in text
 PY
 check "training config seals test and network" "$?" "0"
 
+# Zero-spend deterministic gate: every committed item's assertions must match
+# what the real detect-stack.sh emits. Needs no codex/venv/model — only python3.
+offline_out="$tmp/offline.out"
+offline_rc=0
+bash "$RUNNER" detect-baseline --gate >"$offline_out" 2>&1 || offline_rc=$?
+check "offline baseline gate passes" "$offline_rc" "0"
+check "offline baseline reports a score" "$(grep -c 'BASELINE  hard=' "$offline_out" || true)" "1"
+check "offline baseline has no deterministic miss" "$(grep -c 'MISS (deterministic' "$offline_out" || true)" "0"
+
 echo "---"
 echo "skillopt-pilot: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
