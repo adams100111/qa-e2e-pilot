@@ -6,6 +6,8 @@
 # Node / npx installer
 node_modules/
 *.log
+__pycache__/
+*.py[cod]
 
 # OS
 .DS_Store
@@ -17,3 +19,4 @@ node_modules/
 dist/
 qa-kit/dist/
 .superpowers/
+outputs/skillopt/

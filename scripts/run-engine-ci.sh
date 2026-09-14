@@ -15,7 +15,7 @@ SUITES=(
   index-routes init-config installers interaction-ux journal journal-emit journal-merge memory-sync mutation-flag persona-identity
   portability provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
   required-kinds resume-idempotency session-preflight session-to-toolstream skill-gate-consistency
-  state-machine toolstream
+  state-machine toolstream skillopt-pilot
   ux-adjudicate ux-conventions ux-detectors validate-adapters validate-checklist-json vision-binding
   write-persona-config
 )
