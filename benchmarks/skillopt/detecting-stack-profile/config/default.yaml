@@ -19,7 +19,7 @@ env:
 train:
   # Tiny fixture set — keep the whole train split in one batch.
   num_epochs: 4
-  batch_size: 3
+  batch_size: 4
   accumulation: 1
   seed: 42
 

@@ -40,5 +40,16 @@
       "orm": "ef-core",
       "migrationsPath": "Migrations"
     }
+  },
+  {
+    "id": "fastapi-sqlalchemy",
+    "task_type": "code",
+    "fixture": "fastapi-sqlalchemy",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "fastapi",
+      "orm": "sqlalchemy"
+    }
   }
 ]

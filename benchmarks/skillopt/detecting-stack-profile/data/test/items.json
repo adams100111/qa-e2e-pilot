@@ -26,5 +26,17 @@
       "routing": "server-bridge",
       "environment": "production"
     }
+  },
+  {
+    "id": "monorepo-laravel-next",
+    "task_type": "code",
+    "fixture": "monorepo-laravel-next",
+    "detect": { "mode": "code", "repos": ["be", "fe"] },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "laravel",
+      "orm": "eloquent",
+      "routing": "server-bridge"
+    }
   }
 ]

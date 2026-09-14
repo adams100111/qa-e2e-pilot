@@ -44,16 +44,18 @@ config/default.yaml                SkillOpt run config
 install-into-skillopt.sh           copies this benchmark into a SkillOpt checkout
 ```
 
-## Splits (7 fixtures — a starter set)
+## Splits (10 fixtures — a starter set)
 
 | split | fixtures | notes |
 |-------|----------|-------|
-| train | laravel-inertia, django-drf, dotnet-ef | clean, script-correct |
-| val (selection gate) | rails-app, express-sequelize | sequelize ORM is a real detector gap |
-| test (held-out) | nextjs-prisma, blackbox-laravel | prisma ORM gap + black-box env inference |
+| train | laravel-inertia, django-drf, dotnet-ef, fastapi-sqlalchemy | clean, script-correct |
+| val (selection gate) | rails-app, express-sequelize, laravel-i18n | sequelize ORM gap; i18n-catalog detection |
+| test (held-out) | nextjs-prisma, blackbox-laravel, monorepo-laravel-next | prisma ORM gap; black-box env; multi-component primary selection |
 
-Ground truth pins a field **only when unambiguous** from the fixture; a missing
-field is "not asserted", never "asserted empty".
+`monorepo-laravel-next` uses `detect.repos: ["be","fe"]` — a two-component
+fixture that checks `primary.backend` is chosen correctly (the scorer reads the
+primary backend component). Ground truth pins a field **only when unambiguous**
+from the fixture; a missing field is "not asserted", never "asserted empty".
 
 ## Run it
 
@@ -63,7 +65,7 @@ Zero-spend structure + baseline check (no API calls, run from anywhere):
 python3 benchmarks/skillopt/detecting-stack-profile/sanity.py
 ```
 
-Current deterministic baseline: **hard 5/7, mean-soft 0.93**. The two MISS rows
+Current deterministic baseline: **hard 8/10, mean-soft 0.95**. The two MISS rows
 (`express-sequelize`, `nextjs-prisma` → ORM `unknown`) are the concrete headroom
 a real optimization run would try to close.
 

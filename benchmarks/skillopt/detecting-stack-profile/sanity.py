@@ -41,7 +41,11 @@ def _run_detector(item: dict) -> dict:
         args = ["--no-code", "--headers-file", str(fixture / "headers.txt"),
                 "--base-url", detect.get("base_url", "https://app.example.com"), "--out", out]
     else:
-        args = ["--no-runtime", "--repos", str(fixture / "repo"), "--out", out]
+        # detect.repos is an optional list of fixture-relative repo roots
+        # (multi-component). Comma-separated — space-separated collapses to generic.
+        repos = detect.get("repos") or ["repo"]
+        repo_arg = ",".join(str(fixture / rel) for rel in repos)
+        args = ["--no-runtime", "--repos", repo_arg, "--out", out]
     subprocess.run(["bash", str(DETECTOR), *args], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return json.loads(Path(out).read_text(encoding="utf-8"))

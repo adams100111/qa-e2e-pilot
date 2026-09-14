@@ -24,5 +24,17 @@
       "framework": "express",
       "orm": "sequelize"
     }
+  },
+  {
+    "id": "laravel-i18n",
+    "task_type": "code",
+    "fixture": "laravel-i18n",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "laravel",
+      "orm": "eloquent",
+      "i18n_mechanisms": ["laravel-lang"]
+    }
   }
 ]

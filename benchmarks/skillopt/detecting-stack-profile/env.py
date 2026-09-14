@@ -60,11 +60,15 @@ def _read_fixture(item: dict) -> str:
             f"## Black-box target\nbaseUrl: {base_url}\nNo source repository is available.\n\n"
             f"## Captured runtime response headers\n```\n{headers.strip()}\n```"
         )
+    repos = item.get("detect", {}).get("repos") or ["repo"]
     parts = ["## Local source manifests"]
-    for manifest in sorted((fixture / "repo").glob("*")):
-        if manifest.is_file():
-            body = manifest.read_text(encoding="utf-8").strip()
-            parts.append(f"### {manifest.name}\n```\n{body}\n```")
+    for rel in repos:
+        root = fixture / rel
+        for manifest in sorted(root.rglob("*")):
+            if manifest.is_file():
+                body = manifest.read_text(encoding="utf-8", errors="replace").strip()
+                rel_name = manifest.relative_to(fixture)
+                parts.append(f"### {rel_name}\n```\n{body}\n```")
     return "\n\n".join(parts)
 
 
