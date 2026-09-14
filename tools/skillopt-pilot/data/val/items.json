@@ -22,5 +22,18 @@
       {"path": "components.0.orm.name", "equals": "ef-core"},
       {"path": "components.0.auth.scheme", "equals": "bearer"}
     ]
+  },
+  {
+    "id": "val-rails-activerecord",
+    "fixture": "rails",
+    "task_type": "backend-playbook",
+    "prompt": "Analyze the repository at project/ using code-based detection only. Produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "components.0.framework", "equals": "rails"},
+      {"path": "components.0.orm.name", "equals": "active-record"},
+      {"path": "components.0.frontend.routing", "equals": "server-bridge"},
+      {"path": "components.0.auth.scheme", "equals": "session-cookie"},
+      {"path": "components.0.signal", "equals": "strong"}
+    ]
   }
 ]

@@ -22,5 +22,18 @@
       {"path": "components.0.i18n.present", "equals": true},
       {"path": "components.0.i18n.signal", "equals": "strong"}
     ]
+  },
+  {
+    "id": "test-blackbox-laravel",
+    "fixture": "blackbox-laravel",
+    "task_type": "black-box-fingerprint",
+    "prompt": "The synthetic project at project/ contains only captured runtime response headers (headers.txt) and no source repository. Using runtime-fingerprint (black-box) detection against those headers, produce the authoritative stack profile as result.json and return the same JSON.",
+    "assertions": [
+      {"path": "mode", "equals": "black-box"},
+      {"path": "components.0.framework", "equals": "laravel"},
+      {"path": "components.0.orm.name", "equals": "eloquent"},
+      {"path": "components.0.auth.scheme", "equals": "session-cookie"},
+      {"path": "components.0.signal", "equals": "weak"}
+    ]
   }
 ]
