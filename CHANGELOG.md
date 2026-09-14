@@ -8,6 +8,30 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.7.1 — 2026-09-14 · "Reports that actually render"
+
+Bug-fix release. Two harness-interaction defects that only bite on real (subagent-dispatched,
+long) runs — both surfaced QA'ing a production Laravel app.
+
+- **report.html/report.md now render under the subagent dispatch.** The Report phase wrote both
+  files with the **Write tool**, but under the usual `/qa-run` dispatch the engine runs as a
+  subagent, where the harness blocks the Write tool from creating report files — so `report.html`
+  was silently never produced (findings came back only as agent text). Added
+  `scripts/render-report.py`: a deterministic renderer that fills `templates/report.{md,html}`
+  from `run-manifest.json` + `checkpoint.json` + `bug-log.json` + `stack-profile.json` (tally,
+  per-criterion verdict cards with the checklist's oracle/label, deferred cards, low-confidence
+  callout, bug appendix, evidence links + screenshot slots) and writes via the filesystem, not
+  the Write tool. `writing-qa-reports` now prefers it (step 0); the manual template fill remains
+  the main-agent fallback.
+- **`provenance.sh` no longer dies with `Argument list too long` on long runs.** Both the jq and
+  python legs passed the entire slurped toolstream (easily &gt;128KB — Linux `MAX_ARG_STRLEN`) as a
+  single `--argjson` / `sys.argv` value, so `qa-verify.sh`'s out-of-agent authority check failed
+  **every** criterion on any sufficiently long run — defeating the gate exactly when it matters.
+  Events are now routed through a temp file (`--slurpfile` for jq, file-read for python); no argv
+  size limit.
+
+---
+
 ### v0.7.0 — 2026-09-07 · "Product credibility"
 
 The headline release: the engine now tells the truth about its own accuracy.

@@ -226,8 +226,8 @@ toolstream_file() { echo "${QA_BASE}/$1/toolstream.jsonl"; }
 # full semantics; this is a straight transliteration of it.
 # ---------------------------------------------------------------------------
 check_jq() {
-  local artifact_json="$1" events_json="$2"
-  jq -n -r --argjson art "$artifact_json" --argjson events "$events_json" '
+  local artifact_json="$1" events_file="$2"
+  jq -n -r --argjson art "$artifact_json" --slurpfile events "$events_file" '
     def scalar_str: if . == null then empty else tostring end;
     # leaves: recursively collect scalar VALUES only — NOT object key names.
     # Key names (e.g. name, id, status) are generic and recur across
@@ -329,8 +329,8 @@ check_jq() {
 # the python3 fallback — same semantics as check_jq, see the header.
 # ---------------------------------------------------------------------------
 check_py() {
-  local artifact_json="$1" events_json="$2"
-  python3 - "$artifact_json" "$events_json" <<'PYEOF'
+  local artifact_json="$1" events_file="$2"
+  python3 - "$artifact_json" "$events_file" <<'PYEOF'
 import json, re, sys
 
 def scalar_str(x):
@@ -435,7 +435,7 @@ def call_matches(call, tool_names):
     return any(tool in t for t in tool_names)
 
 art = json.loads(sys.argv[1])
-events = json.loads(sys.argv[2])
+events = [json.loads(_l) for _l in open(sys.argv[2]) if _l.strip()]
 
 kind = art.get("kind") or ""
 prov = art.get("provenance") or {}
@@ -515,39 +515,42 @@ cmd_check() {
   fi
 
   # events_json: the toolstream's JSONL lines slurped into one JSON array.
-  local raw_events events_json
+  local raw_events events_json ev_file
   raw_events="$(bash "$TOOLSTREAM" read "$run_id" 2>/dev/null)"
 
   local raw_count parsed_count
   raw_count="$(printf '%s\n' "$raw_events" | grep -c . || true)"
 
   if has_jq; then
-    events_json="$(printf '%s\n' "$raw_events" | jq -Rn -c '[inputs | fromjson?]' 2>/dev/null)"
-    [[ -z "$events_json" ]] && events_json="[]"
-    parsed_count="$(jq -r 'length' <<< "$events_json")"
+    ev_file="$(mktemp)"
+    printf '%s\n' "$raw_events" | jq -Rc 'fromjson? // empty' > "$ev_file" 2>/dev/null
+    parsed_count="$(jq -s -r 'length' "$ev_file" 2>/dev/null || echo 0)"
     if (( raw_count > parsed_count )); then
       warn_torn_write "$raw_count" "$parsed_count" "$run_id"
     fi
-    check_jq "$artifact_json" "$events_json"
+    check_jq "$artifact_json" "$ev_file"
+    rm -f "$ev_file"
   elif has_py; then
-    events_json="$(python3 -c '
+    ev_file="$(mktemp)"
+    printf '%s\n' "$raw_events" | python3 -c '
 import json, sys
-events = []
-for line in sys.stdin.read().splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        events.append(json.loads(line))
-    except json.JSONDecodeError:
-        continue
-print(json.dumps(events))
-' <<< "$raw_events")"
-    parsed_count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<< "$events_json")"
+with open(sys.argv[1], "w") as out:
+    for line in sys.stdin.read().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        out.write(line + "\n")
+' "$ev_file"
+    parsed_count="$(grep -c . "$ev_file" 2>/dev/null || echo 0)"
     if (( raw_count > parsed_count )); then
       warn_torn_write "$raw_count" "$parsed_count" "$run_id"
     fi
-    check_py "$artifact_json" "$events_json"
+    check_py "$artifact_json" "$ev_file"
+    rm -f "$ev_file"
   else
     die "provenance.sh needs either 'jq' or 'python3'."
   fi

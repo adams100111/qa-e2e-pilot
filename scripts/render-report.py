@@ -44,11 +44,18 @@ def render(run_dir, tpl_dir):
 
     # checklist id -> title (best effort; manifest.checklist may be a path or a list)
     titles = {}
+    oracles = {}
     cl = manifest.get("checklist")
     if isinstance(cl, list):
         for it in cl:
-            if isinstance(it, dict) and it.get("id"):
-                titles[it["id"]] = it.get("title") or it.get("text") or ""
+            if not isinstance(it, dict):
+                continue
+            cid = it.get("criterion_id") or it.get("id")
+            if not cid:
+                continue
+            titles[cid] = it.get("label") or it.get("title") or it.get("text") or ""
+            if it.get("oracle"):
+                oracles[cid] = it["oracle"]
 
     tally = {v: 0 for v in VERDICTS}
     low_conf = 0
@@ -72,7 +79,10 @@ def render(run_dir, tpl_dir):
         conf = (c.get("confidence") or "high").lower()
         title = titles.get(cid, "")
         conf_badge = f'<span class="conf-badge conf-low">confidence: low</span>' if conf == "low" else ""
-        rows = [f'<tr><td>Result</td><td>{esc(c.get("last_action"))}</td></tr>']
+        rows = []
+        if oracles.get(cid):
+            rows.append(f'<tr><td>Oracle</td><td>{esc(oracles[cid])}</td></tr>')
+        rows.append(f'<tr><td>Result</td><td>{esc(c.get("last_action"))}</td></tr>')
         if c.get("kinds"):
             rows.append(f'<tr><td>Verified via</td><td>{esc(", ".join(c["kinds"]))}</td></tr>')
         if c.get("nonUiActionReason"):
@@ -187,6 +197,10 @@ def render(run_dir, tpl_dir):
             f"### {cid} — {titles.get(cid, '')}", "",
             f"- **Verdict:** {c.get('verdict')}",
             f"- **Confidence:** {c.get('confidence')}",
+        ]
+        if oracles.get(cid):
+            lines.append(f"- **Oracle:** {oracles[cid]}")
+        lines += [
             f"- **Result:** {c.get('last_action')}",
         ]
         if c.get("kinds"):
