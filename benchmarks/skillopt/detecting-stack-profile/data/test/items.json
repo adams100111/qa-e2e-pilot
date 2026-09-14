@@ -1,0 +1,30 @@
+[
+  {
+    "id": "nextjs-prisma",
+    "task_type": "code",
+    "fixture": "nextjs-prisma",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "nextjs",
+      "orm": "prisma",
+      "auth": "none",
+      "routing": "file-based",
+      "i18n_mechanisms": []
+    }
+  },
+  {
+    "id": "blackbox-laravel",
+    "task_type": "black-box",
+    "fixture": "blackbox-laravel",
+    "detect": { "mode": "blackbox", "base_url": "https://app.example.com" },
+    "expected": {
+      "mode": "black-box",
+      "framework": "laravel",
+      "orm": "eloquent",
+      "auth": "session-cookie",
+      "routing": "server-bridge",
+      "environment": "production"
+    }
+  }
+]

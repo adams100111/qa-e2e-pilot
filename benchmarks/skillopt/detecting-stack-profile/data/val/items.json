@@ -1,0 +1,28 @@
+[
+  {
+    "id": "rails-app",
+    "task_type": "code",
+    "fixture": "rails-app",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "rails",
+      "orm": "active-record",
+      "migrationsPath": "db/migrate",
+      "auth": "session-cookie",
+      "routing": "server-bridge",
+      "i18n_mechanisms": []
+    }
+  },
+  {
+    "id": "express-sequelize",
+    "task_type": "code",
+    "fixture": "express-sequelize",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "express",
+      "orm": "sequelize"
+    }
+  }
+]

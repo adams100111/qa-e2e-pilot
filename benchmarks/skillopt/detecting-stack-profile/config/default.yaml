@@ -1,0 +1,46 @@
+# SkillOpt config — detecting-stack-profile benchmark.
+#
+# Copy to  configs/detecting_stack_profile/default.yaml  inside the SkillOpt
+# checkout (install-into-skillopt.sh does this). `_base_` is a string path.
+_base_: ../_base_/default.yaml
+
+env:
+  name: detecting_stack_profile        # must match the _ENV_REGISTRY key
+  # Absolute path to the CANONICAL skill under test (qa-e2e-pilot repo).
+  # Optimize the canonical source only — never a dist/ copy. Replace <REPO>.
+  skill_init: <REPO>/skills/detecting-stack-profile/SKILL.md
+  split_mode: split_dir
+  split_dir: skillopt/envs/detecting_stack_profile/data
+  data_path: ""
+  workers: 4
+  max_completion_tokens: 4096
+  limit: 0
+
+train:
+  # Tiny fixture set — keep the whole train split in one batch.
+  num_epochs: 4
+  batch_size: 3
+  accumulation: 1
+  seed: 42
+
+gradient:
+  analyst_workers: 4
+  minibatch_size: 3
+  merge_batch_size: 3
+
+optimizer:
+  learning_rate: 3          # edit budget: bounded edits per step
+  lr_scheduler: cosine
+  use_slow_update: true
+  use_meta_skill: true
+
+evaluation:
+  use_gate: true            # held-out selection gate — the load-bearing control
+  eval_test: true
+
+model:
+  # Target = the model whose behavior the skill guides at deployment.
+  # Optimizer = the separate model that proposes edits. Keep them distinct.
+  optimizer_backend: claude_chat
+  target_backend: claude_chat
+  reasoning_effort: medium

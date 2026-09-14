@@ -1,0 +1,5 @@
+HTTP/2 200
+server: nginx
+content-type: text/html; charset=UTF-8
+set-cookie: XSRF-TOKEN=eyJpdiI6...; path=/
+set-cookie: laravel_session=eyJpdiI6...; path=/; httponly

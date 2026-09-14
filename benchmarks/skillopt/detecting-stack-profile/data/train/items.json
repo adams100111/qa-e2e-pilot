@@ -1,0 +1,44 @@
+[
+  {
+    "id": "laravel-inertia",
+    "task_type": "code",
+    "fixture": "laravel-inertia",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "laravel",
+      "orm": "eloquent",
+      "migrationsPath": "database/migrations",
+      "auth": "session-cookie",
+      "routing": "server-bridge",
+      "i18n_mechanisms": []
+    }
+  },
+  {
+    "id": "django-drf",
+    "task_type": "code",
+    "fixture": "django-drf",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "django",
+      "orm": "django-orm",
+      "migrationsPath": "migrations",
+      "auth": "session-cookie",
+      "routing": "server-bridge",
+      "i18n_mechanisms": []
+    }
+  },
+  {
+    "id": "dotnet-ef",
+    "task_type": "code",
+    "fixture": "dotnet-ef",
+    "detect": { "mode": "code" },
+    "expected": {
+      "mode": "local-matched",
+      "framework": "aspnet",
+      "orm": "ef-core",
+      "migrationsPath": "Migrations"
+    }
+  }
+]
