@@ -19,6 +19,38 @@ bash tools/skillopt-pilot/run.sh final
 
 The candidate is never adopted automatically. Review its exact diff, per-item scores, and full repository gates before changing the canonical skill.
 
+## Choosing the backend / model
+
+The committed `config.yaml` defaults to **codex_exec + gpt-5.5**. Switch backend
+or model for any `run.sh` mode (including `experiment`) via environment variables
+— no committed file is edited, so CI and the offline gate stay unaffected:
+
+| Variable | Effect |
+|---|---|
+| `SKILLOPT_BACKEND` | sets **both** optimizer & target backend |
+| `SKILLOPT_MODEL` | sets **both** optimizer & target model |
+| `SKILLOPT_OPTIMIZER_BACKEND` / `SKILLOPT_TARGET_BACKEND` | per-role backend (wins over `SKILLOPT_BACKEND`) |
+| `SKILLOPT_OPTIMIZER_MODEL` / `SKILLOPT_TARGET_MODEL` | per-role model (wins over `SKILLOPT_MODEL`) |
+
+Supported backends (from SkillOpt): `codex_exec`, `claude_code_exec`,
+`cursor_exec`, `copilot_exec` (local-CLI exec), plus the chat backends
+`openai_chat`, `claude_chat`, `qwen_chat`, `minimax_chat`, `openai_compatible`,
+`copilot_chat`. `run.sh` requires the matching local CLI only for the selected
+exec backend (`codex` / `claude` / `cursor-agent` / `copilot`).
+
+```bash
+# Use the local Claude Code subscription (claude CLI), model = sonnet:
+SKILLOPT_BACKEND=claude_code_exec SKILLOPT_MODEL=sonnet bash tools/skillopt-pilot/run.sh experiment
+
+# Mixed: optimize with opus, run the target as sonnet:
+SKILLOPT_BACKEND=claude_code_exec \
+  SKILLOPT_OPTIMIZER_MODEL=opus SKILLOPT_TARGET_MODEL=sonnet \
+  bash tools/skillopt-pilot/run.sh train
+
+# Explicit codex (the default), pinned model:
+SKILLOPT_BACKEND=codex_exec SKILLOPT_MODEL=gpt-5.5 bash tools/skillopt-pilot/run.sh baseline
+```
+
 ## Zero-spend deterministic baseline (`detect-baseline`)
 
 `bash run.sh detect-baseline [--gate] [--split SPLIT]` (or directly

@@ -5,11 +5,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def _model_cfg_options() -> list[str]:
+    """Backend/model cfg-options from env, mirroring run.sh.
+
+    Single source of truth so `run.sh experiment` and a direct `experiment.py`
+    invocation select the same backend/model. Empty when nothing is overridden,
+    leaving the committed config.yaml defaults (codex_exec + gpt-5.5) in force.
+    """
+    env = os.environ.get
+    opt_backend = env("SKILLOPT_OPTIMIZER_BACKEND") or env("SKILLOPT_BACKEND")
+    tgt_backend = env("SKILLOPT_TARGET_BACKEND") or env("SKILLOPT_BACKEND")
+    opt_model = env("SKILLOPT_OPTIMIZER_MODEL") or env("SKILLOPT_MODEL")
+    tgt_model = env("SKILLOPT_TARGET_MODEL") or env("SKILLOPT_MODEL")
+    opts: list[str] = []
+    if opt_backend:
+        opts.append(f"model.optimizer_backend={opt_backend}")
+    if tgt_backend:
+        opts.append(f"model.target_backend={tgt_backend}")
+    if opt_model:
+        opts.append(f"model.optimizer={opt_model}")
+        os.environ["OPTIMIZER_DEPLOYMENT"] = opt_model
+    if tgt_model:
+        opts.append(f"model.target={tgt_model}")
+        os.environ["TARGET_DEPLOYMENT"] = tgt_model
+    return opts
 
 
 class TrainingSummary(BaseModel):
@@ -131,6 +158,7 @@ def run_experiment(args: argparse.Namespace) -> IterationSummary:
             "train.batch_size=8",
             "gradient.minibatch_size=4",
             "gradient.merge_batch_size=4",
+            *_model_cfg_options(),
         ]
         subprocess.run(command, check=True)
         summary = _read_json(run_root / "summary.json")
