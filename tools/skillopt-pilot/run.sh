@@ -20,8 +20,47 @@ if [[ ! -f "$SOURCE/scripts/train.py" || ! -f "$SOURCE/scripts/eval_only.py" ]];
   echo "SkillOpt source checkout not found: $SOURCE" >&2
   exit 2
 fi
-if ! command -v codex >/dev/null 2>&1; then
-  echo "Codex CLI is required but was not found on PATH" >&2
+
+# ── Backend / model selection (env-overridable) ──────────────────────────────
+# The committed config.yaml defaults to codex_exec + gpt-5.5. Override without
+# editing any committed file:
+#   SKILLOPT_BACKEND   — sets BOTH optimizer & target backend
+#   SKILLOPT_MODEL     — sets BOTH optimizer & target model
+# Fine-grained (win over the shorthands above):
+#   SKILLOPT_OPTIMIZER_BACKEND / SKILLOPT_TARGET_BACKEND
+#   SKILLOPT_OPTIMIZER_MODEL   / SKILLOPT_TARGET_MODEL
+# Examples:
+#   SKILLOPT_BACKEND=claude_code_exec SKILLOPT_MODEL=sonnet bash run.sh experiment
+#   SKILLOPT_BACKEND=codex_exec       SKILLOPT_MODEL=gpt-5.5 bash run.sh train
+OPT_BACKEND="${SKILLOPT_OPTIMIZER_BACKEND:-${SKILLOPT_BACKEND:-}}"
+TGT_BACKEND="${SKILLOPT_TARGET_BACKEND:-${SKILLOPT_BACKEND:-}}"
+OPT_MODEL="${SKILLOPT_OPTIMIZER_MODEL:-${SKILLOPT_MODEL:-}}"
+TGT_MODEL="${SKILLOPT_TARGET_MODEL:-${SKILLOPT_MODEL:-}}"
+
+model_opts=()
+[[ -n "$OPT_BACKEND" ]] && model_opts+=("model.optimizer_backend=$OPT_BACKEND")
+[[ -n "$TGT_BACKEND" ]] && model_opts+=("model.target_backend=$TGT_BACKEND")
+[[ -n "$OPT_MODEL"   ]] && model_opts+=("model.optimizer=$OPT_MODEL")
+[[ -n "$TGT_MODEL"   ]] && model_opts+=("model.target=$TGT_MODEL")
+# Exec backends (claude_code_exec/codex_exec) also read the model from these:
+[[ -n "$TGT_MODEL" ]] && export TARGET_DEPLOYMENT="$TGT_MODEL"
+[[ -n "$OPT_MODEL" ]] && export OPTIMIZER_DEPLOYMENT="$OPT_MODEL"
+# Let experiment.py (which spawns its own train.py) honor the same selection.
+export SKILLOPT_BACKEND SKILLOPT_MODEL SKILLOPT_OPTIMIZER_BACKEND \
+       SKILLOPT_TARGET_BACKEND SKILLOPT_OPTIMIZER_MODEL SKILLOPT_TARGET_MODEL 2>/dev/null || true
+
+# The required local agent CLI depends on the selected exec backend
+# (default = codex, from config.yaml). Chat backends need no local CLI.
+effective_backend="${TGT_BACKEND:-${OPT_BACKEND:-codex_exec}}"
+case "$effective_backend" in
+  claude_code_exec) required_cli="claude" ;;
+  cursor_exec)      required_cli="cursor-agent" ;;
+  copilot_exec)     required_cli="copilot" ;;
+  codex_exec)       required_cli="codex" ;;
+  *)                required_cli="" ;;
+esac
+if [[ -n "$required_cli" ]] && ! command -v "$required_cli" >/dev/null 2>&1; then
+  echo "Required CLI '$required_cli' for backend '$effective_backend' not found on PATH" >&2
   exit 2
 fi
 
@@ -40,6 +79,7 @@ common=(
   "env.split_dir=$PILOT/data"
   "env.fixtures_dir=$PILOT/fixtures"
   "env.runtime_dir=$ROOT/skills/detecting-stack-profile"
+  ${model_opts[@]+"${model_opts[@]}"}
 )
 
 mode="${1:-verify}"
