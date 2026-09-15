@@ -36,6 +36,15 @@ def _model_cfg_options() -> list[str]:
     if tgt_model:
         opts.append(f"model.target={tgt_model}")
         os.environ["TARGET_DEPLOYMENT"] = tgt_model
+    # claude_code_exec: pass the MCP-isolated wrapper via cfg (SkillOpt resets
+    # the claude path from cfg every run, ignoring CLAUDE_CODE_EXEC_PATH) and
+    # force the CLI path (the claude_agent_sdk module is not installed).
+    if "claude_code_exec" in (opt_backend, tgt_backend):
+        wrapper = env("SKILLOPT_CLAUDE_PATH") or str(
+            Path(__file__).resolve().parent / "claude-clean.sh"
+        )
+        opts.append(f"model.claude_code_exec_path={wrapper}")
+        opts.append("model.claude_code_exec_use_sdk=cli")
     return opts
 
 
