@@ -64,6 +64,20 @@ if [[ -n "$required_cli" ]] && ! command -v "$required_cli" >/dev/null 2>&1; the
   exit 2
 fi
 
+# For claude_code_exec, route the target/optimizer through an MCP-isolated
+# wrapper so ambient MCP connectors (e.g. claude.ai account connectors) can't
+# inject a tool schema the Anthropic API rejects (HTTP 400), which silently
+# zeroes every rollout. NOTE: SkillOpt resets the claude path from cfg on every
+# run (default "claude"), IGNORING CLAUDE_CODE_EXEC_PATH — so the wrapper MUST be
+# passed as a cfg-option, not just an env var. use_sdk=cli skips the futile
+# claude_agent_sdk attempt (module not installed). Opt out of MCP isolation with
+# SKILLOPT_CLAUDE_ALLOW_MCP=1 (honored inside the wrapper).
+if [[ "$effective_backend" == "claude_code_exec" ]]; then
+  : "${SKILLOPT_CLAUDE_PATH:=$PILOT/claude-clean.sh}"
+  model_opts+=("model.claude_code_exec_path=$SKILLOPT_CLAUDE_PATH")
+  model_opts+=("model.claude_code_exec_use_sdk=cli")
+fi
+
 if [[ -n "${SKILLOPT_PYTHON:-}" ]]; then
   PYTHON="$SKILLOPT_PYTHON"
 elif [[ -x "$SOURCE/.venv/bin/python" ]]; then
