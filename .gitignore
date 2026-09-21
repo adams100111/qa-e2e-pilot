@@ -15,6 +15,9 @@ __pycache__/
 # Playwright MCP session scratch
 .playwright-mcp/
 
+# graft code-index per-session cache
+graft/
+
 # Multi-harness adapter build output (scripts/build-adapter.sh) — regenerated, never committed
 dist/
 qa-kit/dist/
