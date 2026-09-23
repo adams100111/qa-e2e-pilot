@@ -22,6 +22,27 @@ qa-kit/scripts/migrate-inverted-criterion.sh
 skills/checkpointing-qa-memory/scripts/required-kinds.sh
 skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
 
+# GUARD ON THE LIST ITSELF. The claim "bash32-safety rc=0 covers <file>" is true only while <file>
+# is named in GATING above -- and deleting a line from GATING fails NOTHING: the suite just quietly
+# covers less (12 passed -> 10 passed, rc=0 either way). That is the same shape as
+# check-suite-coverage.sh printing "each gated exactly once" over a python set() that cannot see a
+# duplicate -- a green signal whose reach silently moved -- one level down, and it would undo the
+# widening above. So EXPECTED is a deliberately SEPARATE literal: dropping a file now takes TWO
+# edits, and the second is a visible act in a diff rather than an omission. Extra entries in GATING
+# are never a failure (more coverage is fine); this pins the FLOOR. Each must appear EXACTLY once,
+# so a duplicated line is caught here too.
+EXPECTED="scripts/qa-verify.sh
+scripts/classify-finding.sh
+scripts/known-defects.sh
+qa-kit/scripts/migrate-inverted-criterion.sh
+skills/checkpointing-qa-memory/scripts/required-kinds.sh
+skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
+
+while IFS= read -r want; do
+  hit="$(printf '%s\n' "$GATING" | grep -cxF "$want" || true)"
+  check "GATING list covers $want exactly once" "$hit" "1"
+done <<< "$EXPECTED"
+
 while IFS= read -r f; do
   n="$(grep -cE '^[^#]*\b(mapfile|readarray|declare -A)\b' "$HERE/../../$f" || true)"
   check "no bash-4 builtins in $f" "$n" "0"
