@@ -423,8 +423,13 @@ observe.js console[] (in-page interceptors) ─┤   authoritative for CONSOLE
   observes. Unchanged.
 - `classify-finding.sh`, `known-defects.sh`, `validate-checklist-json.sh` and the `qa-verify.sh`
   additions are **gates**, and are fail-closed. An unparseable input is a failure, never a pass.
-- `qa-kit/scripts/data-baseline.sh validate` currently **exits 0 while printing errors**, which hid
-  a malformed baseline during the originating incident. Fixed in the same pass.
+- **Correction (2026-09-23):** an earlier draft of this section claimed
+  `qa-kit/scripts/data-baseline.sh validate` "exits 0 while printing errors". **That is false.**
+  Verified against the pre-change code: a malformed `scope` yields
+  `{"errors":["row[0].scope: must be an object or null"]}` with **rc=1**, and `git blame` shows it
+  has behaved correctly since its first commit (`6e430fb`). The claim came from a misremembered
+  session, not from the code. Task 12 therefore adds regression tests locking the existing
+  exit-code contract in place, and changes no behaviour.
 
 ## 8. Testing — the guarantee is a test, not a paragraph
 

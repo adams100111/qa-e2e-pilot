@@ -633,8 +633,9 @@ human input required". Generated `id` format `KD-<n>` where `<n>` is one past th
 **Exact values:** none beyond the existing `{errors:[…]}` output shape.
 
 **Behaviour:**
-- `validate` exits non-zero whenever its `errors` array is non-empty. It currently exits 0 while
-  printing them, which hid a malformed baseline during the originating incident.
+- **Verified 2026-09-23: the bug does not exist.** `validate` already exits non-zero whenever its
+  `errors` array is non-empty, and has since `6e430fb`. This task therefore adds regression tests
+  that lock the contract in, and changes no behaviour.
 - The printed JSON shape is unchanged — only the exit code changes.
 - Every existing caller that relied on exit 0 must be checked; `/qa-spec`'s step 6 already documents
   "abort and surface `{errors:[…]}` on nonzero", so the documented contract is what this restores.
