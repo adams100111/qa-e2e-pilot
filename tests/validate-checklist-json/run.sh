@@ -13,6 +13,9 @@ V="$HERE/../../skills/generating-qa-checklist/scripts/validate-checklist-json.sh
 PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 check_contains() { if [[ "$2" == *"$3"* ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (output did not contain '$3': $2)"; FAIL=$((FAIL+1)); fi; }
+# Parity compares two engines; NEITHER side is the "wanted" one, so it must
+# not borrow check()'s got/want wording.
+check_parity() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (ENGINES DIVERGED -- jq printed: '$2' | python3 printed: '$3')"; FAIL=$((FAIL+1)); fi; }
 
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
@@ -323,6 +326,13 @@ check_contains "test_error_line_names_entry_index_and_field -> one-line-per-viol
 # ---------------------------------------------------------------------------
 
 DUAL=0
+# The default-engine label must name the engine ACTUALLY exercised. Labelling
+# a python-only host's run "norm[jq]" is exactly the green-signal-that-does-
+# not-cover-what-it-claims failure this plan exists to remove.
+if command -v jq >/dev/null 2>&1; then DEFAULT_ENGINE="jq"
+elif command -v python3 >/dev/null 2>&1; then DEFAULT_ENGINE="py"
+else DEFAULT_ENGINE="none"; fi
+
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   BASH_BIN="$(type -P bash)"
   FAKEBIN="$WORK/fakebin-no-jq"
@@ -342,14 +352,21 @@ health_case() {
     "$pathv" "$valv" > "$f"
   out_j="$(bash "$V" "$f" 2>&1)"; rc_j=$?
   got_j="$([[ $rc_j -ne 0 ]] && echo reject || echo accept)"
-  check "norm[jq]: $label -> $want" "$got_j" "$want"
+  check "norm[$DEFAULT_ENGINE]: $label -> $want" "$got_j" "$want"
   if [[ "$DUAL" -eq 1 ]]; then
     out_p="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$f" 2>&1)"; rc_p=$?
     got_p="$([[ $rc_p -ne 0 ]] && echo reject || echo accept)"
     check "norm[py]: $label -> $want" "$got_p" "$want"
-    check "parity: $label -> both engines print identical bytes" "$out_j" "$out_p"
+    check_parity "parity: $label -> both engines print identical bytes" "$out_j" "$out_p"
   fi
 }
+
+if [[ "$DUAL" -eq 1 ]]; then
+  echo "note - dual-engine parity matrix: RAN (every case asserted on jq, on python3, and for identical bytes)"
+else
+  echo "SKIP - dual-engine parity matrix: jq or python3 not present on this host, the engines were NOT compared"
+  echo "SKIP - the norm[$DEFAULT_ENGINE] cases below exercise ONE engine only; a divergence CANNOT be detected by this run"
+fi
 
 # --- the reported divergence: jq's tonumber vs python's float() ------------
 health_case "http.status 500 (number)"            '"http.status"' '500'        reject
@@ -359,6 +376,34 @@ health_case "http.status \"500 \" (trailing ws)"  '"http.status"' '"500 "'     r
 health_case "http.status \" 500\" (leading ws)"   '"http.status"' '" 500"'     reject
 health_case "http.status \"\\t500\\n\" (tab/nl)"  '"http.status"' '"\t500\n"'  reject
 health_case "http.status \"1_000\" (underscored)" '"http.status"' '"1_000"'    accept
+
+# --- TRIM-SET GUARD -------------------------------------------------------
+# These pin the deliberate choice of a 4-character trim set (SP/TAB/LF/CR)
+# over each language's own idea of whitespace. VT, FF, NEL and NBSP are
+# stripped by python's bare `str.strip()` but NOT by jq's set, so swapping
+# `_trim_ws` back to `str.strip()` makes python reject these while jq accepts
+# them — reintroducing exactly the jq-permissive/python-strict split that fix
+# round 1 closed. Without these cases that mutation is invisible: the suite
+# reported PASS=217 FAIL=0 with it applied. A deliberate design decision with
+# no test is a comment, not a guarantee.
+health_case "http.status VT+500 (\\u000b, python-only ws)"   '"http.status"' '"\u000b500"' accept
+health_case "http.status FF+500 (\\u000c, python-only ws)"   '"http.status"' '"\u000c500"' accept
+health_case "http.status NBSP+500 (\\u00a0, python-only ws)" '"http.status"' '" 500"' accept
+health_case "http.status NEL+500 (\\u0085, python-only ws)"  '"http.status"' '"\u0085500"' accept
+health_case "http.status 500+VT (\\u000b trailing)"          '"http.status"' '"500\u000b"' accept
+# ...and the four characters that ARE in the trim set must still be trimmed,
+# so the guard cannot be satisfied by trimming nothing at all.
+health_case "http.status SP+500 (in the trim set)"           '"http.status"' '" 500"'      reject
+health_case "http.status TAB+500 (in the trim set)"          '"http.status"' '"\t500"'     reject
+health_case "http.status LF+500 (in the trim set)"           '"http.status"' '"\n500"'     reject
+health_case "http.status CR+500 (in the trim set)"           '"http.status"' '"\r500"'     reject
+
+# --- UNICODE DIGITS: a DELIBERATE accept ----------------------------------
+# Both engines compare against ASCII 48..57 only, so an Arabic-Indic or
+# fullwidth digit spelling is not a number and is accepted. Parity holds.
+# Pinned so the accept stays deliberate rather than becoming a surprise.
+health_case "http.status Arabic-Indic 500 (deliberate accept)" '"http.status"' '"٥٠٠"' accept
+health_case "http.status fullwidth 500 (deliberate accept)"    '"http.status"' '"５００"' accept
 health_case "http.status \"+500\" (signed)"       '"http.status"' '"+500"'     reject
 health_case "http.status 500.0 (json float)"      '"http.status"' '500.0'      reject
 health_case "http.status \"500.0\" (float string)" '"http.status"' '"500.0"'   reject

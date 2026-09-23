@@ -69,7 +69,19 @@
 #      where python's `float()` accepts it (and "1_000"), which would make
 #      jq, the PREFERRED engine, the permissive side and leave legality
 #      depending on QA_ENGINE and PATH. `tests/validate-checklist-json/run.sh`
-#      carries a dual-engine parity matrix so any future divergence fails.
+#      carries a dual-engine parity matrix so any future divergence fails,
+#      including a trim-set guard (`\u000b`, `\u000c`, ` `, `\u0085`)
+#      that fails if either engine is switched back to its own whitespace
+#      notion. Do not "simplify" the trim or the digit test to a stdlib call.
+#
+#      DELIBERATE ACCEPTS, both engines agreeing: a non-ASCII digit spelling
+#      (`٥٠٠`, `５００`), an underscored `"1_000"` and an exponent `"5e2"` are
+#      NOT numbers under the strict ASCII parse, so an `http.status` pinned to
+#      one of them is accepted rather than rejected. An author could
+#      plausibly write one; these are pinned as accepts in the matrix so the
+#      behaviour stays a decision rather than a surprise. They are not a
+#      route-around in practice — a status is written as ASCII digits — but if
+#      that ever stops being true, widen the parse in BOTH engines at once.
 #
 #   2. Reserved prose phrase, matched case-insensitively: `deferred by
 #      design`. Scanned ONLY in the oracle/expect string fields (`oracle`,
