@@ -70,10 +70,52 @@
 #   bug_logged        { bugId, criterionId, title, suspectedLayer, expected,
 #                        actual, axis? }
 #   run_ended         {}
+#   finding_observed  { criterionId, source, channel, method, url, urlLen?,
+#                        status, originClass, statusClass, message, detailRef }
+#   capture_probed    { channel }
 #
 # (Plan A journals + folds these. `act_*`/`plan_*` reconciliation and resume
 # semantics beyond the raw journal record are Plan B's concern — this task
 # only ships the append-only writer + shared write helpers.)
+#
+# THE LAST TWO are the findings-ledger events (plan
+# 2026-09-23-error-honesty-invariants, Tasks 6/7). FOURTEEN event types, not
+# twelve — this list said twelve until they landed.
+#
+#   finding_observed — ONE observed error finding. `fold` reduces these as a
+#     KEYED SET (not last-wins) over a DERIVED `findingKey` of
+#     `<criterionId>|<source>|<method>|<url>|<status>`, with a `console`
+#     source keying on the normalized, capped `message` instead of the url.
+#     A caller-supplied `findingKey` field is advisory and NEVER trusted:
+#     dedup has to be a property of the fold, not of whichever emitter ran,
+#     or a resumed run's re-observed findings double-count. `message` is
+#     capped at ~200 chars and `url` at 1024 — anything longer (a stack
+#     trace, a response body, the full url) goes to
+#     `evidence/<criterion>/findings/` behind `detailRef`, because of the
+#     PIPE_BUF boundary below. An emitter that caps the url itself MUST
+#     supply `urlLen` (the FULL length), which is what makes the derived key
+#     identical for a capped event and an uncapped one. The url in the event
+#     must be the browser-reported, PERCENT-ENCODED form: a 1024-CODEPOINT
+#     decoded IRI breaches the 4096-byte bound.
+#
+#   capture_probed — the once-per-run CAPTURE-CHANNEL canary, appended by
+#     `checkpoint.sh`'s upsert behind a scan-for-an-existing-event guard (NOT
+#     the agent's pre-flight, which a resumed run skips). `channel` is
+#     `toolstream` | `driver-log` | `none`; `none` is an honest degrade and
+#     never an error here. `report-to-junit.sh` reads it straight off the
+#     journal: any value that is not `toolstream`/`driver-log` — including
+#     the event being absent entirely — marks the run `UNVERIFIED`.
+#
+# REGISTERING A NEW EVENT TYPE IS TWO EDITS, BOTH MANDATORY. `journal_append`
+# below accepts ANY non-empty `event` string, so an unregistered event
+# appends successfully and is then silently discarded by the fold as an
+# `unknown-event` anomaly — invisible to `checkpoint.json` and `cursor.json`.
+# Add the name to BOTH `fold.sh`'s `KNOWN_EVENTS_JSON` literal AND the
+# duplicated python3 set inside its `parse_journal_py`; registering in only
+# one leaves the other engine lossy for that event.
+#
+# RESERVED FIELD NAMES: `event`, `seq`, `t`, `childId`, `childSeq` belong to
+# the substrate. An event must never carry a caller-supplied `seq`.
 #
 # ---------------------------------------------------------------------------
 # APPEND ATOMICITY CAVEAT (PIPE_BUF, 4 KB)

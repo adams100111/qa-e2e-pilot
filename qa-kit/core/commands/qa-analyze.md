@@ -34,14 +34,67 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      `sources`) that will run at `confidence: low`. Also cross-check `data-baseline.json` against the criteria's
      `dependsOn`: a `seeded` baseline row no criterion depends on (dead declaration), a `created` entity no
      scenario creates, and a `seeded` row with no readable surface (will be *assumed* at run → low confidence).
+   - **Plan defects** — a criterion whose **oracle asserts that the application FAILED**. This is the sixth
+     category, added because the five above had nowhere to put one: the originating incident's criterion
+     pinned `page.rendersWithoutServerError` to `"false"`, so an HTTP 500 graded as a match, and with no
+     home of its own it was filed under *Risk gaps* and **blessed** — while the same analysis reported
+     "oracle gaps: 0". A plan defect is not a missing criterion; it is a **wrong** one. Two signals:
+     - **Structural** — a `fixture.expect` or top-level `expect` in the reserved health namespace pinned to
+       a failing value: `page.rendersWithoutServerError` = false, `page.crashed` = true,
+       `console.hasError` = true, or `http.status` ≥ 500. Every spelling of the same assertion counts (the
+       boolean, its string form `"false"`/`"TRUE"`/`" false "`, and the `0`/`1` form). A 3xx/4xx
+       `http.status` is **legal** and is never a plan defect — a 302 to login or a 403 is the application
+       *working*. The engine's `skills/generating-qa-checklist/scripts/validate-checklist-json.sh` rejects
+       this shape outright (exit non-zero, one `ERROR: entry[<i>].<field>: …` line per violation), and
+       `/qa-scenarios` step 3 runs it via the engine's checklist writer — so a criterion of this shape
+       reaching `/qa-analyze` means the checklist was produced without that validator passing. Say so.
+     - **Prose** — `expected to fail`, `known defect` or `not a regression` appearing in an **oracle/expect**
+       field (`oracle`, `oracleNote`, `expected`, or a string member of `fixture.expect`/`expect`). These
+       three are deliberately **not** validator rejections: they describe the *application's behaviour*, and
+       *"the save is expected to fail with a validation error"* is a sound oracle for an `error-state`
+       criterion, because a 4xx rejection is the application working. They are demoted to this advisory
+       flag so a human decides. **Never scan `action`** — that is where an author legitimately describes a
+       non-rendering state ("this list does not render until the challenge reaches Judging"), and the
+       over-broad net was removed from the validator for exactly that reason. The governing line is
+       **reject process language, never behaviour language**: `deferred by design` describes a backlog
+       decision and stays a hard validator rejection; the three phrases above describe the application and
+       are surfaced here instead.
+     Remediation is never "loosen the criterion". The defect leaves the plan and is filed in the
+     project-level registry `.qa/known-defects.json`:
+     `bash "{{PLUGIN_ROOT}}/scripts/migrate-inverted-criterion.sh" <checklist.json> <criterion-id>`.
+     Note its **inverted exit codes: exit 2 is the SUCCESS path** (written, human input pending), exit 1
+     is the failure path, and exit 0 is never returned. A caller that treats any non-zero as "failed" silently loses the migration. See
+     `/qa-scenarios`.
 
 5. **Write `analysis.md`** from `{{PLUGIN_ROOT}}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
    oracle note via `/qa-spec`") the operator may accept or decline. End with an explicit verdict line:
    "advisory only — the run is not blocked."
 
-6. **Report:** the gap counts by category + the next step (`/qa-run "<target>"`). Make clear this step
-   never gates; it informs.
+   **Plan defects print ABOVE the verdict line, never inside it.** The template ships five gap headings
+   and then `## Verdict`; insert a `## Plan defects` heading of your own **immediately above
+   `## Verdict`** (it is not pre-printed in the template) and list every plan defect there, one line each
+   with its criterion id, the signal that flagged it, and the `migrate-inverted-criterion.sh` remediation.
+   "(none)" when clean — an empty section is the point: it cannot be omitted into invisibility the way the
+   originating incident's inverted criterion was, folded into *Risk gaps* under a document whose own
+   summary line read "oracle gaps: 0".
+
+   **The "advisory only" charter is carved out for this class.** Write the verdict line as: *advisory only
+   — the run is not blocked; this does not extend to plan defects.* `/qa-analyze` itself still changes
+   nothing and still cannot gate (see Guardrails), but a plan defect is not a suggestion the operator may
+   decline into a green run: a criterion asserting that the application failed is a defect in the plan,
+   and declining to fix it does not make it correct. It is also not this step's to bless — the engine's
+   `validate-checklist-json.sh` rejects the structural shape at authoring time, and the registry
+   (`ticket`, a 90-day-capped `expiry`, a severity floor) is what carries the defect afterwards.
+
+6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
+   into a single "N gaps" figure — plus the next step (`/qa-run "<target>"`). Make clear this step never
+   gates; it informs. If the plan-defect count is non-zero, say plainly that the plan asserts an
+   application failure somewhere and name the criterion ids, rather than reporting a total the reader has
+   to decompose.
 
 Guardrails: read-only (never edit `scenarios.md`/`checklist.json`/`spec-roles.json`); advisory (never a
-`fail`/block); remediation is the human's to approve, applied by re-running the relevant earlier step.
+`fail`/block) — **and that advisory charter is explicitly carved out for `plan-defect`**: this step still
+never blocks the run, but it must not present a plan defect as an optional, declinable suggestion;
+remediation for every other category is the human's to approve, applied by re-running the relevant
+earlier step.
