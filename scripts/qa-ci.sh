@@ -16,8 +16,11 @@
 #   QA_PRINT_AGENT_CMD set to 1 to print the resolved AGENT_CMD and exit (no target required)
 #   QA_VERIFY_CMD     script to run for the out-of-agent re-check (default: scripts/qa-verify.sh),
 #                      invoked as `bash "$QA_VERIFY_CMD" "$RUN_ID"`
-#   QA_SKIP_VERIFY    set to 1 to skip qa-verify entirely — ALWAYS LOGGED (never silent); a run
-#                      reported this way is unverified, not "verified clean"
+#   QA_SKIP_VERIFY    set to 1 to skip qa-verify entirely — ALWAYS LOGGED (never silent), and the
+#                      run is then reported UNVERIFIED and FAILS this script (plan
+#                      2026-09-23-error-honesty-invariants Task 10 / spec §5.7). Skipping
+#                      verification is allowed; reporting the result as verified is not, so this
+#                      env var can no longer buy a green build. Only the literal `1` skips.
 #   QA_VERIFY_STRICT  forwarded to qa-verify.sh as-is (ordinary env inheritance — qa-ci.sh does not
 #                      need to do anything special for this to reach the subprocess); see
 #                      scripts/qa-verify.sh's header for what strict mode changes
@@ -26,8 +29,10 @@
 #   QA_SKIP_SESSION_PREFLIGHT set to 1 to skip scripts/session-preflight.sh (see step 4 below)
 #
 # EXIT: non-zero if pre-flight fails, the agent command fails, no run is produced, qa-verify
-#       overrides at least one recorded pass (and was not explicitly skipped), or the run has any
-#       fail/error criterion (so CI fails the build). 0 only on a clean, verified pass.
+#       overrides at least one recorded pass, QA_SKIP_VERIFY=1 made the run UNVERIFIED, or the run
+#       has any fail/error criterion — including the synthetic `__run-verified__` failure
+#       report-to-junit.sh synthesizes for an UNVERIFIED run (no independent capture channel, or a
+#       damaged run record). 0 only on a clean, verified pass.
 #
 # HONESTY NOTE (Plan H2 WS-3 / docs/running-in-ci.md): no CI workflow in this repo runs a full QA
 # pass today (.github/workflows/adapters.yml only validates the generated adapters). qa-ci.sh is
@@ -115,8 +120,14 @@ log "run: $RUN_ID"
 # a silent one — a skipped run's verdicts are the in-run agent's self-report
 # only, unverified.
 VERIFY_RC=0
+SKIPPED_VERIFY=0
 if [[ "${QA_SKIP_VERIFY:-0}" == "1" ]]; then
-  log "qa-verify SKIPPED (QA_SKIP_VERIFY=1) -- run $RUN_ID's evidence was NOT independently re-checked; its verdicts reflect the in-run agent's own self-report only, UNVERIFIED"
+  SKIPPED_VERIFY=1
+  # Exported so report-to-junit.sh sees the same value even when this script
+  # was invoked with QA_SKIP_VERIFY set only in its own environment: the
+  # exporter reads it to synthesize the UNVERIFIED failure case.
+  export QA_SKIP_VERIFY
+  log "qa-verify SKIPPED (QA_SKIP_VERIFY=1) -- run $RUN_ID's evidence was NOT independently re-checked; its verdicts reflect the in-run agent's own self-report only, UNVERIFIED. This run is reported UNVERIFIED and WILL fail this script (Task 10 / spec §5.7) -- skipping verification is allowed, reporting the result as verified is not."
 else
   VERIFY_CMD="${QA_VERIFY_CMD:-$REPO_ROOT/scripts/qa-verify.sh}"
   log "qa-verify: independently re-checking run $RUN_ID (QA_VERIFY_STRICT=${QA_VERIFY_STRICT:-<unset>})"
@@ -151,8 +162,20 @@ set -e
 
 # 6. Final exit -----------------------------------------------------------------
 # Gates on: the agent command itself failing, OR qa-verify overriding a
-# recorded pass (unless explicitly QA_SKIP_VERIFY'd), OR the JUnit suite
-# having any fail/error testcase.
+# recorded pass, OR the run being UNVERIFIED because verification was
+# skipped, OR the JUnit suite having any fail/error testcase (which now
+# includes report-to-junit.sh's synthetic `__run-verified__` failure for a
+# run with no independent capture channel or a damaged run record).
+#
+# The QA_SKIP_VERIFY gate is stated HERE as well as inherited through
+# $JUNIT_RC on purpose: report-to-junit.sh reading the env var covers a
+# hand-rolled CI that calls the exporter itself, and this explicit gate
+# covers a QA_JUNIT_OUT export that was replaced or never reached. An env
+# var must not be able to switch the guarantee off through either hole.
 if [[ "${AGENT_FAILED:-0}" == "1" ]]; then exit 1; fi
 if [[ "${VERIFY_RC:-0}" != "0" ]]; then exit 1; fi
+if [[ "${SKIPPED_VERIFY:-0}" == "1" ]]; then
+  echo "qa-ci: run $RUN_ID is UNVERIFIED -- verification skipped (QA_SKIP_VERIFY); a skipped verification never yields a green build" >&2
+  exit 1
+fi
 exit "$JUNIT_RC"
