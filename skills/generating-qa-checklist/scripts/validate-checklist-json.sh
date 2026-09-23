@@ -37,6 +37,40 @@
 #   humanAction    optional; if present (and non-null), a boolean
 # Duplicate `id` values across entries are rejected.
 #
+# ERROR-HONESTY INVARIANTS (spec `docs/superpowers/specs/
+# 2026-09-23-error-honesty-invariants-design.md` §4.1, ADR-0026): a criterion
+# may not be authored so that an APPLICATION FAILURE is the correct answer.
+# This is the check that would have caught the originating incident, whose
+# `EC10` pinned `page.rendersWithoutServerError` to the STRING "false" and so
+# graded an HTTP 500 as a match. Two layers, both emitting the same
+# one-line-per-violation `ERROR: entry[<i>].<field>: …` form:
+#
+#   1. Reserved health namespace on `expect.path` (checked on `fixture.expect`
+#      and on a top-level `expect`). These paths describe whole-page or
+#      transport health, never a domain value:
+#        page.rendersWithoutServerError  rejected when `value` is false
+#        page.crashed                    rejected when `value` is true
+#        console.hasError                rejected when `value` is true
+#        http.status                     rejected when `value` >= 500
+#      `value` is matched as a boolean OR its string spelling ("false"/"true"/
+#      "500") — the incident used the string form. An `http.status` in the
+#      3xx/4xx range is LEGAL and must stay so: an authorization refusal (a
+#      302 to login, a 403) is the application WORKING, and several real
+#      criteria assert exactly that. Paths outside the namespace are
+#      untouched (`counts.evaluators = 2` is unaffected). The structural
+#      message ends with the remediation pointer "— move it to
+#      known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)".
+#
+#   2. Reserved prose phrases, matched case-insensitively: `expected to fail`
+#      and `deferred by design`. Scanned ONLY in the oracle/expect string
+#      fields (`oracle`, `oracleNote`, `expected`, and the string members of
+#      `fixture.expect` / `expect`). **`action` is NEVER inspected** — it is
+#      where an author legitimately describes a non-rendering state ("this
+#      list does not render until the challenge reaches Judging"), and an
+#      over-broad net there would make the validator something authors route
+#      around. The weaker signals (`known defect`, `not a regression`) are
+#      deliberately NOT rejected here; they are /qa-analyze plan-defect flags.
+#
 # DEPENDENCIES: bash, EITHER jq OR python3 (jq preferred, python3
 # fallback). No node. Never grep -P/perl (tests/portability/run.sh forbids
 # it in bundled scripts) — this script does no grep-based parsing at all,
@@ -65,6 +99,48 @@ validate_jq() {
   filter='
 def kindEnum: ["happy-path","multiplicity-0","multiplicity-1","multiplicity-N","empty-state","loading-state","error-state","computed-logic","business-rule","downstream-cascade","cross-tenant","race"];
 def reqKindEnum: ["bake","computed","probe","human-action"];
+
+# --- error-honesty invariants (spec 2026-09-23 §4.1) -----------------------
+def remedy: "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)";
+def prosePhrases: ["expected to fail","deferred by design"];
+
+# The reserved health namespace: these expect.path values describe whole-page
+# or transport health, never a domain value, and may not be pinned to a
+# failing value. http.status in the 3xx/4xx range stays legal.
+def healthViolations($i; $prefix; $x):
+  if ($x|type) != "object" then []
+  else
+    ($x.path) as $p
+    | ($x.value) as $v
+    | (if ($v|type) == "string" then ($v|ascii_downcase) else "" end) as $vs
+    | (if ($v|type) == "number" then $v
+       elif ($v|type) == "string" then (($v|tonumber?) // null)
+       else null end) as $n
+    | (if $p == "page.rendersWithoutServerError" and (($v == false) or ($vs == "false"))
+         then ["entry[\($i)].\($prefix): page.rendersWithoutServerError may not be pinned to false \(remedy)"] else [] end)
+    + (if $p == "page.crashed" and (($v == true) or ($vs == "true"))
+         then ["entry[\($i)].\($prefix): page.crashed may not be pinned to true \(remedy)"] else [] end)
+    + (if $p == "console.hasError" and (($v == true) or ($vs == "true"))
+         then ["entry[\($i)].\($prefix): console.hasError may not be pinned to true \(remedy)"] else [] end)
+    + (if $p == "http.status" and ($n != null) and ($n >= 500)
+         then ["entry[\($i)].\($prefix): http.status may not be pinned to \($n) (a 5xx asserts the application FAILED; 3xx/4xx stay legal) \(remedy)"] else [] end)
+  end;
+
+# Prose scan — the oracle/expect fields ONLY. `action` is deliberately never
+# inspected: it is where an author legitimately describes a non-rendering
+# state ("does not render until the challenge reaches Judging").
+def expectProseFields($prefix; $x):
+  if ($x|type) != "object" then []
+  else [ $x | to_entries[] | select((.value|type) == "string") | {f: ($prefix + "." + .key), t: .value} ]
+  end;
+
+def proseViolations($i; $fields):
+  [ $fields[] as $fld
+    | ($fld.t|ascii_downcase) as $lt
+    | prosePhrases[] as $ph
+    | select($lt | contains($ph))
+    | "entry[\($i)].\($fld.f): reserved phrase \"\($ph)\" may not appear in an oracle/expect field — a criterion may not assert that the application failed"
+  ];
 
 def entryViolations($i; $e):
   ( if ($e|type) != "object" then
@@ -99,6 +175,16 @@ def entryViolations($i; $e):
           else [] end )
       + ( if ($e|has("humanAction")) and ($e.humanAction != null) and (($e.humanAction|type) != "boolean")
           then ["entry[\($i)].humanAction: must be a boolean"] else [] end )
+      + ( ( ($e.fixture) as $fx | if ($fx|type) == "object" then $fx.expect else null end ) as $fex
+          | ( $e.expect ) as $tex
+          | healthViolations($i; "fixture.expect"; $fex)
+            + healthViolations($i; "expect"; $tex)
+            + proseViolations($i;
+                ( if ($e.oracle|type) == "string" then [{f:"oracle", t:$e.oracle}] else [] end )
+                + ( if ($e.oracleNote|type) == "string" then [{f:"oracleNote", t:$e.oracleNote}] else [] end )
+                + ( if ($e.expected|type) == "string" then [{f:"expected", t:$e.expected}] else [] end )
+                + expectProseFields("fixture.expect"; $fex)
+                + expectProseFields("expect"; $tex) ) )
     end
   );
 
@@ -145,6 +231,82 @@ KIND_ENUM = {
 }
 REQ_KIND_ENUM = {"bake", "computed", "probe", "human-action"}
 
+# --- error-honesty invariants (spec 2026-09-23 §4.1) -----------------------
+REMEDY = "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)"
+PROSE_PHRASES = ("expected to fail", "deferred by design")
+
+
+def _as_number(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return None
+    return None
+
+
+def health_violations(i, prefix, x):
+    """The reserved health namespace: these expect.path values describe
+    whole-page or transport health, never a domain value, and may not be
+    pinned to a failing value. http.status in the 3xx/4xx range stays legal."""
+    if not isinstance(x, dict):
+        return []
+    v = []
+    p = x.get("path")
+    val = x.get("value")
+    vs = val.lower() if isinstance(val, str) else ""
+    n = _as_number(val)
+    if p == "page.rendersWithoutServerError" and (val is False or vs == "false"):
+        v.append(f"entry[{i}].{prefix}: page.rendersWithoutServerError may not be pinned to false {REMEDY}")
+    if p == "page.crashed" and (val is True or vs == "true"):
+        v.append(f"entry[{i}].{prefix}: page.crashed may not be pinned to true {REMEDY}")
+    if p == "console.hasError" and (val is True or vs == "true"):
+        v.append(f"entry[{i}].{prefix}: console.hasError may not be pinned to true {REMEDY}")
+    if p == "http.status" and n is not None and n >= 500:
+        shown = int(n) if float(n).is_integer() else n
+        v.append(f"entry[{i}].{prefix}: http.status may not be pinned to {shown} "
+                 f"(a 5xx asserts the application FAILED; 3xx/4xx stay legal) {REMEDY}")
+    return v
+
+
+def expect_prose_fields(prefix, x):
+    if not isinstance(x, dict):
+        return []
+    return [(f"{prefix}.{k}", val) for k, val in x.items() if isinstance(val, str)]
+
+
+def prose_violations(i, fields):
+    """Prose scan — the oracle/expect fields ONLY. `action` is deliberately
+    never inspected: it is where an author legitimately describes a
+    non-rendering state ("does not render until the challenge reaches
+    Judging")."""
+    v = []
+    for fname, text in fields:
+        lt = text.lower()
+        for ph in PROSE_PHRASES:
+            if ph in lt:
+                v.append(f'entry[{i}].{fname}: reserved phrase "{ph}" may not appear in an '
+                         f"oracle/expect field — a criterion may not assert that the application failed")
+    return v
+
+
+def honesty_violations(i, e):
+    fx = e.get("fixture")
+    fex = fx.get("expect") if isinstance(fx, dict) else None
+    tex = e.get("expect")
+    v = health_violations(i, "fixture.expect", fex) + health_violations(i, "expect", tex)
+    fields = []
+    for key in ("oracle", "oracleNote", "expected"):
+        if isinstance(e.get(key), str):
+            fields.append((key, e[key]))
+    fields += expect_prose_fields("fixture.expect", fex)
+    fields += expect_prose_fields("expect", tex)
+    return v + prose_violations(i, fields)
+
 
 def entry_violations(i, e):
     v = []
@@ -184,6 +346,7 @@ def entry_violations(i, e):
     if "humanAction" in e and e["humanAction"] is not None:
         if not isinstance(e["humanAction"], bool):
             v.append(f"entry[{i}].humanAction: must be a boolean")
+    v.extend(honesty_violations(i, e))
     return v
 
 
