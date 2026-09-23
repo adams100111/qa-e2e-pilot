@@ -10,7 +10,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PASS=0; FAIL=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   - $1"; PASS=$((PASS+1)); else echo "FAIL - $1 (got '$2' want '$3')"; FAIL=$((FAIL+1)); fi; }
 
+# THE GATING LIST IS THE SCOPE OF THIS SUITE'S rc=0 — nothing else. An rc=0 here is evidence for
+# the files named below and for no other file; citing it for an unlisted script is the exact
+# "green signal that does not cover the change" error this project exists to remove (it happened
+# twice in the error-honesty wave, once caught by the implementer itself). So every new script on a
+# verdict-gating path must be ADDED here, not merely assumed covered.
 GATING="scripts/qa-verify.sh
+scripts/classify-finding.sh
+scripts/known-defects.sh
+qa-kit/scripts/migrate-inverted-criterion.sh
 skills/checkpointing-qa-memory/scripts/required-kinds.sh
 skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
 
