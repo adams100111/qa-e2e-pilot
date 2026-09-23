@@ -27,7 +27,7 @@ Verdict → JUnit mapping:
 
 **`confidence: low` is surfaced prominently, not buried.** Every low-confidence `pass` gets both the `(confidence: low)` name suffix *and* a `<system-out>` element with the reason — most commonly "the expected value could only come from backend code" (a checkpoint-recorded low confidence) or, when a `.qa/runs/<run-id>/verification.json` exists (see "qa-verify" below), the no-toolstream degrade reason from the verifier itself. Don't rely on eyeballing the name column in a wide CI dashboard — grep the XML for `confidence: low` if you need every occurrence.
 
-**Exit code:** `report-to-junit.sh` exits `1` if the suite has any `fail` or `error` testcase, `0` otherwise — so a CI step can fail the build directly on its exit code. (`blocked`/`deferred` do **not** fail the build; they're skips.) A [`qa-verify`](#qa-verify-the-out-of-agent-authority) override also counts as a failure here (see below) — `report-to-junit.sh` reads `verification.json` itself, so this is true whether or not you're going through `qa-ci.sh`.
+**Exit code:** `report-to-junit.sh` exits `1` if the suite has any `fail` or `error` testcase, `0` otherwise — so a CI step can fail the build directly on its exit code. (`blocked`/`deferred` do **not** fail the build; they're skips.) A [`qa-verify`](#qa-verify-the-out-of-agent-authority) override also counts as a failure here (see below) — `report-to-junit.sh` reads `verification.json` itself, so this is true whether or not you're going through `qa-ci.sh`. A run that **could not be verified at all** also fails the build: see [run-level `UNVERIFIED`](#run-level-unverified--a-run-that-cannot-be-verified-fails-the-build).
 
 ## `qa-verify`: the out-of-agent authority
 
@@ -55,13 +55,37 @@ Verdict → JUnit mapping:
 | `QA_AGENT_CMD` | the `$QA_HARNESS` profile's `agentCmd` | command to drive the agent headless; `QA_TARGET` and `QA_CHECKLIST` are exported for a custom command to read |
 | `QA_PRINT_AGENT_CMD` | unset | set `1` to print the resolved `AGENT_CMD` and exit — no target required, useful for debugging harness wiring |
 | `QA_VERIFY_CMD` | `scripts/qa-verify.sh` | script to run for the out-of-agent re-check, invoked as `bash "$QA_VERIFY_CMD" "$RUN_ID"` |
-| `QA_SKIP_VERIFY` | `0` | set `1` to skip `qa-verify` entirely — **always logged**, never silent; a skipped run is reported as unverified, not "verified clean" |
+| `QA_SKIP_VERIFY` | `0` | set `1` to skip `qa-verify` entirely — **always logged**, never silent, and the run is then marked `UNVERIFIED` and **fails the build**. This is *not* a non-failing opt-out: skipping verification is allowed, reporting the result as verified is not. Only the literal `1` skips. See [run-level `UNVERIFIED`](#run-level-unverified--a-run-that-cannot-be-verified-fails-the-build) |
 | `QA_VERIFY_STRICT` | unset | forwarded to `qa-verify.sh` via ordinary env inheritance (see above) |
 | `QA_SKIP_SESSION_PREFLIGHT` | `0` | set `1` to skip `scripts/session-preflight.sh` — the step that derives a toolstream from a `--save-session` log on harnesses with no live capture-hook, run just before `qa-verify`; non-fatal either way, this only controls whether it runs |
 | `QA_JUNIT_OUT` | `qa-results.xml` | JUnit XML output path |
 | `QA_SKIP_PREFLIGHT` | `0` | set `1` to skip pre-flight (when CI already handles app/auth liveness itself) |
 
-A `qa-verify` override makes `qa-ci.sh`'s **final exit code non-zero** — independently of whatever `report-to-junit.sh`'s own exit code would have been — unless you explicitly opted out with `QA_SKIP_VERIFY=1`. Skipping it is always visible in the job log (`qa-verify SKIPPED (QA_SKIP_VERIFY=1) ... UNVERIFIED`); it is never a quiet no-op. `qa-ci.sh` exits non-zero if pre-flight fails, the agent command fails, no run is produced, `qa-verify` overrides at least one recorded pass (and wasn't explicitly skipped), or the run has any `fail`/`error` criterion — `0` only on a clean, verified pass.
+A `qa-verify` override makes `qa-ci.sh`'s **final exit code non-zero** — independently of whatever `report-to-junit.sh`'s own exit code would have been. **`QA_SKIP_VERIFY=1` no longer buys a green build:** it is still always visible in the job log (`qa-verify SKIPPED (QA_SKIP_VERIFY=1) ... UNVERIFIED`), and `qa-ci.sh` now *also* exits `1` on it directly (`qa-ci: run <id> is UNVERIFIED -- verification skipped (QA_SKIP_VERIFY); a skipped verification never yields a green build`). That gate is stated in **both** places on purpose: `report-to-junit.sh` reads the env var itself, which covers a hand-rolled CI calling the exporter directly, and `qa-ci.sh`'s own explicit check covers a `QA_JUNIT_OUT` export that was replaced or never reached. An env var must not be able to switch the guarantee off through either hole. `qa-ci.sh` exits non-zero if pre-flight fails, the agent command fails, no run is produced, `qa-verify` overrides at least one recorded pass, `QA_SKIP_VERIFY=1` made the run `UNVERIFIED`, or the run has any `fail`/`error` criterion — including the synthetic `__run-verified__` failure the exporter writes for an `UNVERIFIED` run. `0` only on a clean, verified pass.
+
+### Run-level `UNVERIFIED` — a run that cannot be verified fails the build
+
+A run that could not be verified used to exit `0` and read as a clean build: the word `UNVERIFIED` appeared only in the assurance-tier `<properties>` block, and a `<properties>` block is unreachable from the exporter's exit code. It no longer is.
+
+`report-to-junit.sh` marks a run `UNVERIFIED` when **any** of these holds:
+
+| Trigger | What it means |
+|---|---|
+| `capture_probed.channel` is not `toolstream` or `driver-log` | The run's once-per-run capture canary (written by `checkpoint.sh`) recorded no independent capture channel. `channel: "none"` is the honest degrade — it is never an error at the canary itself. |
+| the `capture_probed` event is **absent entirely** | No journal, an unreadable journal, or a journal that never carried the canary. Treated **identically to `none`**: that is exactly what a run aborted before any verdict looks like, and such a run must not read as clean. An unrecognised `channel` value fails closed the same way — a value the exporter does not understand is not evidence that a capture exists. |
+| the sibling `fold-anomalies.json` reports `unparseable-line` or `seq-gap` | The run's own **record** is damaged, so the verdicts derived from it cannot be trusted. |
+| `QA_SKIP_VERIFY=1` is set | `qa-verify` never re-checked the run. The exporter reads the env var itself (the same literal-`1` test `qa-ci.sh` uses), so a hand-rolled CI calling the exporter directly cannot lose the status either. |
+
+**Only those two fold anomalies mark a run unverified.** Every other rule — `illegal-edge`, `cross-child-duplicate`, `duplicate-plan-frozen`, `verdict-without-started`, `finding-url-oversize`, `finding-detail-missing` — is a **count only** on the `qa.foldAnomalies` property and never reddens the run: a data-quality problem in one finding is not damage to the record. The narrowness is a deliberate ruling, not an oversight; widening it would let one bad finding invalidate an otherwise clean run.
+
+**How it reaches the exit code.** `UNVERIFIED` synthesizes a `<testcase name="__run-verified__">` carrying a `<failure message="UNVERIFIED — &lt;reason&gt;">` whose body explains the specific trigger. That testcase is **counted in `tests` and `failures`**, so it flows into `sys.exit(1 if (failures or errors) else 0)`. A synthesized failure is the only route that works here: when `qa-verify` did not run at all — which is exactly the `UNVERIFIED` case — routing the status through `qa-verify.sh`'s own failure path would be unreachable precisely when it is needed. Reasons are appended in a fixed order (capture, skip, damage) so the headline is deterministic for a run with more than one.
+
+It is also echoed in two read-only places — the echo, never the signal:
+
+- `<property name="qa.unverifiedReason" value="UNVERIFIED — …"/>` on the `<testsuite>`.
+- `<property name="qa.foldAnomalies" value="rule=N rule=N …"/>` — space-separated `rule=count` pairs in sorted rule order, emitted only when the fold reported at least one anomaly, and including the two record-damage rules (which are *also* named in `qa.unverifiedReason`). An absent or malformed `fold-anomalies.json` yields no property rather than invented damage. Note one currently-expected entry: `checkpoint.sh` emits verdicts with no `criterion_started`, so a real run typically shows `verdict-without-started=N` here. Count-only, newly visible, and not a failure.
+
+The headline `UNVERIFIED — <reason>` is written to **stderr** in both output modes (same channel as the assurance tier, so the XML stream stays pure XML), with the tally beneath it. `qa.verified`/`qa.assuranceTier` and the per-criterion `confidence: low` semantics are unchanged — low confidence simply stops being the headline.
 
 ### The assurance tier — what "verified" actually means today
 
@@ -152,5 +176,6 @@ jobs:
 - This is documented, not yet a turnkey product: the non-interactive `claude -p` invocation depends on your Claude Code CI setup, and `wait-on`/app-start are app-specific.
 - No workflow in *this* repository runs the above — see "Honest status" above. Copy it into your own project's CI.
 - `qa-verify`'s live-hook corroboration (the capture/block hooks) is Claude-only and best-effort/tamper-evident today (assurance Tier A); the other three harness adapters have no live hooks yet (Plan H3) — `qa-verify`'s deterministic checks still run everywhere, but without toolstream corroboration on non-Claude harnesses, more passes will land on the `confidence: low` degrade path (or, under `QA_VERIFY_STRICT`, the hard-fail path for high-stakes criteria).
+- **A run with no capture channel at all now fails the build**, not merely degrades. `checkpoint.sh`'s canary resolves `toolstream` from a non-empty `.qa/runs/<run-id>/toolstream.jsonl`, `driver-log` from `QA_SESSION_LOG` (when it names an existing file) or any `.playwright-mcp/*.md`, and `none` otherwise — and `none` is an `UNVERIFIED` trigger. On a project that has adopted neither the capture-hook nor `--save-session`, enable one of them (`QA_SKIP_SESSION_PREFLIGHT=0` plus a `--save-session` log is the cheapest path on a non-Claude harness) rather than reaching for `QA_SKIP_VERIFY=1`, which is itself an `UNVERIFIED` trigger.
 - CLI/artisan verification stays out of browser scope; cover those backend bugs via the API-probing path.
 - See also [extending-drivers.md](./extending-drivers.md) for swapping the browser MCP or the memory backend.

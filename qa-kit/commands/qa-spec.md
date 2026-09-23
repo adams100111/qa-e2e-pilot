@@ -71,15 +71,99 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
      command in `qa-spec.md`'s Data baseline section **and** a machine copy
      `.qa/specs/<target>/seed.json = {command, cwd}`. If the operator declines, write no `seed.json` (declare-and-verify).
 
+6c. **Known defects — NEVER an oracle (the project-level registry).** While authoring oracles, you will
+   sometimes meet a real, known, unfixed application defect. **Do not write a criterion whose expected
+   answer is that failure.** That is what the originating incident did: a criterion pinned
+   `page.rendersWithoutServerError` to `"false"`, so an HTTP 500 graded `match: true` and the crash *was*
+   the correct answer. The engine's `skills/generating-qa-checklist/scripts/validate-checklist-json.sh`
+   now rejects that shape outright, so there is exactly one legal home for such a defect:
+   **`.qa/known-defects.json`**.
+   - **Project-level, not per-spec.** A defect is a property of the **application**, not of a QA target.
+     One file at the project root's `.qa/`, shared by every target: two specs touching the broken surface
+     share one entry, one ticket, one expiry. Per-spec copies drift, and whichever copy is most convenient
+     gets renewed — which is how a waiver becomes permanent. Never write a per-target copy under
+     `.qa/specs/<target>/`.
+   - **Never a verdict.** A known defect has no `pass`/`fail`, contributes nothing to the tally, and
+     cannot be counted as verification of anything. Do not give it a criterion id and do not reference it
+     from `checklist.json` as though it were planned coverage.
+   - **Schema.** A JSON **array** of entries. Required on every entry, each a non-blank, single-line
+     string: `id`, `title`, `ticket`, `expiry`, `severity`, `observedClass`, `surface`,
+     `observedBehaviour`. Optional: `observedStatus` (a number). Extra fields are tolerated —
+     `migrate-inverted-criterion.sh` adds a `migratedFrom` carrying the criterion id it replaced, which
+     is also what makes a re-run of that script idempotent. No string field may carry a control
+     character (registry prose is single-line by contract). Enums:
+     `observedClass ∈ non-rendering | wrong-value | degraded` and
+     `severity ∈ low | medium | high | critical`.
+     ```json
+     [
+       {
+         "id": "KD-1",
+         "title": "stage_gate_reviews.status='completed' rejected by StageGateReviewStatus",
+         "ticket": "z8tvbhteuc",
+         "expiry": "2026-10-07",
+         "severity": "high",
+         "observedClass": "non-rendering",
+         "observedStatus": 500,
+         "surface": "/admin/evaluations/challenges/{challenge}?tab=gates",
+         "observedBehaviour": "HTTP 500, unhandled ValueError from the status enum cast"
+       }
+     ]
+     ```
+   - **The three rules that carry the weight** (all enforced by the engine's `scripts/known-defects.sh`.
+     Note the packaging boundary from ADR-0022: `${CLAUDE_PLUGIN_ROOT}` is **per-plugin** and resolves to
+     qa-kit's own root, which does not contain that script — invoke it from the engine's checkout/plugin
+     root. `migrate-inverted-criterion.sh` prints the exact `known-defects.sh validate <registry>` line to
+     run when it finishes):
+     - **Severity floor, on structure not prose.** `observedClass: "non-rendering"` forces
+       `severity` to `high` or `critical`. The floor gates on the `observedClass` **enum**, never on
+       `observedBehaviour` — a gate that greps prose is defeated by rewording. This is the check that
+       rejects the originating incident's `severity: "low"`.
+     - **`expiry` is capped at 90 days** from today. Without a cap, `2099-01-01` makes the rule a paper
+       rule. Renewal needs an explicit new date — a deliberate act, visible in a diff and reviewable in a
+       PR. An entry past its `expiry` is `expired`, and `expired` is decided **before** `cleared`.
+     - **Clearing requires positive evidence.** An entry becomes `cleared` only when supplied evidence
+       shows a **2xx navigation to its `surface`** and no fatal finding on that surface. **The absence of
+       a finding never clears anything** — a run that never reached the surface produces exactly the same
+       silence as a fixed defect. With no evidence supplied, every entry stays `outstanding`, and an entry
+       that was not provably exercised is reported as not exercised this run.
+   - **Commands** (engine-side, per the note above).
+     `known-defects.sh validate .qa/known-defects.json [today]` exits `0` iff
+     every entry is well-formed, else prints one `ERROR: entry[<i>].<field>: …` line per violation to
+     **stderr** and exits `1` (`2` when the inputs themselves are unusable). `status` takes
+     `<registry> <today-YYYY-MM-DD> [--evidence <file>]` and prints a JSON array of
+     `{"id":…,"state":"outstanding"|"expired"|"cleared"}` in registry order. Run `validate` after every
+     hand-edit; a registry that does not validate is not a home for anything.
+   - **Migrating an EXISTING inverted criterion.** If a criterion expecting a failure is already in a
+     `checklist.json`, do not hand-edit either file:
+     ```
+     bash "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-inverted-criterion.sh" \
+         .qa/specs/<target>/checklist.json <criterion-id>
+     ```
+     It removes the criterion from the plan, appends a registry entry with `ticket` and `expiry` **empty**
+     (it cannot invent an owner or a deadline), prints `REQUIRED-FIELDS: ticket expiry`, and refuses to
+     report success.
+     **EXIT 2 IS THE SUCCESS PATH. Exit 1 is the failure path. Exit 0 is never returned.** A caller — or
+     an operator — treating any non-zero result as "the migration failed" silently loses a migration that
+     in fact landed. Re-running is idempotent (the append is skipped once `migratedFrom` names the
+     criterion), so the cost of the misread is confusion, not corruption. Nothing under `.qa/runs/` is
+     ever rewritten: a past run's record, including the original `match: true`, stays as recorded, and a
+     target path under `.qa/runs/` is refused outright. Fill in `ticket` and `expiry`, then re-run
+     `known-defects.sh validate`.
+
 7. **Write `qa-spec.md` + a machine run-config.** Copy `${CLAUDE_PLUGIN_ROOT}/templates/qa-spec-template.md`
    to `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
    `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
    machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
-   (`{}` if none), so the run can compute its effective config deterministically (see step 8).
+   (`{}` if none), so the run can compute its effective config deterministically (see step 8). In the
+   **Oracles** section, state how "correct" is independently determined — never that a failure is
+   correct. A known application defect belongs in `.qa/known-defects.json` (step 6c), not in an oracle,
+   and not in the out-of-scope list either: "out of scope" says nothing was checked, whereas the registry
+   carries an owner, a capped deadline and a severity.
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
-   applied, the drift result, the data-baseline entity count (seeded vs created), and the next step
+   applied, the drift result, the data-baseline entity count (seeded vs created), any known-defect entry
+   you wrote or migrated (with the `ticket`/`expiry` fields still owed by a human), and the next step
    (`/qa-scenarios <target>`). State that **roles freeze
    when a run starts** (`plan_frozen`), not now — the snapshot is still soft while authoring. Note that
    the eventual run computes its effective config with
@@ -111,4 +195,5 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
 
 Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the
-drift check is advisory, never an auto-migrate.
+drift check is advisory, never an auto-migrate; a known application defect goes in the project-level
+`.qa/known-defects.json`, never into an oracle and never into a per-spec copy.
