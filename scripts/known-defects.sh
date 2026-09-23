@@ -21,9 +21,16 @@
 #       STDOUT, in registry order. Exit 0.
 #
 # EXIT CODES: 0 ok · 1 validation failed (validate only) · 2 the inputs are unusable
-# (missing/unparseable/wrongly-typed registry or evidence, a registry carrying control
-# characters, a bad argument, no engine available). Both engines agree on the exit code
-# AND on the stderr text for every one of these.
+# (missing/unparseable/multi-document/wrongly-typed registry or evidence, a registry
+# carrying control characters or a non-string id, a bad argument, no engine available).
+#
+# ON DUAL-ENGINE AGREEMENT — the claim this file is entitled to make, and no more:
+# the two engines agree on the exit code and on the stderr text for every input shape
+# enumerated in section (G) of `tests/known-defects/run.sh`, because each of those shapes
+# is asserted there. Agreement is NOT guaranteed by construction; the engines are two
+# independent implementations and three real divergences have already been found in the
+# malformed-input space (a non-array container, null/false evidence, concatenated JSON
+# documents). A new input shape is unproven until it has a parity pair.
 #
 # SCHEMA. Required: id, title, ticket, expiry, severity, observedClass, surface,
 # observedBehaviour (each a non-blank, single-line string). Optional: observedStatus (a
@@ -50,11 +57,18 @@
 #     suggests a fix, so a human removes it from the registry deliberately.
 #   * An entry whose `expiry` is absent or unparseable counts as `expired` - an entry with
 #     no valid deadline is overdue by definition. (`validate` rejects it outright.)
-#   * A navigation row with no string `url` is IGNORED: it is not positive evidence of
-#     reaching anything, and `pathpart("")` would otherwise degrade to "/" and clear every
-#     entry whose surface is "/" (review finding 2).
-#   * A fatal finding carrying no `url` BLOCKS clearing: it cannot be proven to be off the
-#     surface, and the burden of proof is on clearing.
+#   * A navigation row whose `url` does not yield a USABLE PATH is IGNORED: it is not
+#     positive evidence of reaching anything. Usable means: a string which, after the
+#     fragment and any scheme+host are stripped, is non-empty and begins with "/". So
+#     `""`, `"#frag"`, `"https://app.test"` and a relative `"foo"` are all unusable. The
+#     first version of this guard only checked that `url` was a STRING and let the path
+#     fall back to "/", which cleared every entry whose surface was "/" - the same hole
+#     it was written to close (round 1 finding 2, reopened as round 2 finding 1).
+#   * A fatal finding whose `url` does not yield a usable path BLOCKS clearing: it cannot
+#     be proven to be off the surface, and the burden of proof is on clearing. Both sides
+#     treat an unusable url as proving nothing; they land on opposite verdicts only
+#     because that burden sits on one side.
+#   * An entry whose `surface` does not yield a usable path can never be cleared.
 #   * `expiry == today` is NOT yet expired (the entry has until the end of its day).
 #
 # EVIDENCE SHAPE (what qa-verify.sh renders out of the findings journal, spec 5.1/5.3):
@@ -220,16 +234,24 @@ def nes($v): (($v | type) == "string") and ((($v | gsub("^[ \t\r\n]+|[ \t\r\n]+$
 # any character below U+0020, or U+007F
 def hasctl($s): (($s | type) == "string") and ((($s | explode | map(select((. < 32) or (. == 127))) | length)) > 0);
 
-def pathpart($u):
-  (if ($u | type) == "string" then $u else "" end)
-  | sub("#.*$"; "")
-  | (if test("^[A-Za-z][A-Za-z0-9+.-]*://") then sub("^[A-Za-z][A-Za-z0-9+.-]*://[^/]*"; "") else . end)
-  | (if . == "" then "/" else . end);
+# The usable request path of a URL, or null when there is none.
+#
+# Review round 2, finding 1: the previous version type-guarded the url (is it a string?)
+# and then let `pathpart` substitute "/" for an empty result, so `{"url":""}` and
+# `{"url":"#frag"}` still cleared every entry whose surface path part was "/" - the same
+# shape as the Critical it was meant to close, one keystroke away. A TYPE CHECK IS NOT
+# VALIDATION. There is no "/" fallback any more: a url that does not yield a path
+# beginning with "/" yields null, and every caller must decide what null means for it.
+def rawpath($u):
+  if (($u | type) != "string") then null
+  else ( $u
+         | sub("#.*$"; "")
+         | (if test("^[A-Za-z][A-Za-z0-9+.-]*://") then sub("^[A-Za-z][A-Za-z0-9+.-]*://[^/]*"; "") else . end) )
+       | (if ((. == "") or ((startswith("/")) | not)) then null else . end)
+  end;
 
-def surfmatch($surface; $u):
-  (pathpart($surface)) as $sp
-  | (pathpart($u)) as $up
-  | (if ($sp | test("\\?")) then $up else ($up | sub("\\?.*$"; "")) end) as $cand
+def surfmatchp($sp; $up):
+  (if ($sp | test("\\?")) then $up else ($up | sub("\\?.*$"; "")) end) as $cand
   | ($cand | test(pat2re($sp)));
 
 def fatalFinding:
@@ -252,21 +274,27 @@ def evcheck:
     then fail("evidence.findings[] entries must be JSON objects")
   else null end;
 
+# Both sides treat an unusable url the same way - as PROVING NOTHING - which lands on
+# opposite verdicts because the burden of proof only ever sits on clearing:
+#   * a navigation with no usable path is not evidence of having reached anything, so it
+#     cannot contribute the 2xx that clearing requires;
+#   * a fatal finding with no usable path cannot be shown to be OFF this surface, so it
+#     blocks clearing.
 def clearedBy($e; $ev):
   if (($ev | type) != "object") then false
-  elif (nes($e.surface) | not) then false
-  else
-    ([ (($ev.navigations // [])[])
-       # fail-open guard (review finding 2): a navigation with no string url is not
-       # evidence of reaching anything, and pathpart("") would degrade to "/".
-       | select((((.url) // null) | type) == "string")
-       | select(((((.status) // null) | type) == "number") and ((.status) >= 200) and ((.status) < 300))
-       | select(surfmatch($e.surface; .url)) ] | length) > 0
-    and
-    ([ (($ev.findings // [])[])
-       | select(fatalFinding)
-       # fail-closed: a fatal finding with no url cannot be proven off this surface
-       | select(((((.url) // null) | type) != "string") or surfmatch($e.surface; .url)) ] | length) == 0
+  else (rawpath($e.surface)) as $sp
+    | if ($sp == null) then false
+      else
+        ([ (($ev.navigations // [])[])
+           | select(((((.status) // null) | type) == "number") and ((.status) >= 200) and ((.status) < 300))
+           | (rawpath(.url)) as $up
+           | select(($up != null) and surfmatchp($sp; $up)) ] | length) > 0
+        and
+        ([ (($ev.findings // [])[])
+           | select(fatalFinding)
+           | (rawpath(.url)) as $up
+           | select(($up == null) or surfmatchp($sp; $up)) ] | length) == 0
+      end
   end;
 
 def entryState($e; $today; $ev):
@@ -282,6 +310,18 @@ def ctlErrors($i; $e):
          | select(hasctl($e[$k]))
          | "ERROR: entry[\($i)].\($k): contains a control character" ]
   end;
+
+# What `status` refuses outright. `status` does not validate - that is `validate`'s job -
+# but it must not RENDER something it cannot render identically in both engines. A numeric
+# id is the case (round 2, finding 5): 1e400 is `1E+400` in jq and `Infinity` in python3,
+# and `Infinity` is not valid JSON at all, on a command whose contract promises a JSON
+# array. 1E2 and -0 diverge likewise. An id must be a string; an ABSENT id stays null,
+# which both engines render identically.
+def statusBlockers($i; $e):
+  ctlErrors($i; $e)
+  + ( if ((($e | type) == "object") and ($e | has("id")) and (($e.id) != null)
+          and ((($e.id) | type) != "string"))
+      then [ "ERROR: entry[\($i)].id: must be a string when present" ] else [] end );
 
 def entryErrors($i; $e; $today; $seen):
   if (($e | type) != "object") then [ "ERROR: entry[\($i)]: not a JSON object" ]
@@ -310,9 +350,9 @@ def entryErrors($i; $e; $today; $seen):
 (if (type != "array") then fail("registry must be a JSON array") else null end) as $_regchk
 | (evcheck) as $_evchk
 | . as $reg
-| ([ range(0; ($reg | length)) as $i | (ctlErrors($i; $reg[$i])[]) ]) as $ctl
+| ([ range(0; ($reg | length)) as $i | (statusBlockers($i; $reg[$i])[]) ]) as $blk
 | if ($mode == "status") then
-    (if (($ctl | length) > 0) then (($ctl | map(. + "\n") | join("")) | halt_error(3)) else null end) as $_ctlchk
+    (if (($blk | length) > 0) then (($blk | map(. + "\n") | join("")) | halt_error(3)) else null end) as $_blkchk
     | [ range(0; ($reg | length)) as $i
         | ($reg[$i]) as $e
         | "S\t" + ({ id: (if (($e | type) == "object") then (($e.id) // null) else null end),
@@ -409,16 +449,18 @@ def hasctl(v):
 
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
-def pathpart(u):
-    u = u if isinstance(u, str) else ""
+# See the jq leg: no "/" fallback. A type check is not validation (round 2, finding 1).
+def rawpath(u):
+    if not isinstance(u, str):
+        return None
     u = re.sub(r"#.*$", "", u)
     if SCHEME_RE.match(u):
         u = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*", "", u)
-    return u if u != "" else "/"
+    if u == "" or not u.startswith("/"):
+        return None
+    return u
 
-def surfmatch(surface, u):
-    sp = pathpart(surface)
-    up = pathpart(u)
+def surfmatchp(sp, up):
     cand = up if "?" in sp else re.sub(r"\?.*$", "", up)
     return re.search(pat2re(sp), cand) is not None
 
@@ -431,21 +473,26 @@ def fatal_finding(f):
 def cleared_by(e, ev):
     if not isinstance(ev, dict):
         return False
-    if not nes(e.get("surface")):
+    sp = rawpath(e.get("surface"))
+    if sp is None:
         return False
-    surface = e["surface"]
-    # fail-open guard (review finding 2): a navigation with no string url is not evidence
-    # of reaching anything, and pathpart("") would degrade to "/".
-    ok_nav = any(isinstance(n.get("url"), str) and is_num(n.get("status"))
-                 and 200 <= n["status"] < 300 and surfmatch(surface, n["url"])
-                 for n in (ev.get("navigations") or []))
+    # A navigation with no usable path is not evidence of having reached anything.
+    ok_nav = False
+    for n in (ev.get("navigations") or []):
+        if not is_num(n.get("status")) or not (200 <= n["status"] < 300):
+            continue
+        up = rawpath(n.get("url"))
+        if up is not None and surfmatchp(sp, up):
+            ok_nav = True
+            break
     if not ok_nav:
         return False
     for f in (ev.get("findings") or []):
         if not fatal_finding(f):
             continue
-        # fail-closed: a fatal finding with no url cannot be proven off this surface
-        if not isinstance(f.get("url"), str) or surfmatch(surface, f.get("url")):
+        # fail-closed: a fatal finding with no usable path cannot be proven off this surface
+        up = rawpath(f.get("url"))
+        if up is None or surfmatchp(sp, up):
             return False
     return True
 
@@ -470,6 +517,13 @@ def ctl_errors(i, e):
         return []
     return ["ERROR: entry[%d].%s: contains a control character" % (i, k)
             for k in sorted(e.keys()) if hasctl(e.get(k))]
+
+# See the jq leg: what `status` refuses to RENDER (round 2, finding 5).
+def status_blockers(i, e):
+    out = ctl_errors(i, e)
+    if isinstance(e, dict) and "id" in e and e["id"] is not None and not isinstance(e["id"], str):
+        out.append("ERROR: entry[%d].id: must be a string when present" % i)
+    return out
 
 def entry_errors(i, e, today, seen):
     if not isinstance(e, dict):
@@ -498,14 +552,14 @@ def entry_errors(i, e, today, seen):
         out.append("ERROR: entry[%d].observedStatus: must be a number when present" % i)
     return out
 
-ctl = []
+blk = []
 for i, e in enumerate(reg):
-    ctl.extend(ctl_errors(i, e))
+    blk.extend(status_blockers(i, e))
 
 lines = []
 if mode == "status":
-    if ctl:
-        sys.stderr.write("".join(l + "\n" for l in ctl))
+    if blk:
+        sys.stderr.write("".join(l + "\n" for l in blk))
         sys.exit(3)
     for i, e in enumerate(reg):
         row = {"id": (e.get("id") if isinstance(e, dict) else None),
@@ -524,15 +578,33 @@ ERRF="$(mktemp)" || die "cannot create a temporary file"
 cleanup() { rm -f "$ERRF"; }
 trap cleanup EXIT
 
+# Exactly-one-JSON-document check for the jq leg.
+#
+# Round 2, finding 2: `jq empty` is not a parse gate. It accepts a CONCATENATED stream, so
+# `[...] [...]` passed cleanly and then ran the whole filter once per document, emitting
+# DUPLICATED rows and a clean `validate`; it also accepts an empty file as zero documents.
+# python3's json.load rejects both ("Extra data" / "Expecting value"), so this was a
+# verdict-changing divergence. --slurpfile collects every document, so its length is the
+# document count: anything but 1 is not a single JSON document.
+# Round 2, finding 3: this also replaces `cat` for the evidence. `--argjson` fed an empty
+# or multi-document file used to leak a raw `jq: invalid JSON text passed to --argjson`
+# plus a usage dump; now the count is checked first and the value re-serialised compactly.
+jq_one_doc() { # jq_one_doc <file> -> prints the single document, or fails
+  [ "$(jq -n --slurpfile d "$1" '$d | length' 2>/dev/null)" = "1" ] || return 1
+  jq -c -n --slurpfile d "$1" '$d[0]' 2>/dev/null
+}
+
 if has_jq; then
   command -v jq >/dev/null 2>&1 || die "QA_ENGINE=jq was requested but jq is not installed"
-  # Pre-parse both documents so a syntax error reports as itself, instead of being
-  # relabelled by a catch-all (review finding 7).
-  jq empty "$REGISTRY" >/dev/null 2>&1 || die "registry is not valid JSON: $REGISTRY"
+  # Round 2, finding 4: the REGISTRY is fully checked (one document, then array-ness)
+  # BEFORE the evidence is looked at, so both legs report the same first failure for the
+  # same input. python3's json.load + isinstance check already run in this order.
+  jq_one_doc "$REGISTRY" >/dev/null || die "registry is not valid JSON: $REGISTRY"
+  jq -e 'type == "array"' "$REGISTRY" >/dev/null 2>&1 || die "registry must be a JSON array"
   EV_JSON="null"
   if [ -n "$EVIDENCE" ]; then
-    jq empty "$EVIDENCE" >/dev/null 2>&1 || die "evidence is not valid JSON: $EVIDENCE"
-    EV_JSON="$(cat "$EVIDENCE")"
+    EV_JSON="$(jq_one_doc "$EVIDENCE")" || die "evidence is not valid JSON: $EVIDENCE"
+    [ -n "$EV_JSON" ] || die "evidence is not valid JSON: $EVIDENCE"
   fi
   STREAM="$(jq -r --arg today "$TODAY" --arg mode "$CMD" --arg evpath "$EVIDENCE" \
                   --argjson ev "$EV_JSON" "$JQ_PROG" "$REGISTRY" 2>"$ERRF")"
