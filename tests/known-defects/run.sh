@@ -41,6 +41,20 @@
 #       evidence, a navigation with no `url`, control characters in registry
 #       values, and non-object registry elements. This is where all three
 #       Criticals of review round 1 lived.
+#   (H) THE SAME SPACE ONE LEVEL DOWN (round 2). A TYPE CHECK IS NOT VALIDATION:
+#       a url that IS a string but yields no usable path ('', '#frag',
+#       origin-only, relative) used to clear a '/' surface - the same shape as
+#       the Critical it was written to close. Plus the shapes the PARSE GATE
+#       itself mishandled: `jq empty` accepted concatenated JSON documents (two
+#       documents ran the filter twice and emitted duplicated rows) and an empty
+#       file as zero documents, while python3 rejected both; and a non-string
+#       `id` rendered as `1E+400` in jq versus `Infinity` in python3 - not valid
+#       JSON, on a command whose contract promises a JSON array.
+#   (I) THE BASH REFUSAL OF A NON-S-PREFIXED STATUS LINE. One of the two
+#       structural defences the (D)/injection fix rests on, driven by a stub
+#       engine. It previously had NO test, so removing it left the suite green.
+#       A DEFENCE WITH NO TEST IS AN INTENTION - every guard cited as
+#       load-bearing in the lane report must be failable from this file.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../../scripts/known-defects.sh"
@@ -160,6 +174,21 @@ EV_NAV_NO_URL='{"navigations":[{"status":200}],"findings":[]}'
 # Deliberate and now visible: `statusClass` is matched EXACTLY. "FATAL" is not "fatal", so
 # it does not block clearing. That is the ratified contract, not an accident.
 EV_FATAL_WRONG_CASE="{\"navigations\":[$NAV2XX],\"findings\":[{\"url\":\"https://app.test/admin/evaluations/challenges/1?tab=gates\",\"statusClass\":\"FATAL\"}]}"
+
+# --- (H) round 2: a url that IS a string but yields no usable path -------------
+# Round 1 type-guarded `url` and let the path fall back to "/", so these still cleared any
+# entry whose surface path part was "/" - the same shape as the Critical it closed. A type
+# check is not validation. Each of these must leave a "/" surface OUTSTANDING.
+EV_NAV_EMPTY_URL='{"navigations":[{"url":"","status":200}],"findings":[]}'
+EV_NAV_FRAG_URL='{"navigations":[{"url":"#frag","status":200}],"findings":[]}'
+EV_NAV_ORIGIN_ONLY='{"navigations":[{"url":"https://app.test","status":200}],"findings":[]}'
+EV_NAV_RELATIVE='{"navigations":[{"url":"admin/reports","status":200}],"findings":[]}'
+EV_NAV_NULL_URL='{"navigations":[{"url":null,"status":200}],"findings":[]}'
+# The positive control for the same guard: an explicit "/" DOES clear a "/" surface.
+EV_NAV_ROOT='{"navigations":[{"url":"https://app.test/","status":200}],"findings":[]}'
+# Symmetry on the findings side: an unusable url proves nothing, so it BLOCKS clearing.
+EV_FATAL_EMPTY_URL="{\"navigations\":[$NAV2XX],\"findings\":[{\"url\":\"\",\"statusClass\":\"fatal\"}]}"
+EV_FATAL_FRAG_URL="{\"navigations\":[$NAV2XX],\"findings\":[{\"url\":\"#frag\",\"status\":500}]}"
 
 # --- engine plumbing ----------------------------------------------------------
 ENGINES=""
@@ -480,20 +509,172 @@ for ENG in $ENGINES; do
   check "[$ENG] null registry element status exits 0"          "$RC" "0"
   check "[$ENG] null registry element status row is expired"   \
     "$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])[0]["state"])' "$SOUT")" "expired"
+
+  # ==========================================================================
+  # (H) ROUND 2 — the malformed space one level down: a value that passes a TYPE
+  # check but is still unusable, and inputs the parse gate itself mishandled.
+  # ==========================================================================
+
+  # --- finding 1: a string url that yields no usable path is not evidence ---
+  # nav_no_clear <label> <evidence-json> — against the "/" surface, the sharpest case
+  nav_no_clear() {
+    local label="$1" body="$2" f="$R/navbad.$$.json"
+    printf '%s\n' "$body" > "$f"
+    run_split "$ENG" status "$R/st-root.json" "$TODAY" --evidence "$f"
+    check "[$ENG] $label: exits 0"                  "$RC" "0"
+    check "[$ENG] $label: does NOT clear a '/' surface" "$(state_of "$SOUT" KD-3)" "outstanding"
+    rm -f "$f"
+  }
+  nav_no_clear "navigation url '' (empty string)"        "$EV_NAV_EMPTY_URL"
+  nav_no_clear "navigation url '#frag' (fragment only)"  "$EV_NAV_FRAG_URL"
+  nav_no_clear "navigation url origin-only, no path"     "$EV_NAV_ORIGIN_ONLY"
+  nav_no_clear "navigation url relative, unresolvable"   "$EV_NAV_RELATIVE"
+  nav_no_clear "navigation url null"                     "$EV_NAV_NULL_URL"
+
+  # positive control: the guard rejects unusable paths, not ALL paths
+  printf '%s\n' "$EV_NAV_ROOT" > "$R/ev-root.json"
+  run_split "$ENG" status "$R/st-root.json" "$TODAY" --evidence "$R/ev-root.json"
+  check "[$ENG] an explicit '/' navigation DOES clear a '/' surface" \
+    "$(state_of "$SOUT" KD-3)" "cleared"
+
+  # symmetry: on the findings side an unusable url proves nothing, so it BLOCKS
+  printf '%s\n' "$EV_FATAL_EMPTY_URL" > "$R/ev-fe.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-fe.json"
+  check "[$ENG] fatal finding with url '' blocks clearing" "$(state_of "$SOUT" KD-1)" "outstanding"
+  printf '%s\n' "$EV_FATAL_FRAG_URL" > "$R/ev-ff.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-ff.json"
+  check "[$ENG] fatal finding with url '#frag' blocks clearing" "$(state_of "$SOUT" KD-1)" "outstanding"
+
+  # --- finding 2: exactly ONE JSON document, on both legs -------------------
+  # `jq empty` accepted a concatenated stream and ran the filter once per document,
+  # emitting DUPLICATED rows and a clean validate, while python3 exited 2.
+  printf '[]\n[]\n' > "$R/multidoc.json"
+  run_split "$ENG" validate "$R/multidoc.json" "$TODAY"
+  check "[$ENG] multi-document registry: validate exits 2"  "$RC" "2"
+  check "[$ENG] multi-document registry: exact message"     "$SERR" "ERROR: registry is not valid JSON: $R/multidoc.json"
+  write_registry "$R/onedoc.json" "$KD_OK"
+  cat "$R/onedoc.json" "$R/onedoc.json" > "$R/twodoc.json"
+  run_split "$ENG" status "$R/twodoc.json" "$TODAY"
+  check "[$ENG] multi-document registry: status exits 2"    "$RC" "2"
+  check "[$ENG] multi-document registry: no duplicated rows" "$SOUT" ""
+  : > "$R/emptyfile.json"
+  run_split "$ENG" validate "$R/emptyfile.json" "$TODAY"
+  check "[$ENG] empty registry FILE is not an empty registry" "$RC" "2"
+  check "[$ENG] empty registry FILE: exact message"           "$SERR" "ERROR: registry is not valid JSON: $R/emptyfile.json"
+
+  # --- finding 3: empty / multi-document EVIDENCE is rejected cleanly -------
+  # It used to pass the parse gate and then leak `jq: invalid JSON text passed to
+  # --argjson` plus a usage dump out of the jq leg.
+  : > "$R/ev-emptyfile.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-emptyfile.json"
+  check "[$ENG] empty evidence FILE exits 2"        "$RC" "2"
+  check "[$ENG] empty evidence FILE: exact message" "$SERR" "ERROR: evidence is not valid JSON: $R/ev-emptyfile.json"
+  check "[$ENG] empty evidence FILE: no raw engine leak" \
+    "$(printf '%s' "$SERR" | grep -qi 'argjson\|usage:\|jq: error\|traceback' && echo leaked || echo clean)" "clean"
+  printf '{}\n{}\n' > "$R/ev-multidoc.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-multidoc.json"
+  check "[$ENG] multi-document evidence exits 2"        "$RC" "2"
+  check "[$ENG] multi-document evidence: exact message" "$SERR" "ERROR: evidence is not valid JSON: $R/ev-multidoc.json"
+  check "[$ENG] multi-document evidence: no raw engine leak" \
+    "$(printf '%s' "$SERR" | grep -qi 'argjson\|usage:\|jq: error\|traceback' && echo leaked || echo clean)" "clean"
+
+  # --- finding 4: the registry is checked BEFORE the evidence ---------------
+  # Same input, same first failure: a valid-but-non-array registry plus unparseable
+  # evidence must report the REGISTRY problem on both legs.
+  printf '{"id":"KD-1"}\n' > "$R/notarray.json"
+  printf '%s\n' "$EV_NOT_JSON" > "$R/ev-broken.json"
+  run_split "$ENG" status "$R/notarray.json" "$TODAY" --evidence "$R/ev-broken.json"
+  check "[$ENG] registry is checked before evidence: exits 2" "$RC" "2"
+  check "[$ENG] registry is checked before evidence: reports the REGISTRY" \
+    "$SERR" "ERROR: registry must be a JSON array"
+
+  # --- finding 5: status must not render something it cannot render alike ---
+  # A numeric id diverges: 1e400 is `1E+400` in jq and `Infinity` in python3, and
+  # `Infinity` is not valid JSON at all.
+  printf '[{"id":1e400,"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' > "$R/bigid.json"
+  run_split "$ENG" status "$R/bigid.json" "$TODAY"
+  check "[$ENG] numeric id: status exits 2"          "$RC" "2"
+  check "[$ENG] numeric id: exact message"           "$SERR" "ERROR: entry[0].id: must be a string when present"
+  check "[$ENG] numeric id: emits no invalid JSON"   "$SOUT" ""
+  printf '[{"id":1e2,"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' > "$R/e2id.json"
+  run_split "$ENG" status "$R/e2id.json" "$TODAY"
+  check "[$ENG] id 1e2 (renders 1E+2 vs 100.0) refused" "$RC" "2"
+  printf '[{"id":-0,"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' > "$R/negzid.json"
+  run_split "$ENG" status "$R/negzid.json" "$TODAY"
+  check "[$ENG] id -0 (renders -0 vs 0) refused"        "$RC" "2"
+  # an ABSENT id still renders as null, identically, and is not refused
+  printf '[{"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' > "$R/noid.json"
+  run_split "$ENG" status "$R/noid.json" "$TODAY"
+  check "[$ENG] an absent id is still rendered as null" "$RC" "0"
+  check "[$ENG] an absent id row is well-formed JSON"   \
+    "$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])[0]["id"])' "$SOUT")" "None"
 done
+
+# ===== (I) THE BASH REFUSAL OF A NON-S-PREFIXED STATUS LINE ==================
+# Round 2, finding 7. This guard is one of the two structural defences the Critical-3 fix
+# rests on - and it had NO test: replacing its `die` with `:` left the suite fully green.
+# A defence with no test is an intention.
+#
+# Exercising it needs an engine that misbehaves, so we put a STUB `python3` first on PATH
+# and force QA_ENGINE=python3. The stub ignores its arguments and prints one legitimate
+# S-row plus one rogue line that is exactly what an injection would need to look like: a
+# well-formed, `cleared` row with no S prefix. The bash layer must refuse the whole run
+# rather than fold it into the JSON array it prints - and must not silently DROP it either,
+# which is why this asserts exit 2 and not merely "cleared is absent".
+STUB="$WORK/stub"; mkdir -p "$STUB"
+cat > "$STUB/python3" <<'STUB_EOF'
+#!/bin/sh
+printf 'S\t{"id":"KD-1","state":"outstanding"}\n'
+printf '{"id":"KD-9","state":"cleared"}\n'
+exit 0
+STUB_EOF
+chmod +x "$STUB/python3"
+STUBREG="$WORK/stub-registry.json"
+write_registry "$STUBREG" "$KD_FUTURE_EXPIRY"
+STUBERR="$WORK/stub.err"
+STUBOUT="$(QA_ENGINE=python3 PATH="$STUB:$PATH" bash "$SCRIPT" status "$STUBREG" "$TODAY" 2>"$STUBERR")"; STUBRC=$?
+STUBSERR="$(cat "$STUBERR")"
+check "rogue engine line in status mode: exits 2"                "$STUBRC" "2"
+check "rogue engine line in status mode: prints no JSON at all"  "$STUBOUT" ""
+check "rogue engine line in status mode: no forged 'cleared' reaches stdout" \
+  "$(printf '%s' "$STUBOUT" | grep -q 'cleared' && echo leaked || echo clean)" "clean"
+check "rogue engine line in status mode: says what it refused" \
+  "$(printf '%s' "$STUBSERR" | grep -q 'unexpected engine output' && echo yes)" "yes"
+
+# The negative control that makes the above meaningful: a stub emitting ONLY well-formed
+# S-rows is accepted, so the guard discriminates rather than rejecting everything.
+cat > "$STUB/python3" <<'STUB_OK_EOF'
+#!/bin/sh
+printf 'S\t{"id":"KD-1","state":"outstanding"}\n'
+exit 0
+STUB_OK_EOF
+chmod +x "$STUB/python3"
+STUBOUT="$(QA_ENGINE=python3 PATH="$STUB:$PATH" bash "$SCRIPT" status "$STUBREG" "$TODAY" 2>/dev/null)"; STUBRC=$?
+check "well-formed stub rows are accepted (the guard discriminates)" "$STUBRC" "0"
+check "well-formed stub rows render as the JSON array" \
+  "$STUBOUT" '[{"id":"KD-1","state":"outstanding"}]'
+rm -rf "$STUB"
 
 # ===== (F) test_python_engine_matches_jq_engine ==============================
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   X="$WORK/parity"; mkdir -p "$X"
   printf '%s\n' "$EV_2XX_NO_FINDING" > "$X/ev.json"
 
+  # Round 2, finding 6: this used to capture 2>&1 and compare the MERGED stream, so a
+  # channel swap - stdout content appearing on stderr or vice versa - would have compared
+  # equal and passed. Channel separation is precisely what the Critical-3 fix rests on, so
+  # a parity helper that cannot see a channel swap is testing something weaker than the
+  # property being relied on. The streams are compared SEPARATELY.
   cmp_case() { # cmp_case <label> <args...>
     local label="$1"; shift
-    local jo jr po pr
-    jo="$(QA_ENGINE=jq      bash "$SCRIPT" "$@" 2>&1)"; jr=$?
-    po="$(QA_ENGINE=python3 bash "$SCRIPT" "$@" 2>&1)"; pr=$?
-    check "test_python_engine_matches_jq_engine: $label output byte-identical" \
+    local jo jr je po pr pe ef="$X/.cmp-err.$$"
+    jo="$(QA_ENGINE=jq      bash "$SCRIPT" "$@" 2>"$ef")"; jr=$?; je="$(cat "$ef")"
+    po="$(QA_ENGINE=python3 bash "$SCRIPT" "$@" 2>"$ef")"; pr=$?; pe="$(cat "$ef")"
+    rm -f "$ef"
+    check "test_python_engine_matches_jq_engine: $label STDOUT byte-identical" \
       "$([[ "$jo" == "$po" ]] && echo same || echo "diff<<$jo>>vs<<$po>>")" "same"
+    check "test_python_engine_matches_jq_engine: $label STDERR byte-identical" \
+      "$([[ "$je" == "$pe" ]] && echo same || echo "diff<<$je>>vs<<$pe>>")" "same"
     check "test_python_engine_matches_jq_engine: $label exit code identical" "$jr" "$pr"
   }
 
@@ -567,6 +748,52 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   # argument-level degenerate cases
   cmp_case "args: malformed today"                   validate "$X/good.json" "23-09-2026"
   cmp_case "args: missing registry file"             status   "$X/absent.json" "$TODAY"
+
+  # --- round 2 shapes ------------------------------------------------------
+  # Findings 1-5 were all divergences or hazards in shapes the round-1 pairs did not
+  # visit. Each gets a pair, per the rule in the header: a new input shape is unproven
+  # until it has one.
+  parity_ev "evidence: navigation url ''"            "$EV_NAV_EMPTY_URL"
+  parity_ev "evidence: navigation url '#frag'"       "$EV_NAV_FRAG_URL"
+  parity_ev "evidence: navigation url origin-only"   "$EV_NAV_ORIGIN_ONLY"
+  parity_ev "evidence: navigation url relative"      "$EV_NAV_RELATIVE"
+  parity_ev "evidence: navigation url null"          "$EV_NAV_NULL_URL"
+  parity_ev "evidence: navigation url '/'"           "$EV_NAV_ROOT"
+  parity_ev "evidence: fatal finding url ''"         "$EV_FATAL_EMPTY_URL"
+  parity_ev "evidence: fatal finding url '#frag'"    "$EV_FATAL_FRAG_URL"
+
+  write_registry "$X/root.json" "$KD_ROOT_SURFACE"
+  printf '%s\n' "$EV_NAV_EMPTY_URL" > "$X/emptyurl.json"
+  cmp_case "registry: '/' surface vs empty-url nav"  status "$X/root.json" "$TODAY" --evidence "$X/emptyurl.json"
+  printf '%s\n' "$EV_NAV_ROOT" > "$X/rooturl.json"
+  cmp_case "registry: '/' surface vs '/' nav"        status "$X/root.json" "$TODAY" --evidence "$X/rooturl.json"
+
+  # exactly-one-document, both documents, both subcommands
+  printf '[]\n[]\n' > "$X/multidoc.json"
+  cmp_case "registry: multi-document (validate)"     validate "$X/multidoc.json" "$TODAY"
+  cmp_case "registry: multi-document (status)"       status   "$X/multidoc.json" "$TODAY"
+  : > "$X/emptyfile.json"
+  cmp_case "registry: empty file (validate)"         validate "$X/emptyfile.json" "$TODAY"
+  cmp_case "registry: empty file (status)"           status   "$X/emptyfile.json" "$TODAY"
+  : > "$X/ev-emptyfile.json"
+  cmp_case "evidence: empty file"                    status "$X/good.json" "$TODAY" --evidence "$X/ev-emptyfile.json"
+  printf '{}\n{}\n' > "$X/ev-multidoc.json"
+  cmp_case "evidence: multi-document"                status "$X/good.json" "$TODAY" --evidence "$X/ev-multidoc.json"
+
+  # check ORDER: registry problem must win over an evidence problem on both legs
+  printf '{"id":"KD-1"}\n' > "$X/notarray.json"
+  printf '%s\n' "$EV_NOT_JSON" > "$X/ev-broken.json"
+  cmp_case "order: bad registry + bad evidence"      status "$X/notarray.json" "$TODAY" --evidence "$X/ev-broken.json"
+
+  # numeric ids: the shapes that rendered differently
+  for BADID in '1e400' '1e2' '-0' '0.1' 'true'; do
+    printf '[{"id":%s,"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' \
+      "$BADID" > "$X/id.json"
+    cmp_case "registry: non-string id $BADID (status)"   status   "$X/id.json" "$TODAY"
+    cmp_case "registry: non-string id $BADID (validate)" validate "$X/id.json" "$TODAY"
+  done
+  printf '[{"title":"t","ticket":"z","expiry":"2026-11-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]\n' > "$X/noid.json"
+  cmp_case "registry: absent id renders as null"     status "$X/noid.json" "$TODAY"
 fi
 
 echo
