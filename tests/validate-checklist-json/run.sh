@@ -226,10 +226,17 @@ cat > "$WORK/http-status-403.json" <<'EOF'
 ]
 EOF
 
+# Fix round 1, item 3: `expected to fail` is BEHAVIOUR language, not process
+# language. "the save is expected to fail with a validation error" is a
+# legitimate error-state oracle — a 4xx validation rejection is the
+# application WORKING (spec §4). It must validate even in `oracle`, the
+# natural field for an expectation. (It is demoted to a /qa-analyze
+# plan-defect flag, Lane M / Task 13.)
 cat > "$WORK/prose-expected-to-fail.json" <<'EOF'
 [
-  {"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "open the gates surface",
-   "oracle": "The enum cast blows up, so this is Expected To Fail until the fix lands."}
+  {"id": "C-1", "surface": "/x", "kind": "error-state", "tags": [],
+   "action": "Submit the form with a blank title",
+   "oracle": "The save is Expected To Fail with a 422 validation error and the row is not written."}
 ]
 EOF
 
@@ -290,13 +297,12 @@ check "test_accepts_http_status_302 -> exit 0 (authz refusal is the app WORKING)
 bash "$V" "$WORK/http-status-403.json" >/dev/null 2>&1; rc=$?
 check "test_accepts_http_status_403 -> exit 0 (authz refusal is the app WORKING)" "$rc" "0"
 
-out="$(bash "$V" "$WORK/prose-expected-to-fail.json" 2>&1)"; rc=$?
-check "test_rejects_prose_expected_to_fail_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
-check_contains "test_rejects_prose_expected_to_fail_in_oracle -> names entry[0].oracle" "$out" "entry[0].oracle"
-check_contains "test_rejects_prose_expected_to_fail_in_oracle -> quotes the phrase" "$out" "expected to fail"
+bash "$V" "$WORK/prose-expected-to-fail.json" >/dev/null 2>&1; rc=$?
+check "test_accepts_prose_expected_to_fail_in_oracle -> exit 0 (behaviour language, a legitimate error-state oracle)" "$rc" "0"
 
 out="$(bash "$V" "$WORK/prose-deferred-by-design.json" 2>&1)"; rc=$?
 check "test_rejects_prose_deferred_by_design_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_prose_deferred_by_design_in_oracle -> names entry[0].oracle" "$out" "entry[0].oracle"
 check_contains "test_rejects_prose_deferred_by_design_in_oracle -> quotes the phrase" "$out" "deferred by design"
 
 bash "$V" "$WORK/prose-in-action-only.json" >/dev/null 2>&1; rc=$?
@@ -305,6 +311,104 @@ check "test_accepts_prose_in_action_field -> exit 0 (action is NEVER scanned)" "
 out="$(bash "$V" "$WORK/second-entry-violates.json" 2>&1)"; rc=$?
 check "test_error_line_names_entry_index_and_field -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 check_contains "test_error_line_names_entry_index_and_field -> one-line-per-violation ERROR form naming entry[1] and the field" "$out" "ERROR: entry[1].fixture.expect"
+
+# ---------------------------------------------------------------------------
+# Fix round 1, items 1 + 2: value normalisation, and DUAL-ENGINE PARITY.
+#
+# The two engines must reach the same verdict AND print the same bytes for
+# every shape in the matrix below. jq is the preferred engine, so a
+# divergence where jq is permissive is a silent route-around of the whole
+# check: legality would depend on QA_ENGINE and what is on PATH. Every case
+# here is asserted on jq, on python3, and for byte-identical output.
+# ---------------------------------------------------------------------------
+
+DUAL=0
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  BASH_BIN="$(type -P bash)"
+  FAKEBIN="$WORK/fakebin-no-jq"
+  mkdir -p "$FAKEBIN"
+  for tool in bash python3 cat dirname basename mkdir sort; do
+    TOOL_PATH="$(type -P "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN/$tool"
+  done
+  DUAL=1
+fi
+
+# health_case <label> <path-json> <value-json> <reject|accept>
+health_case() {
+  local label="$1" pathv="$2" valv="$3" want="$4"
+  local f="$WORK/health-case.json" out_j out_p rc_j rc_p got_j got_p
+  printf '[{"id":"P-1","surface":"/x","kind":"business-rule","tags":[],"action":"open the surface","fixture":{"expect":{"path":%s,"value":%s,"tolerance":0,"oracleSource":"human"}}}]\n' \
+    "$pathv" "$valv" > "$f"
+  out_j="$(bash "$V" "$f" 2>&1)"; rc_j=$?
+  got_j="$([[ $rc_j -ne 0 ]] && echo reject || echo accept)"
+  check "norm[jq]: $label -> $want" "$got_j" "$want"
+  if [[ "$DUAL" -eq 1 ]]; then
+    out_p="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$f" 2>&1)"; rc_p=$?
+    got_p="$([[ $rc_p -ne 0 ]] && echo reject || echo accept)"
+    check "norm[py]: $label -> $want" "$got_p" "$want"
+    check "parity: $label -> both engines print identical bytes" "$out_j" "$out_p"
+  fi
+}
+
+# --- the reported divergence: jq's tonumber vs python's float() ------------
+health_case "http.status 500 (number)"            '"http.status"' '500'        reject
+health_case "http.status \"500\" (string)"        '"http.status"' '"500"'      reject
+health_case "http.status \" 500 \" (padded both)" '"http.status"' '" 500 "'    reject
+health_case "http.status \"500 \" (trailing ws)"  '"http.status"' '"500 "'     reject
+health_case "http.status \" 500\" (leading ws)"   '"http.status"' '" 500"'     reject
+health_case "http.status \"\\t500\\n\" (tab/nl)"  '"http.status"' '"\t500\n"'  reject
+health_case "http.status \"1_000\" (underscored)" '"http.status"' '"1_000"'    accept
+health_case "http.status \"+500\" (signed)"       '"http.status"' '"+500"'     reject
+health_case "http.status 500.0 (json float)"      '"http.status"' '500.0'      reject
+health_case "http.status \"500.0\" (float string)" '"http.status"' '"500.0"'   reject
+health_case "http.status 503.5 (non-integral)"    '"http.status"' '503.5'      reject
+health_case "http.status \"5e2\" (exponent)"      '"http.status"' '"5e2"'      accept
+health_case "http.status \"abc\""                 '"http.status"' '"abc"'      accept
+health_case "http.status null"                    '"http.status"' 'null'       accept
+health_case "http.status true (boolean)"          '"http.status"' 'true'       accept
+
+# --- the carve-out, restated across spellings ------------------------------
+health_case "http.status 302"                     '"http.status"' '302'        accept
+health_case "http.status \" 302 \""               '"http.status"' '" 302 "'    accept
+health_case "http.status 403"                     '"http.status"' '403'        accept
+health_case "http.status 499 (boundary below)"    '"http.status"' '499'        accept
+health_case "http.status \"499\""                 '"http.status"' '"499"'      accept
+health_case "http.status 200"                     '"http.status"' '200'        accept
+
+# --- item 2: the falsy/truthy route-around ---------------------------------
+health_case "rendersWithoutServerError false"        '"page.rendersWithoutServerError"' 'false'     reject
+health_case "rendersWithoutServerError \"false\""    '"page.rendersWithoutServerError"' '"false"'   reject
+health_case "rendersWithoutServerError \"FALSE\""    '"page.rendersWithoutServerError"' '"FALSE"'   reject
+health_case "rendersWithoutServerError \" false \""  '"page.rendersWithoutServerError"' '" false "' reject
+health_case "rendersWithoutServerError 0 (number)"   '"page.rendersWithoutServerError"' '0'         reject
+health_case "rendersWithoutServerError \"0\""        '"page.rendersWithoutServerError"' '"0"'       reject
+health_case "rendersWithoutServerError true (legal)" '"page.rendersWithoutServerError"' 'true'      accept
+health_case "rendersWithoutServerError 1 (legal)"    '"page.rendersWithoutServerError"' '1'         accept
+health_case "page.crashed true"                      '"page.crashed"' 'true'        reject
+health_case "page.crashed \"true\""                  '"page.crashed"' '"true"'      reject
+health_case "page.crashed \"TRUE\""                  '"page.crashed"' '"TRUE"'      reject
+health_case "page.crashed 1 (number)"                '"page.crashed"' '1'           reject
+health_case "page.crashed \"1\""                     '"page.crashed"' '"1"'         reject
+health_case "page.crashed false (legal)"             '"page.crashed"' 'false'       accept
+health_case "page.crashed 0 (legal)"                 '"page.crashed"' '0'           accept
+health_case "console.hasError true"                  '"console.hasError"' 'true'    reject
+health_case "console.hasError 1 (number)"            '"console.hasError"' '1'       reject
+health_case "console.hasError \"yes\" (not truthy)"  '"console.hasError"' '"yes"'   accept
+health_case "console.hasError false (legal)"         '"console.hasError"' 'false'   accept
+
+# --- item 2: a padded PATH must still be caught ----------------------------
+health_case "path \"http.status \" (trailing ws)"  '"http.status "' '500'   reject
+health_case "path \" page.crashed\" (leading ws)"  '" page.crashed"' 'true' reject
+# ...but the path is NOT case-folded: a fuzzy path match would risk
+# rejecting a legitimate domain path, so a differently-cased path is a
+# different (unreserved) path.
+health_case "path \"HTTP.STATUS\" (not case-folded)" '"HTTP.STATUS"' '500'  accept
+
+# --- paths outside the namespace stay untouched ----------------------------
+health_case "counts.evaluators 2 (domain path)"     '"counts.evaluators"' '2'      accept
+health_case "counts.evaluators 500 (domain path)"   '"counts.evaluators"' '500'    accept
+health_case "totals.errors true (domain path)"      '"totals.errors"' 'true'       accept
 
 # test_existing_validations_unchanged — the suite's pre-existing fixtures
 # keep their exact exit-code behaviour after the new layers land.
@@ -396,12 +500,12 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/http-status-403.json" >/dev/null 2>&1; rc=$?
   check "py-fallback: test_accepts_http_status_403 -> exit 0" "$rc" "0"
 
-  out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-expected-to-fail.json" 2>&1)"; rc=$?
-  check "py-fallback: test_rejects_prose_expected_to_fail_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
-  check_contains "py-fallback: names entry[0].oracle" "$out" "entry[0].oracle"
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-expected-to-fail.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_accepts_prose_expected_to_fail_in_oracle -> exit 0" "$rc" "0"
 
-  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-deferred-by-design.json" >/dev/null 2>&1; rc=$?
+  out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-deferred-by-design.json" 2>&1)"; rc=$?
   check "py-fallback: test_rejects_prose_deferred_by_design_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "py-fallback: names entry[0].oracle" "$out" "entry[0].oracle"
 
   PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-in-action-only.json" >/dev/null 2>&1; rc=$?
   check "py-fallback: test_accepts_prose_in_action_field -> exit 0 (action is NEVER scanned)" "$rc" "0"

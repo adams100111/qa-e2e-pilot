@@ -52,8 +52,11 @@
 #        page.crashed                    rejected when `value` is true
 #        console.hasError                rejected when `value` is true
 #        http.status                     rejected when `value` >= 500
-#      `value` is matched as a boolean OR its string spelling ("false"/"true"/
-#      "500") — the incident used the string form. An `http.status` in the
+#      `value` is normalised before comparison, so every spelling of the same
+#      assertion is caught: the boolean, its string form ("false"/"TRUE"/
+#      " false "), and its 0/1 form (`page.crashed: 1` is `page.crashed:
+#      true`). `path` is trimmed but NOT case-folded — a fuzzy path match
+#      risks rejecting a legitimate domain path. An `http.status` in the
 #      3xx/4xx range is LEGAL and must stay so: an authorization refusal (a
 #      302 to login, a 403) is the application WORKING, and several real
 #      criteria assert exactly that. Paths outside the namespace are
@@ -61,15 +64,28 @@
 #      message ends with the remediation pointer "— move it to
 #      known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)".
 #
-#   2. Reserved prose phrases, matched case-insensitively: `expected to fail`
-#      and `deferred by design`. Scanned ONLY in the oracle/expect string
-#      fields (`oracle`, `oracleNote`, `expected`, and the string members of
-#      `fixture.expect` / `expect`). **`action` is NEVER inspected** — it is
-#      where an author legitimately describes a non-rendering state ("this
-#      list does not render until the challenge reaches Judging"), and an
-#      over-broad net there would make the validator something authors route
-#      around. The weaker signals (`known defect`, `not a regression`) are
-#      deliberately NOT rejected here; they are /qa-analyze plan-defect flags.
+#      BOTH ENGINES NORMALISE IDENTICALLY, and neither may use its own
+#      language's string-to-number coercion — jq's `tonumber` rejects " 500 "
+#      where python's `float()` accepts it (and "1_000"), which would make
+#      jq, the PREFERRED engine, the permissive side and leave legality
+#      depending on QA_ENGINE and PATH. `tests/validate-checklist-json/run.sh`
+#      carries a dual-engine parity matrix so any future divergence fails.
+#
+#   2. Reserved prose phrase, matched case-insensitively: `deferred by
+#      design`. Scanned ONLY in the oracle/expect string fields (`oracle`,
+#      `oracleNote`, `expected`, and the string members of `fixture.expect` /
+#      `expect`). **`action` is NEVER inspected** — it is where an author
+#      legitimately describes a non-rendering state ("this list does not
+#      render until the challenge reaches Judging"), and an over-broad net
+#      there would make the validator something authors route around.
+#      The line is PROCESS language vs BEHAVIOUR language: "deferred by
+#      design" describes a decision about the team's backlog and has no
+#      business in an oracle, so it is hard-rejected. `expected to fail`,
+#      `known defect` and `not a regression` describe the application's
+#      behaviour and are often correct ("the save is expected to fail with a
+#      validation error" is a legitimate error-state oracle — a 4xx rejection
+#      is the application working, per spec §4), so they are /qa-analyze
+#      plan-defect flags, NOT rejections here.
 #
 # DEPENDENCIES: bash, EITHER jq OR python3 (jq preferred, python3
 # fallback). No node. Never grep -P/perl (tests/portability/run.sh forbids
@@ -102,28 +118,86 @@ def reqKindEnum: ["bake","computed","probe","human-action"];
 
 # --- error-honesty invariants (spec 2026-09-23 §4.1) -----------------------
 def remedy: "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)";
-def prosePhrases: ["expected to fail","deferred by design"];
+# Process language only. `expected to fail` is deliberately NOT here: it
+# describes APPLICATION BEHAVIOUR and is a legitimate oracle for an
+# error-state criterion ("the save is expected to fail with a validation
+# error" — a 4xx rejection is the application working, per spec §4). It is a
+# /qa-analyze plan-defect flag instead, beside `known defect` and
+# `not a regression`. `deferred by design` describes a decision about the
+# team backlog and has no business in an oracle.
+def prosePhrases: ["deferred by design"];
+
+# --- shared normalisation --------------------------------------------------
+# Both engines MUST normalise identically. Neither may lean on the host
+# language string-to-number coercion: jq `tonumber` rejects " 500 " while
+# python `float()` accepts it (and "1_000"), which made jq — the PREFERRED
+# engine — the permissive side, so whether a 500 assertion was legal depended
+# on QA_ENGINE and PATH. Trim an explicit 4-character whitespace set, then
+# parse strictly against ASCII digits only. No regex (no dependency on a jq
+# built with Oniguruma) and no `isdigit()`-style unicode widening.
+def trimWs:
+  if type != "string" then .
+  else
+    ( explode ) as $c
+    | ( [ range(0; ($c|length))
+          | select( ($c[.] != 32) and ($c[.] != 9) and ($c[.] != 10) and ($c[.] != 13) ) ] ) as $idx
+    | if ($idx|length) == 0 then ""
+      else ( $c[ $idx[0] : ($idx[($idx|length) - 1] + 1) ] | implode )
+      end
+  end;
+
+def asciiDigits: (explode | map(. >= 48 and . <= 57) | all);
+
+def strictNumber:
+  if type == "number" then .
+  elif type == "string" then
+    ( trimWs as $t
+      | ( if ($t|startswith("+")) or ($t|startswith("-")) then $t[1:] else $t end ) as $b
+      | if ($b|length) == 0 then null
+        elif ($b|asciiDigits) then ($t|tonumber)
+        else ( ($b|split(".")) as $ps
+               | if (($ps|length) == 2) and (($ps[0]|length) > 0) and (($ps[1]|length) > 0)
+                    and ($ps[0]|asciiDigits) and ($ps[1]|asciiDigits)
+                 then ($t|tonumber) else null end )
+        end )
+  else null end;
+
+# Truthiness closes the nearest route-around: `page.crashed: 1` and
+# `page.rendersWithoutServerError: 0` are the same assertion in a different
+# spelling. Trimmed + case-folded for the VALUE only.
+def normBool:
+  if . == true then true
+  elif . == false then false
+  elif type == "number" then (if . == 1 then true elif . == 0 then false else null end)
+  elif type == "string" then
+    ( (trimWs|ascii_downcase) as $t
+      | if ($t == "true") or ($t == "1") then true
+        elif ($t == "false") or ($t == "0") then false
+        else null end )
+  else null end;
 
 # The reserved health namespace: these expect.path values describe whole-page
 # or transport health, never a domain value, and may not be pinned to a
-# failing value. http.status in the 3xx/4xx range stays legal.
+# failing value. http.status in the 3xx/4xx range stays legal. The path is
+# TRIMMED but deliberately NOT case-folded — a fuzzy path match risks
+# rejecting a legitimate domain path.
 def healthViolations($i; $prefix; $x):
   if ($x|type) != "object" then []
   else
-    ($x.path) as $p
+    ($x.path | trimWs) as $p
     | ($x.value) as $v
-    | (if ($v|type) == "string" then ($v|ascii_downcase) else "" end) as $vs
-    | (if ($v|type) == "number" then $v
-       elif ($v|type) == "string" then (($v|tonumber?) // null)
-       else null end) as $n
-    | (if $p == "page.rendersWithoutServerError" and (($v == false) or ($vs == "false"))
+    | ($v | normBool) as $b
+    | ($v | strictNumber) as $n
+    | (if $p == "page.rendersWithoutServerError" and ($b == false)
          then ["entry[\($i)].\($prefix): page.rendersWithoutServerError may not be pinned to false \(remedy)"] else [] end)
-    + (if $p == "page.crashed" and (($v == true) or ($vs == "true"))
+    + (if $p == "page.crashed" and ($b == true)
          then ["entry[\($i)].\($prefix): page.crashed may not be pinned to true \(remedy)"] else [] end)
-    + (if $p == "console.hasError" and (($v == true) or ($vs == "true"))
+    + (if $p == "console.hasError" and ($b == true)
          then ["entry[\($i)].\($prefix): console.hasError may not be pinned to true \(remedy)"] else [] end)
     + (if $p == "http.status" and ($n != null) and ($n >= 500)
-         then ["entry[\($i)].\($prefix): http.status may not be pinned to \($n) (a 5xx asserts the application FAILED; 3xx/4xx stay legal) \(remedy)"] else [] end)
+         then ( (if ($n|floor) == $n then ($n|floor) else $n end) as $shown
+                | ["entry[\($i)].\($prefix): http.status may not be pinned to \($shown) (a 5xx asserts the application FAILED; 3xx/4xx stay legal) \(remedy)"] )
+         else [] end)
   end;
 
 # Prose scan — the oracle/expect fields ONLY. `action` is deliberately never
@@ -233,38 +307,89 @@ REQ_KIND_ENUM = {"bake", "computed", "probe", "human-action"}
 
 # --- error-honesty invariants (spec 2026-09-23 §4.1) -----------------------
 REMEDY = "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)"
-PROSE_PHRASES = ("expected to fail", "deferred by design")
+# Process language only — see the jq engine's `prosePhrases` for why
+# `expected to fail` is deliberately absent.
+PROSE_PHRASES = ("deferred by design",)
+
+# --- shared normalisation --------------------------------------------------
+# Mirrors the jq engine's trimWs / asciiDigits / strictNumber / normBool
+# EXACTLY. Deliberately NOT `str.strip()` (strips \x0b, \x0c and unicode
+# spaces that jq's 4-character set does not), NOT `float()` (accepts " 500 "
+# and "1_000" where jq's tonumber does not), and NOT `str.isdigit()` (true for
+# Arabic-Indic digits and superscripts, where jq's 48..57 test is false).
+_WS = " \t\n\r"
+_ASCII_DIGITS = "0123456789"
 
 
-def _as_number(v):
+def _trim_ws(s):
+    return s.strip(_WS) if isinstance(s, str) else s
+
+
+def _ascii_digits(s):
+    return all(c in _ASCII_DIGITS for c in s)
+
+
+def _strict_number(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         return v
+    if not isinstance(v, str):
+        return None
+    t = _trim_ws(v)
+    b = t[1:] if t.startswith("+") or t.startswith("-") else t
+    if len(b) == 0:
+        return None
+    if _ascii_digits(b):
+        return float(t)
+    ps = b.split(".")
+    if (len(ps) == 2 and len(ps[0]) > 0 and len(ps[1]) > 0
+            and _ascii_digits(ps[0]) and _ascii_digits(ps[1])):
+        return float(t)
+    return None
+
+
+def _norm_bool(v):
+    """Truthiness closes the nearest route-around: `page.crashed: 1` and
+    `page.rendersWithoutServerError: 0` are the same assertion in a different
+    spelling."""
+    if v is True:
+        return True
+    if v is False:
+        return False
+    if isinstance(v, (int, float)):
+        if v == 1:
+            return True
+        if v == 0:
+            return False
+        return None
     if isinstance(v, str):
-        try:
-            return float(v)
-        except ValueError:
-            return None
+        t = _trim_ws(v).lower()
+        if t in ("true", "1"):
+            return True
+        if t in ("false", "0"):
+            return False
+        return None
     return None
 
 
 def health_violations(i, prefix, x):
     """The reserved health namespace: these expect.path values describe
     whole-page or transport health, never a domain value, and may not be
-    pinned to a failing value. http.status in the 3xx/4xx range stays legal."""
+    pinned to a failing value. http.status in the 3xx/4xx range stays legal.
+    The path is TRIMMED but deliberately NOT case-folded."""
     if not isinstance(x, dict):
         return []
     v = []
-    p = x.get("path")
+    p = _trim_ws(x.get("path"))
     val = x.get("value")
-    vs = val.lower() if isinstance(val, str) else ""
-    n = _as_number(val)
-    if p == "page.rendersWithoutServerError" and (val is False or vs == "false"):
+    b = _norm_bool(val)
+    n = _strict_number(val)
+    if p == "page.rendersWithoutServerError" and b is False:
         v.append(f"entry[{i}].{prefix}: page.rendersWithoutServerError may not be pinned to false {REMEDY}")
-    if p == "page.crashed" and (val is True or vs == "true"):
+    if p == "page.crashed" and b is True:
         v.append(f"entry[{i}].{prefix}: page.crashed may not be pinned to true {REMEDY}")
-    if p == "console.hasError" and (val is True or vs == "true"):
+    if p == "console.hasError" and b is True:
         v.append(f"entry[{i}].{prefix}: console.hasError may not be pinned to true {REMEDY}")
     if p == "http.status" and n is not None and n >= 500:
         shown = int(n) if float(n).is_integer() else n
