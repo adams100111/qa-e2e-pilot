@@ -14,14 +14,20 @@
 #   known-defects.sh validate <registry.json> [today-YYYY-MM-DD]
 #       Exit 0 iff every entry is well-formed. Otherwise prints one
 #       `ERROR: entry[<i>].<field>: ...` line per violation to STDERR and exits 1.
-#       EVERY violation is reported, not just the first.
+#       STDOUT stays empty. EVERY violation is reported, not just the first.
 #
 #   known-defects.sh status <registry.json> <today-YYYY-MM-DD> [--evidence <file>]
 #       Prints a JSON array of {"id":...,"state":"outstanding"|"expired"|"cleared"} on
 #       STDOUT, in registry order. Exit 0.
 #
+# EXIT CODES: 0 ok · 1 validation failed (validate only) · 2 the inputs are unusable
+# (missing/unparseable/wrongly-typed registry or evidence, a registry carrying control
+# characters, a bad argument, no engine available). Both engines agree on the exit code
+# AND on the stderr text for every one of these.
+#
 # SCHEMA. Required: id, title, ticket, expiry, severity, observedClass, surface,
-# observedBehaviour (each a non-blank string). Optional: observedStatus (a number).
+# observedBehaviour (each a non-blank, single-line string). Optional: observedStatus (a
+# number). No string field may contain a control character (see "INJECTION" below).
 #   observedClass in {non-rendering, wrong-value, degraded}
 #   severity      in {low, medium, high, critical}
 #
@@ -38,12 +44,16 @@
 #     the surface produces exactly the same silence as a fixed defect. With no evidence
 #     supplied, every entry stays `outstanding`.
 #
-# FAIL-CLOSED CHOICES in `status` (it must exit 0, so it cannot report them as errors):
+# FAIL-CLOSED CHOICES in `status` (it must exit 0 on usable input, so it cannot report
+# these as errors), all deliberate:
 #   * `expired` is decided BEFORE `cleared`: an overdue entry surfaces even when evidence
 #     suggests a fix, so a human removes it from the registry deliberately.
 #   * An entry whose `expiry` is absent or unparseable counts as `expired` - an entry with
 #     no valid deadline is overdue by definition. (`validate` rejects it outright.)
-#   * A fatal finding carrying no `url` blocks clearing: it cannot be proven to be off the
+#   * A navigation row with no string `url` is IGNORED: it is not positive evidence of
+#     reaching anything, and `pathpart("")` would otherwise degrade to "/" and clear every
+#     entry whose surface is "/" (review finding 2).
+#   * A fatal finding carrying no `url` BLOCKS clearing: it cannot be proven to be off the
 #     surface, and the burden of proof is on clearing.
 #   * `expiry == today` is NOT yet expired (the entry has until the end of its day).
 #
@@ -51,7 +61,25 @@
 #   { "navigations": [ {"url": "<absolute or path>", "status": <int>}, ... ],
 #     "findings":    [ {"url": "<absolute or path>", "statusClass": "fatal"|"non-fatal",
 #                       "status": <int>}, ... ] }
-#   A finding counts as fatal when statusClass == "fatal" OR status >= 500.
+#   The top level MUST be a JSON object; `navigations`/`findings`, when present and
+#   non-null, MUST be arrays of objects. Anything else is exit 2 in BOTH engines — never
+#   silently iterated (review finding 1: iterating a JSON object yields values in jq and
+#   KEYS in python, which let python3 clear a defect that had a fatal finding).
+#   A finding counts as fatal when statusClass == "fatal" (exact, case-sensitive) OR
+#   status >= 500.
+#
+# INJECTION. `validate` interpolates registry values into its error lines, and `status`
+# builds a JSON array out of per-entry rows. If both ever shared one stream, a newline
+# inside a registry value could forge a `cleared` row (review finding 3). Two structural
+# defences, not one:
+#   1. THE CHANNELS NEVER COEXIST. The engine is told its mode. In `validate` mode it emits
+#      error lines and NO status rows; in `status` mode it emits `S<TAB>`-prefixed rows and
+#      NO error lines. The bash layer rejects any `status`-mode line that is not
+#      `S<TAB>`-prefixed, so nothing unexpected can reach the JSON it prints. Row payloads
+#      come from tojson/json.dumps, which escape newlines, so a row is always one line.
+#   2. CONTROL CHARACTERS ARE REJECTED. Any string field containing a character below
+#      U+0020, or U+007F, is a validation error in `validate` and a hard exit 2 in
+#      `status`. Registry prose is single-line by contract.
 #
 # SURFACE MATCHING is deterministic and identical in both engines: the surface pattern is
 # compared against the navigation/finding URL's path (and query, when - and only when - the
@@ -127,16 +155,27 @@ if [ -n "$EVIDENCE" ] && [ ! -f "$EVIDENCE" ]; then
 fi
 
 # ---- the engines -------------------------------------------------------------
-# Both engines emit the SAME line-oriented stream on stdout, so the bash layer never has
-# to re-parse JSON and the two engines are trivially byte-comparable:
-#   E<TAB><one `ERROR: entry[i].field: ...` line>
-#   S<TAB><one compact {"id":...,"state":...} object, in registry order>
+# Both engines take (registry, today, evidence-path, mode) and speak ONE protocol:
+#
+#   mode=validate : STDOUT = zero or more `ERROR: ...` lines, nothing else. Exit 0.
+#   mode=status   : STDOUT = exactly one `S<TAB>{"id":...,"state":...}` line per entry,
+#                   nothing else. Exit 0.
+#   either mode   : structurally unusable input -> `ERROR: ...` on STDERR, exit 4.
+#                   control characters in a registry string, in status mode only
+#                   -> `ERROR: ...` lines on STDERR, exit 3.
+#
+# The two content channels are never open at the same time, which is what makes an
+# injected newline unable to forge a row (see "INJECTION" above). Every stderr text and
+# every exit code below is identical in both engines; the parity suite asserts that across
+# the malformed-input space, not just the happy path.
 
 JQ_PROG="$(cat <<'JQ_EOF'
+def fail($m): ("ERROR: " + $m + "\n") | halt_error(4);
+
 def chars: explode | map([.] | implode);
 
-# Escape only true regex metacharacters. Escaping arbitrary punctuation ("\=") is an
-# error in some regex flavours, so the set is explicit and shared with the python leg.
+# Escape only true regex metacharacters. Escaping arbitrary punctuation is an error in
+# some regex flavours, so the set is explicit and shared with the python leg.
 def escre:
   chars
   | map(. as $c
@@ -178,6 +217,9 @@ def dnum($s):
 # non-empty string (whitespace-only counts as empty)
 def nes($v): (($v | type) == "string") and ((($v | gsub("^[ \t\r\n]+|[ \t\r\n]+$"; "")) | length) > 0);
 
+# any character below U+0020, or U+007F
+def hasctl($s): (($s | type) == "string") and ((($s | explode | map(select((. < 32) or (. == 127))) | length)) > 0);
+
 def pathpart($u):
   (if ($u | type) == "string" then $u else "" end)
   | sub("#.*$"; "")
@@ -194,17 +236,34 @@ def fatalFinding:
   (.statusClass == "fatal")
   or (((((.status) // null) | type) == "number") and ((((.status) // 0)) >= 500));
 
+# Structural gate on the evidence document. Anything unusable exits 4 rather than being
+# iterated: iterating a JSON OBJECT yields its values here and its KEYS in python, which
+# is exactly how a fatal finding became invisible to one engine (review finding 1).
+def evcheck:
+  if ($evpath == "") then null
+  elif (($ev | type) != "object") then fail("evidence must be a JSON object: " + $evpath)
+  elif (($ev | has("navigations")) and (($ev.navigations) != null) and ((($ev.navigations) | type) != "array"))
+    then fail("evidence.navigations must be a JSON array")
+  elif (($ev | has("findings")) and (($ev.findings) != null) and ((($ev.findings) | type) != "array"))
+    then fail("evidence.findings must be a JSON array")
+  elif ((([ (($ev.navigations // [])[]) | select((type) != "object") ]) | length) > 0)
+    then fail("evidence.navigations[] entries must be JSON objects")
+  elif ((([ (($ev.findings // [])[]) | select((type) != "object") ]) | length) > 0)
+    then fail("evidence.findings[] entries must be JSON objects")
+  else null end;
+
 def clearedBy($e; $ev):
   if (($ev | type) != "object") then false
   elif (nes($e.surface) | not) then false
   else
     ([ (($ev.navigations // [])[])
-       | select((type == "object") and (((((.status) // null) | type) == "number")))
-       | select(((.status) >= 200) and ((.status) < 300))
+       # fail-open guard (review finding 2): a navigation with no string url is not
+       # evidence of reaching anything, and pathpart("") would degrade to "/".
+       | select((((.url) // null) | type) == "string")
+       | select(((((.status) // null) | type) == "number") and ((.status) >= 200) and ((.status) < 300))
        | select(surfmatch($e.surface; .url)) ] | length) > 0
     and
     ([ (($ev.findings // [])[])
-       | select(type == "object")
        | select(fatalFinding)
        # fail-closed: a fatal finding with no url cannot be proven off this surface
        | select(((((.url) // null) | type) != "string") or surfmatch($e.surface; .url)) ] | length) == 0
@@ -217,11 +276,19 @@ def entryState($e; $today; $ev):
   elif clearedBy($e; $ev) then "cleared"
   else "outstanding" end;
 
+def ctlErrors($i; $e):
+  if (($e | type) != "object") then []
+  else [ ($e | keys[]) as $k
+         | select(hasctl($e[$k]))
+         | "ERROR: entry[\($i)].\($k): contains a control character" ]
+  end;
+
 def entryErrors($i; $e; $today; $seen):
   if (($e | type) != "object") then [ "ERROR: entry[\($i)]: not a JSON object" ]
   else
     ( ["id","title","ticket","expiry","severity","observedClass","surface","observedBehaviour"]
       | map(. as $f | if nes($e[$f]) then empty else "ERROR: entry[\($i)].\($f): missing or empty" end) )
+    + ctlErrors($i; $e)
     + ( if (nes($e.id) and (($seen | index($e.id)) != null))
         then [ "ERROR: entry[\($i)].id: duplicate id '\($e.id)'" ] else [] end )
     + ( if (nes($e.expiry) and (okdate($e.expiry) | not))
@@ -240,42 +307,60 @@ def entryErrors($i; $e; $today; $seen):
         then [ "ERROR: entry[\($i)].observedStatus: must be a number when present" ] else [] end )
   end;
 
-if (type != "array") then error("registry must be a JSON array") else . end
+(if (type != "array") then fail("registry must be a JSON array") else null end) as $_regchk
+| (evcheck) as $_evchk
 | . as $reg
-| [ range(0; ($reg | length)) as $i
-    | ($reg[$i]) as $e
-    | ([ ($reg[0:$i][]) | (if (type == "object") then .id else null end) ]) as $seen
-    | (entryErrors($i; $e; $today; $seen)[]) | "E\t" + . ]
-  +
-  [ range(0; ($reg | length)) as $i
-    | ($reg[$i]) as $e
-    | "S\t" + ({ id: (if (($e | type) == "object") then (($e.id) // null) else null end),
-                 state: entryState($e; $today; $ev) } | tojson) ]
-| .[]
+| ([ range(0; ($reg | length)) as $i | (ctlErrors($i; $reg[$i])[]) ]) as $ctl
+| if ($mode == "status") then
+    (if (($ctl | length) > 0) then (($ctl | map(. + "\n") | join("")) | halt_error(3)) else null end) as $_ctlchk
+    | [ range(0; ($reg | length)) as $i
+        | ($reg[$i]) as $e
+        | "S\t" + ({ id: (if (($e | type) == "object") then (($e.id) // null) else null end),
+                     state: entryState($e; $today; $ev) } | tojson) ]
+    | .[]
+  else
+    [ range(0; ($reg | length)) as $i
+      | ($reg[$i]) as $e
+      | ([ ($reg[0:$i][]) | (if (type == "object") then .id else null end) ]) as $seen
+      | (entryErrors($i; $e; $today; $seen)[]) ]
+    | .[]
+  end
 JQ_EOF
 )"
 
 PY_PROG="$(cat <<'PY_EOF'
 import json, re, sys
 
-registry_path, today, evidence_path = sys.argv[1], sys.argv[2], sys.argv[3]
+registry_path, today, evidence_path, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
-def bail(msg):
-    sys.stderr.write("ERROR: " + msg + "\n"); sys.exit(2)
+def fail(msg):
+    sys.stderr.write("ERROR: " + msg + "\n")
+    sys.exit(4)
 
 try:
     reg = json.load(open(registry_path))
 except Exception:
-    bail("registry is not valid JSON: " + registry_path)
+    fail("registry is not valid JSON: " + registry_path)
 if not isinstance(reg, list):
-    bail("registry must be a JSON array")
+    fail("registry must be a JSON array")
 
 ev = None
 if evidence_path:
     try:
         ev = json.load(open(evidence_path))
     except Exception:
-        bail("evidence is not valid JSON: " + evidence_path)
+        fail("evidence is not valid JSON: " + evidence_path)
+    # Structural gate (review finding 1): iterating a JSON object yields VALUES in jq and
+    # KEYS here, which is how a fatal finding became invisible to one engine. Never iterate
+    # a container we have not proven to be a list of objects.
+    if not isinstance(ev, dict):
+        fail("evidence must be a JSON object: " + evidence_path)
+    for key in ("navigations", "findings"):
+        if key in ev and ev[key] is not None and not isinstance(ev[key], list):
+            fail("evidence.%s must be a JSON array" % key)
+        for item in (ev.get(key) or []):
+            if not isinstance(item, dict):
+                fail("evidence.%s[] entries must be JSON objects" % key)
 
 META = set("\\.^$|?*+()[]{}")
 
@@ -319,6 +404,9 @@ def dnum(s):
 def nes(v):
     return isinstance(v, str) and len(v.strip(" \t\r\n")) > 0
 
+def hasctl(v):
+    return isinstance(v, str) and any(ord(c) < 32 or ord(c) == 127 for c in v)
+
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 def pathpart(u):
@@ -338,8 +426,6 @@ def is_num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 def fatal_finding(f):
-    if not isinstance(f, dict):
-        return False
     return f.get("statusClass") == "fatal" or (is_num(f.get("status")) and f.get("status") >= 500)
 
 def cleared_by(e, ev):
@@ -348,10 +434,11 @@ def cleared_by(e, ev):
     if not nes(e.get("surface")):
         return False
     surface = e["surface"]
-    navs = ev.get("navigations") or []
-    ok_nav = any(isinstance(n, dict) and is_num(n.get("status"))
-                 and 200 <= n["status"] < 300 and surfmatch(surface, n.get("url"))
-                 for n in navs)
+    # fail-open guard (review finding 2): a navigation with no string url is not evidence
+    # of reaching anything, and pathpart("") would degrade to "/".
+    ok_nav = any(isinstance(n.get("url"), str) and is_num(n.get("status"))
+                 and 200 <= n["status"] < 300 and surfmatch(surface, n["url"])
+                 for n in (ev.get("navigations") or []))
     if not ok_nav:
         return False
     for f in (ev.get("findings") or []):
@@ -378,6 +465,12 @@ REQUIRED = ["id", "title", "ticket", "expiry", "severity", "observedClass", "sur
 CLASSES = ["non-rendering", "wrong-value", "degraded"]
 SEVS = ["low", "medium", "high", "critical"]
 
+def ctl_errors(i, e):
+    if not isinstance(e, dict):
+        return []
+    return ["ERROR: entry[%d].%s: contains a control character" % (i, k)
+            for k in sorted(e.keys()) if hasctl(e.get(k))]
+
 def entry_errors(i, e, today, seen):
     if not isinstance(e, dict):
         return ["ERROR: entry[%d]: not a JSON object" % i]
@@ -385,6 +478,7 @@ def entry_errors(i, e, today, seen):
     for f in REQUIRED:
         if not nes(e.get(f)):
             out.append("ERROR: entry[%d].%s: missing or empty" % (i, f))
+    out.extend(ctl_errors(i, e))
     if nes(e.get("id")) and e.get("id") in seen:
         out.append("ERROR: entry[%d].id: duplicate id '%s'" % (i, e.get("id")))
     exp = e.get("expiry")
@@ -404,41 +498,73 @@ def entry_errors(i, e, today, seen):
         out.append("ERROR: entry[%d].observedStatus: must be a number when present" % i)
     return out
 
+ctl = []
+for i, e in enumerate(reg):
+    ctl.extend(ctl_errors(i, e))
+
 lines = []
-for i, e in enumerate(reg):
-    seen = [r.get("id") if isinstance(r, dict) else None for r in reg[:i]]
-    for msg in entry_errors(i, e, today, seen):
-        lines.append("E\t" + msg)
-for i, e in enumerate(reg):
-    row = {"id": (e.get("id") if isinstance(e, dict) else None),
-           "state": entry_state(e, today, ev)}
-    lines.append("S\t" + json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+if mode == "status":
+    if ctl:
+        sys.stderr.write("".join(l + "\n" for l in ctl))
+        sys.exit(3)
+    for i, e in enumerate(reg):
+        row = {"id": (e.get("id") if isinstance(e, dict) else None),
+               "state": entry_state(e, today, ev)}
+        lines.append("S\t" + json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+else:
+    for i, e in enumerate(reg):
+        seen = [r.get("id") if isinstance(r, dict) else None for r in reg[:i]]
+        lines.extend(entry_errors(i, e, today, seen))
 sys.stdout.write("".join(l + "\n" for l in lines))
 PY_EOF
 )"
 
 # ---- run the selected engine -------------------------------------------------
+ERRF="$(mktemp)" || die "cannot create a temporary file"
+cleanup() { rm -f "$ERRF"; }
+trap cleanup EXIT
+
 if has_jq; then
+  command -v jq >/dev/null 2>&1 || die "QA_ENGINE=jq was requested but jq is not installed"
+  # Pre-parse both documents so a syntax error reports as itself, instead of being
+  # relabelled by a catch-all (review finding 7).
+  jq empty "$REGISTRY" >/dev/null 2>&1 || die "registry is not valid JSON: $REGISTRY"
   EV_JSON="null"
   if [ -n "$EVIDENCE" ]; then
+    jq empty "$EVIDENCE" >/dev/null 2>&1 || die "evidence is not valid JSON: $EVIDENCE"
     EV_JSON="$(cat "$EVIDENCE")"
-    printf '%s' "$EV_JSON" | jq -e . >/dev/null 2>&1 || die "evidence is not valid JSON: $EVIDENCE"
   fi
-  STREAM="$(jq -r --arg today "$TODAY" --argjson ev "$EV_JSON" "$JQ_PROG" "$REGISTRY" 2>/dev/null)" \
-    || die "registry is not a valid JSON array of entries: $REGISTRY"
+  STREAM="$(jq -r --arg today "$TODAY" --arg mode "$CMD" --arg evpath "$EVIDENCE" \
+                  --argjson ev "$EV_JSON" "$JQ_PROG" "$REGISTRY" 2>"$ERRF")"
+  ERC=$?
 elif has_py; then
-  STREAM="$(python3 -c "$PY_PROG" "$REGISTRY" "$TODAY" "$EVIDENCE")" || exit $?
+  STREAM="$(python3 -c "$PY_PROG" "$REGISTRY" "$TODAY" "$EVIDENCE" "$CMD" 2>"$ERRF")"
+  ERC=$?
 else
   die "known-defects.sh needs either 'jq' or 'python3'."
 fi
+
+case "$ERC" in
+  0) : ;;
+  3|4)
+    # A structural input problem, or control characters in `status` mode. The engine has
+    # already written the exact ERROR text; both engines write the same bytes.
+    cat "$ERRF" >&2
+    exit 2 ;;
+  *)
+    # Anything else is a genuine engine fault: surface its real diagnostic rather than
+    # relabelling it (review finding 7).
+    cat "$ERRF" >&2
+    die "engine failed (exit $ERC) on $REGISTRY" ;;
+esac
 
 # ---- render ------------------------------------------------------------------
 if [ "$CMD" = "validate" ]; then
   RC=0
   while IFS= read -r line; do
-    case "$line" in
-      "E$TAB"*) printf '%s\n' "${line#E$TAB}" >&2; RC=1 ;;
-    esac
+    [ -n "$line" ] || continue
+    printf '%s\n' "$line" >&2
+    RC=1
   done <<EOF
 $STREAM
 EOF
@@ -446,14 +572,18 @@ EOF
   exit "$RC"
 fi
 
-# status
+# status: STDOUT carries S-rows and nothing else. Any other line means the engine did
+# something unexpected, so refuse rather than fold it into the JSON.
 JSON="["
 FIRST=1
 while IFS= read -r line; do
+  [ -n "$line" ] || continue
   case "$line" in
     "S$TAB"*)
       if [ "$FIRST" -eq 1 ]; then FIRST=0; else JSON="$JSON,"; fi
       JSON="$JSON${line#S$TAB}" ;;
+    *)
+      die "unexpected engine output in status mode: $line" ;;
   esac
 done <<EOF
 $STREAM

@@ -24,9 +24,23 @@
 #   (E) EXIT CODE HONESTY. `validate` must never exit 0 while printing errors.
 #       That exact bug shipped in qa-kit/scripts/data-baseline.sh and hid a
 #       malformed baseline in production use.
-#   (F) DUAL-ENGINE PARITY. Every case runs on jq and on python3; the two
-#       engines must agree byte-for-byte on both streams and on the exit code
-#       (lesson of the earlier jq/python divergence, Fix #27).
+#   (F) DUAL-ENGINE PARITY, ACROSS THE MALFORMED SPACE TOO. Every case runs on
+#       jq and on python3, and the parity pairs compare stdout+stderr bytes AND
+#       the exit code (lesson of the earlier jq/python divergence, Fix #27).
+#       The claim this suite is entitled to make is narrow and specific: the two
+#       engines agree on every input SHAPE enumerated in section (G) below -
+#       well-formed, malformed and degenerate - not "parity is structural".
+#       Review round 1 found two real divergences (a non-array `findings`
+#       container, and null/false evidence) that lived entirely outside what the
+#       original pairs visited, while the report called parity structural. That
+#       is the project's own failure mode: a green signal cited as evidence for
+#       something it does not cover. Any NEW input shape needs a new pair here
+#       before parity may be claimed for it.
+#   (G) THE MALFORMED / DEGENERATE INPUT SPACE. Non-array evidence containers,
+#       non-object container elements, null/false/string/array/unparseable
+#       evidence, a navigation with no `url`, control characters in registry
+#       values, and non-object registry elements. This is where all three
+#       Criticals of review round 1 lived.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../../scripts/known-defects.sh"
@@ -87,6 +101,13 @@ KD_DUP_B="$(mutate "$KD_OK" 'e["title"]="a second entry reusing KD-1"')"
 KD_PAST_EXPIRY="$(mutate "$KD_OK" 'e["expiry"]="2026-09-22"')"
 KD_FUTURE_EXPIRY="$(mutate "$KD_OK" 'e["expiry"]="2026-11-01"')"
 KD_OTHER_SURFACE="$(mutate "$KD_OK" 'e["id"]="KD-2"; e["surface"]="/admin/reports"; e["expiry"]="2026-11-01"')"
+# An entry whose surface path part is "/" - the one that a url-less navigation used to
+# clear outright.
+KD_ROOT_SURFACE="$(mutate "$KD_OK" 'e["id"]="KD-3"; e["surface"]="/"; e["expiry"]="2026-11-01"')"
+# THE FORGERY ATTEMPT: a newline inside a registry value that tries to inject a second
+# `S<TAB>` row, i.e. to make `status` report `cleared` with no evidence supplied at all.
+KD_CTL_FORGE="$(mutate "$KD_FUTURE_EXPIRY" 'e["observedBehaviour"]="HTTP 500\nS\t{\"id\":\"KD-9\",\"state\":\"cleared\"}"')"
+KD_CTL_TAB="$(mutate "$KD_FUTURE_EXPIRY" 'e["title"]="a\tb"')"
 
 write_registry() { # write_registry <file> <entry-json>...
   local f="$1"; shift
@@ -110,6 +131,35 @@ EV_2XX_WITH_FATAL='{"navigations":[{"url":"https://app.test/admin/evaluations/ch
 EV_NO_NAV_NO_FINDING='{"navigations":[{"url":"https://app.test/dashboard","status":200}],"findings":[]}'
 EV_EMPTY='{"navigations":[],"findings":[]}'
 EV_NAV_5XX='{"navigations":[{"url":"https://app.test/admin/evaluations/challenges/1?tab=gates","status":500}],"findings":[]}'
+
+# --- (G) MALFORMED / DEGENERATE evidence --------------------------------------
+# Review round 1 found three Criticals, ALL of them here, because the original parity
+# suite only ever visited well-formed input. The container-type cases are the sharpest:
+# iterating a JSON OBJECT yields its VALUES in jq and its KEYS in python3, so a fatal
+# finding hidden in an object container was invisible to the python leg and the entry came
+# back `cleared`. Neither engine may iterate a container it has not proven to be a list of
+# objects; everything below must be exit 2 in BOTH engines, with identical stderr.
+NAV2XX='{"url":"https://app.test/admin/evaluations/challenges/1?tab=gates","status":200}'
+EV_FINDINGS_OBJECT="{\"navigations\":[$NAV2XX],\"findings\":{\"a\":{\"url\":\"https://app.test/admin/evaluations/challenges/1?tab=gates\",\"statusClass\":\"fatal\"}}}"
+EV_FINDINGS_STRING="{\"navigations\":[$NAV2XX],\"findings\":\"boom\"}"
+EV_FINDINGS_ELEM="{\"navigations\":[$NAV2XX],\"findings\":[\"boom\"]}"
+EV_NAVS_OBJECT='{"navigations":{"a":{"url":"https://app.test/admin/evaluations/challenges/1?tab=gates","status":200}},"findings":[]}'
+EV_NAVS_STRING='{"navigations":"boom","findings":[]}'
+EV_NAVS_ELEM='{"navigations":["boom"],"findings":[]}'
+EV_TOP_NULL='null'
+EV_TOP_FALSE='false'
+EV_TOP_STRING='"boom"'
+EV_TOP_ARRAY='[]'
+EV_NOT_JSON='{oops'
+# Degenerate but LEGAL evidence: must be accepted and must leave the entry outstanding.
+EV_TOP_EMPTY_OBJ='{}'
+EV_NULL_CONTAINERS='{"navigations":null,"findings":null}'
+# A navigation row with no url. pathpart("") used to degrade to "/", so this cleared every
+# entry whose surface path part was "/" - the exact inverse of the findings-side guard.
+EV_NAV_NO_URL='{"navigations":[{"status":200}],"findings":[]}'
+# Deliberate and now visible: `statusClass` is matched EXACTLY. "FATAL" is not "fatal", so
+# it does not block clearing. That is the ratified contract, not an accident.
+EV_FATAL_WRONG_CASE="{\"navigations\":[$NAV2XX],\"findings\":[{\"url\":\"https://app.test/admin/evaluations/challenges/1?tab=gates\",\"statusClass\":\"FATAL\"}]}"
 
 # --- engine plumbing ----------------------------------------------------------
 ENGINES=""
@@ -332,6 +382,104 @@ for ENG in $ENGINES; do
   check "[$ENG] malformed <today> exits nonzero"             "$([[ $RC -ne 0 ]] && echo yes)" "yes"
   run "$ENG" bogus "$R/ok.json" "$TODAY"
   check "[$ENG] unknown subcommand exits nonzero"            "$([[ $RC -ne 0 ]] && echo yes)" "yes"
+
+  # ==========================================================================
+  # (G) THE MALFORMED / DEGENERATE INPUT SPACE — review round 1
+  # Every Critical found in review lived here. These are per-engine behaviour
+  # pins; the parity block below additionally proves the two engines agree.
+  # ==========================================================================
+
+  # --- finding 1: a container that is not an array must never be iterated ----
+  # ev_rejected <label> <evidence-json> <exact-stderr-line>
+  # The exact-message pin matters: a guard that CRASHES instead of reporting also exits
+  # nonzero, so "nonzero" alone would let a traceback masquerade as a clean rejection.
+  ev_rejected() {
+    local label="$1" body="$2" want="$3" f="$R/evbad.$$.json"
+    printf '%s\n' "$body" > "$f"
+    run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$f"
+    check "[$ENG] $label: exit 2"            "$RC" "2"
+    check "[$ENG] $label: exact message"     "$SERR" "$want"
+    check "[$ENG] $label: no crash trace"    "$(printf '%s' "$SERR" | grep -qi 'traceback\|jq: error' && echo crashed || echo clean)" "clean"
+    check "[$ENG] $label: prints no verdict" "$SOUT" ""
+    rm -f "$f"
+  }
+  ev_rejected "findings as a JSON object (hid a fatal finding from python3)" \
+    "$EV_FINDINGS_OBJECT" "ERROR: evidence.findings must be a JSON array"
+  ev_rejected "findings as a string" \
+    "$EV_FINDINGS_STRING" "ERROR: evidence.findings must be a JSON array"
+  ev_rejected "findings element not an object" \
+    "$EV_FINDINGS_ELEM" "ERROR: evidence.findings[] entries must be JSON objects"
+  ev_rejected "navigations as a JSON object" \
+    "$EV_NAVS_OBJECT" "ERROR: evidence.navigations must be a JSON array"
+  ev_rejected "navigations as a string" \
+    "$EV_NAVS_STRING" "ERROR: evidence.navigations must be a JSON array"
+  ev_rejected "navigations element not an object" \
+    "$EV_NAVS_ELEM" "ERROR: evidence.navigations[] entries must be JSON objects"
+
+  # --- finding 4: null / false / string / array evidence -> exit 2, both legs -
+  EVBAD="$R/evbad.$$.json"
+  ev_rejected "evidence top level null"   "$EV_TOP_NULL"   "ERROR: evidence must be a JSON object: $EVBAD"
+  ev_rejected "evidence top level false"  "$EV_TOP_FALSE"  "ERROR: evidence must be a JSON object: $EVBAD"
+  ev_rejected "evidence top level string" "$EV_TOP_STRING" "ERROR: evidence must be a JSON object: $EVBAD"
+  ev_rejected "evidence top level array"  "$EV_TOP_ARRAY"  "ERROR: evidence must be a JSON object: $EVBAD"
+  ev_rejected "evidence not parseable"    "$EV_NOT_JSON"   "ERROR: evidence is not valid JSON: $EVBAD"
+
+  # --- degenerate but LEGAL evidence: accepted, clears nothing ---------------
+  printf '%s\n' "$EV_TOP_EMPTY_OBJ" > "$R/ev-empty-obj.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-empty-obj.json"
+  check "[$ENG] evidence {} is legal and exits 0"      "$RC" "0"
+  check "[$ENG] evidence {} clears nothing"            "$(state_of "$SOUT" KD-1)" "outstanding"
+
+  printf '%s\n' "$EV_NULL_CONTAINERS" > "$R/ev-nullc.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-nullc.json"
+  check "[$ENG] null containers are legal and exit 0"  "$RC" "0"
+  check "[$ENG] null containers clear nothing"         "$(state_of "$SOUT" KD-1)" "outstanding"
+
+  # --- finding 2: a navigation with no url is not evidence of reaching ------
+  printf '%s\n' "$EV_NAV_NO_URL" > "$R/ev-nourl.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-nourl.json"
+  check "[$ENG] url-less navigation exits 0"                  "$RC" "0"
+  check "[$ENG] url-less navigation does not clear"           "$(state_of "$SOUT" KD-1)" "outstanding"
+  # the sharp edge: an entry whose surface path part IS "/"
+  write_registry "$R/st-root.json" "$KD_ROOT_SURFACE"
+  run_split "$ENG" status "$R/st-root.json" "$TODAY" --evidence "$R/ev-nourl.json"
+  check "[$ENG] url-less navigation does not clear a '/' surface either" \
+    "$(state_of "$SOUT" KD-3)" "outstanding"
+
+  # --- ratified contract, now deliberate: statusClass is matched EXACTLY -----
+  printf '%s\n' "$EV_FATAL_WRONG_CASE" > "$R/ev-case.json"
+  run_split "$ENG" status "$R/st-fut.json" "$TODAY" --evidence "$R/ev-case.json"
+  check "[$ENG] statusClass 'FATAL' (wrong case) does NOT block clearing" \
+    "$(state_of "$SOUT" KD-1)" "cleared"
+
+  # --- finding 3: a newline in a registry value cannot forge a verdict -------
+  write_registry "$R/ctl.json" "$KD_CTL_FORGE"
+  run_split "$ENG" status "$R/ctl.json" "$TODAY"
+  check "[$ENG] control-char registry: status exits 2"        "$RC" "2"
+  check "[$ENG] control-char registry: status prints NOTHING on stdout" "$SOUT" ""
+  check "[$ENG] control-char registry: no forged 'cleared' anywhere" \
+    "$(printf '%s%s' "$SOUT" "$SERR" | grep -q 'cleared' && echo leaked || echo clean)" "clean"
+  check "[$ENG] control-char registry: names the offending field" \
+    "$(printf '%s\n' "$SERR" | grep -qE '^ERROR: entry\[0\]\.observedBehaviour: contains a control character$' && echo yes)" "yes"
+  run_split "$ENG" validate "$R/ctl.json" "$TODAY"
+  check "[$ENG] control-char registry: validate exits 1"      "$RC" "1"
+  check "[$ENG] control-char registry: validate names it"     \
+    "$(printf '%s\n' "$SERR" | grep -qE 'contains a control character' && echo yes)" "yes"
+  write_registry "$R/ctltab.json" "$KD_CTL_TAB"
+  run_split "$ENG" validate "$R/ctltab.json" "$TODAY"
+  check "[$ENG] a tab in a registry value is rejected too"    "$RC" "1"
+
+  # --- degenerate registry elements -----------------------------------------
+  printf '[null]\n' > "$R/null-elem.json"
+  run_split "$ENG" validate "$R/null-elem.json" "$TODAY"
+  check "[$ENG] null registry element rejected"               "$RC" "1"
+  check "[$ENG] null registry element named"                  \
+    "$(printf '%s\n' "$SERR" | grep -qE '^ERROR: entry\[0\]: not a JSON object$' && echo yes)" "yes"
+  run_split "$ENG" status "$R/null-elem.json" "$TODAY"
+  check "[$ENG] null registry element is expired, not cleared" "$(state_of "$SOUT" '<none>')" "<absent>"
+  check "[$ENG] null registry element status exits 0"          "$RC" "0"
+  check "[$ENG] null registry element status row is expired"   \
+    "$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])[0]["state"])' "$SOUT")" "expired"
 done
 
 # ===== (F) test_python_engine_matches_jq_engine ==============================
@@ -364,6 +512,61 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   printf '[]\n' > "$X/empty.json"
   cmp_case "status (empty registry)"     status   "$X/empty.json" "$TODAY"
   cmp_case "validate (empty registry)"   validate "$X/empty.json" "$TODAY"
+
+  # ==========================================================================
+  # PARITY ACROSS THE MALFORMED AND DEGENERATE SPACE — review round 1, finding 5
+  #
+  # The original parity block used well-formed registries and well-formed evidence for all
+  # seven of its pairs, then the report claimed byte parity was "structural". It was not:
+  # two real divergences (a non-array `findings` container, and null/false evidence) lived
+  # entirely outside what the suite visited. That is the same mistake this whole project
+  # exists to remove - a green signal cited as evidence for something it never covered.
+  # These pairs visit the space where the divergences actually were.
+  # ==========================================================================
+  parity_ev() { # parity_ev <label> <evidence-json>
+    local label="$1" body="$2" f="$X/p.$$.json"
+    printf '%s\n' "$body" > "$f"
+    cmp_case "$label" status "$X/good.json" "$TODAY" --evidence "$f"
+    rm -f "$f"
+  }
+  parity_ev "evidence: findings as an object"      "$EV_FINDINGS_OBJECT"
+  parity_ev "evidence: findings as a string"       "$EV_FINDINGS_STRING"
+  parity_ev "evidence: findings element not object" "$EV_FINDINGS_ELEM"
+  parity_ev "evidence: navigations as an object"   "$EV_NAVS_OBJECT"
+  parity_ev "evidence: navigations as a string"    "$EV_NAVS_STRING"
+  parity_ev "evidence: navigations element not object" "$EV_NAVS_ELEM"
+  parity_ev "evidence: top level null"             "$EV_TOP_NULL"
+  parity_ev "evidence: top level false"            "$EV_TOP_FALSE"
+  parity_ev "evidence: top level string"           "$EV_TOP_STRING"
+  parity_ev "evidence: top level array"            "$EV_TOP_ARRAY"
+  parity_ev "evidence: unparseable"                "$EV_NOT_JSON"
+  parity_ev "evidence: empty object"               "$EV_TOP_EMPTY_OBJ"
+  parity_ev "evidence: null containers"            "$EV_NULL_CONTAINERS"
+  parity_ev "evidence: navigation with no url"     "$EV_NAV_NO_URL"
+  parity_ev "evidence: empty arrays"               "$EV_EMPTY"
+  parity_ev "evidence: statusClass wrong case"     "$EV_FATAL_WRONG_CASE"
+  parity_ev "evidence: 2xx nav + fatal finding"    "$EV_2XX_WITH_FATAL"
+  parity_ev "evidence: 5xx nav only"               "$EV_NAV_5XX"
+
+  # degenerate REGISTRIES, both subcommands
+  write_registry "$X/ctl.json" "$KD_CTL_FORGE"
+  cmp_case "registry: control characters (status)"   status   "$X/ctl.json" "$TODAY"
+  cmp_case "registry: control characters (validate)" validate "$X/ctl.json" "$TODAY"
+  printf '[null,"boom",3]\n' > "$X/degen.json"
+  cmp_case "registry: non-object elements (validate)" validate "$X/degen.json" "$TODAY"
+  cmp_case "registry: non-object elements (status)"   status   "$X/degen.json" "$TODAY"
+  printf '{"id":"KD-1"}\n' > "$X/obj.json"
+  cmp_case "registry: not an array (validate)"       validate "$X/obj.json" "$TODAY"
+  cmp_case "registry: not an array (status)"         status   "$X/obj.json" "$TODAY"
+  printf 'not json\n' > "$X/bad.json"
+  cmp_case "registry: unparseable (validate)"        validate "$X/bad.json" "$TODAY"
+  cmp_case "registry: unparseable (status)"          status   "$X/bad.json" "$TODAY"
+  write_registry "$X/root.json" "$KD_ROOT_SURFACE"
+  printf '%s\n' "$EV_NAV_NO_URL" > "$X/nourl.json"
+  cmp_case "registry: '/' surface vs url-less nav"   status   "$X/root.json" "$TODAY" --evidence "$X/nourl.json"
+  # argument-level degenerate cases
+  cmp_case "args: malformed today"                   validate "$X/good.json" "23-09-2026"
+  cmp_case "args: missing registry file"             status   "$X/absent.json" "$TODAY"
 fi
 
 echo
