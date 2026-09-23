@@ -38,8 +38,11 @@ pattern only), `tests/<suite>/run.sh` harness enrolled in `scripts/run-engine-ci
 - **Exact reserved-namespace table** (Task 3), verbatim from spec §4.1:
   `page.rendersWithoutServerError` rejected when `value` is `false`; `page.crashed` when `true`;
   `http.status` when `>= 500`; `console.hasError` when `true`.
-- **Exact prose triggers** (Task 3), verbatim from spec §4.1, matched case-insensitively, in the
-  **oracle/expect fields only, never in `action`**: `expected to fail`, `deferred by design`.
+- **Exact prose trigger** (Task 3), verbatim from spec §4.1, matched case-insensitively, in the
+  **oracle/expect fields only, never in `action`**: `deferred by design`. (`expected to fail` was
+  removed after review — it is a legitimate oracle for an `error-state` criterion, since a 4xx
+  validation rejection is the application working. Reject process language, never behaviour
+  language.)
 - **Exact finding key format** (Task 6): `<criterionId>|<source>|<method>|<url>|<status>`.
 - **Known-defect expiry cap:** 90 days. **Severity floor:** `observedClass: non-rendering` ⇒
   minimum `high`.

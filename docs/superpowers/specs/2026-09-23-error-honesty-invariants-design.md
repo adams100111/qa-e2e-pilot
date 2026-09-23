@@ -128,12 +128,24 @@ transport health rather than a domain value, and may not be pinned to a failing 
 An `http.status` in the 3xx/4xx range stays legal — that is §4's carve-out. Paths outside this
 namespace are untouched; a domain assertion like `counts.evaluators = 2` is unaffected.
 
-**Prose, deliberately narrow.** Hard-reject only `expected to fail` and `deferred by design`, and
-only in the **oracle/expect fields — never in `action`**. `action` is where an author legitimately
-explains context ("this list does not render until the challenge reaches Judging" is a good
-description, and an over-broad net would reject it). The weaker signals `known defect` and
-`not a regression` become `/qa-analyze` **plan-defect** flags instead (§5.9), which now print above
-the verdict line and so cannot be quietly blessed.
+**Prose, deliberately narrow.** Hard-reject only **`deferred by design`**, and only in the
+**oracle/expect fields — never in `action`**. `action` is where an author legitimately explains
+context ("this list does not render until the challenge reaches Judging" is a good description, and
+an over-broad net would reject it).
+
+The governing principle, adopted after review found the first draft over-broad:
+
+> **Reject process language. Never reject behaviour language.**
+
+"Deferred by design" describes a decision about the team's backlog and has no business in an oracle.
+"Expected to fail" describes the *application*, and is frequently correct — *"the save is expected to
+fail with a validation error"* is a sound oracle for an `error-state` criterion, because a 4xx
+validation rejection is the application **working**, which §4 explicitly permits. An earlier draft
+hard-rejected that phrase in the oracle field, which is precisely where its legitimate use lives;
+that would have produced exactly the false-positive class that makes authors disable a validator.
+
+`expected to fail`, `known defect` and `not a regression` are therefore `/qa-analyze` **plan-defect**
+flags instead (§5.9), which print above the verdict line and so cannot be quietly blessed.
 
 Both layers use the validator's existing one-line-per-violation form
 (`ERROR: entry[<i>].<field>: …`).
