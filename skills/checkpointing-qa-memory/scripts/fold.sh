@@ -56,7 +56,17 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 
 # Event schema (journal.sh EVENT SCHEMA comment block) — a parsed line whose
 # `event` value isn't in this set is a schema-unknown-event anomaly.
-KNOWN_EVENTS_JSON='["run_started","phase_entered","phase_exited","plan_frozen","plan_amended","scenario_started","criterion_started","act_intent","act_committed","criterion_verdict","bug_logged","run_ended"]'
+#
+# REGISTRATION IS MANDATORY AND DUPLICATED. journal.sh's append accepts ANY
+# non-empty `event` string, so an unregistered event appends successfully and
+# is then SILENTLY DISCARDED here as an `unknown-event` anomaly — it never
+# reaches fold.jq/fold.py at all. This set exists twice (the jq literal
+# below, and the python3 set inside parse_journal_py), one per parsing
+# engine; adding an event name to only one of them leaves the other engine
+# silently lossy for that event. Keep the two lists identical.
+# `finding_observed` / `capture_probed` are the findings-ledger events
+# (plan 2026-09-23-error-honesty-invariants, Task 6).
+KNOWN_EVENTS_JSON='["run_started","phase_entered","phase_exited","plan_frozen","plan_amended","scenario_started","criterion_started","act_intent","act_committed","criterion_verdict","bug_logged","run_ended","finding_observed","capture_probed"]'
 
 # ---------------------------------------------------------------------------
 # parse_journal_jq/py <journal-file> -> stdout {"events":[...],"skipped":[...]}
@@ -99,9 +109,13 @@ parse_journal_py() {
   python3 - "$file" <<'PYEOF'
 import json, sys
 
+# MUST stay identical to KNOWN_EVENTS_JSON above — see the registration note
+# there. An event registered in only one of the two lists is silently
+# discarded by the other engine as an `unknown-event` anomaly.
 known = {"run_started", "phase_entered", "phase_exited", "plan_frozen",
          "plan_amended", "scenario_started", "criterion_started", "act_intent",
-         "act_committed", "criterion_verdict", "bug_logged", "run_ended"}
+         "act_committed", "criterion_verdict", "bug_logged", "run_ended",
+         "finding_observed", "capture_probed"}
 
 path = sys.argv[1]
 events = []
