@@ -82,5 +82,91 @@ check "a valid --allow-writes call still succeeds after prior rejections" "$(jq 
 check "no stray .tmp.\$\$ sibling left after a successful write" \
   "$(find "$WORK" -maxdepth 1 -name 'c-trunc.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+# ---------------------------------------------------------------------------
+# Task 9 (Lane E): the `findings` block + a NON-DESTRUCTIVE re-render.
+#
+# init-config.sh renders a fresh object and `mv -f`s it over $OUT, so every
+# top-level key it does not itself emit used to be silently destroyed on every
+# re-run. That already lost the six keys `.qa/config.json.example` documents
+# but the writer never emits (viewport, responsiveMatrix, persona, detection,
+# passGate, fixtures), plus `personas` -- which is written ONLY by
+# confirming-discovered-roles' write-persona-config.sh, never by this script.
+# A re-render must now merge the freshly-rendered object OVER the existing one:
+# unknown keys survive, keys the script owns stay authoritative.
+# ---------------------------------------------------------------------------
+
+# --- fresh bootstrap writes the findings block -----------------------------
+FIND_OUT="$WORK/c-findings.json"
+bash "$GEN" --base-url http://localhost:3000 --out "$FIND_OUT" >/dev/null 2>&1
+check "fresh bootstrap writes a findings block"     "$(get "$FIND_OUT" '.findings | type')"           "object"
+check "findings block is documented (_doc)"         "$(get "$FIND_OUT" '(.findings._doc // "") | length > 0')" "true"
+check "findings._doc names the benign semantics"    "$(get "$FIND_OUT" '(.findings._doc // "") | test("POSIX-ERE") and test("path")')" "true"
+
+# --- benign defaults EMPTY (fail-closed: no waivers by default) ------------
+check "findings.benign is an array"                 "$(get "$FIND_OUT" '.findings.benign | type')"    "array"
+check "findings.benign defaults empty (fail-closed)" "$(get "$FIND_OUT" 'if (.findings | type == "object") and (.findings | has("benign")) then (.findings.benign | length | tostring) else "absent" end')" "0"
+
+# --- re-render preserves unknown top-level keys ----------------------------
+PRES="$WORK/c-preserve.json"
+bash "$GEN" --base-url http://localhost:3000 --out "$PRES" >/dev/null 2>&1
+jq '. + {
+      myCustomKey: {"a": 1},
+      viewport: {"width": 1440, "height": 900},
+      responsiveMatrix: [{"id": "mobile", "width": 390, "height": 844}],
+      persona: {"lens": "first-time-user"},
+      detection: {"ux": {"objective": true, "advisoryAesthetics": false}},
+      passGate: {"enforce": true},
+      fixtures: {"hardBlock": true},
+      personas: [{"id": "admin", "role": "admin", "plane": "global", "auth": "qa.admin@example (seeded credential)"}],
+      maxParallel: 99
+    }' "$PRES" > "$PRES.hand" && mv -f "$PRES.hand" "$PRES"
+check "sanity: hand-edited config parses"           "$(jq -e . "$PRES" >/dev/null 2>&1 && echo ok)"   "ok"
+
+# re-run the bootstrap over the hand-edited file (this is the destructive path)
+bash "$GEN" --base-url http://localhost:3000 --allow-writes true --out "$PRES" >/dev/null 2>&1
+
+check "re-render output is still valid JSON"        "$(jq -e . "$PRES" >/dev/null 2>&1 && echo ok)"   "ok"
+check "unknown top-level key survives re-render"    "$(get "$PRES" '.myCustomKey.a')"                 "1"
+
+# the six keys config.json.example documents but the writer never emits
+check "viewport survives re-render"                 "$(get "$PRES" '.viewport.width')"                "1440"
+check "responsiveMatrix survives re-render"         "$(get "$PRES" '.responsiveMatrix[0].id')"        "mobile"
+check "persona survives re-render"                  "$(get "$PRES" '.persona.lens')"                  "first-time-user"
+check "detection survives re-render"                "$(get "$PRES" '.detection.ux.advisoryAesthetics')" "false"
+check "passGate survives re-render"                 "$(get "$PRES" '.passGate.enforce')"              "true"
+check "fixtures survives re-render"                 "$(get "$PRES" '.fixtures.hardBlock')"            "true"
+
+# personas is written by write-persona-config.sh, NEVER by this script
+check "personas survives re-render"                 "$(get "$PRES" '.personas[0].id')"                "admin"
+check "personas entry keeps its auth descriptor"    "$(get "$PRES" '.personas[0].auth')"              "qa.admin@example (seeded credential)"
+
+# --- keys the script OWNS are still authoritative --------------------------
+check "owned maxParallel is reset by a re-run"      "$(get "$PRES" '.maxParallel')"                   "3"
+check "owned allowApiWrites reflects the new flag"  "$(get "$PRES" '.allowApiWrites')"                "true"
+check "owned baseUrl is re-rendered"                "$(get "$PRES" '.baseUrl')"                       "http://localhost:3000"
+check "findings block is present after re-render"   "$(get "$PRES" '.findings.benign | type')"        "array"
+
+# --- a corrupt/unparseable existing file does not block a fresh render -----
+CORRUPT="$WORK/c-corrupt.json"
+printf 'not json at all' > "$CORRUPT"
+bash "$GEN" --base-url http://localhost:3000 --out "$CORRUPT" >/dev/null 2>&1
+check "unparseable existing config is replaced, output valid" "$(jq -e . "$CORRUPT" >/dev/null 2>&1 && echo ok)" "ok"
+check "unparseable existing config: baseUrl written" "$(get "$CORRUPT" '.baseUrl')"                   "http://localhost:3000"
+
+# --- existing cases unchanged: a re-run over Case 1's output keeps them ----
+bash "$GEN" --base-url "https://crm.ddev.site" --environment auto --repos "." \
+  --storage-state ".qa/auth/storageState.json" --out "$OUT" >/dev/null 2>&1
+check "existing cases unchanged: baseUrl"           "$(get "$OUT" '.baseUrl')"                        "https://crm.ddev.site"
+check "existing cases unchanged: driver preset"     "$(get "$OUT" '.drivers[0].preset')"              "managed"
+check "existing cases unchanged: repos role"        "$(get "$OUT" '.repos[0].role')"                  "backend"
+check "existing cases unchanged: writes default"    "$(get "$OUT" '.allowApiWrites')"                 "false"
+check "no stray .tmp.\$\$ sibling after re-render"   "$(find "$WORK" -maxdepth 1 -name 'c-preserve.json.tmp.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# --- the shipped example documents the findings block ----------------------
+EXAMPLE="$HERE/../../.qa/config.json.example"
+check "config.json.example is valid JSON"           "$(jq -e . "$EXAMPLE" >/dev/null 2>&1 && echo ok)" "ok"
+check "example documents findings.benign"           "$(get "$EXAMPLE" '.findings.benign | type')"     "array"
+check "example findings block carries a _doc"        "$(get "$EXAMPLE" '(.findings._doc // "") | length > 0')" "true"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

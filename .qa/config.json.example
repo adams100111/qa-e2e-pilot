@@ -59,6 +59,10 @@
     "secretPatterns": ["(?i)(password|token|secret|api[_-]?key)\\s*[=:]\\s*\\S+"],
     "redactedKeys": []
   },
+  "findings": {
+    "_doc": "Error-honesty findings classification. benign: an allowlist of POSIX-ERE-compatible regexes (no lookaround/backreferences -- matched via jq's built-in regex or python3 're', never grep -P/perl) tested against an observed finding's URL **path** ONLY -- the path component, never the query string and never the whole URL. A match downgrades that finding's originClass to \"benign\", so it can never fail a run; the benign check runs AFTER the origin check, so a rule here can downgrade an in-scope path too. Every entry is a deliberate, human-authored, git-tracked WAIVER of an observed application error -- keep the list short and justified (the canonical example being a favicon rule, \"^/favicon\\\\.ico$\"). FAIL-CLOSED DEFAULT (honesty-critical, and the opposite of `enforcement.secretPatterns`' fail-SAFE default): an EMPTY list is the bootstrap default and means NO waivers -- and an ABSENT `findings` block is the same thing, not a permissive one. An unparseable URL, a relative URL, or a missing `baseUrl` all classify as \"in-scope\": never third-party, never benign. This whole block is OWNED by bootstrapping-qa-config's init-config.sh, which re-renders it on every re-run (unlike the unknown keys around it, which a re-run now preserves) -- so keep hand-added waivers under version control.",
+    "benign": []
+  },
   "isolation": { "maxOpenContexts": 1, "mechanism": "isolated" },
   "criteriaBudget": 60
 }
