@@ -35,6 +35,30 @@
 # docs/harness-adapters.md's "Claude assurance tier" note and docs/running-in-ci.md's
 # QA_VERIFY_STRICT section for what "authoritative" does and does not guarantee.
 #
+# RUN-LEVEL `UNVERIFIED` (plan 2026-09-23-error-honesty-invariants Task 10 / spec §5.7): the word
+# `UNVERIFIED` already appeared in the assurance-tier property below, and a <properties> block is
+# UNREACHABLE from this script's exit code (`sys.exit(1 if (failures or errors) else 0)` at the
+# bottom) — so a run that could not be verified still exited 0 and read as a clean build. A run is
+# now `UNVERIFIED` when ANY of:
+#   - the run's ONE `capture_probed` journal event (checkpoint.sh's once-per-run canary) records a
+#     `channel` that is not an actual capture channel — `none`, an unrecognized value, or the event
+#     (or the journal) absent entirely. An absent canary is treated IDENTICALLY to `none`: it is
+#     what a run aborted before any verdict looks like, and such a run must not read as clean.
+#   - `QA_SKIP_VERIFY=1` is set in the environment (the same literal-`1` test qa-ci.sh branches on,
+#     so a hand-rolled CI that calls this exporter directly cannot lose the status either).
+#   - the sibling `fold-anomalies.json` reports `unparseable-line` or `seq-gap`. ONLY those two:
+#     both mean the run's own RECORD is damaged, so its verdicts cannot be trusted. Every other
+#     anomaly (`illegal-edge`, `cross-child-duplicate`, `duplicate-plan-frozen`,
+#     `verdict-without-started`, `finding-url-oversize`, `finding-detail-missing`, …) is surfaced as
+#     a COUNT ONLY on the `qa.foldAnomalies` property and NEVER marks a run unverified — a
+#     data-quality problem in one finding is not damage to the record.
+# `UNVERIFIED` SYNTHESIZES a `<testcase name="__run-verified__">` carrying a `<failure>` whose
+# message is `UNVERIFIED — <reason>`; it is counted in tests/failures, so it reaches the exit code.
+# That is the only route that works when qa-verify did not run at all — which is exactly the
+# `UNVERIFIED` case — so routing it through qa-verify.sh's own failure path would be unreachable
+# precisely when it is needed. `qa.verified` / `qa.assuranceTier` and the per-criterion
+# `confidence: low` semantics are UNCHANGED; low confidence simply stops being the headline.
+#
 # COST TELEMETRY (audit-2 W4-3): when a sibling run-manifest.json carries a non-null `cost`
 # object (checkpointing-qa-memory writes it from scripts/cost-summary.sh's output), ONE
 # additional <property name="qa.cost" .../> line is emitted on the <testsuite>, e.g.
@@ -101,7 +125,12 @@ checkpoint_path, out_path = sys.argv[1], sys.argv[2]
 with open(checkpoint_path) as f:
     data = json.load(f)
 
-run_id = data.get("run_id", "qa-e2e-pilot")
+# `or` (not a get-default): fold.sh writes run_id as JSON null when the journal
+# never carried a run_started event — i.e. on an aborted run, which is exactly
+# an UNVERIFIED run. quoteattr(None) raises, and a traceback writes no XML at
+# all, so the UNVERIFIED reason would be lost in the one case it matters most.
+run_id = data.get("run_id") or "qa-e2e-pilot"
+updated_at = data.get("updated_at") or ""
 criteria = data.get("criteria", [])
 
 counts = {"pass": 0, "fail": 0, "error": 0, "blocked": 0, "deferred": 0}
@@ -167,6 +196,94 @@ def load_cost_summary(checkpoint_file):
     return cost if isinstance(cost, dict) else None
 
 cost_summary = load_cost_summary(checkpoint_path)
+
+# --- run-level UNVERIFIED (Task 10 / spec §5.7) ----------------------------
+# An actual, independent capture channel. `none` is not an error at the
+# canary (checkpoint.sh never dies on it) — it is the honest input to this
+# status. Anything NOT in this tuple fails CLOSED, including an unrecognized
+# channel value: a value this script does not understand is not evidence
+# that a capture exists.
+CAPTURE_CHANNELS = ("toolstream", "driver-log")
+
+# The only two anomalies that mean the run's own RECORD is damaged. This
+# tuple is a RULING, deliberately narrow — see the header. Widening it lets
+# one bad finding invalidate an otherwise clean run.
+RECORD_DAMAGE_ANOMALIES = ("unparseable-line", "seq-gap")
+
+
+def load_capture_channel(checkpoint_file):
+    """The `channel` of this run's ONE capture_probed journal event, or None
+    when the event is absent entirely (no journal, an unreadable journal, or
+    a journal that never carried the canary). None and "none" are treated
+    identically by the caller."""
+    journal_path = os.path.join(os.path.dirname(checkpoint_file) or ".", "journal.ndjson")
+    if not os.path.isfile(journal_path):
+        return None
+    try:
+        with open(journal_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    # A torn/malformed line is the fold's `unparseable-line`
+                    # anomaly to report, never this scan's to abort on.
+                    continue
+                if isinstance(obj, dict) and obj.get("event") == "capture_probed":
+                    channel = obj.get("channel")
+                    return channel if isinstance(channel, str) else ""
+    except OSError:
+        return None
+    return None
+
+
+def load_fold_anomaly_counts(checkpoint_file):
+    """{rule: count} from the sibling fold-anomalies.json. Absent or
+    malformed -> {} : unreadable JSON must never INVENT damage (and must
+    never crash the export), same posture as the other optional siblings."""
+    path = os.path.join(os.path.dirname(checkpoint_file) or ".", "fold-anomalies.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    items = raw.get("anomalies") if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return {}
+    out = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rule = item.get("rule")
+        if isinstance(rule, str) and rule:
+            out[rule] = out.get(rule, 0) + 1
+    return out
+
+
+capture_channel = load_capture_channel(checkpoint_path)
+anomaly_counts = load_fold_anomaly_counts(checkpoint_path)
+# The SAME literal-`1` test qa-ci.sh's own QA_SKIP_VERIFY branch uses — any
+# other value (0, true, yes, "1 ") leaves verification running, so it must
+# not mark the run unverified either.
+skip_verify = os.environ.get("QA_SKIP_VERIFY") == "1"
+
+unverified_reasons = []
+if capture_channel not in CAPTURE_CHANNELS:
+    unverified_reasons.append("no independent capture")
+if skip_verify:
+    unverified_reasons.append("verification skipped (QA_SKIP_VERIFY)")
+damaging = [r for r in RECORD_DAMAGE_ANOMALIES if anomaly_counts.get(r)]
+if damaging:
+    unverified_reasons.append("run record damaged (%s)" % ", ".join(damaging))
+# Fixed reason order (capture, skip, damage) so the headline and the failure
+# message are deterministic for a run with more than one reason.
+unverified = bool(unverified_reasons)
+unverified_message = "UNVERIFIED — " + "; ".join(unverified_reasons)
+
 verification_by_key = {}
 if verification_records is not None:
     for rec in verification_records:
@@ -206,8 +323,12 @@ else:
     assurance_tier = ("qa-verify: ran, authoritative -- every recorded pass independently "
                        "verified. " + _TIER_NOTE)
 
-tests = len(criteria) + len(advisory_items)
-failures = counts["fail"] + verify_overrides
+# The synthetic __run-verified__ case counts as a test AND a failure — that
+# is the whole mechanism: `failures` is what the exit code at the bottom
+# reads, and a run-level row that is not counted is a <properties> block
+# with extra steps.
+tests = len(criteria) + len(advisory_items) + (1 if unverified else 0)
+failures = counts["fail"] + verify_overrides + (1 if unverified else 0)
 errors = counts["error"]
 skipped = counts["blocked"] + counts["deferred"] + len(advisory_items)
 
@@ -218,7 +339,7 @@ lines.append(
 )
 lines.append(
     f'  <testsuite name={quoteattr(run_id)} tests="{tests}" failures="{failures}" '
-    f'errors="{errors}" skipped="{skipped}" timestamp={quoteattr(str(data.get("updated_at","")))}>'
+    f'errors="{errors}" skipped="{skipped}" timestamp={quoteattr(updated_at)}>'
 )
 lines.append('    <properties>')
 lines.append(
@@ -243,6 +364,27 @@ if phase_surface_rec:
     ps_text = "; ".join(str(r) for r in ps_reasons) or "phase-surface finding recorded with no reason text"
     lines.append(
         f'      <property name="qa.phaseSurfaceFindings" value={quoteattr(ps_text)}/>'
+    )
+
+# Run-level UNVERIFIED (Task 10): the reason is ALSO surfaced as a property,
+# for the same reason qa.assuranceTier is — but the property is the echo, not
+# the signal. The signal is the synthesized <testcase> below, which is the
+# only thing the exit code can see.
+if unverified:
+    lines.append(
+        f'      <property name="qa.unverifiedReason" value={quoteattr(unverified_message)}/>'
+    )
+
+# Fold anomalies: a COUNT ONLY, for every rule including the two that mark
+# the run unverified (those are named in qa.unverifiedReason as well). This
+# property NEVER affects tests/failures/errors — same posture as
+# qa.phaseSurfaceFindings.
+if anomaly_counts:
+    anomaly_text = " ".join(
+        f"{rule}={anomaly_counts[rule]}" for rule in sorted(anomaly_counts)
+    )
+    lines.append(
+        f'      <property name="qa.foldAnomalies" value={quoteattr(anomaly_text)}/>'
     )
 
 # Cost telemetry (audit-2 W4-3): ONE properties line, honest tool-calls-as-proxy
@@ -270,6 +412,48 @@ if cost_summary is not None:
         f'      <property name="qa.cost" value={quoteattr(cost_text)}/>'
     )
 lines.append('    </properties>')
+
+# The synthesized run-level case (Task 10 / spec §5.7). Emitted FIRST, before
+# any criterion, because it qualifies every verdict beneath it: this run could
+# not be independently verified, so its passes are a self-report and not a
+# verification result. It is a <failure> (never a <skipped>, never a property)
+# so `sys.exit(1 if (failures or errors) else 0)` at the bottom sees it —
+# `__phase-surface__` is the precedent for a run-level row that deliberately
+# never fails; this one is the opposite by design.
+if unverified:
+    detail_lines = [
+        "This run could not be independently verified, so its verdicts are the in-run "
+        "agent's self-report, not a verification result.",
+    ]
+    if "no independent capture" in unverified_reasons:
+        detail_lines.append(
+            "no independent capture: the run's capture_probed canary recorded "
+            + (("channel=" + capture_channel) if isinstance(capture_channel, str)
+               else "no capture_probed event at all (an aborted run reads the same as an uncaptured one)")
+            + " -- no toolstream and no resolvable driver-log session, so nothing in this run "
+              "can be reconciled against an independent record."
+        )
+    if "verification skipped (QA_SKIP_VERIFY)" in unverified_reasons:
+        detail_lines.append(
+            "verification skipped (QA_SKIP_VERIFY): QA_SKIP_VERIFY=1 was set, so qa-verify never "
+            "re-checked this run. Skipping verification is allowed; reporting the result as "
+            "verified is not."
+        )
+    for reason in unverified_reasons:
+        if reason.startswith("run record damaged"):
+            detail_lines.append(
+                reason + ": the fold reported that this run's own journal is damaged, so the "
+                "event record its verdicts were derived from is incomplete. See "
+                "fold-anomalies.json."
+            )
+    lines.append(
+        f'    <testcase name="__run-verified__" classname={quoteattr(run_id)}>'
+    )
+    lines.append(
+        f'      <failure message={quoteattr(unverified_message)}>'
+        f'{escape(" ".join(detail_lines))}</failure>'
+    )
+    lines.append('    </testcase>')
 
 for c in criteria:
     cid = c.get("criterion_id", "?")
@@ -376,15 +560,24 @@ lines.append('  </testsuite>')
 lines.append('</testsuites>')
 xml = "\n".join(lines) + "\n"
 
+# The report's HEADLINE (Task 10 / spec §5.7): `UNVERIFIED — <reason>` with
+# the tally printed BENEATH it, on stderr in both output modes (same channel
+# as the assurance tier, so the XML stream stays pure XML).
+tally = (f"{tests} tests, {failures} failures, {errors} errors, "
+         f"{skipped} skipped ({len(advisory_items)} advisory)")
+if unverified:
+    sys.stderr.write(unverified_message + "\n")
+
 if out_path:
     with open(out_path, "w") as f:
         f.write(xml)
-    sys.stderr.write(
-        f"wrote {out_path}: {tests} tests, {failures} failures, {errors} errors, "
-        f"{skipped} skipped ({len(advisory_items)} advisory)\n"
-    )
+    sys.stderr.write(f"wrote {out_path}: {tally}\n")
 else:
     sys.stdout.write(xml)
+    if unverified:
+        # The XML-to-stdout mode has never printed a tally; print one only
+        # under UNVERIFIED so the headline is not left without its numbers.
+        sys.stderr.write(f"tally: {tally}\n")
 
 # Assurance tier — always to stderr (even when the XML itself goes to stdout)
 # so it's never silently missed. See docs/harness-adapters.md.
