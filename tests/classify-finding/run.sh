@@ -17,11 +17,15 @@
 #   (D) a `findings.benign[]` POSIX-ERE matched against the URL PATH
 #       downgrades to benign — checked AFTER origin, so it can downgrade an
 #       in-scope path.
-#   (E) FAIL-CLOSED: an unparseable URL, an absent/unusable `baseUrl`, a
-#       relative URL, or an absent `findings` block => `in-scope`. Never
-#       `third-party`, never `benign`. The missing-`findings` case is also
-#       the Lane-E independence case: Lane A must not require the config key
-#       Lane E adds, and its absence must never excuse an error.
+#   (E) FAIL-CLOSED applies to an UNKNOWABLE origin, never to a KNOWN
+#       FOREIGN one: an unparseable URL, a relative URL, an absent/unusable
+#       `baseUrl`, or an unparseable config => `in-scope`, never
+#       `third-party`, never `benign`. An absent `findings` block is NOT one
+#       of those cases — it removes only the benign downgrade, so the origin
+#       comparison still decides and a cross-origin URL stays `third-party`.
+#       That is also the Lane-E independence case: this script must not
+#       require the config key Lane E adds, and its absence must neither
+#       excuse an in-scope error nor make third-party noise fatal.
 #   (F) exit 0 on any successful classification; non-zero ONLY on unusable
 #       arguments (missing config file, wrong arg count).
 #   (G) the jq and python3 engines agree byte-for-byte over the whole matrix.
@@ -132,17 +136,34 @@ test_relative_url_fails_closed() {
   check "[$e] test_relative_url_fails_closed (never benign)" "$(origin_of "$OUT")" "in-scope"
 }
 
+# An absent `findings` block removes the BENIGN DOWNGRADE and nothing else.
+# It says nothing about origin, which `baseUrl` alone decides — so a known
+# foreign origin is still `third-party`. (Classifying third-party noise —
+# analytics beacons, CDN errors, extension traffic — as in-scope+fatal is
+# the false-positive class "report everything, fail only in-scope" exists to
+# avoid.) The genuine fail-closed cases are pinned by
+# test_unparseable_url_fails_closed / test_missing_baseurl_fails_closed /
+# test_relative_url_fails_closed instead.
 test_absent_findings_block_fails_closed() {
-  local e="$1"; run_cls "$e" nofindings 'https://app.test/favicon.ico' 404
-  check "[$e] test_absent_findings_block_fails_closed" "$(origin_of "$OUT")" "in-scope"
+  local e="$1"; run_cls "$e" nofindings 'https://app.test/x' 404
+  check "[$e] test_absent_findings_block_fails_closed (same origin -> in-scope)" "$(origin_of "$OUT")" "in-scope"
   check "[$e] test_absent_findings_block_fails_closed (exit 0)" "$RC" "0"
-  # fail-closed is absolute: with no findings policy nothing is excused,
-  # not even a different origin.
+  # no allowlist => nothing can be downgraded, so a benign-LOOKING path on
+  # the app's own origin stays in-scope
+  run_cls "$e" nofindings 'https://app.test/favicon.ico' 404
+  check "[$e] test_absent_findings_block_fails_closed (benign-looking path -> in-scope)" "$(origin_of "$OUT")" "in-scope"
+  # a KNOWN FOREIGN origin is not an unknowable one: still third-party
+  run_cls "$e" nofindings 'https://cdn.other.test/beacon' 403
+  check "[$e] test_absent_findings_block_fails_closed (cross-origin -> third-party)" "$(origin_of "$OUT")" "third-party"
+  check "[$e] test_absent_findings_block_fails_closed (cross-origin statusClass)" "$(status_of "$OUT")" "non-fatal"
+  # ... including a 5xx: recorded as third-party, not a fatal in-scope finding
   run_cls "$e" nofindings 'https://cdn.other.test/beacon' 500
-  check "[$e] test_absent_findings_block_fails_closed (never third-party)" "$(origin_of "$OUT")" "in-scope"
-  # an unparseable config is the same fail-closed case, and still exit 0
+  check "[$e] test_absent_findings_block_fails_closed (cross-origin 5xx -> third-party)" "$(origin_of "$OUT")" "third-party"
+  # an UNPARSEABLE config is a different case: baseUrl is then unknowable,
+  # so it stays fail-closed in-scope, and still exit 0
   run_cls "$e" malformed 'https://cdn.other.test/beacon' 500
-  check "[$e] test_absent_findings_block_fails_closed (malformed config)" "$(origin_of "$OUT")" "in-scope"
+  check "[$e] test_absent_findings_block_fails_closed (unparseable config -> in-scope)" "$(origin_of "$OUT")" "in-scope"
+  check "[$e] test_absent_findings_block_fails_closed (unparseable config, exit 0)" "$RC" "0"
 }
 
 test_status_500_is_fatal() {
@@ -229,7 +250,9 @@ benign|not a url|500
 benign|/admin/x|500
 benign|/favicon.ico|404
 nobase|https://cdn.other.test/beacon|500
+nofindings|https://app.test/x|404
 nofindings|https://app.test/favicon.ico|404
+nofindings|https://cdn.other.test/beacon|403
 nofindings|https://cdn.other.test/beacon|500
 malformed|https://cdn.other.test/beacon|500
 basic|https://app.test/x|302
@@ -258,7 +281,7 @@ test_python_engine_matches_jq_engine() {
   # non-vacuity guard: two empty blobs are also "identical" (that is exactly
   # what this comparison reported while the script did not yet exist).
   check "test_python_engine_matches_jq_engine (matrix is non-vacuous)" \
-    "$(printf '%s\n' "$mj" | grep -c 'originClass=')" "25"
+    "$(printf '%s\n' "$mj" | grep -c 'originClass=')" "27"
   check "test_python_engine_matches_jq_engine (whole matrix byte-identical)" \
     "$([[ "$mj" == "$mp" ]] && echo same || echo diff)" "same"
   if [[ "$mj" != "$mp" ]]; then

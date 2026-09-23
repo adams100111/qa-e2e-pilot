@@ -29,12 +29,16 @@
 #   checked AFTER origin so a benign rule can downgrade an in-scope path
 #   (and a third-party one).
 #
-#   FAIL-CLOSED. An unparseable URL, a relative URL, an absent/unusable
-#   `baseUrl`, an unparseable config, or an absent `findings` block all
-#   yield `in-scope` — never `third-party`, never `benign`. With no findings
-#   policy in the config NOTHING is excused: Lane A does not depend on the
-#   `findings` key another lane adds, and its absence must never be the
-#   reason an application error went unattributed.
+#   FAIL-CLOSED, for an UNKNOWABLE origin only. An unparseable URL, a
+#   relative URL, an absent/unusable/unparseable `baseUrl`, or an unparseable
+#   config yield `in-scope` — never `third-party`, never `benign`. A KNOWN
+#   FOREIGN origin is not that case: when `baseUrl` is usable the origin
+#   comparison always decides, so a cross-origin URL is `third-party` even
+#   with no `findings` block in the config. An absent `findings` block
+#   removes the benign downgrade and nothing else — this script does not
+#   depend on the `findings` key another task adds, and its absence must
+#   neither excuse an in-scope error nor turn third-party noise (analytics
+#   beacons, CDN errors, extension traffic) into a fatal in-scope finding.
 #
 # DEPENDENCIES: bash 3.2-safe (no associative arrays, no mapfile, no ${x^^}),
 # EITHER jq OR python3 (jq preferred, `QA_ENGINE` overrides the auto-detect,
@@ -113,6 +117,10 @@ read_config > "$TMP" || true
 BASE_URL=""; POLICY="absent"
 exec 3< "$TMP"
 IFS= read -r -d '' BASE_URL <&3 || BASE_URL=""
+# POLICY is read to advance fd 3 onto the regex list and to report the
+# absent-policy case; it does NOT gate the origin comparison. When the policy
+# is absent the remaining stream is empty, so the benign loop simply never
+# runs — the absence removes the downgrade, not the comparison.
 IFS= read -r -d '' POLICY   <&3 || POLICY="absent"
 [ -n "$POLICY" ] || POLICY="absent"
 
@@ -197,7 +205,14 @@ esac
 # --- originClass -----------------------------------------------------------
 ORIGIN_CLASS="in-scope"                # fail-closed default; only a fully
                                        # resolved comparison may change it
-if [ "$POLICY" = "present" ] && parse_url "$URL"; then
+# Fail-closed applies to an UNKNOWABLE origin, never to a KNOWN FOREIGN one:
+# the origin comparison runs whenever both URLs parse, whether or not the
+# config carries a `findings` block. An absent `findings` block removes the
+# benign downgrade only (the NUL stream below is then empty) — it says
+# nothing about origin, which `baseUrl` alone decides. Classifying a
+# third-party 500 as in-scope+fatal would fail the run on analytics/CDN/
+# extension noise, the false-positive class this design exists to avoid.
+if parse_url "$URL"; then
   URL_ORIGIN="$(origin_string)"
   URL_PATH="$P_PATH"
   if parse_url "$BASE_URL"; then
