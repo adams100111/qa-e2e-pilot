@@ -146,6 +146,48 @@ def nmsg(v):
     return _trim1(_trim1(_WS_RUN.sub(" ", v))[:200])
 
 
+# URL_CAP: `url` is the one event field whose length comes from the
+# application under test -- observe.js records every fetch/XHR url, so a
+# `data:` URI or a long query string reaches the PIPE_BUF boundary of 4096
+# bytes on its own. An event above that boundary is not guaranteed to land
+# torn-free; the fold then drops the torn line, that manufactures a
+# `seq-gap`, and under plan decision R15 a `seq-gap` marks the WHOLE RUN
+# UNVERIFIED. One oversized URL must not be able to invalidate an otherwise
+# clean run, so the event contract caps `url` at 1024 characters, carries the
+# full length in the integer `urlLen`, and keeps the untruncated url in the
+# detail file at `detailRef`.
+#
+# The bound is arithmetic over the whole documented budget, not an example:
+# 16 (event name) + 64 (criterionId) + 7 (source) + 10 (channel) +
+# 7 (method) + 1024 (url) + 15 (urlLen digits) + 19 (status) +
+# 11 (originClass) + 9 (statusClass) + 1200 (message: 200 codepoints at the
+# worst 6-byte JSON escape) + 256 (detailRef) + 15 (seq) + 20 (t) + ~180 for
+# key names and punctuation < 4096. `url` is ASCII by contract, not by
+# assumption: RFC 3986 defines a URI as a sequence of US-ASCII characters,
+# and observe.js records the percent-encoded url the browser reports.
+# tests/findings-ledger/run.sh holds every line of that arithmetic, including
+# what happens when the ASCII precondition is violated.
+URL_CAP = 1024
+
+
+def url_len(e):
+    """The FULL length of the finding's url, whether or not the emitter
+    already truncated it. An emitter that caps the url itself MUST supply
+    `urlLen`; when it is absent (or not a usable non-negative integer) the
+    length of the url actually carried is used. This is what makes the
+    derived key identical for a capped event and an uncapped one -- Task 8
+    recomputes the key from the driver log, where the url is never
+    truncated, so the two derivations have to agree."""
+    n = e.get("urlLen")
+    if isinstance(n, bool):
+        return len(kstr(e.get("url")))
+    if isinstance(n, int) and 0 <= n < 10 ** 15:
+        return n
+    if isinstance(n, float) and n == int(n) and 0 <= n < 1e15:
+        return int(n)
+    return len(kstr(e.get("url")))
+
+
 def finding_key(e):
     """The run-scoped identity of one observed finding:
 
@@ -156,6 +198,22 @@ def finding_key(e):
     URL COMPONENT carries the normalized, capped `message` instead -- still
     exactly five `|`-separated components.
 
+    When the url is TRUNCATED (its full `urlLen` exceeds URL_CAP) the URL
+    component is the capped url followed by "#" and the full length. Without
+    that discriminator two genuinely different long URLs sharing their first
+    1024 characters would collapse into ONE finding -- a finding silently
+    hiding another, which is strictly worse than the torn write the cap
+    exists to prevent. The marker is appended ONLY on truncation, so an
+    ordinary url keys exactly as it reads, and its position is unambiguous:
+    it begins after character 1024, and truncation is independently visible
+    as `urlLen > 1024` on the entry.
+
+    ACCEPTED RESIDUAL: `urlLen` separates long URLs of DIFFERENT length. Two
+    different URLs that share a 1024-character prefix AND have the same total
+    length still collapse. Distinguishing those needs a digest of the full
+    url, which the event contract does not carry; the case is pinned by a
+    test so it is a known stopping point rather than a surprise.
+
     The key is DERIVED HERE; a caller-supplied `findingKey` field on the
     event is advisory and never trusted. Dedup has to be a property of the
     fold rather than of whichever emitter happened to run, or the resume
@@ -164,7 +222,12 @@ def finding_key(e):
     that derives it differently surfaces there as a missing finding instead
     of being silently absorbed here."""
     src = kstr(e.get("source"))
-    url_component = nmsg(e.get("message")) if src == "console" else kstr(e.get("url"))
+    if src == "console":
+        url_component = nmsg(e.get("message"))
+    else:
+        capped = kstr(e.get("url"))[:URL_CAP]
+        full = url_len(e)
+        url_component = capped + "#" + str(full) if full > URL_CAP else capped
     return "|".join([
         kstr(e.get("criterionId")),
         src,
@@ -458,12 +521,17 @@ def main():
     # `unknown-event`.
     findings_order = []
     findings_seen = {}
+    findings_anoms = []
     for e in events:
         if e.get("event") != "finding_observed":
             continue
         k = finding_key(e)
         if k in findings_seen:
             continue
+        raw_url = kstr(e.get("url"))
+        capped_url = raw_url[:URL_CAP]
+        full_len = url_len(e)
+        ref = kstr(e.get("detailRef"))
         findings_order.append(k)
         findings_seen[k] = {
             "findingKey": k,
@@ -471,13 +539,30 @@ def main():
             "source": kstr(e.get("source")),
             "channel": kstr(e.get("channel")),
             "method": kstr(e.get("method")),
-            "url": kstr(e.get("url")),
+            "url": capped_url,
+            "urlLen": full_len,
             "status": kstr(e.get("status")),
             "originClass": kstr(e.get("originClass")),
             "statusClass": kstr(e.get("statusClass")),
             "message": nmsg(e.get("message")),
-            "detailRef": kstr(e.get("detailRef")),
+            "detailRef": ref,
         }
+        # finding-url-oversize: the EVENT ITSELF carried a url longer than
+        # URL_CAP, i.e. the emitter did not cap it, i.e. that journal line
+        # was already at risk of a torn append before this fold ran. The
+        # fold cannot un-write it, so it reports the contract breach rather
+        # than silently absorbing it -- a truncation the ledger performed
+        # quietly would leave the run looking clean while its record was
+        # damaged.
+        if len(raw_url) > URL_CAP:
+            findings_anoms.append({
+                "rule": "finding-url-oversize", "findingKey": k, "urlLen": full_len,
+            })
+        # finding-detail-missing: the url was truncated, so the untruncated
+        # form exists ONLY in the detail file -- an empty detailRef means it
+        # is unrecoverable from the run record.
+        if full_len > URL_CAP and ref == "":
+            findings_anoms.append({"rule": "finding-detail-missing", "findingKey": k})
     findings = [findings_seen[k] for k in findings_order]
 
     # ---- pass 3 (Task 4): resumable cursor projection -- independent of
@@ -595,7 +680,7 @@ def main():
             "criteria": criteria,
             "findings": findings,
         },
-        "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms,
+        "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms + findings_anoms,
         "openActs": open_acts,
         "cursor": cursor_doc,
     }

@@ -33,12 +33,23 @@
 #
 #   (D) `message` is normalized (ASCII whitespace runs collapsed to one
 #       space, one leading/trailing space trimmed) and capped at 200
-#       characters. The cap is load-bearing for the PIPE_BUF bound in (E).
+#       characters; `url` is capped at 1024 characters with the full length
+#       carried in the integer `urlLen` and the untruncated url written to
+#       the detail file at `detailRef`. Both caps are load-bearing for the
+#       PIPE_BUF bound in (E), and the key derivation includes `urlLen` so
+#       truncation cannot collide two long URLs of different length into one
+#       finding — a finding silently hiding another is worse than a torn
+#       write.
 #
 #   (E) A worst-case serialized event stays under the PIPE_BUF boundary of
 #       4096 bytes (journal.sh:79-93) — above it an append is not guaranteed
-#       torn-free, and the torn-line recovery path is itself a
-#       duplicate-append path.
+#       torn-free, the fold then drops the torn line, that manufactures a
+#       `seq-gap`, and under plan decision R15 a `seq-gap` marks the whole
+#       run UNVERIFIED. One oversized URL must not be able to invalidate an
+#       otherwise clean run, so the bound is asserted here against the FULL
+#       documented budget rather than against a convenient example, and the
+#       fold reports a contract breach (`finding-url-oversize`) instead of
+#       silently truncating an event that was already at risk.
 #
 #   (F) Reserved names (`event`, `seq`, `t`, `childId`, `childSeq`) are never
 #       carried from a caller: journal.sh restamps `seq`/`t`, and a projected
@@ -49,6 +60,25 @@
 #       wrong types, empty arrays, duplicate keys, control characters).
 #       stdout and stderr are compared SEPARATELY: a merged `2>&1`
 #       comparison would pass a channel swap.
+#
+# ---------------------------------------------------------------------------
+# RULE FOR WHOEVER EXTENDS THIS SUITE — read before adding a case
+# ---------------------------------------------------------------------------
+# PARITY ALONE CANNOT SEE A DIVERGENCE THE FIXTURES NEVER REACH. A
+# dual-engine comparison only proves the two engines agree on the inputs it
+# is given; a rule that one engine implements and the other does not is
+# invisible until a fixture exercises it. This is how Wave 1 shipped two
+# Critical engine divergences behind a green parity suite, and it is why the
+# first draft of THIS suite let a python3-only mutation survive: fold.py had
+# its 200-char cap deleted and every assertion still passed, because the
+# python3 engine was only reached through parity fixtures whose messages were
+# all shorter than the cap.
+#
+# So: every behavioural rule gets (1) a fixture that actually reaches it, and
+# (2) a NAMED, engine-independent assertion run against BOTH engines — see
+# `write_ledger_journal` + `ledger_asserts` below, which is the pattern to
+# copy. Parity is the backstop, never the proof. And prove the assertion is
+# live by deleting the rule from ONE engine and watching the suite go red.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$HERE/../../skills/checkpointing-qa-memory/scripts"
@@ -88,10 +118,15 @@ con_finding() {
       method:"",url:"",status:"",originClass:"in-scope",statusClass:"fatal",
       message:$msg,detailRef:""}'
 }
-repeat_char() { # repeat_char <char> <count>
-  local i=0 out=""
-  while [[ $i -lt $2 ]]; do out="${out}$1"; i=$((i+1)); done
-  printf '%s' "$out"
+repeat_char() { # repeat_char <char-or-string> <count>
+  jq -rn --arg c "$1" --argjson n "$2" '[range(0; $n) | $c] | join("")'
+}
+# repeat_jchar <json-escape-without-quotes> <count> -- the argument is decoded
+# as a JSON string first, so a control character or an astral-plane codepoint
+# can be built without embedding a raw one in this file. --argjson is fed a
+# single literal document, never a jq filter that could emit more than one.
+repeat_jchar() {
+  jq -rn --argjson c "\"$1\"" --argjson n "$2" '[range(0; $n) | $c] | join("")'
 }
 
 # ---------------------------------------------------------------------------
@@ -273,38 +308,208 @@ check "test_message_capped_at_200_chars: console key component is 200 chars" \
   "$(get "$(ckpt cap-console)" '.findings[0].findingKey | split("|") | .[3] | length')" "200"
 
 # ---------------------------------------------------------------------------
+# test_url_capped_at_1024_chars / test_urlLen_carries_full_length
+#
+# `url` is the one event field whose length comes from the application under
+# test: observe.js records every fetch/XHR url, so a data: URI or a long
+# query string reaches PIPE_BUF on its own. The contract therefore caps it at
+# 1024 characters, carries the FULL length in the integer `urlLen`, and keeps
+# the untruncated url in the detail file at `detailRef`. The fold enforces
+# the cap on projection (defence in depth) and reports an event that arrived
+# over the cap as `finding-url-oversize`, because such an event was already
+# at risk of a torn append before the fold ever saw it.
+# ---------------------------------------------------------------------------
+URL_1024="https://app.test/?q=$(repeat_char q 1004)"
+URL_2000="https://app.test/?q=$(repeat_char q 1980)"
+URL_2001="https://app.test/?q=$(repeat_char q 1981)"
+check "fixture sanity: URL_1024 is exactly 1024 chars" "${#URL_1024}" "1024"
+check "fixture sanity: URL_2000 is exactly 2000 chars" "${#URL_2000}" "2000"
+
+emit urlcap-run '{"event":"run_started","runId":"urlcap-run"}'
+emit urlcap-run "$(net_finding EC1 GET "$URL_2000" 500)"
+fold1 urlcap-run
+check "test_url_capped_at_1024_chars: projected url is capped to 1024" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].url | length')" "1024"
+check "test_url_capped_at_1024_chars: projected url is the 1024-char prefix" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].url')" "$URL_1024"
+check "test_urlLen_carries_full_length: urlLen is the FULL length" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].urlLen')" "2000"
+check "test_urlLen_carries_full_length: urlLen is an integer, not a string" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].urlLen | type')" "number"
+check "test_url_capped_at_1024_chars: findingKey url component carries the capped url plus urlLen" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].findingKey')" \
+  "EC1|network|GET|${URL_1024}#2000|500"
+check "test_url_capped_at_1024_chars: an over-cap event is reported, not silently truncated" \
+  "$(get "$(anom urlcap-run)" '[.anomalies[] | select(.rule=="finding-url-oversize" and .urlLen==2000)] | length')" "1"
+
+# A url AT or under the cap is untouched: no truncation marker, no anomaly.
+emit urlshort-run '{"event":"run_started","runId":"urlshort-run"}'
+emit urlshort-run "$(net_finding EC1 GET https://app.test/dash 500)"
+emit urlshort-run "$(net_finding EC2 GET "$URL_1024" 500)"
+fold1 urlshort-run
+check "test_urlLen_carries_full_length: a short url has urlLen == its own length" \
+  "$(get "$(ckpt urlshort-run)" '.findings[0].urlLen')" "21"
+check "test_url_capped_at_1024_chars: a url AT the cap gets no truncation marker" \
+  "$(get "$(ckpt urlshort-run)" '.findings[1].findingKey')" "EC2|network|GET|${URL_1024}|500"
+check "test_url_capped_at_1024_chars: a url AT the cap raises no oversize anomaly" \
+  "$(get "$(anom urlshort-run)" '[.anomalies[] | select(.rule=="finding-url-oversize")] | length')" "0"
+
+# An emitter that already capped the url and supplied urlLen must produce the
+# SAME key as one that passed the untruncated url — otherwise Task 8, which
+# recomputes the key from the driver log, would disagree with the journal.
+emit urlpre-run '{"event":"run_started","runId":"urlpre-run"}'
+emit urlpre-run "$(jq -cn --arg u "$URL_1024" '{event:"finding_observed",criterionId:"EC1",source:"network",channel:"driver-log",method:"GET",url:$u,urlLen:2000,status:500,originClass:"in-scope",statusClass:"fatal",message:"boom",detailRef:"evidence/EC1/findings/f1.json"}')"
+fold1 urlpre-run
+check "test_url_capped_at_1024_chars: emitter-capped url + supplied urlLen yields the identical key" \
+  "$(get "$(ckpt urlpre-run)" '.findings[0].findingKey')" \
+  "$(get "$(ckpt urlcap-run)" '.findings[0].findingKey')"
+check "test_url_capped_at_1024_chars: an already-capped event raises no oversize anomaly" \
+  "$(get "$(anom urlpre-run)" '[.anomalies[] | select(.rule=="finding-url-oversize")] | length')" "0"
+
+# ---------------------------------------------------------------------------
+# test_truncated_urls_do_not_collide — two genuinely different long URLs
+# sharing their first 1024 characters must stay two findings. Truncation that
+# merged them would be a finding silently hiding another, which is strictly
+# worse than the torn write the cap exists to prevent.
+# ---------------------------------------------------------------------------
+emit collide-run '{"event":"run_started","runId":"collide-run"}'
+emit collide-run "$(net_finding EC1 GET "$URL_2000" 500)"
+emit collide-run "$(net_finding EC1 GET "$URL_2001" 500)"
+fold1 collide-run
+check "test_truncated_urls_do_not_collide: same 1024-char prefix, different length -> two findings" \
+  "$(findings_len collide-run)" "2"
+check "test_truncated_urls_do_not_collide: the two keys differ only in urlLen" \
+  "$(get "$(ckpt collide-run)" '[.findings[].findingKey | split("#") | .[1]] | join(",")')" "2000|500,2001|500"
+# KNOWN AND ACCEPTED RESIDUAL, pinned here so it is not a surprise later:
+# urlLen separates long URLs of DIFFERENT length. Two different URLs that
+# share a 1024-char prefix AND have the same total length still collapse.
+# That is a deliberate stopping point — distinguishing them needs a digest of
+# the full url, which the event contract does not carry.
+URL_A="https://app.test/?q=$(repeat_char q 1979)A"
+URL_B="https://app.test/?q=$(repeat_char q 1979)B"
+emit residual-run '{"event":"run_started","runId":"residual-run"}'
+emit residual-run "$(net_finding EC1 GET "$URL_A" 500)"
+emit residual-run "$(net_finding EC1 GET "$URL_B" 500)"
+fold1 residual-run
+check "residual (accepted): equal-length URLs sharing a 1024-char prefix DO still collapse" \
+  "$(findings_len residual-run)" "1"
+
+# ---------------------------------------------------------------------------
+# test_truncation_without_detailRef_is_an_anomaly — when the url is truncated
+# the untruncated form lives ONLY in the detail file; an empty detailRef
+# means it is unrecoverable, so the fold says so.
+# ---------------------------------------------------------------------------
+emit noref-run '{"event":"run_started","runId":"noref-run"}'
+emit noref-run "$(jq -cn --arg u "$URL_2000" '{event:"finding_observed",criterionId:"EC1",source:"network",channel:"driver-log",method:"GET",url:$u,status:500,originClass:"in-scope",statusClass:"fatal",message:"boom",detailRef:""}')"
+fold1 noref-run
+check "test_truncation_without_detailRef_is_an_anomaly: reported" \
+  "$(get "$(anom noref-run)" '[.anomalies[] | select(.rule=="finding-detail-missing")] | length')" "1"
+check "test_truncation_without_detailRef_is_an_anomaly: anomaly names the findingKey" \
+  "$(get "$(anom noref-run)" '[.anomalies[] | select(.rule=="finding-detail-missing") | .findingKey] | .[0] | split("|") | .[0]')" "EC1"
+check "test_truncation_without_detailRef_is_an_anomaly: a truncated url WITH a detailRef is not flagged" \
+  "$(get "$(anom urlcap-run)" '[.anomalies[] | select(.rule=="finding-detail-missing")] | length')" "0"
+check "test_truncation_without_detailRef_is_an_anomaly: an untruncated url with an empty detailRef is not flagged" \
+  "$(get "$(anom console-run)" '[.anomalies[] | select(.rule=="finding-detail-missing")] | length')" "0"
+
+# ---------------------------------------------------------------------------
 # test_event_stays_under_pipe_buf — the serialized JOURNAL LINE (the unit
 # that O_APPEND writes) for a worst-case event must be < 4096 bytes.
-# Worst case per the event contract: a 64-char criterionId, OPTIONS, a
-# 2048-char URL, a 256-char detailRef, and a message AT the 200-char cap.
+#
+# THE FULL DOCUMENTED BUDGET, not a convenient example. Every field is at its
+# contract maximum simultaneously:
+#
+#   "finding_observed"        16 bytes   (the event name itself)
+#   criterionId          <=   64
+#   source               <=    7   "network"
+#   channel              <=   10   "driver-log"
+#   method               <=    7   "OPTIONS"
+#   url                  <= 1024   percent-encoded ASCII (see below)
+#   urlLen               <=   15   digits
+#   status               <=   19   "unhandled-exception"
+#   originClass          <=   11   "third-party"
+#   statusClass          <=    9   "non-fatal"
+#   message              <=  200   codepoints, each up to 6 bytes once
+#                                   JSON-escaped (a control character costs
+#                                   \uXXXX) -> <= 1200 bytes
+#   detailRef            <=  256
+#   seq                  <=   15   digits, stamped by journal.sh
+#   t                         20   stamped by journal.sh
+#   + 14 key names, quotes, colons, commas, braces and the newline
+#
+# `url` is ASCII BY CONTRACT, not by assumption: RFC 3986 defines a URI as a
+# sequence of characters from the US-ASCII set, and observe.js records the
+# url the browser reports, which is already percent-encoded. The final case
+# below pins what happens if that precondition is ever violated (a decoded
+# IRI), so it is a tested boundary rather than an unstated assumption.
 # ---------------------------------------------------------------------------
 WC_CID="$(repeat_char c 64)"
-WC_URL="https://app.test/$(repeat_char u 2031)"
 WC_REF="evidence/$(repeat_char r 247)"
-WC_MSG="$(repeat_char m 200)"
-WC_EVENT="$(jq -cn --arg c "$WC_CID" --arg u "$WC_URL" --arg r "$WC_REF" --arg m "$WC_MSG" \
-  '{event:"finding_observed",criterionId:$c,source:"network",channel:"driver-log",
-    method:"OPTIONS",url:$u,status:500,originClass:"third-party",statusClass:"non-fatal",
-    message:$m,detailRef:$r}')"
-emit pipebuf-run "$WC_EVENT"
-WC_LINE_BYTES="$(wc -c < "$WORK/.qa/runs/pipebuf-run/journal.ndjson" | tr -d ' ')"
-check "test_event_stays_under_pipe_buf: worst-case event line is under 4096 bytes" \
-  "$([[ "$WC_LINE_BYTES" -lt 4096 ]] && echo under || echo "over($WC_LINE_BYTES)")" "under"
-# The 200-char cap is LOAD-BEARING for that bound: the same event with an
-# uncapped 4000-char message blows past PIPE_BUF.
-UNCAPPED_MSG="$(repeat_char m 4000)"
-UNCAPPED_EVENT="$(jq -cn --arg c "$WC_CID" --arg u "$WC_URL" --arg r "$WC_REF" --arg m "$UNCAPPED_MSG" \
-  '{event:"finding_observed",criterionId:$c,source:"network",channel:"driver-log",
-    method:"OPTIONS",url:$u,status:500,originClass:"third-party",statusClass:"non-fatal",
-    message:$m,detailRef:$r}')"
-emit pipebuf-uncapped "$UNCAPPED_EVENT"
-UC_LINE_BYTES="$(wc -c < "$WORK/.qa/runs/pipebuf-uncapped/journal.ndjson" | tr -d ' ')"
-check "test_event_stays_under_pipe_buf: an UNcapped message would exceed 4096 (cap is load-bearing)" \
-  "$([[ "$UC_LINE_BYTES" -ge 4096 ]] && echo over || echo "under($UC_LINE_BYTES)")" "over"
-# The fold still caps such an event down to 200 on projection.
-fold1 pipebuf-uncapped
+wc_event() { # wc_event <url> <message>
+  jq -cn --arg c "$WC_CID" --arg u "$1" --arg r "$WC_REF" --arg m "$2" \
+    '{event:"finding_observed",criterionId:$c,source:"network",channel:"driver-log",
+      method:"OPTIONS",url:$u,urlLen:999999999999999,status:"unhandled-exception",
+      originClass:"third-party",statusClass:"non-fatal",message:$m,detailRef:$r}'
+}
+line_bytes() { # line_bytes <run-id>
+  wc -c < "$WORK/.qa/runs/$1/journal.ndjson" | tr -d ' '
+}
+bound() { # bound <run-id> -> under|over(N)
+  local n; n="$(line_bytes "$1")"
+  if [[ "$n" -lt 4096 ]]; then echo "under"; else echo "over($n)"; fi
+}
+
+# (1) every field at its ASCII maximum, all at once.
+emit pb-ascii "$(wc_event "$URL_1024" "$(repeat_char m 200)")"
+check "test_event_stays_under_pipe_buf: full budget, all fields at their ASCII maximum" \
+  "$(bound pb-ascii)" "under"
+echo "note - pipe-buf: full ASCII budget serializes to $(line_bytes pb-ascii) bytes (limit 4096)"
+
+# (2) the message at its worst JSON expansion: 200 control characters, each
+#     escaped to \uXXXX (6 bytes) by both engines.
+CTL_MSG="$(repeat_jchar '\u0001' 200)"
+emit pb-ctl "$(wc_event "$URL_1024" "$CTL_MSG")"
+check "test_event_stays_under_pipe_buf: 200 control characters in message (6 bytes each)" \
+  "$(bound pb-ctl)" "under"
+echo "note - pipe-buf: control-char message budget serializes to $(line_bytes pb-ctl) bytes (limit 4096)"
+
+# (3) the message at its worst UTF-8 expansion: 200 non-BMP codepoints.
+EMOJI_MSG="$(repeat_jchar '\ud83d\ude00' 200)"
+emit pb-emoji "$(wc_event "$URL_1024" "$EMOJI_MSG")"
+check "test_event_stays_under_pipe_buf: 200 non-BMP codepoints in message" \
+  "$(bound pb-emoji)" "under"
+echo "note - pipe-buf: non-BMP message budget serializes to $(line_bytes pb-emoji) bytes (limit 4096)"
+
+# (4) the 1024-char url cap is LOAD-BEARING: the same event with an uncapped
+#     4000-character url blows past PIPE_BUF.
+emit pb-uncapped "$(wc_event "https://app.test/?q=$(repeat_char q 3980)" "$(repeat_char m 200)")"
+check "test_event_stays_under_pipe_buf: an UNcapped 4000-char url exceeds 4096 (cap is load-bearing)" \
+  "$(bound pb-uncapped)" "over($(line_bytes pb-uncapped))"
+# ...and the fold enforces the cap on projection anyway, and says the event
+# breached the contract rather than absorbing it.
+fold1 pb-uncapped
+check "test_event_stays_under_pipe_buf: fold caps an over-long url to 1024 on projection" \
+  "$(get "$(ckpt pb-uncapped)" '.findings[0].url | length')" "1024"
+check "test_event_stays_under_pipe_buf: fold reports the over-cap event" \
+  "$(get "$(anom pb-uncapped)" '[.anomalies[] | select(.rule=="finding-url-oversize")] | length')" "1"
+
+# (5) the 200-char message cap is load-bearing too.
+emit pb-longmsg "$(wc_event "$URL_1024" "$(repeat_char m 4000)")"
+check "test_event_stays_under_pipe_buf: an UNcapped 4000-char message exceeds 4096 (cap is load-bearing)" \
+  "$(bound pb-longmsg)" "over($(line_bytes pb-longmsg))"
+fold1 pb-longmsg
 check "test_event_stays_under_pipe_buf: fold caps an over-long message to 200 on projection" \
-  "$(get "$(ckpt pipebuf-uncapped)" '.findings[0].message | length')" "200"
+  "$(get "$(ckpt pb-longmsg)" '.findings[0].message | length')" "200"
+
+# (6) the ASCII precondition, pinned: a 1024-CODEPOINT non-ASCII url (a
+#     decoded IRI, 4 bytes per codepoint) reaches 4096 bytes on the url alone,
+#     so the contract requires the browser-reported percent-encoded url. This
+#     is asserted, not assumed — an emitter that passes a decoded IRI breaks
+#     the bound, and the fold flags it because its CHARACTER length is at the
+#     cap while its byte length is not.
+IRI_URL="$(repeat_jchar '\ud83d\ude00' 1024)"
+emit pb-iri "$(wc_event "$IRI_URL" "$(repeat_char m 200)")"
+check "test_event_stays_under_pipe_buf: a 1024-codepoint non-ASCII url DOES breach the bound" \
+  "$(bound pb-iri)" "over($(line_bytes pb-iri))"
 
 # ---------------------------------------------------------------------------
 # test_event_carries_no_reserved_field_names — reserved: event, seq, t,
@@ -320,7 +525,7 @@ check "test_event_carries_no_reserved_field_names: projected entry has none of t
   "$(get "$(ckpt reserved-run)" '[.findings[0] | keys[] | select(. == "seq" or . == "t" or . == "childId" or . == "childSeq" or . == "event")] | length')" "0"
 check "test_event_carries_no_reserved_field_names: projected entry is exactly the contract fields" \
   "$(get "$(ckpt reserved-run)" '.findings[0] | keys | join(",")')" \
-  "channel,criterionId,detailRef,findingKey,message,method,originClass,source,status,statusClass,url"
+  "channel,criterionId,detailRef,findingKey,message,method,originClass,source,status,statusClass,url,urlLen"
 
 # A journal with no finding at all still carries findings: [] (stable shape
 # for Task 8, which must be able to tell "no findings" from "no field").
@@ -416,6 +621,12 @@ write_happy_journal() { # write_happy_journal <run-id>
 # reach. This fixture is the reason the per-engine loop below exists.
 L200="$(repeat_char L 200)"
 L400="$(repeat_char L 400)"
+LEDGER_URL_1024="https://app.test/?u=$(repeat_char u 1004)"
+LEDGER_URL_2000="https://app.test/?u=$(repeat_char u 1980)"
+LEDGER_URL_2001="https://app.test/?u=$(repeat_char u 1981)"
+check "fixture sanity: LEDGER_URL_1024 is exactly 1024 chars" "${#LEDGER_URL_1024}" "1024"
+check "fixture sanity: LEDGER_URL_2000 is exactly 2000 chars" "${#LEDGER_URL_2000}" "2000"
+check "fixture sanity: LEDGER_URL_2001 is exactly 2001 chars" "${#LEDGER_URL_2001}" "2001"
 write_ledger_journal() { # write_ledger_journal <run-id>
   local d="$WORK/.qa/runs/$1"
   mkdir -p "$d"
@@ -433,6 +644,17 @@ write_ledger_journal() { # write_ledger_journal <run-id>
     ledger_line "$(con_finding EC1 "${L200}AAA")"
     ledger_line "$(con_finding EC1 "${L200}BBB")"
     ledger_line "$(net_finding EC3 GET https://app.test/c 500 "$L400")"
+    ledger_line "$(net_finding EC4 GET "$LEDGER_URL_2000" 500)"
+    ledger_line "$(net_finding EC4 GET "$LEDGER_URL_2001" 500)"
+    # EC5: a truncated url with an EMPTY detailRef — the untruncated form is
+    # unrecoverable. EC6: an emitter that already capped the url and supplied
+    # urlLen. Both live in THIS fixture, which is folded under both engines,
+    # because a rule reached only under the default engine is a rule only
+    # half-tested: two fold.py mutations (finding-detail-missing removed,
+    # url_len ignoring the supplied urlLen) survived while these two rows
+    # existed only in single-engine cases above.
+    ledger_line "$(jq -cn --arg u "$LEDGER_URL_2000" '{event:"finding_observed",criterionId:"EC5",source:"network",channel:"driver-log",method:"GET",url:$u,status:500,originClass:"in-scope",statusClass:"fatal",message:"boom",detailRef:""}')"
+    ledger_line "$(jq -cn --arg u "$LEDGER_URL_1024" '{event:"finding_observed",criterionId:"EC6",source:"network",channel:"driver-log",method:"GET",url:$u,urlLen:2000,status:500,originClass:"in-scope",statusClass:"fatal",message:"boom",detailRef:"evidence/EC6/findings/a.json"}')"
     ledger_line '{"event":"capture_probed","channel":"driver-log"}'
   } > "$d/journal.ndjson"
 }
@@ -444,11 +666,11 @@ write_ledger_journal() { # write_ledger_journal <run-id>
 # canonical-inequality diff.
 ledger_asserts() {
   local eng="$1" run="$2"
-  check "ledger[${eng}]: five findings after dedup" "$(findings_len "$run")" "5"
+  check "ledger[${eng}]: nine findings after dedup" "$(findings_len "$run")" "9"
   check "ledger[${eng}]: keyed-set collapse + breadth + first-seen order" \
-    "$(get "$(ckpt "$run")" '[.findings[].criterionId] | join(",")')" "EC1,EC1,EC2,EC1,EC3"
+    "$(get "$(ckpt "$run")" '[.findings[].criterionId] | join(",")')" "EC1,EC1,EC2,EC1,EC3,EC4,EC4,EC5,EC6"
   check "ledger[${eng}]: duplicate of the first finding did not re-order or re-add" \
-    "$(get "$(ckpt "$run")" '[.findings[] | select(.source=="network") | .url] | join(",")')" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.source=="network" and (.criterionId | test("^EC[123]$"))) | .url] | join(",")')" \
     "https://app.test/a,https://app.test/b,https://app.test/a,https://app.test/c"
   check "ledger[${eng}]: console key component capped at 200" \
     "$(get "$(ckpt "$run")" '.findings[3].findingKey | split("|") | .[3] | length')" "200"
@@ -460,6 +682,29 @@ ledger_asserts() {
     "$(get "$(ckpt "$run")" '.findings[4].message')" "$L200"
   check "ledger[${eng}]: no count field on any entry" \
     "$(get "$(ckpt "$run")" '[.findings[] | keys[] | select(test("count|occurrences|seen|times"))] | length')" "0"
+  # url cap / urlLen / no-collision, asserted PER ENGINE — a fold.py-only
+  # regression in the cap is invisible to the parity comparison alone,
+  # because parity cannot see a divergence the fixtures never reach.
+  check "ledger[${eng}]: over-cap url projected at 1024 characters" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC4") | .url | length] | join(",")')" "1024,1024"
+  check "ledger[${eng}]: urlLen carries the full lengths" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC4") | .urlLen] | join(",")')" "2000,2001"
+  check "ledger[${eng}]: same 1024-char prefix, different length -> two findings" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC4")] | length')" "2"
+  check "ledger[${eng}]: truncated keys carry the urlLen discriminator" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC4") | .findingKey | split("#") | .[1]] | join(",")')" "2000|500,2001|500"
+  check "ledger[${eng}]: every over-cap event is reported as a contract breach" \
+    "$(get "$(anom "$run")" '[.anomalies[] | select(.rule=="finding-url-oversize")] | length')" "3"
+  check "ledger[${eng}]: truncation with an empty detailRef is reported" \
+    "$(get "$(anom "$run")" '[.anomalies[] | select(.rule=="finding-detail-missing") | .findingKey | split("|") | .[0]] | join(",")')" "EC5"
+  check "ledger[${eng}]: an emitter-supplied urlLen is honoured" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC6") | [(.url | length), .urlLen] | join("/")] | join(",")')" "1024/2000"
+  check "ledger[${eng}]: an emitter-capped url still keys with the urlLen discriminator" \
+    "$(get "$(ckpt "$run")" '[.findings[] | select(.criterionId=="EC6") | .findingKey | split("#") | .[1]] | join(",")')" "2000|500"
+  check "ledger[${eng}]: an already-capped event is NOT reported as a breach" \
+    "$(get "$(anom "$run")" '[.anomalies[] | select(.rule=="finding-url-oversize") | .findingKey | split("|") | .[0]] | join(",")')" "EC4,EC4,EC5"
+  check "ledger[${eng}]: urlLen is an integer on every entry" \
+    "$(get "$(ckpt "$run")" '[.findings[] | .urlLen | type] | unique | join(",")')" "number"
 }
 
 if command -v python3 >/dev/null 2>&1; then
