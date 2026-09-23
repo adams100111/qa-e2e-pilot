@@ -22,7 +22,9 @@
  * could attach — that load-window evidence must come from the driver-backed
  * browser_console_messages / browser_network_requests calls (see SKILL.md's Observe-Round section).
  *
- * Returns JSON: { round, domDigest, console[], network[], ux[], axe }.
+ * Returns JSON: { round, console[], network[], domDigest, ux[], axe } — the findings
+ * (console/network) are serialized BEFORE the bulky domDigest on purpose, so the capture hook's
+ * 4000-byte response cap truncates the re-observable DOM inventory rather than the error evidence.
  *   - domDigest: compact live-region text + interactive-element inventory (the snapshot substitute
  *     for identifying what to act on next — data-testid/label/href, not a Playwright ref; use it to
  *     build a selector, e.g. `[data-testid="…"]`, for the next act call's `target`)
@@ -43,7 +45,7 @@
  * the first observe after any navigation): the tail below installs-if-needed and then calls
  * __qaObserve() itself, so a single evaluate call is both the self-heal check and the round read.
  *   ... (this file's own source) ...
- *   // returns { round, domDigest, console[], network[], ux[], axe }
+ *   // returns { round, console[], network[], domDigest, ux[], axe }
  *
  * If you already know the current document has the interceptors installed (no navigation since
  * the last round) a lighter, cheaper snippet also works: `return __qaObserve({ digestSelector:
@@ -136,11 +138,17 @@ function installObserve() {
     var interactive = Array.prototype.slice.call(root.querySelectorAll('button, a[href], input, select, [role=button], [role=link]'))
       .slice(0, 80).map(function (el) {
         var r = el.getBoundingClientRect();
+        // testid/href are length-capped (64/128) like label (40) already was:
+        // a framework-generated data-testid or a long signed/query-laden href
+        // can each run to hundreds of characters, and 80 of them dominate the
+        // serialized payload — which capture-hook.sh truncates at 4000 bytes.
+        var testid = el.getAttribute('data-testid');
+        var href = el.getAttribute('href');
         return {
           tag: el.tagName.toLowerCase(),
-          testid: el.getAttribute('data-testid') || undefined,
+          testid: testid ? String(testid).slice(0, 64) : undefined,
           label: (el.getAttribute('aria-label') || el.value || (el.textContent || '').trim()).slice(0, 40),
-          href: el.getAttribute('href') || undefined,
+          href: href ? String(href).slice(0, 128) : undefined,
           visible: r.width > 0 && r.height > 0
         };
       });
@@ -157,11 +165,19 @@ function installObserve() {
       axe = 'call-axe-run-separately'; // axe.run is async; agent injects axe.min.js + awaits window.axe.run() in its own evaluate
     }
 
+    // KEY ORDER IS LOAD-BEARING. The capture hook records a bounded prefix of
+    // this response (scripts/capture-hook.sh RESPONSE_BODY_CAP = 4000 bytes,
+    // applied with `head -c`); that cap is a recorded decision (see
+    // scripts/provenance.sh's residual (a)) and is NOT raised. Serializing
+    // `console` and `network` BEFORE the bulky `domDigest` means the
+    // truncation eats the DOM inventory — reconstructible by re-observing —
+    // instead of the error evidence, which is not. Same keys as before, new
+    // order; consumers read by key, so nothing downstream changes.
     var payload = {
       round: buf.round,
-      domDigest: { liveText: liveText, interactive: interactive },
       console: buf.console.splice(0),   // drain since last round
       network: buf.network.splice(0),   // drain since last round
+      domDigest: { liveText: liveText, interactive: interactive },
       ux: ux,
       axe: axe
     };
