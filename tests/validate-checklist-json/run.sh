@@ -137,6 +137,191 @@ bash "$V" "$WORK/does-not-exist.json" >/dev/null 2>&1; rc=$?
 check "nonexistent file -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
 
 # ---------------------------------------------------------------------------
+# Error-honesty invariants (plan 2026-09-23, Task 3): a criterion may not
+# assert that the application FAILED. Two layers — a reserved health
+# namespace on `expect.path`, and two reserved prose phrases in the
+# oracle/expect fields ONLY (never `action`). 3xx/4xx stay legal (spec §4
+# carve-out: an authorization refusal is the application WORKING).
+# ---------------------------------------------------------------------------
+
+# The EC10 shape VERBATIM from the originating incident (spec §1): the
+# pinned value is the STRING "false", not a boolean, and oracleSource is
+# "human". This is incident regression case 1.
+cat > "$WORK/ec10-string-false.json" <<'EOF'
+[
+  {
+    "id": "EC10",
+    "surface": "/challenges/1/gates",
+    "kind": "business-rule",
+    "tags": [],
+    "action": "open the gates surface as an authorized admin",
+    "fixture": {
+      "expect": {
+        "path": "page.rendersWithoutServerError",
+        "value": "false",
+        "tolerance": 0,
+        "oracleSource": "human"
+      }
+    }
+  }
+]
+EOF
+
+cat > "$WORK/ec10-boolean-false.json" <<'EOF'
+[
+  {
+    "id": "EC10",
+    "surface": "/challenges/1/gates",
+    "kind": "business-rule",
+    "tags": [],
+    "action": "open the gates surface as an authorized admin",
+    "fixture": {
+      "expect": {
+        "path": "page.rendersWithoutServerError",
+        "value": false,
+        "tolerance": 0,
+        "oracleSource": "human"
+      }
+    }
+  }
+]
+EOF
+
+cat > "$WORK/page-crashed-true.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "business-rule", "tags": [], "action": "open x",
+   "fixture": {"expect": {"path": "page.crashed", "value": true, "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+cat > "$WORK/console-haserror-true.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "business-rule", "tags": [], "action": "open x",
+   "fixture": {"expect": {"path": "console.hasError", "value": true, "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+cat > "$WORK/http-status-500.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "business-rule", "tags": [], "action": "open x",
+   "fixture": {"expect": {"path": "http.status", "value": 500, "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+# The §4 carve-out: an authorization refusal (302 redirect to login, or a
+# 403) is the application WORKING and must keep validating.
+cat > "$WORK/http-status-302.json" <<'EOF'
+[
+  {"id": "EC9", "surface": "/challenges/1/gates", "kind": "business-rule", "tags": ["role-sensitive"],
+   "action": "open the gates surface as an unauthorized evaluator",
+   "fixture": {"expect": {"path": "http.status", "value": 302, "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+cat > "$WORK/http-status-403.json" <<'EOF'
+[
+  {"id": "EC11", "surface": "/challenges/1/gates", "kind": "business-rule", "tags": ["role-sensitive"],
+   "action": "POST a gate decision as an unauthorized evaluator",
+   "fixture": {"expect": {"path": "http.status", "value": 403, "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+cat > "$WORK/prose-expected-to-fail.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "open the gates surface",
+   "oracle": "The enum cast blows up, so this is Expected To Fail until the fix lands."}
+]
+EOF
+
+cat > "$WORK/prose-deferred-by-design.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "open the gates surface",
+   "oracle": "Deferred by design - not actionable within this QA pass's scope."}
+]
+EOF
+
+# `action` is where an author legitimately describes a non-rendering state.
+# It is NEVER scanned — not even when it literally contains a reserved
+# phrase.
+cat > "$WORK/prose-in-action-only.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [],
+   "action": "View the evaluators list; this list does not render until the challenge reaches Judging"},
+  {"id": "C-2", "surface": "/y", "kind": "error-state", "tags": [],
+   "action": "Submit the form with a blank title; the save is expected to fail with a validation error"},
+  {"id": "C-3", "surface": "/z", "kind": "happy-path", "tags": [],
+   "action": "Open the archive tab, which is deferred by design in this release"}
+]
+EOF
+
+# Violation on entry index 1, so the index in the message is load-bearing.
+cat > "$WORK/second-entry-violates.json" <<'EOF'
+[
+  {"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "open x"},
+  {"id": "C-2", "surface": "/y", "kind": "business-rule", "tags": [], "action": "open y",
+   "fixture": {"expect": {"path": "page.rendersWithoutServerError", "value": "false", "tolerance": 0, "oracleSource": "human"}}}
+]
+EOF
+
+out="$(bash "$V" "$WORK/ec10-boolean-false.json" 2>&1)"; rc=$?
+check "test_rejects_renders_without_server_error_false_boolean -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_renders_without_server_error_false_boolean -> names the reserved path" "$out" "page.rendersWithoutServerError"
+
+out="$(bash "$V" "$WORK/ec10-string-false.json" 2>&1)"; rc=$?
+check "test_rejects_renders_without_server_error_false_string -> non-zero (EC10 verbatim)" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_renders_without_server_error_false_string -> names the reserved path" "$out" "page.rendersWithoutServerError"
+check_contains "test_rejects_renders_without_server_error_false_string -> ends with the remediation pointer" "$out" "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)"
+
+out="$(bash "$V" "$WORK/page-crashed-true.json" 2>&1)"; rc=$?
+check "test_rejects_page_crashed_true -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_page_crashed_true -> names the reserved path" "$out" "page.crashed"
+
+out="$(bash "$V" "$WORK/console-haserror-true.json" 2>&1)"; rc=$?
+check "test_rejects_console_has_error_true -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_console_has_error_true -> names the reserved path" "$out" "console.hasError"
+
+out="$(bash "$V" "$WORK/http-status-500.json" 2>&1)"; rc=$?
+check "test_rejects_http_status_500 -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_http_status_500 -> names the reserved path" "$out" "http.status"
+
+bash "$V" "$WORK/http-status-302.json" >/dev/null 2>&1; rc=$?
+check "test_accepts_http_status_302 -> exit 0 (authz refusal is the app WORKING)" "$rc" "0"
+
+bash "$V" "$WORK/http-status-403.json" >/dev/null 2>&1; rc=$?
+check "test_accepts_http_status_403 -> exit 0 (authz refusal is the app WORKING)" "$rc" "0"
+
+out="$(bash "$V" "$WORK/prose-expected-to-fail.json" 2>&1)"; rc=$?
+check "test_rejects_prose_expected_to_fail_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_prose_expected_to_fail_in_oracle -> names entry[0].oracle" "$out" "entry[0].oracle"
+check_contains "test_rejects_prose_expected_to_fail_in_oracle -> quotes the phrase" "$out" "expected to fail"
+
+out="$(bash "$V" "$WORK/prose-deferred-by-design.json" 2>&1)"; rc=$?
+check "test_rejects_prose_deferred_by_design_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_rejects_prose_deferred_by_design_in_oracle -> quotes the phrase" "$out" "deferred by design"
+
+bash "$V" "$WORK/prose-in-action-only.json" >/dev/null 2>&1; rc=$?
+check "test_accepts_prose_in_action_field -> exit 0 (action is NEVER scanned)" "$rc" "0"
+
+out="$(bash "$V" "$WORK/second-entry-violates.json" 2>&1)"; rc=$?
+check "test_error_line_names_entry_index_and_field -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+check_contains "test_error_line_names_entry_index_and_field -> one-line-per-violation ERROR form naming entry[1] and the field" "$out" "ERROR: entry[1].fixture.expect"
+
+# test_existing_validations_unchanged — the suite's pre-existing fixtures
+# keep their exact exit-code behaviour after the new layers land.
+bash "$V" "$WORK/wellformed.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: wellformed -> exit 0" "$rc" "0"
+bash "$V" "$WORK/minimal.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: minimal -> exit 0" "$rc" "0"
+bash "$V" "$WORK/empty.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: empty array -> exit 0" "$rc" "0"
+bash "$V" "$WORK/missing-id.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: missing id -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+bash "$V" "$WORK/duplicate-id.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: duplicate id -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+bash "$V" "$WORK/bogus-required-kind.json" >/dev/null 2>&1; rc=$?
+check "test_existing_validations_unchanged: bogus requiredKinds -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+# ---------------------------------------------------------------------------
 # python3-fallback pass: mask jq from PATH, re-run every case, same
 # expectations. Dual-engine agreement is the point.
 # ---------------------------------------------------------------------------
@@ -186,6 +371,44 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/malformed.json" 2>&1)"; rc=$?
   check "py-fallback: malformed JSON -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
   check_contains "py-fallback: says invalid JSON" "$out" "invalid JSON"
+
+  # Error-honesty invariants must hold identically on the python3 engine.
+  out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/ec10-string-false.json" 2>&1)"; rc=$?
+  check "py-fallback: test_rejects_renders_without_server_error_false_string -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "py-fallback: names the reserved path" "$out" "page.rendersWithoutServerError"
+  check_contains "py-fallback: ends with the remediation pointer" "$out" "— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/ec10-boolean-false.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_rejects_renders_without_server_error_false_boolean -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/page-crashed-true.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_rejects_page_crashed_true -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/console-haserror-true.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_rejects_console_has_error_true -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/http-status-500.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_rejects_http_status_500 -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/http-status-302.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_accepts_http_status_302 -> exit 0" "$rc" "0"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/http-status-403.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_accepts_http_status_403 -> exit 0" "$rc" "0"
+
+  out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-expected-to-fail.json" 2>&1)"; rc=$?
+  check "py-fallback: test_rejects_prose_expected_to_fail_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "py-fallback: names entry[0].oracle" "$out" "entry[0].oracle"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-deferred-by-design.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_rejects_prose_deferred_by_design_in_oracle -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+
+  PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/prose-in-action-only.json" >/dev/null 2>&1; rc=$?
+  check "py-fallback: test_accepts_prose_in_action_field -> exit 0 (action is NEVER scanned)" "$rc" "0"
+
+  out="$(PATH="$FAKEBIN" "$BASH_BIN" "$V" "$WORK/second-entry-violates.json" 2>&1)"; rc=$?
+  check "py-fallback: test_error_line_names_entry_index_and_field -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "py-fallback: names entry[1] and the field" "$out" "ERROR: entry[1].fixture.expect"
 
   echo "note - jq-fallback dual-engine sub-case: RAN (jq masked from PATH via a restricted fakebin)"
 else
