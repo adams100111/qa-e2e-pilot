@@ -78,6 +78,12 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    the correct answer. The engine's `skills/generating-qa-checklist/scripts/validate-checklist-json.sh`
    now rejects that shape outright, so there is exactly one legal home for such a defect:
    **`.qa/known-defects.json`**.
+   - **Start from the shipped example.** The engine ships `.qa/known-defects.json.example` with one fully
+     worked entry and a long `_doc` key inside it (the registry is a single top-level array, so there is
+     no room for a file-level `_doc` the way `.qa/config.json.example` has one). Copy it to
+     `.qa/known-defects.json`, drop the `_doc` key, and edit. Unlike `.qa/config.json`, this file is
+     **not** gitignored — keep it in version control, which is what makes a renewal or a removal visible
+     in review.
    - **Project-level, not per-spec.** A defect is a property of the **application**, not of a QA target.
      One file at the project root's `.qa/`, shared by every target: two specs touching the broken surface
      share one entry, one ticket, one expiry. Per-spec copies drift, and whichever copy is most convenient
@@ -125,7 +131,11 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
        shows a **2xx navigation to its `surface`** and no fatal finding on that surface. **The absence of
        a finding never clears anything** — a run that never reached the surface produces exactly the same
        silence as a fixed defect. With no evidence supplied, every entry stays `outstanding`, and an entry
-       that was not provably exercised is reported as not exercised this run.
+       that was not provably exercised is reported as not exercised this run. **Evidence urls must be
+       ABSOLUTE**: a relative or path-less url proves nothing, so it is ignored on the navigation side and
+       blocks clearing on the finding side. `surface` is matched against the url's path (and query only
+       when the surface itself carries one), with a `{placeholder}` segment matching one-or-more
+       characters that are not `/`, `?` or `&`.
    - **Commands** (engine-side, per the note above).
      `known-defects.sh validate .qa/known-defects.json [today]` exits `0` iff
      every entry is well-formed, else prints one `ERROR: entry[<i>].<field>: …` line per violation to
