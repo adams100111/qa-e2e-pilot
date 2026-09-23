@@ -12,7 +12,8 @@ upsert_py for the EXACT checkpoint.json record shape reproduced below).
 INPUT:  {"events": [<valid, schema-known event objects, any order>],
          "skipped": [<wrapper-level anomaly objects, e.g. unparseable-line
                       / unknown-event>]}
-OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...]},
+OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...],
+                        "findings": [...keyed-set, first-seen order...]},
          "anomalies": [...wrapper skipped ++ engine-detected...],
          "openActs": [...act_intent keys with no matching act_committed...],
          "cursor": {"run_id", "phase", "criteria_total", "criteria_done",
@@ -56,12 +57,14 @@ would alias to the same key -- an existing structural property of the
 journal format, not something introduced here).
 """
 import json
+import re
 import sys
 
 KNOWN_EVENTS = {
     "run_started", "phase_entered", "phase_exited", "plan_frozen",
     "plan_amended", "scenario_started", "criterion_started", "act_intent",
     "act_committed", "criterion_verdict", "bug_logged", "run_ended",
+    "finding_observed", "capture_probed",
 }
 
 
@@ -73,6 +76,102 @@ def s(e, key):
 
 def tuple_key(e):
     return (s(e, "scenarioId"), s(e, "criterionId"), s(e, "personaId"))
+
+
+# ---- findings-ledger helpers (Task 6, plan 2026-09-23-error-honesty-
+# invariants). Exact mirrors of fold.jq's kstr/nmsg/finding_key. Every one is
+# a TOTAL function whose result is provably identical to the jq side, because
+# a findings ledger that differs between the two engines is worse than one
+# that drops a malformed field.
+
+def kstr(v):
+    """The ONLY stringification used for a findingKey component or a
+    projected findings field.
+
+      str                              -> as-is
+      integer-valued number, |v|<1e15  -> its decimal integer form ("500")
+      anything else                    -> "" (None, bool, non-integer
+                                              number, dict, list)
+
+    `bool` is rejected BEFORE the numeric branch because Python makes
+    `isinstance(True, int)` true, while jq reports `true | type` as
+    "boolean" -- without the explicit bool check the two engines would
+    disagree on a boolean field. The narrow number window and the ""
+    default exist for the same reason: jq and python3 render a boolean, a
+    non-integral float, a very large number and a container differently as
+    text, so none of them is ever stringified here.
+    """
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return ""
+    if isinstance(v, int):
+        return str(v) if -10 ** 15 < v < 10 ** 15 else ""
+    if isinstance(v, float):
+        if v == int(v) and -1e15 < v < 1e15:
+            return str(int(v))
+        return ""
+    return ""
+
+
+# Runs of ASCII whitespace only -- space, TAB, LF, CR, VT, FF -- written out
+# EXPLICITLY rather than as the \s shorthand: python3 re is unicode-aware
+# (\s there also matches NBSP, U+0085, U+2028, ...) while jq's oniguruma
+# treats \s as ASCII-only, so the shorthand would silently diverge between
+# the engines on exactly the kind of pasted console text a finding carries.
+_WS_RUN = re.compile("[ \t\n\r\x0b\x0c]+")
+
+
+def _trim1(x):
+    """Strip ONE leading and ONE trailing space -- jq's
+    `ltrimstr(" ") | rtrimstr(" )`, not Python's greedy strip(). After the
+    _WS_RUN collapse there is never more than one consecutive space, so the
+    two are equivalent on real input; matching jq's exact semantics keeps
+    them equivalent on every input."""
+    if x.startswith(" "):
+        x = x[1:]
+    if x.endswith(" "):
+        x = x[:-1]
+    return x
+
+
+def nmsg(v):
+    """`message` normalization + the 200-character cap (plan Global
+    Constraints). Long detail belongs in evidence/<criterion>/findings/
+    behind `detailRef`: an event above the PIPE_BUF boundary of 4096 bytes
+    is not guaranteed to land torn-free, and the torn-line recovery path is
+    itself a duplicate-append path. Non-str -> ""."""
+    if not isinstance(v, str):
+        return ""
+    return _trim1(_trim1(_WS_RUN.sub(" ", v))[:200])
+
+
+def finding_key(e):
+    """The run-scoped identity of one observed finding:
+
+        <criterionId>|<source>|<method>|<url>|<status>
+
+    verbatim from the plan Global Constraints. For a console finding
+    (`source == "console"`) the event sets `method` and `url` to "" and the
+    URL COMPONENT carries the normalized, capped `message` instead -- still
+    exactly five `|`-separated components.
+
+    The key is DERIVED HERE; a caller-supplied `findingKey` field on the
+    event is advisory and never trusted. Dedup has to be a property of the
+    fold rather than of whichever emitter happened to run, or the resume
+    double-count this ledger exists to prevent comes back through the
+    emitter. Task 8 qa-verify recomputes the key the same way, so an emitter
+    that derives it differently surfaces there as a missing finding instead
+    of being silently absorbed here."""
+    src = kstr(e.get("source"))
+    url_component = nmsg(e.get("message")) if src == "console" else kstr(e.get("url"))
+    return "|".join([
+        kstr(e.get("criterionId")),
+        src,
+        kstr(e.get("method")),
+        url_component,
+        kstr(e.get("status")),
+    ])
 
 
 def main():
@@ -331,6 +430,56 @@ def main():
                 "tuple": "{}/{}/{}".format(v["scenarioId"], v["criterionId"], v["personaId"]),
             })
 
+    # ---- findings ledger (Task 6): KEYED-SET reduction over
+    # finding_observed. Mirrors fold.jq's $findings exactly.
+    #
+    # This copies the shape of the pass-1 intent_order/intent_set walk above
+    # (an order list plus a seen map, skipping a key already present) -- it
+    # is DELIBERATELY NOT the last-wins pattern the criterion_verdict groups
+    # use, and it deliberately carries NO count/occurrence field: the set IS
+    # the answer. A count would re-introduce exactly the resume
+    # double-counting this ledger exists to prevent, because a resumed run
+    # re-observes and re-appends the findings it already recorded (the
+    # journal has no dedup of its own). First-seen order is the `events`
+    # order, i.e. ascending `seq`.
+    #
+    # The projected entry is the event's CONTRACT FIELDS ONLY, each passed
+    # through kstr/nmsg. The reserved names (`event`, `seq`, `t`, `childId`,
+    # `childSeq`) are never carried -- `seq`/`t` belong to journal.sh, which
+    # restamps them on append, and a caller-supplied `seq` must never travel
+    # into a derived artifact. `status` is projected in its kstr form (so an
+    # HTTP 500 appears as "500") precisely so the field and the key
+    # component built from it can never disagree.
+    #
+    # `capture_probed` is registered in fold.sh but intentionally NOT
+    # projected here: Task 7 emits it behind the journal-emptiness
+    # once-guard and Task 10 reads its `channel` straight off the journal.
+    # Registration alone is what keeps it from being discarded as an
+    # `unknown-event`.
+    findings_order = []
+    findings_seen = {}
+    for e in events:
+        if e.get("event") != "finding_observed":
+            continue
+        k = finding_key(e)
+        if k in findings_seen:
+            continue
+        findings_order.append(k)
+        findings_seen[k] = {
+            "findingKey": k,
+            "criterionId": kstr(e.get("criterionId")),
+            "source": kstr(e.get("source")),
+            "channel": kstr(e.get("channel")),
+            "method": kstr(e.get("method")),
+            "url": kstr(e.get("url")),
+            "status": kstr(e.get("status")),
+            "originClass": kstr(e.get("originClass")),
+            "statusClass": kstr(e.get("statusClass")),
+            "message": nmsg(e.get("message")),
+            "detailRef": kstr(e.get("detailRef")),
+        }
+    findings = [findings_seen[k] for k in findings_order]
+
     # ---- pass 3 (Task 4): resumable cursor projection -- independent of
     # pass 2's checkpoint groups. Tracks tuples touched by criterion_started,
     # plan_frozen's criteria[] entries (a "planned" tuple counts the same as
@@ -444,6 +593,7 @@ def main():
             "run_id": run_id,
             "updated_at": last_t,
             "criteria": criteria,
+            "findings": findings,
         },
         "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms,
         "openActs": open_acts,

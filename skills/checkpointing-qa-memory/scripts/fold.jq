@@ -26,7 +26,8 @@
 # INPUT:  {"events": [<valid, schema-known event objects, any order>],
 #          "skipped": [<wrapper-level anomaly objects, e.g. unparseable-line
 #                       / unknown-event>]}
-# OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...]},
+# OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...],
+#                         "findings": [...keyed-set, first-seen order...]},
 #          "anomalies": [...wrapper skipped ++ engine-detected...],
 #          "openActs": [...act_intent keys with no matching act_committed...],
 #          "cursor": {"run_id", "phase", "criteria_total", "criteria_done",
@@ -44,6 +45,73 @@
 
 def tuple_key($e):
   ($e.scenarioId // "") + "" + ($e.criterionId // "") + "" + ($e.personaId // "");
+
+# ---- findings-ledger helpers (Task 6, plan 2026-09-23-error-honesty-
+# invariants). Every one of these is a TOTAL function whose result is
+# provably identical to its fold.py counterpart, because a findings ledger
+# that differs between the two engines is worse than one that drops a
+# malformed field. ----------------------------------------------------------
+#
+# kstr: the ONLY stringification used to build a findingKey component or to
+# project a findings field.
+#   string                          -> as-is
+#   integer-valued number, |v|<1e15 -> its decimal integer form ("500")
+#   anything else                   -> "" (null, absent, boolean,
+#                                          non-integer number, object, array)
+# The narrow number case and the "" default are deliberate: jq and python3
+# disagree on how they render a boolean, a non-integral float, a very large
+# number, or a container as text, so none of those is ever stringified here.
+def kstr($v):
+  if ($v | type) == "string" then $v
+  elif ($v | type) == "number"
+       and ($v == ($v | floor))
+       and $v > -1000000000000000
+       and $v < 1000000000000000
+    then ($v | floor | tostring)
+  else "" end;
+
+# nmsg: `message` normalization + the 200-character cap (plan Global
+# Constraints: `message` capped at 200 characters; long detail belongs in
+# evidence/<criterion>/findings/ behind `detailRef`, because an event above
+# the PIPE_BUF boundary of 4096 bytes is not guaranteed to land torn-free
+# and the torn-line recovery path is itself a duplicate-append path).
+# Runs of ASCII whitespace (space, TAB, LF, CR, VT, FF) collapse to a single
+# space; one leading and one trailing space are trimmed; the result is cut
+# to 200 codepoints and re-trimmed. The class is written out EXPLICITLY and
+# never as the shorthand escape for whitespace: oniguruma treats that class
+# as ASCII-only while python3 re treats it as unicode-aware, so the
+# shorthand would silently diverge on NBSP / U+2028 / U+0085.
+# Non-string -> "".
+def nmsg($v):
+  if ($v | type) == "string" then
+    ($v
+     | gsub("[ \t\n\r\u000B\u000C]+"; " ")
+     | ltrimstr(" ") | rtrimstr(" ")
+     | .[0:200]
+     | ltrimstr(" ") | rtrimstr(" "))
+  else "" end;
+
+# finding_key: the run-scoped identity of one observed finding —
+#   <criterionId>|<source>|<method>|<url>|<status>
+# verbatim from the plan Global Constraints. For a console finding
+# (`source == "console"`) the event sets `method` and `url` to "" and the URL
+# COMPONENT of the key carries the normalized, capped `message` instead —
+# still exactly five `|`-separated components.
+#
+# The key is DERIVED HERE; a caller-supplied `findingKey` field on the event
+# is advisory and is never trusted. Dedup has to be a property of the fold
+# rather than of whichever emitter happened to run, or the resume
+# double-count this ledger exists to prevent comes back through the emitter.
+# Task 8 qa-verify recomputes the key the same way, so an emitter that
+# derives it differently shows up there as a missing finding instead of
+# being silently absorbed here.
+def finding_key($e):
+  (kstr($e.criterionId)) as $cid
+  | (kstr($e.source)) as $src
+  | (kstr($e.method)) as $meth
+  | (if $src == "console" then nmsg($e.message) else kstr($e.url) end) as $u
+  | (kstr($e.status)) as $st
+  | $cid + "|" + $src + "|" + $meth + "|" + $u + "|" + $st;
 
 (.events // []) as $events
 | (.skipped // []) as $wrapper_skipped
@@ -245,6 +313,55 @@ def tuple_key($e):
 | ([ $tuple_childids | to_entries[] | select((.value.childIds | length) > 1)
      | {rule: "cross-child-duplicate", tuple: (.value.scenarioId + "/" + .value.criterionId + "/" + .value.personaId)} ]) as $cross_child_anoms
 
+# ---- findings ledger (Task 6): KEYED-SET reduction over finding_observed.
+#
+# This copies the shape of the $intents pass above (an `order` list plus a
+# `seen` map, skipping a key already present) — it is DELIBERATELY NOT the
+# last-wins pattern the criterion_verdict groups use, and it deliberately
+# carries NO count/occurrence field: the set IS the answer. A count would
+# re-introduce exactly the resume double-counting this ledger exists to
+# prevent, because a resumed run re-observes and re-appends the findings it
+# already recorded (the journal has no dedup of its own). First-seen order
+# is the $ev order, i.e. ascending `seq`.
+#
+# The projected entry is the event's CONTRACT FIELDS ONLY, each passed
+# through kstr/nmsg: `findingKey`, `criterionId`, `source`, `channel`,
+# `method`, `url`, `status`, `originClass`, `statusClass`, `message`,
+# `detailRef`. The reserved names (`event`, `seq`, `t`, `childId`,
+# `childSeq`) are never carried — `seq`/`t` belong to journal.sh, which
+# restamps them on append, and a caller-supplied `seq` must never travel
+# into a derived artifact. `status` is projected in its kstr form (so an
+# HTTP 500 appears as "500") precisely so the field and the key component
+# built from it can never disagree.
+#
+# `capture_probed` is registered in fold.sh but intentionally NOT projected
+# here: Task 7 emits it behind the journal-emptiness once-guard and Task 10
+# reads its `channel` straight off the journal. Registration alone is what
+# keeps it from being discarded as an `unknown-event`.
+| (reduce $ev[] as $e ({order: [], seen: {}};
+    if $e.event == "finding_observed" then
+      (finding_key($e)) as $k
+      | if (.seen | has($k)) then .
+        else
+          (.order += [$k])
+          | .seen[$k] = {
+              findingKey: $k,
+              criterionId: kstr($e.criterionId),
+              source: kstr($e.source),
+              channel: kstr($e.channel),
+              method: kstr($e.method),
+              url: kstr($e.url),
+              status: kstr($e.status),
+              originClass: kstr($e.originClass),
+              statusClass: kstr($e.statusClass),
+              message: nmsg($e.message),
+              detailRef: kstr($e.detailRef)
+            }
+        end
+    else . end
+  )) as $findings_state
+| ([ $findings_state.order[] | $findings_state.seen[.] ]) as $findings
+
 # ---- pass 3 (Task 4): resumable cursor projection — independent of pass 2's
 # checkpoint groups. Tracks tuples touched by criterion_started, plan_frozen's
 # criteria[] entries (a "planned" tuple counts the same as "started" for
@@ -351,7 +468,8 @@ def tuple_key($e):
     checkpoint: {
       run_id: $state.run_id,
       updated_at: $state.last_t,
-      criteria: $finalized.criteria
+      criteria: $finalized.criteria,
+      findings: $findings
     },
     anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms),
     openActs: $open_acts,
