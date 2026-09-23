@@ -68,24 +68,27 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
 
 5. **Write `analysis.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
-   oracle note via `/qa-spec`") the operator may accept or decline. End with an explicit verdict line:
-   "advisory only — the run is not blocked."
+   oracle note via `/qa-spec`") the operator may accept or decline. The template ships **six** gap
+   headings — one per category above — and then `## Verdict`, whose carve-out wording is already
+   pre-printed; fill in its trailing gap-summary placeholder.
 
-   **Plan defects print ABOVE the verdict line, never inside it.** The template ships five gap headings
-   and then `## Verdict`; insert a `## Plan defects` heading of your own **immediately above
-   `## Verdict`** (it is not pre-printed in the template) and list every plan defect there, one line each
-   with its criterion id, the signal that flagged it, and the `migrate-inverted-criterion.sh` remediation.
-   "(none)" when clean — an empty section is the point: it cannot be omitted into invisibility the way the
-   originating incident's inverted criterion was, folded into *Risk gaps* under a document whose own
-   summary line read "oracle gaps: 0".
+   **Plan defects print ABOVE the verdict line, never inside it — and the template already carries the
+   slot.** `## Plan defects` is **pre-printed** immediately above `## Verdict`. **Fill it; never add a
+   second one, and never delete it.** One line per defect: its criterion id, the signal that flagged it,
+   and the `migrate-inverted-criterion.sh` remediation. **"(none)" when clean** — an empty section is the
+   point, which is why the heading lives in the artifact rather than in an instruction to remember it:
+   the originating incident's inverted criterion was folded into *Risk gaps* under a document whose own
+   summary line read "oracle gaps: 0", and an absent heading is what let it vanish. Relying on an author
+   to insert the section is the same class of mistake as relying on a run to self-report its verdicts.
 
-   **The "advisory only" charter is carved out for this class.** Write the verdict line as: *advisory only
-   — the run is not blocked; this does not extend to plan defects.* `/qa-analyze` itself still changes
-   nothing and still cannot gate (see Guardrails), but a plan defect is not a suggestion the operator may
-   decline into a green run: a criterion asserting that the application failed is a defect in the plan,
-   and declining to fix it does not make it correct. It is also not this step's to bless — the engine's
-   `validate-checklist-json.sh` rejects the structural shape at authoring time, and the registry
-   (`ticket`, a 90-day-capped `expiry`, a severity floor) is what carries the defect afterwards.
+   **The "advisory only" charter is carved out for this class**, and the pre-printed verdict line says so:
+   *Advisory only — the run is **not** blocked; this does not extend to plan defects.* `/qa-analyze`
+   itself still changes nothing and still cannot gate (see Guardrails), but a plan defect is not a
+   suggestion the operator may decline into a green run: a criterion asserting that the application failed
+   is a defect in the plan, and declining to fix it does not make it correct. It is also not this step's
+   to bless — the engine's `validate-checklist-json.sh` rejects the structural shape at authoring time,
+   and the registry (`ticket`, a 90-day-capped `expiry`, a severity floor) is what carries the defect
+   afterwards.
 
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
    into a single "N gaps" figure — plus the next step (`/qa-run "<target>"`). Make clear this step never
