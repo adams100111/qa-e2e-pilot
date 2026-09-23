@@ -1330,5 +1330,193 @@ check "C5b: duplicate checklist id emits a note" "$(printf '%s' "$DUP_ERR" | gre
 check "C5b: pass still recorded" \
   "$([[ -f "$WORK/.qa/runs/${DUP_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
 
+
+# ===========================================================================
+# Task 7 (Lane I) — the `capture_probed` once-guard.
+#
+# checkpoint.sh emits exactly ONE `capture_probed` event per run, recording
+# WHICH capture channel this run's evidence can come from:
+#   toolstream  — a toolstream line for this run already exists
+#   driver-log  — scripts/session-preflight.sh could resolve a session log
+#   none        — neither. An honest degrade, NOT an error: it is the input
+#                 to the run-level UNVERIFIED status.
+# The guard lives in cmd_upsert beside the journal-emptiness `run_started`
+# guard — deliberately NOT in the agent's Phase 0 pre-flight, because
+# commands/qa-resume.md dispatches a resumed run into its recorded phase,
+# "not from Pre-flight", so a Phase-0 assertion is silently skipped on every
+# resumed run.
+#
+# Each case runs in its OWN cwd (checkpoint.sh's QA_BASE is relative to the
+# cwd, and the .playwright-mcp/ discovery probe is too), so one case's
+# channel fixtures can never leak into another's.
+# ===========================================================================
+
+# cp_count <cwd> <run-id> -> how many capture_probed events that journal holds
+cp_count() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -R -s '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ] | length' \
+    < "$j" 2>/dev/null
+}
+
+# cp_field <cwd> <run-id> <jq-field> -> that field of the FIRST capture_probed
+cp_field() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -r -R -s --arg f "$3" '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ]
+              | if length == 0 then "NOEVENT" else (.[0][$f] // "NOFIELD") end' \
+    < "$j" 2>/dev/null
+}
+
+# cp_keys <cwd> <run-id> -> sorted key list of the FIRST capture_probed event
+cp_keys() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -r -R -s '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ]
+              | if length == 0 then "NOEVENT" else (.[0] | keys | join(",")) end' \
+    < "$j" 2>/dev/null
+}
+
+# --- CP1: fresh run, no capture channel at all -> ONE event, channel none ---
+CP1_DIR="$WORK/cp-none"; mkdir -p "$CP1_DIR"
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C1 pass >/dev/null 2>&1 )
+CP1_RC=$?
+check "CP1: channel none is NOT an error (exit 0)" "$CP1_RC" "0"
+check "CP1: exactly one capture_probed on a fresh run" "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP1: channel is none when neither channel exists" "$(cp_field "$CP1_DIR" cp1 channel)" "none"
+check "CP1: event name is capture_probed" "$(cp_field "$CP1_DIR" cp1 event)" "capture_probed"
+check "CP1: event carries exactly {channel,event} + journal seq/t" \
+  "$(cp_keys "$CP1_DIR" cp1)" "channel,event,seq,t"
+# the canary must not displace run_started as the run's first event, and the
+# ordinary upsert record must be untouched by it
+check "CP1: run_started is still seq 1" \
+  "$(jq -r -R -s '[ split("\n")[] | select(length>0) | fromjson ] | .[0] | "\(.event):\(.seq)"' \
+     < "$CP1_DIR/.qa/runs/cp1/journal.ndjson" 2>/dev/null)" "run_started:1"
+check "CP1: criterion record still written" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria[0].criterion_id')" "C1"
+check "CP1: criterion verdict still pass" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria[0].verdict')" "pass"
+
+# --- CP2: never re-emitted by later upserts in the same run ----------------
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C1 fail >/dev/null 2>&1 )
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C2 blocked >/dev/null 2>&1 )
+check "CP2: still exactly one capture_probed after 3 upserts" "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP2: the later upserts still recorded (2 criteria)" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria | length')" "2"
+
+# --- CP3: RESUME — a resumed session appends to a NON-EMPTY journal that
+# already carries the canary; it must NOT re-fire. This is the central claim
+# of the task, so it is asserted against a journal that has been appended to
+# out-of-band (exactly what a resumed run's journal looks like).
+printf '%s\n' '{"event":"phase_exited","phase":"verify","seq":98,"t":"2026-09-23T00:00:00Z"}' \
+  >> "$CP1_DIR/.qa/runs/cp1/journal.ndjson"
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C3 pass >/dev/null 2>&1 )
+CP3_RC=$?
+check "CP3: resumed upsert exits 0" "$CP3_RC" "0"
+check "CP3: resume does NOT re-emit capture_probed (still exactly one)" \
+  "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP3: the resumed verdict was still recorded" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '[.criteria[] | select(.criterion_id=="C3")] | length')" "1"
+
+# --- CP4: the journal was created by journal-emit.sh (freeze/started) BEFORE
+# the first checkpoint.sh upsert — the real orchestrator order (the plan is
+# frozen at the Generate→Verify boundary, before any verdict). The canary
+# must still fire exactly once: a bare journal-emptiness test would be dead
+# code in every real run.
+CP4_DIR="$WORK/cp-emit-first"; mkdir -p "$CP4_DIR/.qa/runs/cp4"
+printf '%s\n' '{"event":"run_started","runId":"cp4","seq":1,"t":"2026-09-23T00:00:00Z"}' \
+  > "$CP4_DIR/.qa/runs/cp4/journal.ndjson"
+printf '%s\n' '{"event":"criterion_started","scenarioId":"__shared__","criterionId":"C1","personaId":"","seq":2,"t":"2026-09-23T00:00:00Z"}' \
+  >> "$CP4_DIR/.qa/runs/cp4/journal.ndjson"
+( cd "$CP4_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp4 C1 pass >/dev/null 2>&1 )
+CP4_RC=$?
+check "CP4: upsert onto a journal-emit-created journal exits 0" "$CP4_RC" "0"
+check "CP4: canary fires once even though the journal was already non-empty" \
+  "$(cp_count "$CP4_DIR" cp4)" "1"
+( cd "$CP4_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp4 C2 pass >/dev/null 2>&1 )
+check "CP4: and still exactly one after a second upsert" "$(cp_count "$CP4_DIR" cp4)" "1"
+
+# --- CP5: channel toolstream when a toolstream line for this run exists ----
+CP5_DIR="$WORK/cp-toolstream"; mkdir -p "$CP5_DIR/.qa/runs/cp5"
+printf '%s\n' '{"seq":1,"tool":"browser_navigate","args":{}}' > "$CP5_DIR/.qa/runs/cp5/toolstream.jsonl"
+( cd "$CP5_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp5 C1 pass >/dev/null 2>&1 )
+check "CP5: exactly one capture_probed" "$(cp_count "$CP5_DIR" cp5)" "1"
+check "CP5: channel is toolstream when a toolstream line exists" \
+  "$(cp_field "$CP5_DIR" cp5 channel)" "toolstream"
+
+# --- CP6: channel driver-log via QA_SESSION_LOG (session-preflight.sh's
+# first resolution rule) ----------------------------------------------------
+CP6_DIR="$WORK/cp-sesslog"; mkdir -p "$CP6_DIR"
+printf '%s\n' '# session' > "$CP6_DIR/session.md"
+( cd "$CP6_DIR" || exit 1; QA_SESSION_LOG="session.md" bash "$SCRIPT" cp6 C1 pass >/dev/null 2>&1 )
+check "CP6: exactly one capture_probed" "$(cp_count "$CP6_DIR" cp6)" "1"
+check "CP6: channel is driver-log when QA_SESSION_LOG resolves" \
+  "$(cp_field "$CP6_DIR" cp6 channel)" "driver-log"
+
+# --- CP7: channel driver-log via .playwright-mcp/*.md discovery (the second
+# resolution rule — every harness profile's --save-session --output-dir) ----
+CP7_DIR="$WORK/cp-pwmcp"; mkdir -p "$CP7_DIR/.playwright-mcp"
+printf '%s\n' '# session' > "$CP7_DIR/.playwright-mcp/session-2026.md"
+( cd "$CP7_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp7 C1 pass >/dev/null 2>&1 )
+check "CP7: exactly one capture_probed" "$(cp_count "$CP7_DIR" cp7)" "1"
+check "CP7: channel is driver-log when .playwright-mcp holds a session log" \
+  "$(cp_field "$CP7_DIR" cp7 channel)" "driver-log"
+
+# --- CP8: toolstream WINS over a resolvable session log (a live-hook
+# toolstream is the channel session-preflight.sh itself refuses to overwrite)
+CP8_DIR="$WORK/cp-both"; mkdir -p "$CP8_DIR/.qa/runs/cp8" "$CP8_DIR/.playwright-mcp"
+printf '%s\n' '{"seq":1,"tool":"browser_click","args":{}}' > "$CP8_DIR/.qa/runs/cp8/toolstream.jsonl"
+printf '%s\n' '# session' > "$CP8_DIR/.playwright-mcp/session.md"
+( cd "$CP8_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp8 C1 pass >/dev/null 2>&1 )
+check "CP8: channel is toolstream when BOTH channels are present" \
+  "$(cp_field "$CP8_DIR" cp8 channel)" "toolstream"
+
+# --- CP9: QA_SESSION_LOG set but pointing at nothing -> none, still exit 0
+# (mirrors session-preflight.sh's resolve_session_log: an explicit
+# QA_SESSION_LOG that does not exist resolves NOTHING, it does not fall back
+# to .playwright-mcp) -------------------------------------------------------
+CP9_DIR="$WORK/cp-badsess"; mkdir -p "$CP9_DIR/.playwright-mcp"
+printf '%s\n' '# session' > "$CP9_DIR/.playwright-mcp/session.md"
+( cd "$CP9_DIR" || exit 1; QA_SESSION_LOG="no-such-session.md" bash "$SCRIPT" cp9 C1 pass >/dev/null 2>&1 )
+CP9_RC=$?
+check "CP9: a missing QA_SESSION_LOG target is not an error (exit 0)" "$CP9_RC" "0"
+check "CP9: channel is none (explicit QA_SESSION_LOG never falls back)" \
+  "$(cp_field "$CP9_DIR" cp9 channel)" "none"
+
+# --- CP10: an EMPTY toolstream.jsonl holds no toolstream LINE -> not the
+# toolstream channel ---------------------------------------------------------
+CP10_DIR="$WORK/cp-empty-ts"; mkdir -p "$CP10_DIR/.qa/runs/cp10"
+: > "$CP10_DIR/.qa/runs/cp10/toolstream.jsonl"
+( cd "$CP10_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp10 C1 pass >/dev/null 2>&1 )
+check "CP10: an empty toolstream.jsonl is not the toolstream channel" \
+  "$(cp_field "$CP10_DIR" cp10 channel)" "none"
+
+# --- CP11: the python3 branch of the canary (jq masked from PATH) ----------
+# Uses a COMPLETE jq-less fakebin (every external tool checkpoint.sh's
+# journal.sh/fold.sh subprocesses need, minus jq), so has_jq() genuinely
+# fails and the python3 builder + python3 journal scan really run.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  NOJQBIN="$WORK/nojqbin"; mkdir -p "$NOJQBIN"
+  for tool in bash date mkdir cat mv rm dirname mktemp grep sort python3; do
+    tp="$(command -v "$tool" 2>/dev/null)"; [ -n "$tp" ] && ln -sf "$tp" "$NOJQBIN/$tool"
+  done
+  CP11_DIR="$WORK/cp-pyengine"; mkdir -p "$CP11_DIR"
+  ( cd "$CP11_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11 C1 pass >/dev/null 2>&1 )
+  CP11_RC=$?
+  check "CP11: py-engine upsert exits 0" "$CP11_RC" "0"
+  check "CP11: py-engine emits exactly one capture_probed" "$(cp_count "$CP11_DIR" cp11)" "1"
+  check "CP11: py-engine channel none" "$(cp_field "$CP11_DIR" cp11 channel)" "none"
+  ( cd "$CP11_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11 C2 pass >/dev/null 2>&1 )
+  check "CP11: py-engine does NOT re-emit on the second upsert" "$(cp_count "$CP11_DIR" cp11)" "1"
+  echo "note - capture_probed python3-engine sub-case: RAN (jq masked from PATH via a jq-less fakebin)"
+else
+  echo "SKIP - capture_probed python3-engine sub-case: jq or python3 not present on this host (4 assertions skipped)"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

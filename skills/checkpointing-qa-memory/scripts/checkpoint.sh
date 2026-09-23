@@ -212,6 +212,123 @@ print(json.dumps({"event": "phase_entered", "phase": sys.argv[1]}))
   fi
 }
 
+# ---------------------------------------------------------------------------
+# capture_probed (Task 7) — the once-per-run CAPTURE-CHANNEL canary.
+#
+# Records, exactly once per run, which independent capture channel this run's
+# evidence can be reconciled against:
+#   toolstream  — a toolstream line for this run already exists (a live
+#                  capture-hook wrote .qa/runs/<run-id>/toolstream.jsonl)
+#   driver-log  — scripts/session-preflight.sh can resolve a Playwright MCP
+#                  --save-session log, so a toolstream is derivable
+#   none        — neither. `none` is NOT an error here: it is the honest
+#                  input to the run-level UNVERIFIED status. Never `die` on it.
+#
+# WHY IT LIVES HERE, in cmd_upsert, beside the journal-emptiness run_started
+# guard — and NOT in the agent's Phase 0 pre-flight: commands/qa-resume.md
+# dispatches a resumed run straight into its recorded phase, "not from
+# Pre-flight", so a Phase-0 assertion is silently skipped on every resumed
+# run. The journal is the only place a once-per-run fact survives a resume.
+#
+# WHY THE GUARD IS A SCAN, not a bare `[[ ! -s journal ]]` test (the
+# scan-for-an-existing-event variant of the same idiom — cf.
+# journal-emit.sh's plan_frozen_exists): in the real orchestrator order the
+# plan is frozen via journal-emit.sh at the Generate→Verify boundary, i.e.
+# BEFORE the first checkpoint.sh upsert, so the journal is already non-empty
+# when cmd_upsert first runs. A bare emptiness test would therefore be dead
+# code in every real run and the canary would be silently absent — exactly
+# the failure mode this task exists to prevent. The scan keeps both
+# guarantees the emptiness test has (fires at most once, never re-fires on
+# resume, because a resumed run's journal already carries the event) and adds
+# the one it lacks.
+# ---------------------------------------------------------------------------
+
+# detect_capture_channel <run-id> -> "toolstream" | "driver-log" | "none"
+#
+# The driver-log probe MIRRORS scripts/session-preflight.sh's
+# resolve_session_log (QA_SESSION_LOG when it names an existing file — an
+# explicit setting never falls back — else any *.md under .playwright-mcp/,
+# the --output-dir every harness profile uses for --save-session). It is a
+# pure predicate: it never runs session-preflight.sh, which would WRITE a
+# toolstream as a side effect. Pure-bash globbing (no ls/head) so it stays
+# honest under the restricted PATHs this script's own characterization
+# sub-cases use.
+detect_capture_channel() {
+  local run_id="$1"
+  if [[ -s "${QA_BASE}/${run_id}/toolstream.jsonl" ]]; then
+    echo "toolstream"
+    return 0
+  fi
+  if [[ -n "${QA_SESSION_LOG:-}" ]]; then
+    if [[ -f "$QA_SESSION_LOG" ]]; then
+      echo "driver-log"
+    else
+      echo "none"
+    fi
+    return 0
+  fi
+  local candidate
+  for candidate in .playwright-mcp/*.md; do
+    if [[ -f "$candidate" ]]; then
+      echo "driver-log"
+      return 0
+    fi
+  done
+  echo "none"
+}
+
+build_capture_probed_event() {
+  local channel="$1"
+  if has_jq; then
+    jq -cn --arg channel "$channel" '{event: "capture_probed", channel: $channel}' \
+      || die "Failed to build the capture_probed journal event via jq."
+  elif has_py; then
+    python3 -c '
+import json, sys
+print(json.dumps({"event": "capture_probed", "channel": sys.argv[1]}))
+' "$channel" || die "Failed to build the capture_probed journal event via python3."
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
+# capture_probed_exists <run-id> -> 0 when this run's journal already carries
+# a capture_probed event, 1 otherwise (including no journal at all).
+#
+# ONE engine invocation for the whole file (not one per line): the journal is
+# read as raw text and each line parsed defensively, so a torn/malformed line
+# — including the torn LAST line journal.sh's PIPE_BUF boundary accepts —
+# can never abort the scan or be mistaken for the event.
+capture_probed_exists() {
+  local run_id="$1"
+  local journal_path="${QA_BASE}/${run_id}/journal.ndjson"
+  [[ -s "$journal_path" ]] || return 1
+  if has_jq; then
+    jq -e -R -s 'any(split("\n")[];
+                   (try fromjson catch null) as $o
+                   | if ($o | type) == "object" then ($o.event == "capture_probed") else false end)' \
+      >/dev/null 2>&1 < "$journal_path"
+  elif has_py; then
+    python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and obj.get("event") == "capture_probed":
+            sys.exit(0)
+sys.exit(1)
+' "$journal_path"
+  else
+    die "checkpoint.sh needs either 'jq' or 'python3' to scan the journal."
+  fi
+}
+
 # Identity for matching an existing record is the PAIR (criterion_id,
 # persona) — scenarioId is the persona when set, else the literal
 # "__shared__" sentinel (persona defaults to "" — back-compat: identity is
@@ -1028,6 +1145,19 @@ cmd_upsert() {
     QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$run_started_event" \
       || die "Failed to append the run_started event to the journal for run '${run_id}'."
     write_latest "$run_id"
+  fi
+
+  # Task 7 — the capture-channel canary, behind its own once-guard (see
+  # capture_probed_exists' header for why the guard is a scan rather than a
+  # bare journal-emptiness test, and why this cannot live in the agent's
+  # Phase 0 pre-flight). `channel: none` is an honest degrade, never an
+  # error — it is the input to the run-level UNVERIFIED status.
+  if ! capture_probed_exists "$run_id"; then
+    local capture_channel capture_probed_event
+    capture_channel="$(detect_capture_channel "$run_id")"
+    capture_probed_event="$(build_capture_probed_event "$capture_channel")"
+    QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$journal_sh" append "$run_id" "$capture_probed_event" \
+      || die "Failed to append the capture_probed event to the journal for run '${run_id}'."
   fi
 
   local phase_event
