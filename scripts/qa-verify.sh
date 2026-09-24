@@ -216,6 +216,70 @@
 # declares, matching this script's existing convention of small
 # self-contained classifiers (e.g. capture-hook.sh's clock-advisory scan).
 
+# RUN-SCOPED CHECKS PASS (plan 2026-09-23-error-honesty-invariants Task 8,
+# spec §5.5): a THIRD pass, independent of BOTH the per-criterion pass-record
+# loop and the phase-surface pass, adding four checks that are RUN-SCOPED —
+# evaluated regardless of any criterion's recorded verdict.
+#
+# WHY RUN-SCOPED IS THE WHOLE POINT. Everything above this line re-checks only
+# records whose `verdict == "pass"` (list_pass_records). In the incident this
+# plan exists because of, the criterion that observed a 500 was recorded
+# `fail`, so it was never re-examined by anything, and the run still shipped
+# as a verified result. A check that only ever looks at passes cannot see a
+# dropped error; these four look at the run.
+#
+#   1. LEDGER COMPLETENESS (I1). Recomputes the expected finding set from the
+#      two independent channels — the driver network log (authoritative for
+#      REQUESTS, including the navigating document request) and the
+#      `__qaObserve` payloads recoverable from the toolstream (authoritative
+#      for CONSOLE errors, which no network log can see) — and compares it
+#      against the run's `finding_observed` journal events. An observation
+#      that is REQUIRED to be journaled and is not OVERRIDES the run.
+#      Required means classify-finding.sh returning in-scope + fatal for a
+#      network observation, or an `error`-level console entry. A third-party
+#      or benign 5xx is not required (that is what the classifier decides),
+#      and an in-scope 3xx/4xx is recorded but never required (R1).
+#   2. CLASSIFICATION RE-CHECK (I2). Re-runs classify-finding.sh over every
+#      journaled finding and OVERRIDES the run on any disagreement. An agent
+#      must not be able to mis-class a 500 by writing a journal event that
+#      says otherwise.
+#   3. LOAD-WINDOW COVERAGE (I5/R9). Fails a run in which a
+#      `browser_navigate` is not followed by a `browser_network_requests`
+#      before the next navigation. It reads ONLY the `tool` field, never
+#      `responseBody` — capture-hook.sh:308 truncates responseBody at 4000
+#      bytes and session-to-toolstream.js:119 writes it as `null` on three of
+#      the four harnesses, so a check reading it would be unreliable; the
+#      `tool` sequence is not. This is the check that closes the blind spot
+#      where a navigation-time 500 lives: such a 500 IS the document request,
+#      not a fetch/XHR, and no script runs on a 500 page, so `__qaObserve` is
+#      structurally blind to it (spec §5.4, §11.3).
+#   4. KNOWN-DEFECT GATE (I4). Any `expired` registry entry fails the run, as
+#      does any entry that known-defects.sh validate rejects. The evidence
+#      handed to `known-defects.sh status` is the ratified shape
+#      {navigations:[{url,status}], findings:[{url,statusClass,status}]},
+#      produced verbatim and never a local variant.
+#
+# NO EVIDENCE IS NOT CONTRADICTED EVIDENCE. When neither channel is available
+# the checks do not fail the run: the absence is recorded (`channel: "none"`,
+# a reason naming it, confidence degraded to "low") and Task 10 turns it into
+# a run-level UNVERIFIED. Failing a run for having no capture would punish
+# the wrong thing — the same "opt-in capture, no punishment for its absence"
+# posture as the no-toolstream provenance degrade above.
+#
+# THE RECORD, AND THE ONE WAY IT DIFFERS FROM `__phase-surface__`: results are
+# written to verification.json as a synthetic run-level record
+# (criterionId "__run-checks__") carrying
+#   runChecks: {ledgerComplete, classificationsAgree, loadWindowCovered,
+#               knownDefectsOk}
+# plus `channel` and the registry's per-entry states. Unlike the
+# phase-surface record, this one DOES flip qa-verify's exit code: its checks
+# are structural proofs about the run's own record rather than best-effort
+# wall-clock correlation, and ADR-0026 settles that an engine invariant
+# outranks a criterion's own pinned expectation. The record is emitted when
+# any check is false OR when the run carried findings evidence at all; a run
+# with none gains no record, which is both honest and what keeps every
+# pre-existing fixture in tests/qa-verify/run.sh unchanged.
+
 set -uo pipefail
 
 QA_BASE="${QA_BASE:-.qa/runs}"
@@ -226,6 +290,8 @@ PROVENANCE_SH="$HERE/provenance.sh"
 TOOLSTREAM_SH="$HERE/toolstream.sh"
 STATE_MACHINE_JSON="$HERE/../skills/checkpointing-qa-memory/references/state-machine.json"
 PARSE_SESSION_LOG_JS="$HERE/../skills/driving-browser-qa/scripts/parse-session-log.js"
+CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
+KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
 
 # Script-global (NOT `local` to main) so the EXIT trap registered in main —
 # which fires AFTER main returns, i.e. back at global scope — can still see
@@ -254,6 +320,8 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 [[ -f "$TOOLSTREAM_SH" ]] || die "qa-verify.sh: cannot find toolstream.sh at ${TOOLSTREAM_SH}."
 [[ -f "$STATE_MACHINE_JSON" ]] || die "qa-verify.sh: cannot find state-machine.json at ${STATE_MACHINE_JSON}."
 [[ -f "$PARSE_SESSION_LOG_JS" ]] || die "qa-verify.sh: cannot find parse-session-log.js at ${PARSE_SESSION_LOG_JS}."
+[[ -f "$CLASSIFY_FINDING_SH" ]] || die "qa-verify.sh: cannot find classify-finding.sh at ${CLASSIFY_FINDING_SH}."
+[[ -f "$KNOWN_DEFECTS_SH" ]] || die "qa-verify.sh: cannot find known-defects.sh at ${KNOWN_DEFECTS_SH}."
 
 # ---------------------------------------------------------------------------
 # validate_run_id — mirrors provenance.sh/checkpoint.sh's Fix 28 path-
@@ -1357,6 +1425,1038 @@ print(json.dumps({
 }
 
 # ---------------------------------------------------------------------------
+# RUN-SCOPED CHECKS PASS (plan 2026-09-23-error-honesty-invariants Task 8,
+# spec §5.5). A THIRD pass, independent of both the per-criterion pass-record
+# loop and the phase-surface pass. See the header comment's "RUN-SCOPED
+# CHECKS PASS" section for the full rationale.
+# ---------------------------------------------------------------------------
+
+known_defects_file() { echo ".qa/known-defects.json"; }
+qa_config_file() { echo ".qa/config.json"; }
+
+to_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
+# nmsg_bash <text> -> the message normalization the findings ledger's
+# `nmsg` performs (fold.jq:85 / fold.py mirror): runs of ASCII whitespace
+# collapse to one space, one leading and one trailing space are trimmed, the
+# result is cut to 200 characters and re-trimmed. Implemented ONCE, in bash,
+# deliberately: both sides of this pass's comparison (a journaled
+# `finding_observed` message and a console entry recomputed from the
+# toolstream) go through THIS function, so the two can never disagree with
+# each other, whatever either JSON engine would have done.
+nmsg_bash() {
+  local s
+  s="$(printf '%s' "$1" | tr '\t\n\r\013\014' '     ' | tr -s ' ')"
+  s="${s# }"; s="${s% }"
+  s="${s:0:200}"
+  s="${s# }"; s="${s% }"
+  printf '%s' "$s"
+}
+
+# net_ident <method> <url> <url-len> <status> -> the run-scoped identity of
+# one network observation, in the findings ledger's own key space MINUS its
+# `criterionId` component:
+#     net|<METHOD>|<url capped at 1024>[#<full length>]|<status>
+#
+# THE TWO DELIBERATE DIFFERENCES FROM fold.jq's finding_key, both of which
+# only ever make this check MORE conservative (fewer overrides, never more):
+#
+#   1. `criterionId` IS EXCLUDED. Neither independent channel records which
+#      criterion was under test when a request was issued — a HAR row and a
+#      __qaObserve payload carry no criterion at all — so a key including it
+#      could never be recomputed. Excluding it means a finding journaled
+#      against the WRONG criterion still counts as journaled. That is the
+#      right trade: a mis-attributed finding is visible in the report, while
+#      a DROPPED one is exactly the failure this plan exists to remove, and
+#      attributing an observation to a criterion would need an act/phase
+#      correlation this pass does not have.
+#   2. `method` is UPPERCASED. HTTP methods are case-insensitive; a HAR
+#      records `GET` while observe.js records whatever `init.method` held,
+#      which may be `get`. Comparing them verbatim would manufacture a
+#      missing finding out of a letter case.
+#
+# Everything else is the ledger's contract verbatim, and relied upon rather
+# than re-derived: the url is capped at 1024 characters and, WHEN AND ONLY
+# WHEN its full length exceeds that cap, "#<full length>" is appended. The
+# full length prefers an emitter-supplied `urlLen`, which is what makes the
+# identity CAPPING-INVARIANT — the driver log carries the untruncated url,
+# the journal carries the capped url plus `urlLen`, and both land on the
+# same string.
+net_ident() {
+  local method="$1" url="$2" ulen="$3" status="$4" capped
+  case "$ulen" in
+    ''|*[!0-9]*) ulen="${#url}" ;;
+  esac
+  capped="${url:0:1024}"
+  if [[ "$ulen" -gt 1024 ]]; then
+    printf 'net|%s|%s#%s|%s' "$(to_upper "$method")" "$capped" "$ulen" "$status"
+  else
+    printf 'net|%s|%s|%s' "$(to_upper "$method")" "$capped" "$status"
+  fi
+}
+
+# net_prefix <method> <url> <status> -> a SECONDARY, coarser identity keyed
+# on the url's first 300 characters.
+#
+# WHY IT EXISTS: observe.js:109/126 slices every recorded url to 300
+# characters and supplies NO `urlLen`, so an IN-PAGE observation of a
+# 500-byte url is genuinely shorter than the driver log's record of the same
+# request, and net_ident's capping-invariance — which relies on `urlLen` —
+# has nothing to work with. Without this fallback, one request seen by both
+# channels and journaled ONCE would be reported as a dropped finding, a
+# false override.
+#
+# IT IS DELIBERATELY NARROW, and the narrowness is load-bearing. The
+# fallback is consulted ONLY for an observation from the TOOLSTREAM channel
+# whose recorded url is at least 300 characters long — i.e. only where
+# observe.js could actually have sliced it. Applied to DRIVER-LOG rows it
+# would swallow net_ident entirely: a driver url is never sliced, so the
+# journal's capped form and the log's full form always share their first 300
+# characters, and a coarse prefix match would then absorb every divergence
+# net_ident exists to catch (including two distinct >1024-character urls
+# that differ only after the cap). A survived mutation found exactly that:
+# with the fallback unscoped, ignoring `urlLen` altogether changed nothing
+# any test could see. Scoping it restores the distinction.
+#
+# UPSTREAM RESIDUAL, not fixable here: two distinct urls of >=300 characters
+# that share their first 300, seen only IN-PAGE, are indistinguishable in
+# observe.js's own payload — it records neither the remainder nor a length.
+# Journalling one of them therefore absorbs the other. Closing that needs
+# `urlLen` from observe.js, not a different comparison in this script.
+net_prefix() {
+  printf 'net|%s|%s|%s' "$(to_upper "$1")" "${2:0:300}" "$3"
+}
+
+# console_ident <text> -> the identity of one console finding. The ledger
+# keys a console finding on its normalized message (fold.jq's finding_key:
+# `source == "console"` sets method/url to "" and the url component carries
+# nmsg(message)), so the same normalization is all that is needed here.
+console_ident() { printf 'console|%s' "$(nmsg_bash "$1")"; }
+
+# set_contains <newline-delimited-set> <member> -> exit 0 iff present.
+# grep -F -x -- so a member containing regex metacharacters, a leading `-`,
+# or a `|` is matched literally and in full. An EMPTY member is never a
+# member (a bare `grep -Fxq ""` matches every line).
+set_contains() {
+  [[ -n "$2" ]] || return 1
+  printf '%s\n' "$1" | grep -Fxq -- "$2"
+}
+
+# ---------------------------------------------------------------------------
+# network_log_file <run-id> -> stdout the resolved driver network log path,
+# or nothing. MIRRORS session-preflight.sh's resolve_session_log contract:
+# QA_NETWORK_LOG wins when it names an existing file and, being an explicit
+# setting, NEVER falls back; otherwise the run's own
+# .qa/runs/<run-id>/network-log.json; otherwise any *.har under
+# .playwright-mcp/ (the --output-dir every harness profile already uses).
+# Resolution tests for EXISTENCE, not for non-emptiness: a zero-byte log is
+# a resolved channel that happens to carry nothing, which is a different
+# fact from no channel at all, and this pass has to keep the two apart.
+# Pure-bash globbing (no ls/head) so it stays honest under a restricted PATH.
+# ---------------------------------------------------------------------------
+network_log_file() {
+  local run_id="$1" candidate
+  if [[ -n "${QA_NETWORK_LOG:-}" ]]; then
+    [[ -f "$QA_NETWORK_LOG" ]] && echo "$QA_NETWORK_LOG"
+    return 0
+  fi
+  candidate="$(run_dir "$run_id")/network-log.json"
+  if [[ -f "$candidate" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  for candidate in .playwright-mcp/*.har; do
+    if [[ -f "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# driver_rows <log-file> -> stdout: a FIRST line that is either `usable` or
+# `unusable`, then SIX LINES PER ROW: kind("net"), method, url, status,
+# text(""), type.
+#
+# Accepts two container shapes and nothing else: a flat JSON array of
+# {method,url,status[,type]} request records, or a HAR
+# ({log:{entries:[{request:{method,url},response:{status}}]}}). Any other
+# container — a JSON object that is not a HAR, `null`, `false`, a number, a
+# string, concatenated JSON documents, an empty file, or text that is not
+# JSON at all — is `unusable`: NO ROWS, no reasons that could fail the run,
+# and the absence is recorded rather than punished (spec §5.5: distinguish
+# no evidence from contradicted evidence). A row is DROPPED unless its url
+# is a NON-EMPTY string and its status is an integer — a type check alone
+# ("url is a string") let an empty url through in a Wave-1 Critical.
+#
+# SIX LINES PER ROW, never a delimited single line: `IFS=$'\t' read`
+# collapses runs of tab and strips leading/trailing ones, so a row with an
+# empty field silently shifts every column left (see list_pass_records'
+# comment for the same bug caught in this suite before). Line framing is
+# safe because the extractor replaces LF and CR in every emitted string
+# with a space — done by split/join and str.replace rather than a regex, so
+# the two engines cannot diverge on a character class.
+# ---------------------------------------------------------------------------
+driver_rows() {
+  local f="$1"
+  if has_jq; then
+    jq -n -r --rawfile raw "$f" '
+      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
+      def istr($v): ($v | type) == "string" and ($v | length) > 0;
+      def inum($v): ($v | type) == "number" and ($v == ($v | floor))
+                    and $v > -1000000000000000 and $v < 1000000000000000;
+      def row($m; $u; $s; $ty): "net", ($m | sane), ($u | sane), ($s | floor | tostring), "", ($ty | sane);
+      ($raw | try fromjson catch null) as $d
+      | if ($d | type) == "array" then
+          "usable",
+          ( $d[]
+            | select((type) == "object")
+            | select(istr(.url) and inum(.status))
+            | row(.method; .url; .status; (.type // ._resourceType // .resourceType // "")) )
+        elif ($d | type) == "object" and (($d.log | type) == "object")
+             and (($d.log.entries | type) == "array") then
+          "usable",
+          ( $d.log.entries[]
+            | select((type) == "object" and ((.request | type) == "object") and ((.response | type) == "object"))
+            | select(istr(.request.url) and inum(.response.status))
+            | row(.request.method; .request.url; .response.status; (._resourceType // .resourceType // "")) )
+        else "unusable" end
+    ' 2>/dev/null || echo "unusable"
+  else
+    python3 -c '
+import json, sys
+
+def sane(v):
+    if not isinstance(v, str):
+        return ""
+    return v.replace("\n", " ").replace("\r", " ")
+
+def istr(v):
+    return isinstance(v, str) and len(v) > 0
+
+def inum(v):
+    return isinstance(v, int) and not isinstance(v, bool) and -1000000000000000 < v < 1000000000000000
+
+def fnum(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == int(v) and -1000000000000000 < v < 1000000000000000
+
+out = []
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+except Exception:
+    print("unusable")
+    sys.exit(0)
+
+def row(m, u, s, ty):
+    out.extend(["net", sane(m), sane(u), str(int(s)), "", sane(ty)])
+
+if isinstance(d, list):
+    for e in d:
+        if not isinstance(e, dict):
+            continue
+        if not (istr(e.get("url")) and fnum(e.get("status"))):
+            continue
+        ty = e.get("type")
+        if not isinstance(ty, str):
+            ty = e.get("_resourceType")
+        if not isinstance(ty, str):
+            ty = e.get("resourceType")
+        row(e.get("method"), e.get("url"), e.get("status"), ty)
+elif isinstance(d, dict) and isinstance(d.get("log"), dict) and isinstance(d["log"].get("entries"), list):
+    for e in d["log"]["entries"]:
+        if not isinstance(e, dict) or not isinstance(e.get("request"), dict) or not isinstance(e.get("response"), dict):
+            continue
+        if not (istr(e["request"].get("url")) and fnum(e["response"].get("status"))):
+            continue
+        ty = e.get("_resourceType")
+        if not isinstance(ty, str):
+            ty = e.get("resourceType")
+        row(e["request"].get("method"), e["request"].get("url"), e["response"].get("status"), ty)
+else:
+    print("unusable")
+    sys.exit(0)
+
+print("usable")
+for line in out:
+    print(line)
+' "$f" 2>/dev/null || echo "unusable"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# observe_rows <run-id> -> stdout SIX LINES PER ROW, same framing as
+# driver_rows: kind("net"|"console"), method, url, status, text, type("").
+#
+# Channel 1, in-page interception. Reads each toolstream line's
+# `responseBody`; when that string itself parses as a JSON object carrying
+# `network[]` / `console[]` it is an __qaObserve payload, and when it parses
+# as a JSON ARRAY of request records it is a browser_network_requests
+# result. Anything else is ignored — including a responseBody truncated by
+# capture-hook.sh's 4000-byte cap, which simply fails to parse and
+# contributes nothing. That loss is the cap's documented, accepted cost
+# (spec §11.1) and it can only ever HIDE a required finding, never invent
+# one, so it degrades this check rather than breaking it.
+#
+# Only `level == "error"` console entries are emitted. observe.js buffers
+# `error` and `warn`; a warning is not an observed error, and invariant I1
+# is about errors.
+# ---------------------------------------------------------------------------
+observe_rows() {
+  local f
+  f="$(toolstream_file_for "$1")"
+  [[ -f "$f" ]] || return 0
+  if has_jq; then
+    jq -R -r '
+      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
+      def istr($v): ($v | type) == "string" and ($v | length) > 0;
+      def inum($v): ($v | type) == "number" and ($v == ($v | floor))
+                    and $v > -1000000000000000 and $v < 1000000000000000;
+      def netrow: "net", (.method | sane), (.url | sane), (.status | floor | tostring), "", "";
+      def conrow: "console", "", "", "", (.text | sane), "";
+      (try fromjson catch null) as $o
+      | if ($o | type) != "object" then empty
+        else
+          ( if ($o.responseBody | type) == "string"
+            then ($o.responseBody | try fromjson catch null)
+            else null end ) as $b
+          | if ($b | type) == "object" then
+              ( ( if ($b.network | type) == "array" then $b.network[] else empty end )
+                | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow ),
+              ( ( if ($b.console | type) == "array" then $b.console[] else empty end )
+                | select((type) == "object") | select(.level == "error") | select(istr(.text)) | conrow )
+            elif ($b | type) == "array" then
+              ( $b[] | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow )
+            else empty end
+        end
+    ' "$f" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+
+def sane(v):
+    if not isinstance(v, str):
+        return ""
+    return v.replace("\n", " ").replace("\r", " ")
+
+def istr(v):
+    return isinstance(v, str) and len(v) > 0
+
+def fnum(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == int(v) and -1000000000000000 < v < 1000000000000000
+
+out = []
+
+def netrow(e):
+    out.extend(["net", sane(e.get("method")), sane(e.get("url")), str(int(e["status"])), "", ""])
+
+def conrow(e):
+    out.extend(["console", "", "", "", sane(e.get("text")), ""])
+
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(o, dict):
+            continue
+        rb = o.get("responseBody")
+        b = None
+        if isinstance(rb, str):
+            try:
+                b = json.loads(rb)
+            except Exception:
+                b = None
+        if isinstance(b, dict):
+            net = b.get("network")
+            if isinstance(net, list):
+                for e in net:
+                    if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
+                        netrow(e)
+            con = b.get("console")
+            if isinstance(con, list):
+                for e in con:
+                    if isinstance(e, dict) and e.get("level") == "error" and istr(e.get("text")):
+                        conrow(e)
+        elif isinstance(b, list):
+            for e in b:
+                if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
+                    netrow(e)
+
+for line in out:
+    print(line)
+' "$f" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# journal_finding_rows <run-id> -> stdout EIGHT LINES PER `finding_observed`
+# event: source, method, url, urlLen(decimal or ""), status, originClass,
+# statusClass, message.
+#
+# The agent's LEDGER CLAIM, read straight off journal.ndjson. Every field
+# goes through the ledger's own `kstr` projection (string as-is; an integral
+# number within +/-1e15 as its decimal form; anything else — null, absent,
+# boolean, non-integral number, object, array — as ""), so a
+# non-string/non-number field can never travel into an identity or a reason.
+# A torn or unparseable line is skipped, exactly as fold.sh skips it; the
+# events AFTER it are still read (a torn write must not hide the findings
+# that follow it).
+# ---------------------------------------------------------------------------
+journal_finding_rows() {
+  local f
+  f="$(journal_file "$1")"
+  [[ -f "$f" ]] || return 0
+  if has_jq; then
+    jq -R -r '
+      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
+      def kstr($v): if ($v | type) == "string" then $v
+                    elif ($v | type) == "number" and ($v == ($v | floor))
+                         and $v > -1000000000000000 and $v < 1000000000000000
+                      then ($v | floor | tostring)
+                    else "" end;
+      (try fromjson catch null) as $o
+      | if ($o | type) == "object" and ($o.event == "finding_observed") then
+          (kstr($o.source) | sane),
+          (kstr($o.method) | sane),
+          (kstr($o.url) | sane),
+          ( if ($o.urlLen | type) == "number" and ($o.urlLen == ($o.urlLen | floor))
+               and ($o.urlLen) >= 0 and ($o.urlLen) < 1000000000000000
+            then ($o.urlLen | floor | tostring) else "" end ),
+          (kstr($o.status) | sane),
+          (kstr($o.originClass) | sane),
+          (kstr($o.statusClass) | sane),
+          (kstr($o.message) | sane)
+        else empty end
+    ' "$f" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+
+def sane(v):
+    return v.replace("\n", " ").replace("\r", " ")
+
+def kstr(v):
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return ""
+    if v != int(v) or not (-1000000000000000 < v < 1000000000000000):
+        return ""
+    return str(int(v))
+
+def ulen(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return ""
+    if v != int(v) or not (0 <= v < 1000000000000000):
+        return ""
+    return str(int(v))
+
+out = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(o, dict) or o.get("event") != "finding_observed":
+            continue
+        out.extend([
+            sane(kstr(o.get("source"))),
+            sane(kstr(o.get("method"))),
+            sane(kstr(o.get("url"))),
+            ulen(o.get("urlLen")),
+            sane(kstr(o.get("status"))),
+            sane(kstr(o.get("originClass"))),
+            sane(kstr(o.get("statusClass"))),
+            sane(kstr(o.get("message"))),
+        ])
+for line in out:
+    print(line)
+' "$f" 2>/dev/null || true
+  fi
+}
+
+# tool_sequence <run-id> -> stdout the ORDERED `tool` value of every
+# toolstream line, one per line. The load-window check needs nothing else:
+# `responseBody` is truncated at 4000 bytes by capture-hook.sh:308 and
+# written as `null` unconditionally by session-to-toolstream.js:119 on three
+# of the four harnesses, so a check that read it would be unreliable on most
+# runs; the `tool` sequence is not (spec §11.1/§11.4).
+tool_sequence() {
+  local f
+  f="$(toolstream_file_for "$1")"
+  [[ -f "$f" ]] || return 0
+  if has_jq; then
+    jq -R -r '
+      (try fromjson catch null) as $o
+      | if ($o | type) == "object" and (($o.tool | type) == "string")
+        then ($o.tool | ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")))
+        else empty end
+    ' "$f" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(o, dict) and isinstance(o.get("tool"), str):
+            print(o["tool"].replace("\n", " ").replace("\r", " "))
+' "$f" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# load_window_reasons <run-id> -> one reason line per UNCOVERED navigation.
+#
+# CHECK 3 (I5/R9). A `browser_navigate` must be followed by a
+# `browser_network_requests` before the next navigation. This is the check
+# that closes the blind spot where a navigation-time 500 lives: that 500 IS
+# the document request, issued by the browser's navigation machinery rather
+# than by fetch/XHR, and no script runs on a 500 page — so `__qaObserve` can
+# never see it, structurally, and only the driver-backed
+# browser_network_requests can (spec §5.4, §11.3).
+#
+# The trailing navigation counts: a run whose LAST navigation was never read
+# back has exactly the blind spot this check exists to close, so end-of-
+# stream is not a free pass.
+#
+# `*browser_navigate` as a case pattern matches a bare tool name and an
+# MCP-prefixed one alike, and does NOT match `browser_navigate_back`
+# (the string does not end in `browser_navigate`). DOCUMENTED RESIDUAL:
+# browser_navigate_back is neither required to be read back nor treated as a
+# window boundary. It replays history rather than driving a fresh
+# navigation, and the driver's own network log is cumulative, so counting it
+# would add false failures without closing a hole.
+# ---------------------------------------------------------------------------
+load_window_reasons() {
+  local run_id="$1" i j n covered t
+  local -a tools=()
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    tools[${#tools[@]}]="$t"
+  done < <(tool_sequence "$run_id")
+  n=${#tools[@]}
+  i=0
+  while [[ "$i" -lt "$n" ]]; do
+    case "${tools[$i]}" in
+      *browser_navigate)
+        covered=0
+        j=$((i + 1))
+        while [[ "$j" -lt "$n" ]]; do
+          case "${tools[$j]}" in
+            *browser_navigate) break ;;
+            *browser_network_requests) covered=1; break ;;
+          esac
+          j=$((j + 1))
+        done
+        if [[ "$covered" -eq 0 ]]; then
+          echo "load-window coverage: the browser_navigate at toolstream position $((i + 1)) is not followed by a browser_network_requests before the next navigation (or before the end of the run) — the load window in which a navigation-time 5xx lives was never read back"
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
+# classify_one <config> <url> <status> -> sets CF_ORIGIN / CF_STATUS from
+# classify-finding.sh, reused verbatim. Exit non-zero when the script could
+# not be run at all or printed neither line.
+CF_ORIGIN=""; CF_STATUS=""
+classify_one() {
+  local out line
+  CF_ORIGIN=""; CF_STATUS=""
+  out="$(bash "$CLASSIFY_FINDING_SH" "$1" "$2" "$3" 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      originClass=*) CF_ORIGIN="${line#originClass=}" ;;
+      statusClass=*) CF_STATUS="${line#statusClass=}" ;;
+    esac
+  done <<< "$out"
+  [[ -n "$CF_ORIGIN" && -n "$CF_STATUS" ]]
+}
+
+# enc_nav <url> <status-digits> / enc_finding <url> <statusClass>
+# <status-digits-or-empty> -> ONE compact JSON object for the known-defects
+# evidence document. The exact ratified evidence shape (known-defects.sh's
+# "EVIDENCE SHAPE" block) is
+#   {navigations:[{url,status}], findings:[{url,statusClass,status}]}
+# and it is produced here verbatim — never a locally invented variant.
+# `--argjson` is fed ONLY a bash-validated run of digits, never the output
+# of a jq filter that could emit more than one document.
+enc_nav() {
+  if has_jq; then
+    jq -cn --arg u "$1" --argjson s "$2" '{url: $u, status: $s}'
+  else
+    python3 -c '
+import json, sys
+print(json.dumps({"url": sys.argv[1], "status": int(sys.argv[2])}, separators=(",", ":")))
+' "$1" "$2"
+  fi
+}
+enc_finding() {
+  if [[ -n "$3" ]]; then
+    if has_jq; then
+      jq -cn --arg u "$1" --arg c "$2" --argjson s "$3" '{url: $u, statusClass: $c, status: $s}'
+    else
+      python3 -c '
+import json, sys
+print(json.dumps({"url": sys.argv[1], "statusClass": sys.argv[2], "status": int(sys.argv[3])}, separators=(",", ":")))
+' "$1" "$2" "$3"
+    fi
+  else
+    if has_jq; then
+      jq -cn --arg u "$1" --arg c "$2" '{url: $u, statusClass: $c}'
+    else
+      python3 -c '
+import json, sys
+print(json.dumps({"url": sys.argv[1], "statusClass": sys.argv[2]}, separators=(",", ":")))
+' "$1" "$2"
+    fi
+  fi
+}
+
+# REASON_CAP / reason_add — the run-scoped pass appends one reason per finding
+# it has something to say about, and a run can legitimately observe hundreds.
+# TWO things break at that scale, and the cap closes both: verification.json
+# grows unboundedly, and `json_array_from_args` passes every reason as a
+# POSITIONAL ARGUMENT to jq/python3, so a long enough list exceeds ARG_MAX,
+# the builder fails, and the whole record is lost. The booleans, not the
+# prose, are what this pass is authoritative about, so the prose is what
+# gets bounded. reason_add relies on bash dynamic scoping to append to its
+# caller's `reasons` array (bash 3.2-safe; no nameref).
+REASON_CAP=100
+reason_add() {
+  if [[ "${#reasons[@]}" -lt "$REASON_CAP" ]]; then
+    reasons[${#reasons[@]}]="$1"
+  elif [[ "${#reasons[@]}" -eq "$REASON_CAP" ]]; then
+    reasons[${#reasons[@]}]="run-scoped checks: reason list truncated at ${REASON_CAP} entries — further reasons were suppressed to keep verification.json and this pass's own argument list bounded; the runChecks booleans are unaffected and remain authoritative"
+  fi
+}
+
+# compact_one_json <text> -> the text re-serialized as EXACTLY ONE compact
+# JSON document, or nothing when it is not exactly one. The `--argjson` trap:
+# three separate lanes of this plan broke on feeding `--argjson` a value that
+# could be more than one document, so every value that reaches `--argjson`
+# below is gated through here (or built from bash-validated digits) first.
+compact_one_json() {
+  if has_jq; then
+    jq -c -s -e 'if length == 1 then .[0] else error("not exactly one document") end' <<< "$1" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))
+' "$1" 2>/dev/null
+  fi
+}
+
+# kd_expired_ids <status-json> -> stdout one id per `expired` entry.
+kd_expired_ids() {
+  if has_jq; then
+    jq -r 'if type == "array" then (.[] | select((type) == "object" and .state == "expired") | (.id | tostring)) else empty end' <<< "$1" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+if isinstance(d, list):
+    for e in d:
+        if isinstance(e, dict) and e.get("state") == "expired":
+            print(str(e.get("id")))
+' "$1" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# run_run_checks_pass <run-id> -> stdout ONE compact JSON verification
+# record (the synthetic "__run-checks__" run-level record), or nothing.
+#
+# Unlike "__phase-surface__", this record DOES flip qa-verify's exit code:
+# its four checks are structural proofs about the run's own record, not
+# best-effort temporal correlation, and the incident this plan exists
+# because of is precisely a run that exited 0 while its record said 500.
+#
+# WHEN THE RECORD IS EMITTED: whenever any of the four checks is false, OR
+# whenever the run carried FINDINGS EVIDENCE to evaluate at all (a resolved
+# driver network log, a parsed __qaObserve payload, a journaled
+# finding_observed event, or a known-defect registry). A run with none of
+# those gains NO record — which is what keeps every pre-existing qa-verify
+# fixture byte-identical, and is honest: there is nothing to report about
+# checks that had nothing to check.
+# ---------------------------------------------------------------------------
+run_run_checks_pass() {
+  local run_id="$1"
+  local ledger_ok="true" class_ok="true" window_ok="true" kd_ok="true"
+  local -a reasons=()
+  local channel_driver=0 channel_toolstream=0 has_evidence=0
+  local cfg cfg_tmp="" netlog="" today
+  local jidents="" jprefixes="" seen_required=""
+  local line
+
+  # --- the config classify-finding.sh classifies against. An absent
+  # .qa/config.json is not an error: classify-finding is fail-closed for an
+  # unknowable origin, and `{}` yields exactly that (no baseUrl -> in-scope),
+  # so a run with no config over-reports rather than under-reports. ---
+  cfg="$(qa_config_file)"
+  if [[ ! -f "$cfg" ]]; then
+    cfg_tmp="$(mktemp)" || cfg_tmp=""
+    if [[ -n "$cfg_tmp" ]]; then
+      printf '%s' '{}' > "$cfg_tmp"
+      cfg="$cfg_tmp"
+    fi
+  fi
+
+  # --- CHECK 3: load-window coverage. Evaluated first because it needs
+  # neither channel — only the ordered `tool` sequence. ---
+  if has_toolstream "$run_id"; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      window_ok="false"
+      reason_add "$line"
+    done < <(load_window_reasons "$run_id")
+  fi
+
+  # --- the agent's ledger claim ---
+  local j_source j_method j_url j_ulen j_status j_origin j_statusclass j_message
+  local j_ident j_prefix j_count=0
+  while IFS= read -r j_source; do
+    IFS= read -r j_method   || break
+    IFS= read -r j_url      || break
+    IFS= read -r j_ulen     || break
+    IFS= read -r j_status   || break
+    IFS= read -r j_origin   || break
+    IFS= read -r j_statusclass || break
+    IFS= read -r j_message  || break
+    j_count=$((j_count + 1))
+
+    if [[ "$j_source" == "console" ]]; then
+      j_ident="$(console_ident "$j_message")"
+      j_prefix=""
+    else
+      j_ident="$(net_ident "$j_method" "$j_url" "$j_ulen" "$j_status")"
+      j_prefix="$(net_prefix "$j_method" "$j_url" "$j_status")"
+    fi
+    jidents="${jidents}${j_ident}
+"
+    [[ -n "$j_prefix" ]] && jprefixes="${jprefixes}${j_prefix}
+"
+
+    # --- CHECK 2: classification re-check. An agent must not be able to
+    # mis-class a 500 by writing a journal event that says otherwise. Only a
+    # CLAIMED class can be contradicted: an event carrying neither
+    # originClass nor statusClass claims nothing, so there is nothing to
+    # re-check, and silence is never an override. ---
+    if [[ -n "$j_origin" || -n "$j_statusclass" ]]; then
+      if classify_one "$cfg" "$j_url" "$j_status"; then
+        # A url whose FULL length exceeded the ledger's 1024-character cap
+        # cannot be re-classified faithfully — its path, and therefore the
+        # findings.benign match, may have been cut off. The absence of a
+        # trustworthy input is recorded; statusClass, which depends on the
+        # status alone, is still re-checked.
+        local origin_checkable=1
+        case "$j_ulen" in
+          ''|*[!0-9]*) : ;;
+          *) [[ "$j_ulen" -gt 1024 ]] && origin_checkable=0 ;;
+        esac
+        if [[ "$origin_checkable" -eq 0 ]]; then
+          reason_add "classification re-check: finding ${j_ident} carries a url truncated at the ledger cap (urlLen=${j_ulen}), so its originClass could not be independently recomputed — recorded, not overridden"
+        elif [[ -n "$j_origin" && "$j_origin" != "$CF_ORIGIN" ]]; then
+          class_ok="false"
+          reason_add "classification re-check: finding ${j_ident} was journaled as originClass=${j_origin} but classify-finding.sh recomputes originClass=${CF_ORIGIN}"
+        fi
+        if [[ -n "$j_statusclass" && "$j_statusclass" != "$CF_STATUS" ]]; then
+          class_ok="false"
+          reason_add "classification re-check: finding ${j_ident} was journaled as statusClass=${j_statusclass} but classify-finding.sh recomputes statusClass=${CF_STATUS}"
+        fi
+      else
+        reason_add "classification re-check: classify-finding.sh could not classify finding ${j_ident} — recorded, not overridden (no recomputed class to compare against)"
+      fi
+    fi
+  done < <(journal_finding_rows "$run_id")
+  [[ "$j_count" -gt 0 ]] && has_evidence=1
+
+  # --- the independent channels ---
+  netlog="$(network_log_file "$run_id")"
+  local -a obs_kind=() obs_method=() obs_url=() obs_status=() obs_text=() obs_type=() obs_chan=()
+  local r_kind r_method r_url r_status r_text r_type
+
+  if [[ -n "$netlog" ]]; then
+    has_evidence=1
+    local first_line="" got_first=0
+    while IFS= read -r r_kind; do
+      if [[ "$got_first" -eq 0 ]]; then
+        first_line="$r_kind"; got_first=1
+        [[ "$first_line" == "usable" ]] || break
+        continue
+      fi
+      IFS= read -r r_method || break
+      IFS= read -r r_url    || break
+      IFS= read -r r_status || break
+      IFS= read -r r_text   || break
+      IFS= read -r r_type   || break
+      obs_kind[${#obs_kind[@]}]="$r_kind"
+      obs_method[${#obs_method[@]}]="$r_method"
+      obs_url[${#obs_url[@]}]="$r_url"
+      obs_status[${#obs_status[@]}]="$r_status"
+      obs_text[${#obs_text[@]}]="$r_text"
+      obs_type[${#obs_type[@]}]="$r_type"
+      obs_chan[${#obs_chan[@]}]="driver-log"
+    done < <(driver_rows "$netlog")
+    if [[ "$first_line" == "usable" ]]; then
+      channel_driver=1
+    else
+      reason_add "ledger completeness: the driver network log ${netlog} is not a usable request record (expected a JSON array of request objects or a HAR) — recorded as an absent channel, never an override"
+    fi
+  fi
+
+  local driver_count=${#obs_kind[@]}
+  while IFS= read -r r_kind; do
+    IFS= read -r r_method || break
+    IFS= read -r r_url    || break
+    IFS= read -r r_status || break
+    IFS= read -r r_text   || break
+    IFS= read -r r_type   || break
+    obs_kind[${#obs_kind[@]}]="$r_kind"
+    obs_method[${#obs_method[@]}]="$r_method"
+    obs_url[${#obs_url[@]}]="$r_url"
+    obs_status[${#obs_status[@]}]="$r_status"
+    obs_text[${#obs_text[@]}]="$r_text"
+    obs_type[${#obs_type[@]}]="$r_type"
+    obs_chan[${#obs_chan[@]}]="toolstream"
+  done < <(observe_rows "$run_id")
+  if [[ ${#obs_kind[@]} -gt "$driver_count" ]]; then
+    channel_toolstream=1
+    has_evidence=1
+  fi
+
+  # --- CHECK 1: ledger completeness. An observation that is REQUIRED to be
+  # journaled and is not is a dropped-error signal -> override the run.
+  #
+  # REQUIRED means, for a network observation, classify-finding.sh returning
+  # originClass=in-scope AND statusClass=fatal, and for a console
+  # observation, an `error`-level entry. A third-party or benign 5xx is NOT
+  # required (that is what the classifier is for — failing a run on
+  # analytics/CDN/extension noise is the false-positive class this design
+  # exists to avoid), and an in-scope 3xx/4xx is recorded but never required
+  # (decision R1: observe.js's isOkStatus is 2xx-only, so requiring every
+  # non-2xx would fail the spec's own authz criteria).
+  #
+  # The `status >= 500` pre-filter below is an OPTIMIZATION ONLY, and a
+  # superset-preserving one: classify-finding.sh calls nothing else fatal
+  # for a numeric status, so filtering cannot drop a required finding. The
+  # classifier remains the authority for every row that survives it. ---
+  local idx=0 total=${#obs_kind[@]} k m u s tx ch ident prefix
+  while [[ "$idx" -lt "$total" ]]; do
+    k="${obs_kind[$idx]}"; m="${obs_method[$idx]}"; u="${obs_url[$idx]}"
+    s="${obs_status[$idx]}"; tx="${obs_text[$idx]}"; ch="${obs_chan[$idx]}"
+    idx=$((idx + 1))
+    if [[ "$k" == "console" ]]; then
+      [[ -z "$tx" ]] && continue
+      ident="$(console_ident "$tx")"
+      set_contains "$seen_required" "$ident" && continue
+      seen_required="${seen_required}${ident}
+"
+      if ! set_contains "$jidents" "$ident"; then
+        ledger_ok="false"
+        reason_add "ledger completeness: a console error observed in the toolstream is absent from the findings journal — \"$(nmsg_bash "$tx")\" (identity ${ident})"
+      fi
+      continue
+    fi
+    case "$s" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    [[ "$s" -lt 500 ]] && continue
+    ident="$(net_ident "$m" "$u" "" "$s")"
+    prefix="$(net_prefix "$m" "$u" "$s")"
+    set_contains "$seen_required" "$ident" && continue
+    seen_required="${seen_required}${ident}
+"
+    if classify_one "$cfg" "$u" "$s"; then
+      :
+    else
+      CF_ORIGIN="in-scope"; CF_STATUS="fatal"
+      reason_add "ledger completeness: classify-finding.sh could not classify the observed ${m} ${u} status=${s} — failing closed to originClass=in-scope statusClass=fatal"
+    fi
+    [[ "$CF_ORIGIN" == "in-scope" && "$CF_STATUS" == "fatal" ]] || continue
+    if set_contains "$jidents" "$ident"; then continue; fi
+    # The coarse 300-character fallback, ONLY for an in-page observation long
+    # enough to have been sliced by observe.js. See net_prefix.
+    if [[ "$ch" == "toolstream" && "${#u}" -ge 300 ]] && set_contains "$jprefixes" "$prefix"; then
+      continue
+    fi
+    ledger_ok="false"
+    reason_add "ledger completeness: an observed finding is absent from the findings journal — ${m} ${u} status=${s} (originClass=${CF_ORIGIN} statusClass=${CF_STATUS}); identity ${ident}"
+  done
+
+  # --- channel -------------------------------------------------------------
+  local channel="none"
+  if [[ "$channel_driver" -eq 1 && "$channel_toolstream" -eq 1 ]]; then
+    channel="both"
+  elif [[ "$channel_driver" -eq 1 ]]; then
+    channel="driver-log"
+  elif [[ "$channel_toolstream" -eq 1 ]]; then
+    channel="toolstream"
+  fi
+  if [[ "$channel" == "none" ]]; then
+    reason_add "ledger completeness: no independent findings channel is available for this run (no usable driver network log resolved and no __qaObserve payload recoverable from the toolstream) — the ledger could be neither confirmed nor contradicted, so the absence is recorded and the run is NOT failed for it (spec §5.5; Task 10 turns the absence into UNVERIFIED)"
+  fi
+
+  # --- CHECK 4: known-defect gate -----------------------------------------
+  local reg kd_json="[]"
+  reg="$(known_defects_file)"
+  if [[ -f "$reg" ]]; then
+    has_evidence=1
+    today="$(date -u +%Y-%m-%d)"
+
+    local vout vrc
+    vout="$(bash "$KNOWN_DEFECTS_SH" validate "$reg" "$today" 2>&1 >/dev/null)"; vrc=$?
+    if [[ "$vrc" -ne 0 ]]; then
+      kd_ok="false"
+      if [[ -n "$vout" ]]; then
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          reason_add "known-defect registry: ${line}"
+        done <<< "$vout"
+      else
+        reason_add "known-defect registry: known-defects.sh validate exited ${vrc} for ${reg} with no diagnostic output"
+      fi
+    fi
+
+    # Evidence, in the ratified shape. `navigations` are DOCUMENT requests
+    # only: a log that records no resource type contributes no navigations,
+    # so nothing clears — the same burden-of-proof direction decision R4
+    # already mandates (absence of a finding never clears anything).
+    local navs="" finds="" obj
+    idx=0
+    while [[ "$idx" -lt "$total" ]]; do
+      if [[ "${obs_kind[$idx]}" == "net" && "${obs_type[$idx]}" == "document" && -n "${obs_url[$idx]}" ]]; then
+        case "${obs_status[$idx]}" in
+          ''|*[!0-9]*) ;;
+          *)
+            obj="$(enc_nav "${obs_url[$idx]}" "${obs_status[$idx]}")"
+            [[ -n "$obj" ]] && { [[ -n "$navs" ]] && navs="${navs},"; navs="${navs}${obj}"; }
+            ;;
+        esac
+      fi
+      idx=$((idx + 1))
+    done
+    while IFS= read -r j_source; do
+      IFS= read -r j_method   || break
+      IFS= read -r j_url      || break
+      IFS= read -r j_ulen     || break
+      IFS= read -r j_status   || break
+      IFS= read -r j_origin   || break
+      IFS= read -r j_statusclass || break
+      IFS= read -r j_message  || break
+      [[ -n "$j_url" ]] || continue
+      case "$j_status" in
+        ''|*[!0-9]*) obj="$(enc_finding "$j_url" "$j_statusclass" "")" ;;
+        *)           obj="$(enc_finding "$j_url" "$j_statusclass" "$j_status")" ;;
+      esac
+      [[ -n "$obj" ]] && { [[ -n "$finds" ]] && finds="${finds},"; finds="${finds}${obj}"; }
+    done < <(journal_finding_rows "$run_id")
+
+    local ev_tmp sout srrc
+    ev_tmp="$(mktemp)" || ev_tmp=""
+    if [[ -n "$ev_tmp" ]]; then
+      printf '{"navigations":[%s],"findings":[%s]}' "$navs" "$finds" > "$ev_tmp"
+      sout="$(bash "$KNOWN_DEFECTS_SH" status "$reg" "$today" --evidence "$ev_tmp" 2>/dev/null)"; srrc=$?
+      rm -f "$ev_tmp"
+    else
+      sout=""; srrc=1
+    fi
+    if [[ "$srrc" -ne 0 || -z "$sout" ]]; then
+      kd_ok="false"
+      reason_add "known-defect registry: known-defects.sh status exited ${srrc} for ${reg} — the registry could not be evaluated, which is not a pass"
+    else
+      kd_json="$(compact_one_json "$sout")"
+      if [[ -z "$kd_json" ]]; then
+        kd_ok="false"
+        kd_json="[]"
+        reason_add "known-defect registry: known-defects.sh status did not print exactly one JSON document for ${reg} — the registry could not be evaluated, which is not a pass"
+      fi
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        kd_ok="false"
+        reason_add "known-defect registry: entry ${line} is EXPIRED — a known defect past its deadline fails the run until it is fixed or its expiry is deliberately renewed (decision R2)"
+      done < <(kd_expired_ids "$sout")
+    fi
+  fi
+
+  [[ -n "$cfg_tmp" ]] && rm -f "$cfg_tmp"
+
+  # --- emit ---------------------------------------------------------------
+  local any_false=0
+  [[ "$ledger_ok" == "false" || "$class_ok" == "false" || "$window_ok" == "false" || "$kd_ok" == "false" ]] && any_false=1
+  if [[ "$any_false" -eq 0 && "$has_evidence" -eq 0 ]]; then
+    return 0
+  fi
+
+  local verdict="pass" conf="high"
+  if [[ "$any_false" -eq 1 ]]; then
+    verdict="fail"
+  elif [[ "$channel" == "none" ]]; then
+    conf="low"
+  fi
+
+  local reasons_json
+  if [[ ${#reasons[@]} -eq 0 ]]; then
+    reasons_json="$(json_array_from_args "run-scoped checks: ledger completeness, classification re-check, load-window coverage and the known-defect gate all passed")"
+  else
+    reasons_json="$(json_array_from_args "${reasons[@]}")"
+  fi
+
+  if has_jq; then
+    jq -cn \
+      --arg verV "$verdict" --arg conf "$conf" --arg channel "$channel" \
+      --argjson reasons "$reasons_json" --argjson kd "$kd_json" \
+      --argjson ledger "$ledger_ok" --argjson class "$class_ok" \
+      --argjson window "$window_ok" --argjson kdok "$kd_ok" \
+      '{criterionId: "__run-checks__", persona: "", inRunVerdict: "n/a",
+        verifierVerdict: $verV, confidence: $conf, reasons: $reasons,
+        channel: $channel, knownDefects: $kd,
+        runChecks: {ledgerComplete: $ledger, classificationsAgree: $class,
+                    loadWindowCovered: $window, knownDefectsOk: $kdok}}'
+  else
+    python3 -c '
+import json, sys
+verV, conf, channel, reasons, kd, ledger, klass, window, kdok = sys.argv[1:10]
+print(json.dumps({
+    "criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a",
+    "verifierVerdict": verV, "confidence": conf, "reasons": json.loads(reasons),
+    "channel": channel, "knownDefects": json.loads(kd),
+    "runChecks": {
+        "ledgerComplete": json.loads(ledger),
+        "classificationsAgree": json.loads(klass),
+        "loadWindowCovered": json.loads(window),
+        "knownDefectsOk": json.loads(kdok),
+    },
+}, separators=(",", ":")))
+' "$verdict" "$conf" "$channel" "$reasons_json" "$kd_json" "$ledger_ok" "$class_ok" "$window_ok" "$kd_ok"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 main() {
@@ -1416,6 +2516,27 @@ main() {
   local ps_rec
   ps_rec="$(run_phase_surface_pass "$run_id")"
   [[ -n "$ps_rec" ]] && echo "$ps_rec" >> "$results_tmp"
+
+  # --- Run-scoped checks pass (Task 8) — a THIRD, independent pass. Adds AT
+  # MOST one synthetic "__run-checks__" record and, unlike the phase-surface
+  # record above, DOES set run_failed (see the header comment). ---
+  # Appendix A, applied to this pass too: run_run_checks_pass is invoked
+  # inside a command substitution, so a crash anywhere in its call chain
+  # would leave rc_rec EMPTY with the assignment itself reporting success —
+  # and an empty rc_rec is ALSO the legitimate "nothing to report" result.
+  # The exit code is therefore the only signal that separates the two, and a
+  # non-zero one synthesizes an error record rather than silently dropping
+  # the run-scoped authority (a lost gate must never look like a clean run).
+  local rc_rec rc_rc
+  rc_rec="$(run_run_checks_pass "$run_id")"
+  rc_rc=$?
+  if [[ "$rc_rc" -ne 0 ]]; then
+    rc_rec="$(build_error_record "__run-checks__" "" "run_run_checks_pass exited ${rc_rc} (see qa-verify's own stderr above for the underlying failure) — the four run-scoped checks did not complete")"
+  fi
+  if [[ -n "$rc_rec" ]]; then
+    echo "$rc_rec" >> "$results_tmp"
+    [[ "$(rec_verdict "$rc_rec")" != "pass" ]] && run_failed=1
+  fi
 
   # Atomic write (Appendix A: verification.json non-atomic write): write to a
   # temp file in the SAME directory as the destination, then rename over it.
