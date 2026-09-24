@@ -190,7 +190,7 @@ jq -n \
     redactedKeys: []
   },
   findings: (($existing.findings // {}) + {
-    _doc: "Error-honesty findings classification. benign: an allowlist of POSIX-ERE-compatible regexes (no lookaround/backreferences -- matched via jq built-in regex or python3 re, never grep -P/perl) tested against a finding URL path ONLY -- the path component, not the query string and not the whole URL. A match downgrades that finding to originClass \"benign\", so it can never fail a run; the benign check runs AFTER the origin check, so a rule here can downgrade an in-scope path too. Every entry is a deliberate, human-authored WAIVER of an observed application error -- keep the list short and justified (a favicon rule such as ^/favicon[.]ico$ is the canonical example). FAIL-CLOSED DEFAULT (honesty-critical): this list is EMPTY on a fresh bootstrap -- no waivers by default -- and an ABSENT findings block is the same empty allowlist, never a permissive one. Origin still decides originClass on its own: a cross-origin URL is third-party whether or not this block exists, and only a genuinely unknowable origin (an unparseable URL, a relative URL, or a missing baseUrl) is forced fail-closed to \"in-scope\". PERSISTENCE: unlike every other key this script owns, benign is SEED-IF-ABSENT and PRESERVE-IF-PRESENT -- a re-run of the bootstrap will NOT reset your waivers. It cannot rely on you having them in git: this same script appends .qa/ to the project .gitignore, so this file is untracked by default.",
+    _doc: "Error-honesty findings classification. benign: an allowlist of POSIX ERE regexes (no lookaround/backreferences) matched by grep -E in scripts/classify-finding.sh -- deliberately grep, NOT the JSON engine, so the jq and python3 paths cannot diverge on regex semantics; grep -P is never used, and an invalid pattern is skipped with a warning rather than silently matching. Tested against a finding URL path ONLY -- the path component, not the query string and not the whole URL. A match downgrades that finding to originClass \"benign\", so it can never fail a run; the benign check runs AFTER the origin check, so a rule here can downgrade an in-scope path too. Every entry is a deliberate, human-authored WAIVER of an observed application error -- keep the list short and justified (a favicon rule such as ^/favicon[.]ico$ is the canonical example). FAIL-CLOSED DEFAULT (honesty-critical): this list is EMPTY on a fresh bootstrap -- no waivers by default -- and an ABSENT findings block is the same empty allowlist, never a permissive one. Origin still decides originClass on its own: a cross-origin URL is third-party whether or not this block exists, and only a genuinely unknowable origin (an unparseable URL, a relative URL, or a missing baseUrl) is forced fail-closed to \"in-scope\". PERSISTENCE: unlike every other key this script owns, benign is SEED-IF-ABSENT and PRESERVE-IF-PRESENT -- a re-run of the bootstrap will NOT reset your waivers. It cannot rely on you having them in git: this same script gitignores this file (it writes a .qa/* rule into the project .gitignore), so .qa/config.json is untracked by default. The ONE .qa/ file that rule deliberately keeps TRACKED is .qa/known-defects.json, whose 90-day expiry cap depends on a renewal being a visible diff.",
     benign: $benign
   })
 }' > "${OUT}.tmp.$$"; _jq_rc=$?
@@ -215,8 +215,30 @@ qadir="$(dirname "$OUT")"
 if [[ "$(basename "$qadir")" == ".qa" ]]; then
   mkdir -p "$qadir/auth" "$qadir/runs" 2>/dev/null || true
   if [[ -d .git || -f .gitignore ]]; then
-    if ! grep -qxF '.qa/' .gitignore 2>/dev/null; then
-      printf '\n# qa-e2e-pilot per-project state\n.qa/\n' >> .gitignore
+    # `.qa/` is scratch state, with ONE exception: `.qa/known-defects.json` must
+    # stay TRACKED. The registry's 90-day expiry cap (ruling R2) is enforced by
+    # a renewal being a deliberate act, visible in a diff and reviewable in a
+    # PR; an untracked registry makes a renewal invisible and turns the cap back
+    # into "deferred by design" under a new name.
+    #
+    # THE ORDER AND THE EXACT PATTERNS BELOW ARE LOAD-BEARING (verified with
+    # `git check-ignore -v`, not reasoned about; see tests/init-config):
+    #   * git CANNOT re-include a file whose PARENT DIRECTORY is excluded, so a
+    #     bare `.qa/` makes `!.qa/known-defects.json` DEAD (the directory rule
+    #     still wins). Exclude the directory's ENTRIES -- `.qa/*` -- instead.
+    #   * appending `.qa/*` is NOT enough on its own when a bare `.qa/` (or a
+    #     slashless `.qa`) is ALREADY present from an older bootstrap or a hand
+    #     edit -- that directory rule still wins. `!.qa/` un-excludes the
+    #     directory first so the entry-level rules can take effect. It is a
+    #     harmless no-op when nothing excluded `.qa` in the first place.
+    # Each line is added only if absent, so a second bootstrap duplicates
+    # nothing and a hand-edited .gitignore is only ever appended to.
+    _gi_add=""
+    grep -qxF '!.qa/' .gitignore 2>/dev/null                   || _gi_add="${_gi_add}!.qa/"$'\n'
+    grep -qxF '.qa/*' .gitignore 2>/dev/null                   || _gi_add="${_gi_add}.qa/*"$'\n'
+    grep -qxF '!.qa/known-defects.json' .gitignore 2>/dev/null || _gi_add="${_gi_add}!.qa/known-defects.json"$'\n'
+    if [[ -n "$_gi_add" ]]; then
+      printf '\n# qa-e2e-pilot per-project state. `.qa/` is scratch (runs, auth,\n# config) EXCEPT the known-defects registry, which stays tracked on purpose:\n# the 90-day expiry cap only bites if renewing a waiver is a visible diff.\n# `.qa/*` + `!.qa/` (not a bare `.qa/`) because git cannot re-include a file\n# inside an excluded directory -- do not "simplify" these three lines.\n%s' "$_gi_add" >> .gitignore
     fi
   fi
 fi

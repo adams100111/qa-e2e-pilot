@@ -100,7 +100,7 @@ FIND_OUT="$WORK/c-findings.json"
 bash "$GEN" --base-url http://localhost:3000 --out "$FIND_OUT" >/dev/null 2>&1
 check "fresh bootstrap writes a findings block"     "$(get "$FIND_OUT" '.findings | type')"           "object"
 check "findings block is documented (_doc)"         "$(get "$FIND_OUT" '(.findings._doc // "") | length > 0')" "true"
-check "findings._doc names the benign semantics"    "$(get "$FIND_OUT" '(.findings._doc // "") | test("POSIX-ERE") and test("path")')" "true"
+check "findings._doc names the benign semantics"    "$(get "$FIND_OUT" '(.findings._doc // "") | test("POSIX ERE") and test("path")')" "true"
 
 # --- benign defaults EMPTY (fail-closed: no waivers by default) ------------
 check "findings.benign is an array"                 "$(get "$FIND_OUT" '.findings.benign | type')"    "array"
@@ -255,6 +255,119 @@ EXAMPLE="$HERE/../../.qa/config.json.example"
 check "config.json.example is valid JSON"           "$(jq -e . "$EXAMPLE" >/dev/null 2>&1 && echo ok)" "ok"
 check "example documents findings.benign"           "$(get "$EXAMPLE" '.findings.benign | type')"     "array"
 check "example findings block carries a _doc"        "$(get "$EXAMPLE" '(.findings._doc // "") | length > 0')" "true"
+
+# ---------------------------------------------------------------------------
+# Fix round 2, item 1: the known-defects REGISTRY must end up TRACKED.
+#
+# .qa/known-defects.json.example and qa-kit's /qa-spec both promise the registry
+# is "NOT gitignored -- keep it in version control, which is what makes a
+# renewal or a removal visible in review". That promise is what enforces the
+# 90-day expiry cap (R2): an untracked registry makes a renewal invisible, and
+# the cap degrades into "deferred by design" under a new name. init-config.sh
+# used to append a bare `.qa/`, which ignored it.
+#
+# `git check-ignore -v` is the oracle here -- NOT reasoning about gitignore
+# precedence. These cases were derived empirically and two of them FAIL under
+# the obvious implementations (see the negative controls at the end).
+# ---------------------------------------------------------------------------
+GI_REPO_N=0
+# bootstrap_repo <label> [pre-existing .gitignore lines...]
+# Creates a temp git repo, seeds .gitignore with the given lines (none => no
+# file at all), runs a real bootstrap into .qa/config.json, and echoes the dir.
+bootstrap_repo() {
+  GI_REPO_N=$((GI_REPO_N+1))
+  local d; d="$WORK/gi-$GI_REPO_N"
+  mkdir -p "$d"
+  ( cd "$d" && git init -q . ) >/dev/null 2>&1
+  if [[ "$#" -gt 0 ]]; then printf '%s\n' "$@" > "$d/.gitignore"; fi
+  ( cd "$d" && bash "$GEN" --base-url http://localhost:3000 --out .qa/config.json ) >/dev/null 2>&1
+  : > "$d/.qa/known-defects.json"
+  echo "$d"
+}
+# ignored_state <dir> <path> -> "ignored" | "tracked"
+ignored_state() {
+  if ( cd "$1" && git check-ignore -q "$2" ) >/dev/null 2>&1; then echo "ignored"; else echo "tracked"; fi
+}
+# why <dir> <path> -> the `git check-ignore -v` line (the deliverable)
+why() { ( cd "$1" && git check-ignore -v "$2" 2>/dev/null ) || echo "(not ignored)"; }
+
+# Case A: a clean repo with NO pre-existing .gitignore
+R="$(bootstrap_repo "clean")"
+check "clean repo: known-defects.json is TRACKED"   "$(ignored_state "$R" .qa/known-defects.json)"   "tracked"
+check "clean repo: config.json is still IGNORED"    "$(ignored_state "$R" .qa/config.json)"          "ignored"
+check "clean repo: .qa/runs is still IGNORED"       "$(ignored_state "$R" .qa/runs)"                 "ignored"
+check "clean repo: auth storageState still IGNORED" "$(ignored_state "$R" .qa/auth/storageState.json)" "ignored"
+echo "     check-ignore -v .qa/known-defects.json => $(why "$R" .qa/known-defects.json)"
+echo "     check-ignore -v .qa/config.json        => $(why "$R" .qa/config.json)"
+
+# Case B: a .gitignore that ALREADY carries a bare `.qa/` (older bootstrap)
+R="$(bootstrap_repo "pre-existing-bare" '# my stuff' 'node_modules/' '.qa/')"
+check "pre-existing bare .qa/: registry is TRACKED" "$(ignored_state "$R" .qa/known-defects.json)"   "tracked"
+check "pre-existing bare .qa/: config still IGNORED" "$(ignored_state "$R" .qa/config.json)"         "ignored"
+check "pre-existing bare .qa/: user's lines kept"   "$(grep -cxF 'node_modules/' "$R/.gitignore")"   "1"
+echo "     check-ignore -v .qa/known-defects.json => $(why "$R" .qa/known-defects.json)"
+
+# Case C: a slashless `.qa` (also excludes the directory)
+R="$(bootstrap_repo "slashless" '.qa')"
+check "pre-existing slashless .qa: registry TRACKED" "$(ignored_state "$R" .qa/known-defects.json)"  "tracked"
+check "pre-existing slashless .qa: config IGNORED"  "$(ignored_state "$R" .qa/config.json)"          "ignored"
+
+# Case D: `.qa/` plus an UNRELATED, ACTUALLY-WORKING negation the fix must not
+# disturb. NOTE the fixture uses `dist/*`, not `dist/`, on purpose: a bare
+# `dist/` + `!dist/keep.txt` does not re-include keep.txt either (same git rule
+# this whole section is about), so `dist/` would be testing a negation that was
+# already broken before this change and would prove nothing.
+R="$(bootstrap_repo "unrelated-negation" '.qa/' 'dist/*' '!dist/keep.txt')"
+mkdir -p "$R/dist"; : > "$R/dist/keep.txt"; : > "$R/dist/drop.js"
+check "unrelated negation: registry is TRACKED"     "$(ignored_state "$R" .qa/known-defects.json)"   "tracked"
+check "unrelated negation: config is IGNORED"       "$(ignored_state "$R" .qa/config.json)"          "ignored"
+check "unrelated negation still works (keep.txt)"   "$(ignored_state "$R" dist/keep.txt)"            "tracked"
+check "unrelated negation intact (drop.js ignored)" "$(ignored_state "$R" dist/drop.js)"             "ignored"
+
+# Case E: idempotency -- a SECOND bootstrap must not duplicate any line
+R="$(bootstrap_repo "idempotent")"
+( cd "$R" && bash "$GEN" --base-url http://localhost:3000 --out .qa/config.json ) >/dev/null 2>&1
+( cd "$R" && bash "$GEN" --base-url http://localhost:4000 --out .qa/config.json ) >/dev/null 2>&1
+check "re-bootstrap: '!.qa/' appears exactly once"  "$(grep -cxF '!.qa/' "$R/.gitignore")"           "1"
+check "re-bootstrap: '.qa/*' appears exactly once"  "$(grep -cxF '.qa/*' "$R/.gitignore")"           "1"
+check "re-bootstrap: registry negation exactly once" "$(grep -cxF '!.qa/known-defects.json' "$R/.gitignore")" "1"
+check "re-bootstrap: registry still TRACKED"        "$(ignored_state "$R" .qa/known-defects.json)"   "tracked"
+check "re-bootstrap: config still IGNORED"          "$(ignored_state "$R" .qa/config.json)"          "ignored"
+
+# Case F: a hand-edited .gitignore that already has our exact lines is untouched
+R="$(bootstrap_repo "hand-edited" '!.qa/' '.qa/*' '!.qa/known-defects.json')"
+check "hand-edited exact lines: nothing appended"   "$(grep -cxF '.qa/*' "$R/.gitignore")"           "1"
+check "hand-edited exact lines: registry TRACKED"   "$(ignored_state "$R" .qa/known-defects.json)"   "tracked"
+
+# --- NEGATIVE CONTROLS: prove each part of the rule is load-bearing --------
+# Same probe, but with hand-written .gitignore forms instead of the script's.
+neg_probe() {
+  GI_REPO_N=$((GI_REPO_N+1))
+  local d; d="$WORK/gi-neg-$GI_REPO_N"; local label="$1"; shift
+  mkdir -p "$d/.qa"
+  ( cd "$d" && git init -q . ) >/dev/null 2>&1
+  : > "$d/.qa/known-defects.json"; : > "$d/.qa/config.json"
+  printf '%s\n' "$@" > "$d/.gitignore"
+  echo "$(ignored_state "$d" .qa/known-defects.json)"
+}
+check "NEG: bare '.qa/' + filename negation LEAVES IT IGNORED" \
+  "$(neg_probe naive '.qa/' '!.qa/known-defects.json')" "ignored"
+check "NEG: '.qa/*' appended after a bare '.qa/' STILL IGNORED" \
+  "$(neg_probe no-unexclude '.qa/' '.qa/*' '!.qa/known-defects.json')" "ignored"
+check "NEG: dropping the registry negation leaves it IGNORED" \
+  "$(neg_probe no-negation '!.qa/' '.qa/*')" "ignored"
+check "POS: the shipped three-line form TRACKS it" \
+  "$(neg_probe shipped '.qa/' '!.qa/' '.qa/*' '!.qa/known-defects.json')" "tracked"
+
+# --- Fix round 2, item 2: the regex engine is grep -E, not the JSON engine --
+check "init-config findings._doc names grep -E"     "$(get "$FIND_OUT" '(.findings._doc // "") | test("grep -E")')" "true"
+check "init-config findings._doc drops the jq/python3 regex claim" \
+  "$(get "$FIND_OUT" '(.findings._doc // "") | test("jq built-in regex|python3 re,") | not')"          "true"
+check "example findings._doc names grep -E"         "$(get "$EXAMPLE" '(.findings._doc // "") | test("grep -E")')" "true"
+check "example findings._doc drops the jq/python3 regex claim" \
+  "$(get "$EXAMPLE" '(.findings._doc // "") | test("jq.s built-in regex") | not')"                     "true"
+check "example enforcement._doc KEEPS its jq/python3 claim (it is correct there)" \
+  "$(get "$EXAMPLE" '(.enforcement._doc // "") | test("jq.s built-in regex")')"                        "true"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
