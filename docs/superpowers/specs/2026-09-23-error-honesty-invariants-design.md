@@ -299,9 +299,22 @@ machinery, not by `fetch` or XHR, and no script runs on a 500 page to be interce
 mechanism can ever see it. Only the driver-backed `browser_network_requests` does —
 `SKILL.md:160` names "the navigating document request" as what that call, and only that call, sees.
 
-The driver log (a HAR, or the `--save-session` log `session-preflight.sh` already consumes) is
-therefore authoritative for requests. It is immune to the 4,000-byte cap, sees every request, and
-already exists on the non-Claude harnesses, which is what makes I1 portable per ADR-0024.
+The driver-backed request record is therefore authoritative for requests, and it reaches
+`qa-verify.sh` two ways:
+
+1. **`browser_network_requests` results in the toolstream** — the path that works **today**.
+   `qa-verify.sh`'s `observe_rows` parses each `responseBody` that is a JSON array of request
+   records, so the mandated post-navigation call (I5) is what carries a navigation-time 500 into the
+   finding set. It inherits the 4,000-byte cap, so a long request list truncates and simply fails to
+   parse — which can only ever *hide* a required finding, never invent one.
+2. **A file-based driver log** — `QA_NETWORK_LOG`, else `.qa/runs/<run-id>/network-log.json`, else
+   `.playwright-mcp/*.har`. Immune to the cap and portable across harnesses, and therefore the
+   preferred source. **Correction (2026-09-24): nothing in this repo writes such a file yet**, so
+   this source is inert on real runs until a producer exists. An earlier draft of this section
+   described it as simply "authoritative", which overstated what ships. Wiring a HAR producer is the
+   top follow-up; until then path 1 plus I5's enforced follow-up call is what closes the nav-500
+   blind spot, and I5 needs only the `tool` field, so neither the cap nor the `responseBody: null`
+   harnesses can defeat it.
 
 **Harnesses and drivers that can satisfy neither channel are `UNVERIFIED`** (§5.7). This is not an
 edge case: `session-to-toolstream.js:119` writes `responseBody: null` **always**, so Codex, Pi and
