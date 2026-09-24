@@ -44,7 +44,9 @@
 #                        requires high|critical there), else `medium`
 #   observedBehaviour <- the pinned health assertion, or the criterion's oracle prose
 #   observedStatus    <- the pinned `http.status`, when it is an integer
-#   migratedFrom      <- the criterion id. This is what makes a re-run idempotent.
+#   migratedFrom      <- the criterion id
+#   migratedFromChecklist <- the checklist's RESOLVED absolute path. Together with
+#                        `migratedFrom` this is the MIGRATION KEY (see below).
 #   ticket, expiry    <- ALWAYS "". Not derivable. This is why the exit code is 2.
 #
 # EVERY DERIVED STRING IS SANITISED (control characters -> space, runs collapsed,
@@ -61,11 +63,33 @@
 # shape `tests/qa-kit-enforcement/run.sh` already guards for `verify-plan.sh`: the frozen
 # SPEC plan is the thing that gets edited, never the agent-amendable run copy.
 #
-# WRITE ORDER is registry-then-checklist, and each write is atomic (temp file in the
-# same directory + rename), so an interruption can leave a filed defect whose criterion
-# is still in the plan — never a deleted criterion with no defect filed. A re-run
-# finishes the job: the append is skipped when `migratedFrom` already names the
-# criterion, so the second pass only removes the row.
+# THE MIGRATION KEY IS (`migratedFrom`, `migratedFromChecklist`) — the criterion id AND
+# the checklist it came from — and it is checked, not assumed. Keying on the criterion id
+# ALONE was a Critical: two checklists reusing an id made the second run match the FIRST
+# checklist's entry, so it deleted its criterion, filed NOTHING for it, and exited 2 (the
+# success code). An inverted criterion removed with nothing gating it IS the originating
+# incident's failure mode — a known defect with no owner, no deadline and no record —
+# reintroduced by the fix built to prevent it.
+#
+# THE INVARIANT ENFORCED HERE: the criterion is removed ONLY IF an entry for THAT
+# migration exists on disk afterwards. Mechanically:
+#   1. the registry is written first (atomic: temp file in the same directory + rename);
+#   2. the entry is VERIFIED BY RE-READING THE REGISTRY FROM DISK — a write that returned
+#      0 is not evidence that the entry is there — and a failure exits 1 with the
+#      criterion STILL IN THE PLAN;
+#   3. only then is the criterion removed, atomically;
+#   4. the post-state is verified again (entry present AND criterion gone) before the
+#      command reports anything.
+# So an interruption, a dropped rename or a broken key can leave a filed defect whose
+# criterion is still in the plan, and a re-run finishes the job. It cannot leave a
+# deleted criterion with no entry for its migration; if that state is ever reachable,
+# the command exits 1 rather than reporting it.
+#
+# A LEGACY entry carrying `migratedFrom` but no `migratedFromChecklist` identifies no
+# migration, so it CANNOT gate a removal: a properly keyed entry is filed beside it. That
+# is deliberate — the alternative is letting an unkeyed entry stand in for any checklist,
+# which is the Critical again. Both entries then need a `ticket` and an `expiry`, which
+# is visible and honest rather than silent.
 #
 # DEPENDENCIES: bash 3.2 (no mapfile/readarray/declare -A), EITHER jq OR python3.
 # ENGINE SELECTION: QA_ENGINE=jq|python3 forces one; unset auto-selects jq when present.
@@ -142,6 +166,24 @@ done
 [ -r "$CHECKLIST" ] || die "checklist not readable: $CHECKLIST"
 CL_DIR="$(dirname "$CHECKLIST")"
 [ -w "$CL_DIR" ] || die "cannot write in the checklist's directory: $CL_DIR"
+
+# The checklist's identity, and half of the migration key. `cd … && pwd -P` is the
+# portable canonicalisation (stock macOS bash 3.2 has no `realpath`): it makes a
+# relative path, an absolute path and a symlinked parent directory name ONE migration.
+# NOT a content hash — the content changes the moment the criterion is removed, so a
+# hash would make the command non-idempotent against its own output.
+CL_ABS_DIR="$(cd "$CL_DIR" 2>/dev/null && pwd -P)" || die "cannot resolve the checklist's directory: $CL_DIR"
+[ -n "$CL_ABS_DIR" ] || die "cannot resolve the checklist's directory: $CL_DIR"
+case "$CL_ABS_DIR" in
+  */) CLID="${CL_ABS_DIR}$(basename "$CHECKLIST")" ;;
+  *)  CLID="${CL_ABS_DIR}/$(basename "$CHECKLIST")" ;;
+esac
+# The key is written into the registry verbatim (it must match exactly), and the registry
+# rejects control characters — so refuse one here rather than file an entry that fails
+# validation for a reason the operator cannot act on.
+case "$CLID" in
+  *[[:cntrl:]]*) die "the checklist path must not contain control characters: $CLID" ;;
+esac
 
 RG_DIR="$(dirname "$REGISTRY")"
 if [ -e "$REGISTRY" ]; then
@@ -237,7 +279,7 @@ def oracleProse($e):
 | ( if ($C | type) != "array" then fail("checklist must be a JSON array (got \($C|type)): \($clpath)") else . end )
 | ( if ($R | type) != "array" then fail("registry must be a JSON array (got \($R|type)): \($rgpath)") else . end )
 | ( [ $C[] | select((type == "object") and (.id == $cid)) ] ) as $matches
-| ( [ $R[] | select((type == "object") and (.migratedFrom == $cid)) ] ) as $prior
+| ( [ $R[] | select((type == "object") and (.migratedFrom == $cid) and (.migratedFromChecklist == $clid)) ] ) as $prior
 | ( if (($matches | length) == 0) and (($prior | length) == 0)
     then fail("criterion '\($cid)' is not in \($clpath) and no registry entry was migrated from it")
     else . end )
@@ -271,7 +313,7 @@ def oracleProse($e):
           severity: $derivedSeverity, observedClass: $derivedClass, surface: $derivedSurface,
           observedBehaviour: $derivedBehaviour }
         + ( if $obsStatus != null then { observedStatus: $obsStatus } else {} end )
-        + { migratedFrom: $cid } )
+        + { migratedFrom: $cid, migratedFromChecklist: $clid } )
     else null end ) as $entry
 | ( if $append then ($R + [$entry]) else $R end ) as $newR
 | ( if $append then "KD-\($next)"
@@ -294,6 +336,7 @@ engine_jq() {
     --slurpfile cl "$WORK/cl.in" \
     --slurpfile rg "$WORK/rg.in" \
     --arg cid "$CID" \
+    --arg clid "$CLID" \
     --arg clpath "$CHECKLIST" \
     --arg rgpath "$REGISTRY" \
     --argjson tmax "$TITLE_MAX" \
@@ -308,11 +351,12 @@ engine_jq() {
 
 # ---- python3 engine (fallback) ----------------------------------------------
 engine_py() {
-  python3 - "$WORK" "$CID" "$CHECKLIST" "$REGISTRY" "$TITLE_MAX" "$SURFACE_MAX" "$BEHAV_MAX" <<'PYEOF'
+  python3 - "$WORK" "$CID" "$CHECKLIST" "$REGISTRY" "$TITLE_MAX" "$SURFACE_MAX" "$BEHAV_MAX" "$CLID" <<'PYEOF'
 import json, sys
 
 work, cid, clpath, rgpath = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 TMAX, SMAX, BMAX = int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+clid = sys.argv[8]
 
 HEALTH = ("page.rendersWithoutServerError", "page.crashed", "console.hasError", "http.status")
 INT_CAP = 1000000000000000
@@ -413,7 +457,8 @@ if not isinstance(R, list):
     fail("registry must be a JSON array (got %s): %s" % (type(R).__name__, rgpath))
 
 matches = [e for e in C if isinstance(e, dict) and e.get("id") == cid]
-prior = [e for e in R if isinstance(e, dict) and e.get("migratedFrom") == cid]
+prior = [e for e in R if isinstance(e, dict) and e.get("migratedFrom") == cid
+         and e.get("migratedFromChecklist") == clid]
 if not matches and not prior:
     fail("criterion '%s' is not in %s and no registry entry was migrated from it" % (cid, clpath))
 
@@ -463,6 +508,7 @@ if append:
     if obs_status is not None:
         entry["observedStatus"] = obs_status
     entry["migratedFrom"] = cid
+    entry["migratedFromChecklist"] = clid
     newR = R + [entry]
     kdid = "KD-%d" % nxt
     m_class, m_severity, m_surface = derived_class, derived_severity, derived_surface
@@ -531,11 +577,75 @@ atomic_write() { # <target> <source>
   mv "$tmp" "$t" || { rm -f "$tmp"; die "rename failed: $t"; }
 }
 
+# THE POST-STATE IS READ BACK FROM DISK, NEVER INFERRED from a write returning 0.
+# `phase=entry` asks only "is there an entry for THIS migration?"; `phase=full` also
+# asks "is the criterion gone from the plan?". Prints `ok` or the reason.
+post_check() { # <phase: entry|full>
+  local phase="$1" res
+  if has_jq; then
+    res="$(jq -n -r --slurpfile rg "$REGISTRY" --slurpfile cl "$CHECKLIST" \
+             --arg cid "$CID" --arg clid "$CLID" --arg phase "$phase" '
+      if ($rg | length) != 1 then "the registry is not one JSON document"
+      elif ($cl | length) != 1 then "the checklist is not one JSON document"
+      elif (($rg[0] | type) != "array") then "the registry is not a JSON array"
+      elif (($cl[0] | type) != "array") then "the checklist is not a JSON array"
+      elif ([ $rg[0][] | select((type == "object") and (.migratedFrom == $cid)
+                                and (.migratedFromChecklist == $clid)) ] | length) == 0
+        then "no registry entry names this migration"
+      elif ($phase == "full")
+        and (([ $cl[0][] | select((type == "object") and (.id == $cid)) ] | length) != 0)
+        then "the criterion is still in the plan"
+      else "ok" end' 2>/dev/null)" || res="the verification engine failed"
+  else
+    res="$(python3 - "$REGISTRY" "$CHECKLIST" "$CID" "$CLID" "$phase" <<'PVEOF'
+import json, sys
+rgp, clp, cid, clid, phase = sys.argv[1:6]
+try:
+    reg = json.load(open(rgp))
+except Exception:
+    print("the registry is not one JSON document"); sys.exit(0)
+try:
+    cl = json.load(open(clp))
+except Exception:
+    print("the checklist is not one JSON document"); sys.exit(0)
+if not isinstance(reg, list):
+    print("the registry is not a JSON array")
+elif not isinstance(cl, list):
+    print("the checklist is not a JSON array")
+elif not any(isinstance(e, dict) and e.get("migratedFrom") == cid
+             and e.get("migratedFromChecklist") == clid for e in reg):
+    print("no registry entry names this migration")
+elif phase == "full" and any(isinstance(e, dict) and e.get("id") == cid for e in cl):
+    print("the criterion is still in the plan")
+else:
+    print("ok")
+PVEOF
+)" || res="the verification engine failed"
+  fi
+  [ "$res" = "ok" ] || { POST_REASON="$res"; return 1; }
+  return 0
+}
+
+POST_REASON=""
+
 if [ "$M_appended" = "yes" ]; then
   atomic_write "$REGISTRY" "$WORK/registry.new"
 fi
+
+# GATE: the criterion is removed ONLY IF an entry for this migration is on disk. This
+# runs BEFORE the removal, so a dropped write, a broken key or a hand-edited registry
+# costs an exit 1 with the plan intact — never a deleted criterion with nothing filed.
+if ! post_check entry; then
+  die "refusing to remove criterion '$CID' from $CHECKLIST: $POST_REASON (registry: $REGISTRY). The plan is unchanged."
+fi
+
 if [ "$M_removed" -gt 0 ]; then
   atomic_write "$CHECKLIST" "$WORK/checklist.new"
+fi
+
+# And the final state is verified, not assumed, before anything is reported.
+if ! post_check full; then
+  die "migration of '$CID' did not reach a consistent state: $POST_REASON (checklist: $CHECKLIST, registry: $REGISTRY)"
 fi
 
 # ---- report, then REFUSE to report success ----------------------------------
@@ -549,6 +659,7 @@ if [ "$M_removed" -eq 0 ] && [ "$M_appended" = "no" ]; then
   echo "already migrated: criterion '$CID' is known defect $M_kdid (no changes written)"
 fi
 echo "  derived: observedClass=$M_class severity=$M_severity surface=$M_surface"
+echo "  keyed:   migratedFrom=$CID migratedFromChecklist=$CLID"
 echo "REQUIRED-FIELDS: ticket expiry"
 echo "  ticket - the tracking ticket that owns the fix (e.g. PROJ-123)"
 echo "  expiry - the fix deadline as YYYY-MM-DD, at most 90 days from today (the registry caps it there)"
