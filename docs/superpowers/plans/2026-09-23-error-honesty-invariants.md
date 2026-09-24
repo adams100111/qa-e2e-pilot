@@ -665,8 +665,8 @@ human input required". Generated `id` format `KD-<n>` where `<n>` is one past th
 - Consumes: the registry (Task 4), the validator (Task 3), the migration script (Task 11).
 - Produces: no script interface — process documentation only.
 
-**Exact values:** new gap category name `plan-defect`. The demoted prose signals it surfaces:
-`known defect`, `not a regression`.
+**Exact values:** new gap category name `plan-defect`. The demoted prose signals it surfaces, all
+three: `expected to fail`, `known defect`, `not a regression`.
 
 **Behaviour:**
 - `/qa-analyze` gains a sixth category, `plan-defect`, printed **above** the verdict line — not

@@ -63,10 +63,15 @@ kinds and provenance, applied here to disposition instead.
 ## Consequences
 
 - `qa-verify.sh`'s new checks (findings-ledger recomputation, `classify-finding.sh` disposition,
-  the reserved-health-namespace rejection) are **run-scoped**: they apply to the whole run's
+  load-window coverage, and the known-defect gate) are **run-scoped**: they apply to the whole run's
   observed findings and may override or fail a run regardless of what verdict any individual
   criterion recorded for itself. A `pass` with `match: true` is no longer sufficient by
   construction — the run-scoped checks can still fail it.
+- The **reserved-health-namespace rejection** is *not* one of those run-scoped checks: it is an
+  **authoring-time** gate in `skills/generating-qa-checklist/scripts/validate-checklist-json.sh`,
+  as stated earlier in this record. It stops the criterion being written; the run-scoped checks
+  catch what the run then observes. Conflating the two was an error in an earlier draft of this
+  section.
 - This is a real behavior change, not a restatement. Today `qa-verify.sh` only re-checks records
   whose `verdict == "pass"` — which is exactly why `EC10`, recorded as a matched, low-severity
   "deferred by design" bug rather than a `pass`, was never re-examined by anything downstream.

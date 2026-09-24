@@ -400,7 +400,9 @@ configured thing that quietly is not there.
   (coverage / role / oracle / risk / data) had nowhere to put an inverted oracle, so it landed under
   *Risk gaps* and was **blessed**. Plan defects print **above** the verdict line, and the
   "advisory only — the run is not blocked" charter is explicitly carved out for this class. The
-  demoted prose signals from §4.1 (`known defect`, `not a regression`) surface here.
+  demoted prose signals from §4.1 — `expected to fail`, `known defect`, `not a regression` — surface
+  here. (All **three**: an earlier draft of this line named only two, omitting `expected to fail`,
+  which §4.1 demotes for the reason recorded there.)
 - **`/qa-spec` and `/qa-scenarios`** emit a `known-defects.json` entry where they would previously
   have authored a criterion expecting a failure.
 - **`qa-kit/scripts/migrate-inverted-criterion.sh`** removes the criterion from `checklist.json`,
@@ -417,8 +419,14 @@ errors detected and then ignored.
 
 Minimal fix: surface the anomaly count in the report, and let **`unparseable-line` and `seq-gap`
 contribute to `UNVERIFIED`** — both mean the run's own record is damaged, so its verdicts cannot be
-trusted, which is precisely what `UNVERIFIED` says. The other four stay reported-only. Anything
-larger is separate work.
+trusted, which is precisely what `UNVERIFIED` says.
+
+Every **other** anomaly stays reported-only — `illegal-edge`, `cross-child-duplicate`,
+`duplicate-plan-frozen`, `verdict-without-started`, plus the two this spec's own §5.1 adds,
+`finding-url-oversize` and `finding-detail-missing`. **Six, not four:** an earlier draft said "the
+other four" and was written before §5.1 introduced the last two. The two new ones describe a
+data-quality problem in one finding, not damage to the run's record, which is why they do not
+trigger `UNVERIFIED`. Anything larger is separate work.
 
 ## 6. Data flow
 
