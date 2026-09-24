@@ -89,10 +89,15 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      > is idempotent, so the cost is confusion rather than corruption.
      Nothing under `.qa/runs/` is ever rewritten — a past run's record, including the original
      `match: true`, stays as recorded, and a target path under `.qa/runs/` is refused outright. Fill in
-     `ticket` and `expiry` by hand, then validate the registry with the engine's
-     `known-defects.sh validate .qa/known-defects.json` — an **engine** script, so it is not reachable
-     through qa-kit's per-plugin `${CLAUDE_PLUGIN_ROOT}` (ADR-0022); the migration script's closing line
-     prints the exact command to run.
+     `ticket` and `expiry` by hand, then validate the registry with
+     `known-defects.sh validate .qa/known-defects.json`.
+     **You have to supply the path yourself.** `known-defects.sh` is an **engine** script and qa-kit
+     cannot address it: `${CLAUDE_PLUGIN_ROOT}` is per-plugin and resolves to qa-kit's own root, which does not
+     contain it (ADR-0022). The migration script's last line prints
+     `Fill both fields in, then: known-defects.sh validate <registry>` — a **bare script name with no
+     `bash` and no path**, i.e. a reminder of *which* command to run, not a runnable one. Resolve it
+     against the engine's checkout or plugin root before running it. This gap is a known packaging
+     limitation, not something to paper over with a guessed path.
    - **The three demoted phrases.** `expected to fail`, `known defect` and `not a regression` are
      deliberately **not** validator rejections — they describe the application's behaviour and are often
      correct. `/qa-analyze` surfaces them as `plan-defect` flags above its verdict line instead. The
