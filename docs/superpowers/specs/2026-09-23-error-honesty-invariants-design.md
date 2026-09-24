@@ -279,6 +279,14 @@ becomes permanent.
   reached the surface produces exactly the same silence. An entry not provably exercised stays
   `outstanding`. **Correction (2026-09-24):** an earlier draft added "and the report says it was not
   exercised this run" — nothing writes that either.
+- **`cleared` is reported, never acted upon.** The state reaches `verification.json`'s
+  `__run-checks__`; **nothing consumes it**, and no code removes an entry from the registry.
+  `report-to-junit.sh` reads only the boolean `knownDefectsOk`. Removing a cleared entry stays a
+  human act, and that is deliberate rather than a shortfall: R2 made *renewal* a deliberate act
+  visible in a diff so a waiver could not silently persist, and *removal* deserves the same
+  treatment — a defect leaving the registry should be visible in review too. So `cleared` means
+  "the evidence says it is now safe to delete this entry", not "this entry has been deleted".
+  A `cleared` state must never fail a build: clearing is the good outcome.
 
 ### 5.4 Where findings actually come from (two channels)
 
