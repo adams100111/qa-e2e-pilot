@@ -355,6 +355,196 @@ run_migrate_malformed() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# FIX ROUND 1 — the migration key must identify the MIGRATION, not just the
+# criterion id.
+#
+# THE CRITICAL THIS REPLACES. Keying idempotency on `migratedFrom == <id>` alone
+# meant a SECOND checklist reusing a criterion id matched the FIRST checklist's
+# registry entry: the criterion was deleted from the plan, NO entry was filed for
+# it, and the command exited 2 — its success code. An inverted criterion removed
+# with nothing gating it is the originating incident's failure mode (a known
+# defect with no owner, no deadline and no record) reintroduced by the fix built
+# to prevent it.
+#
+# THE INVARIANT NOW ENFORCED: the criterion is removed only if an entry for THAT
+# migration — (`migratedFrom`, `migratedFromChecklist`) — exists on disk
+# afterwards. The registry is written first, the entry is then VERIFIED BY
+# RE-READING THE FILE (not inferred from the write having returned 0), and only
+# then is the criterion removed; the post-state is verified again after.
+#
+# The deliverable is the reviewer's reproduction INVERTED: two checklists reusing
+# id X1, second run -> a second entry is filed for it, never
+# removed-with-nothing-filed.
+# ---------------------------------------------------------------------------
+MIG_INV='[{"id":"X1","surface":"/s","kind":"error-state","tags":[],"action":"open the page","fixture":{"expect":{"path":"page.crashed","value":true}}}]'
+# Same id, DIFFERENT content — a genuinely different defect that happens to share an id.
+MIG_INV2='[{"id":"X1","surface":"/other","kind":"error-state","tags":[],"action":"open the other page","fixture":{"expect":{"path":"console.hasError","value":true}}}]'
+
+# The invariant, asserted directly: every checklist whose criterion is gone must have
+# an entry keyed to THAT checklist. Prints "held" or the first violation.
+mig_invariant() { # <registry> <checklist> <criterion-id>
+  python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, os, sys
+reg_p, cl_p, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+clid = os.path.join(os.path.realpath(os.path.dirname(cl_p)), os.path.basename(cl_p))
+reg = json.load(open(reg_p)) if os.path.exists(reg_p) else []
+cl = json.load(open(cl_p))
+present = any(isinstance(e, dict) and e.get("id") == cid for e in cl)
+gated = any(isinstance(e, dict) and e.get("migratedFrom") == cid
+            and e.get("migratedFromChecklist") == clid for e in reg)
+if present:
+    print("held")            # still in the plan: nothing to gate
+elif gated:
+    print("held")            # removed AND an entry for this migration exists
+else:
+    print("VIOLATED: criterion removed with no entry for this migration")
+PYEOF
+}
+
+mig_clid() { python3 -c 'import os,sys;print(os.path.join(os.path.realpath(os.path.dirname(sys.argv[1])),os.path.basename(sys.argv[1])))' "$1"; }
+
+run_migrate_key() {
+  local E="$1" T rc out
+  T="$(mktemp -d)"; TMPDIRS+=("$T")
+  mkdir -p "$T/t1" "$T/t2"
+  printf '%s' "$MIG_INV" > "$T/t1/checklist.json"
+  printf '%s' "$MIG_INV" > "$T/t2/checklist.json"
+
+  # (1) THE REVIEWER'S REPRODUCTION, INVERTED. Two checklists reusing id X1 and one
+  # shared registry: the second run must file its OWN entry, never delete the
+  # criterion with nothing gating it.
+  ( cd "$T/t1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/kd.json" ) >/dev/null 2>&1
+  check "$E key: first checklist exits 2" "$?" "2"
+  out="$(cd "$T/t2" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/kd.json" 2>&1)"; rc=$?
+  check "$E key: second checklist exits 2" "$rc" "2"
+  check "$E key: second checklist files its OWN entry" "$(mig_reglen "$T/kd.json")" "2"
+  check "$E key: second entry is KD-2" "$(mig_reg "$T/kd.json" 1 id)" '"KD-2"'
+  check "$E key: second entry names its own checklist" \
+    "$(mig_reg "$T/kd.json" 1 migratedFromChecklist)" "\"$(mig_clid "$T/t2/checklist.json")\""
+  check "$E key: first entry names the first checklist" \
+    "$(mig_reg "$T/kd.json" 0 migratedFromChecklist)" "\"$(mig_clid "$T/t1/checklist.json")\""
+  check "$E key: second run says it appended" "$(printf '%s\n' "$out" | grep -c 'appended known defect KD-2')" "1"
+  # THE INVARIANT, on both checklists.
+  check "$E key: invariant holds for checklist 1" "$(mig_invariant "$T/kd.json" "$T/t1/checklist.json" X1)" "held"
+  check "$E key: invariant holds for checklist 2" "$(mig_invariant "$T/kd.json" "$T/t2/checklist.json" X1)" "held"
+  # And the registry still fails ONLY on the empty ticket/expiry of BOTH entries.
+  ( QA_ENGINE=$E bash "$KDSH" validate "$T/kd.json" 2>"$T/kd2.err" >/dev/null )
+  check "$E key: two-entry registry fails ONLY on ticket+expiry" \
+    "$(LC_ALL=C sort "$T/kd2.err" | sed 's/^ERROR: //' | tr '\n' ';')" \
+    "entry[0].expiry: missing or empty;entry[0].ticket: missing or empty;entry[1].expiry: missing or empty;entry[1].ticket: missing or empty;"
+
+  # (2) Same id, DIFFERENT content -> also two entries (two distinct migrations).
+  mkdir -p "$T/d1" "$T/d2"
+  printf '%s' "$MIG_INV"  > "$T/d1/checklist.json"
+  printf '%s' "$MIG_INV2" > "$T/d2/checklist.json"
+  ( cd "$T/d1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/dkd.json" ) >/dev/null 2>&1
+  ( cd "$T/d2" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/dkd.json" ) >/dev/null 2>&1
+  check "$E key: same id different content -> two entries" "$(mig_reglen "$T/dkd.json")" "2"
+  check "$E key: different-content entry keeps its own surface" "$(mig_reg "$T/dkd.json" 1 surface)" '"/other"'
+  check "$E key: invariant holds for d2" "$(mig_invariant "$T/dkd.json" "$T/d2/checklist.json" X1)" "held"
+
+  # (3) The SAME checklist migrated twice -> still exactly one entry, no-op, exit 2.
+  mkdir -p "$T/s1"; printf '%s' "$MIG_INV" > "$T/s1/checklist.json"
+  ( cd "$T/s1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/skd.json" ) >/dev/null 2>&1
+  local sc sr
+  sc="$(cksum < "$T/s1/checklist.json")"; sr="$(cksum < "$T/skd.json")"
+  out="$(cd "$T/s1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/skd.json" 2>&1)"; rc=$?
+  check "$E key: same checklist twice exits 2" "$rc" "2"
+  check "$E key: same checklist twice keeps ONE entry" "$(mig_reglen "$T/skd.json")" "1"
+  check "$E key: same checklist twice is a no-op (registry)"  "$(cksum < "$T/skd.json")" "$sr"
+  check "$E key: same checklist twice is a no-op (checklist)" "$(cksum < "$T/s1/checklist.json")" "$sc"
+  check "$E key: same checklist twice says already migrated" "$(printf '%s\n' "$out" | grep -c 'already migrated')" "1"
+
+  # (4) RELATIVE vs ABSOLUTE path for the same file -> the SAME migration.
+  mkdir -p "$T/r1"; printf '%s' "$MIG_INV" > "$T/r1/checklist.json"
+  ( cd "$T/r1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/rkd.json" ) >/dev/null 2>&1
+  out="$(QA_ENGINE=$E bash "$MIG" "$T/r1/checklist.json" X1 --known-defects "$T/rkd.json" 2>&1)"; rc=$?
+  check "$E key: relative-then-absolute exits 2" "$rc" "2"
+  check "$E key: relative-then-absolute is ONE migration" "$(mig_reglen "$T/rkd.json")" "1"
+  check "$E key: relative-then-absolute says already migrated" "$(printf '%s\n' "$out" | grep -c 'already migrated')" "1"
+  # ... and via a SYMLINKED parent directory, which `pwd -P` must resolve to the same path.
+  ln -s "$T/r1" "$T/r1-link"
+  out="$(QA_ENGINE=$E bash "$MIG" "$T/r1-link/checklist.json" X1 --known-defects "$T/rkd.json" 2>&1)"; rc=$?
+  check "$E key: symlinked parent is the SAME migration" "$(mig_reglen "$T/rkd.json")" "1"
+  check "$E key: symlinked parent exits 2" "$rc" "2"
+
+  # (5) A registry that ALREADY holds an entry for a DIFFERENT checklist's X1 —
+  # hand-written, as an operator's registry would be — must not gate ours.
+  mkdir -p "$T/o1"; printf '%s' "$MIG_INV" > "$T/o1/checklist.json"
+  printf '%s' '[{"id":"KD-7","title":"someone else","ticket":"P-1","expiry":"2026-10-01","severity":"high","observedClass":"non-rendering","surface":"/elsewhere","observedBehaviour":"b","migratedFrom":"X1","migratedFromChecklist":"/some/other/project/checklist.json"}]' > "$T/okd.json"
+  ( cd "$T/o1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/okd.json" ) >/dev/null 2>&1
+  check "$E key: another checklist's X1 does not gate ours" "$(mig_reglen "$T/okd.json")" "2"
+  check "$E key: our entry increments past KD-7" "$(mig_reg "$T/okd.json" 1 id)" '"KD-8"'
+  check "$E key: invariant holds against a foreign entry" "$(mig_invariant "$T/okd.json" "$T/o1/checklist.json" X1)" "held"
+
+  # (6) A LEGACY entry (migratedFrom, no migratedFromChecklist) identifies no
+  # migration, so it cannot gate a removal: a properly keyed entry is filed.
+  mkdir -p "$T/l1"; printf '%s' "$MIG_INV" > "$T/l1/checklist.json"
+  printf '%s' '[{"id":"KD-1","title":"legacy","ticket":"","expiry":"","severity":"high","observedClass":"non-rendering","surface":"/s","observedBehaviour":"b","migratedFrom":"X1"}]' > "$T/lkd.json"
+  ( cd "$T/l1" && QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/lkd.json" ) >/dev/null 2>&1
+  check "$E key: a legacy unkeyed entry does not gate a removal" "$(mig_reglen "$T/lkd.json")" "2"
+  check "$E key: invariant holds against a legacy entry" "$(mig_invariant "$T/lkd.json" "$T/l1/checklist.json" X1)" "held"
+
+  # (7) POST-STATE IS VERIFIED, NOT INFERRED. Fault injection: a `mv` shim on PATH
+  # silently drops the registry rename, so the write "succeeds" and the entry is not
+  # there. The criterion must NOT be removed, and the command must exit 1.
+  mkdir -p "$T/p1" "$T/shim"
+  printf '%s' "$MIG_INV" > "$T/p1/checklist.json"
+  local pc; pc="$(cksum < "$T/p1/checklist.json")"
+  cat > "$T/shim/mv" <<'SHIMEOF'
+#!/usr/bin/env bash
+# fault injection: silently drop the rename that would publish the registry
+for a in "$@"; do case "$a" in *kd-drop.json|*checklist-drop.json) exit 0 ;; esac; done
+exec /bin/mv "$@"
+SHIMEOF
+  chmod +x "$T/shim/mv"
+  ( cd "$T/p1" && PATH="$T/shim:$PATH" QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/kd-drop.json" ) >/dev/null 2>&1
+  check "$E post-state: dropped registry write exits 1" "$?" "1"
+  check "$E post-state: dropped registry write leaves the criterion in the plan" \
+    "$(cksum < "$T/p1/checklist.json")" "$pc"
+  check "$E post-state: invariant holds after a dropped write" \
+    "$(mig_invariant "$T/kd-drop.json" "$T/p1/checklist.json" X1)" "held"
+
+  # (8) ...and the SECOND verification: the same shim drops the CHECKLIST rename, so
+  # the entry is filed but the criterion is still in the plan. That is the SAFE
+  # direction (a filed defect whose criterion survives, which a re-run finishes), but
+  # it is not a consistent end state, so it must be reported as exit 1 rather than
+  # declared a success.
+  mkdir -p "$T/p2"
+  printf '%s' "$MIG_INV" > "$T/p2/checklist-drop.json"
+  local pc2; pc2="$(cksum < "$T/p2/checklist-drop.json")"
+  ( cd "$T/p2" && PATH="$T/shim:$PATH" QA_ENGINE=$E bash "$MIG" checklist-drop.json X1 --known-defects "$T/kd2ok.json" ) >/dev/null 2>&1
+  check "$E post-state: dropped checklist write exits 1" "$?" "1"
+  check "$E post-state: dropped checklist write still filed the entry" "$(mig_reglen "$T/kd2ok.json")" "1"
+  check "$E post-state: dropped checklist write left the plan intact" \
+    "$(cksum < "$T/p2/checklist-drop.json")" "$pc2"
+  check "$E post-state: invariant holds after a dropped checklist write" \
+    "$(mig_invariant "$T/kd2ok.json" "$T/p2/checklist-drop.json" X1)" "held"
+
+  # (9) THE VERIFICATION MUST USE THE WHOLE KEY. A mutation battery found that the
+  # post-check could be loosened to `migratedFrom` alone with no test failing — the
+  # engine always writes the full key, so the checklist half never mattered. It matters
+  # HERE: the registry already holds a FOREIGN entry for another checklist's X1, and the
+  # shim drops the append of ours. A post-check keyed on the criterion id alone accepts
+  # the foreign entry as proof, removes our criterion and exits 2 — the Critical again,
+  # one layer down. Keyed on both fields it exits 1 with the plan intact.
+  mkdir -p "$T/p3"
+  printf '%s' "$MIG_INV" > "$T/p3/checklist.json"
+  printf '%s' '[{"id":"KD-7","title":"another project","ticket":"P-1","expiry":"2026-10-01","severity":"high","observedClass":"non-rendering","surface":"/elsewhere","observedBehaviour":"b","migratedFrom":"X1","migratedFromChecklist":"/some/other/project/checklist.json"}]' > "$T/p3-kd-drop.json"
+  local pc3; pc3="$(cksum < "$T/p3/checklist.json")"
+  ( cd "$T/p3" && PATH="$T/shim:$PATH" QA_ENGINE=$E bash "$MIG" checklist.json X1 --known-defects "$T/p3-kd-drop.json" ) >/dev/null 2>&1
+  check "$E post-state: a foreign entry is not proof of OUR migration" "$?" "1"
+  check "$E post-state: foreign entry leaves our criterion in the plan" \
+    "$(cksum < "$T/p3/checklist.json")" "$pc3"
+  check "$E post-state: foreign-entry registry is unchanged" "$(mig_reglen "$T/p3-kd-drop.json")" "1"
+  check "$E post-state: invariant holds against a foreign entry + dropped write" \
+    "$(mig_invariant "$T/p3-kd-drop.json" "$T/p3/checklist.json" X1)" "held"
+}
+
+command -v jq >/dev/null 2>&1      && run_migrate_key jq
+command -v python3 >/dev/null 2>&1 && run_migrate_key python3
+
 command -v jq >/dev/null 2>&1      && { run_migrate_engine jq;      run_migrate_derivation jq;      run_migrate_malformed jq; }
 command -v python3 >/dev/null 2>&1 && { run_migrate_engine python3; run_migrate_derivation python3; run_migrate_malformed python3; }
 
@@ -363,18 +553,23 @@ command -v python3 >/dev/null 2>&1 && { run_migrate_engine python3; run_migrate_
 # assumed.
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   P="$(mktemp -d)"; TMPDIRS+=("$P")
+  # Both engines run in the SAME directory on the SAME paths, inputs reset between
+  # runs: `migratedFromChecklist` is a resolved absolute path, so a per-engine
+  # directory would make the two outputs differ for a reason that is not divergence.
+  mkdir -p "$P/wk"
   for eng in jq python3; do
-    mkdir -p "$P/$eng"
-    printf '%s' "$INV_PLAN" > "$P/$eng/checklist.json"
-    printf '%s' '[{"id":"KD-9","title":"t","ticket":"P-1","expiry":"2026-10-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]' > "$P/$eng/kd.json"
-    ( cd "$P/$eng" && QA_ENGINE=$eng bash "$MIG" checklist.json EC10 --known-defects kd.json ) > "$P/$eng.out" 2>&1
+    printf '%s' "$INV_PLAN" > "$P/wk/checklist.json"
+    printf '%s' '[{"id":"KD-9","title":"t","ticket":"P-1","expiry":"2026-10-01","severity":"high","observedClass":"non-rendering","surface":"/x","observedBehaviour":"b"}]' > "$P/wk/kd.json"
+    ( cd "$P/wk" && QA_ENGINE=$eng bash "$MIG" checklist.json EC10 --known-defects kd.json ) > "$P/$eng.out" 2>&1
+    cp "$P/wk/checklist.json" "$P/$eng.checklist"
+    cp "$P/wk/kd.json" "$P/$eng.registry"
   done
   check "migrate: cross-engine stdout identical" \
     "$(cmp -s "$P/jq.out" "$P/python3.out" && echo same || echo diff)" "same"
   check "migrate: cross-engine checklist identical" \
-    "$(cmp -s "$P/jq/checklist.json" "$P/python3/checklist.json" && echo same || echo diff)" "same"
+    "$(cmp -s "$P/jq.checklist" "$P/python3.checklist" && echo same || echo diff)" "same"
   check "migrate: cross-engine registry identical" \
-    "$(cmp -s "$P/jq/kd.json" "$P/python3/kd.json" && echo same || echo diff)" "same"
+    "$(cmp -s "$P/jq.registry" "$P/python3.registry" && echo same || echo diff)" "same"
 fi
 
 echo "qa-kit-enforcement (incl. migrate-inverted-criterion): PASS=$pass FAIL=$fail"
