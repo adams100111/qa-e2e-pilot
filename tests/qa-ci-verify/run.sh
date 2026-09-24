@@ -18,6 +18,9 @@
 #   PART 3 — qa-ci.sh: the qa-verify step's exit code genuinely gates the
 #     FINAL exit (independent of report-to-junit's own exit code), and
 #     QA_SKIP_VERIFY is explicit and LOGGED, never silent.
+#   PART 7 — Fix round 1: the Lane K `__run-checks__` record reaches the
+#     REPORT (it already reached the exit code), naming WHICH run-scoped
+#     check failed, counted once, never masking (or masked by) UNVERIFIED.
 #   PART 5/6 — Task 10 (plan 2026-09-23-error-honesty-invariants, spec §5.7):
 #     run-level `UNVERIFIED` reaches the EXIT CODE. The word already existed
 #     in `<properties>`, which `:395`'s `sys.exit(1 if (failures or errors)`
@@ -720,5 +723,321 @@ check_not_contains "qa-ci Case G: nothing is reported as skipped" \
   "$(cat "$DIR_G/stdout.log")" "qa-verify SKIPPED"
 check_not_contains "qa-ci Case G: no synthetic failure case in the export" \
   "$(cat "$DIR_G/out.xml")" "__run-verified__"
+
+# ===========================================================================
+# PART 7 — Fix round 1 (Lane K hand-off): the synthetic `__run-checks__`
+# record reaches the REPORT, not just the exit code.
+#
+# Lane K's Task 8 writes one run-level `__run-checks__` record into
+# verification.json carrying
+#   runChecks: {ledgerComplete, classificationsAgree, loadWindowCovered,
+#               knownDefectsOk}
+# and — unlike `__phase-surface__` — it DOES flip qa-verify's exit code, so
+# qa-ci.sh's VERIFY_RC path already fails the build. Enforcement was never
+# the gap. The gap was diagnostic: report-to-junit.sh renders testcases for
+# checkpoint criteria only (plus the `__phase-surface__` property), so a CI
+# user got a red build with nothing in the report naming WHICH run-check
+# failed — and a build that fails without saying why is the kind of thing
+# people route around, which is the very failure this feature exists to stop.
+#
+# WHAT IS PINNED HERE:
+#   (A) A non-pass `__run-checks__` record synthesizes a
+#       `<testcase name="__run-checks__">` carrying a `<failure>` whose
+#       message NAMES the failed checks: `run checks failed: ledgerComplete,
+#       loadWindowCovered`. Counted in tests/failures, so it reaches
+#       `sys.exit` — asserted as an EXIT CODE, never as XML text alone.
+#   (B) It fails ONCE. `verify_overrides` is computed over checkpoint
+#       criteria only, and `__run-checks__` is not one, so there is no
+#       double count: a run whose ONLY problem is a failed run-check reports
+#       exactly `failures="1"` and exactly one `__run-checks__` testcase.
+#   (C) It never masks, and is never masked by, an UNVERIFIED
+#       `__run-verified__` failure. Both are legitimately present together
+#       (a run with no capture channel whose journal also misclassifies a
+#       finding), and then BOTH appear and `failures` counts both.
+#   (D) An all-pass record synthesizes NO testcase and leaves the exit code
+#       alone; the positive result is surfaced as a `qa.runChecks` property,
+#       so "the gate ran and passed" is still visible.
+#   (E) Fail CLOSED on a malformed record: qa-verify's own
+#       `build_error_record("__run-checks__", …)` path writes a record with
+#       `verifierVerdict: "error"` and NO `runChecks` key at all (the four
+#       checks did not complete). A lost gate must never render as a clean
+#       run, so that shape still produces the failure case.
+#   (F) Every fixture is produced by the REAL qa-verify.sh under BOTH of its
+#       engines (QA_ENGINE=jq and QA_ENGINE=python3, each in its own tree),
+#       and the report's xml/stdout/stderr are compared SEPARATELY between
+#       them. report-to-junit.sh itself is python3-only; the dual-engine
+#       axis is the PRODUCER of the artefact it reads.
+# ===========================================================================
+MCP="mcp__plugin_playwright_playwright"
+RC_NAV="${MCP}__browser_navigate"
+RC_NETREQ="${MCP}__browser_network_requests"
+RC_SNAP="${MCP}__browser_snapshot"
+RC_FINDING_500='{"event":"finding_observed","criterionId":"EC10","source":"network","channel":"driver-log","method":"GET","url":"https://app.test/dashboard","status":500,"originClass":"in-scope","statusClass":"fatal","message":"500 on the dashboard document request"}'
+RC_NETLOG='[{"method":"GET","url":"https://app.test/dashboard","status":500,"type":"document"}]'
+
+rc_ts() { # <tree> <run> <tool>
+  ( cd "$1" && bash "$TOOLSTREAM" append "$2" \
+      "{\"tool\":\"$3\",\"args\":{},\"resultDigest\":{\"len\":0,\"sha256\":\"x\"},\"responseBody\":\"\"}" >/dev/null )
+}
+rc_jr() { ( cd "$1" && bash "$JOURNAL" append "$2" "$3" >/dev/null ); }
+rc_netlog() { mkdir -p "$1/.qa/runs/$2"; printf '%s' "$3" > "$1/.qa/runs/$2/network-log.json"; }
+rc_ckpt() { ( cd "$1" && bash "$CKPT" "$2" "$3" blocked --last-action "environment stopped us" >/dev/null ); }
+# rc_checks <run-dir> -> "<field>=<value> …" for the four run-checks, from the
+# __run-checks__ record. python3 so it needs no jq and is engine-agnostic.
+rc_checks() {
+  python3 - "$1/verification.json" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+fields = ("ledgerComplete", "classificationsAgree", "loadWindowCovered", "knownDefectsOk")
+out = "no-record"
+if os.path.isfile(path):
+    try:
+        recs = json.load(open(path))
+    except Exception:
+        recs = []
+    for r in recs if isinstance(recs, list) else []:
+        if isinstance(r, dict) and r.get("criterionId") == "__run-checks__":
+            checks = r.get("runChecks")
+            if isinstance(checks, dict):
+                out = r.get("verifierVerdict", "?") + " " + " ".join(
+                    "%s=%s" % (f, str(checks.get(f)).lower()) for f in fields)
+            else:
+                out = r.get("verifierVerdict", "?") + " no-runChecks"
+            break
+print(out)
+PYEOF
+}
+
+for QV_ENGINE in jq python3; do
+  if ! command -v "$QV_ENGINE" >/dev/null 2>&1; then
+    echo "SKIP - __run-checks__ cases [$QV_ENGINE]: $QV_ENGINE not on this host"; continue
+  fi
+  T="$WORK/p7-$QV_ENGINE"; mkdir -p "$T/.qa"
+  # .qa/config.json is PROJECT-level (decision R16): its baseUrl is what
+  # makes an app.test 500 in-scope rather than third-party.
+  printf '%s' '{"baseUrl":"https://app.test"}' > "$T/.qa/config.json"
+  qv() { ( cd "$T" && QA_ENGINE="$QV_ENGINE" bash "$QAVERIFY" "$1" >/dev/null 2>&1 ); }
+
+  # --- 7a: ONE failed check (ledgerComplete). The driver log holds a
+  # navigation 500 the findings journal never recorded — incident regression
+  # shape. A toolstream exists, so the run is CAPTURED and the only problem
+  # is the run-check: that isolation is what makes the count assertion mean
+  # something. The criterion is `blocked` (a skip, not a failure), so any
+  # `failures` above 1 is this task double-counting.
+  rc_ts "$T" rcone "$RC_NAV"; rc_ts "$T" rcone "$RC_NETREQ"
+  rc_netlog "$T" rcone "$RC_NETLOG"
+  rc_jr "$T" rcone '{"event":"run_started"}'
+  rc_ckpt "$T" rcone EC10
+  qv rcone; RCV_ONE=$?
+  check "test_run_checks_failure[$QV_ENGINE]: fixture sanity — qa-verify itself exits non-zero" \
+    "$([[ "$RCV_ONE" -ne 0 ]] && echo yes)" "yes"
+  check "test_run_checks_failure[$QV_ENGINE]: fixture sanity — exactly ledgerComplete is false" \
+    "$(rc_checks "$T/.qa/runs/rcone")" \
+    "fail ledgerComplete=false classificationsAgree=true loadWindowCovered=true knownDefectsOk=true"
+  check "test_run_checks_failure[$QV_ENGINE]: fixture sanity — the run IS captured (so UNVERIFIED is not in play)" \
+    "$(canary_channel "$T/.qa/runs/rcone")" "toolstream"
+  junit_run "$T" rcone "$T/rcone"; RC7A=$?
+  check "test_run_checks_failure_produces_nonzero_exit[$QV_ENGINE]: exit is NON-ZERO" \
+    "$([[ "$RC7A" -ne 0 ]] && echo yes)" "yes"
+  X7A="$(cat "$T/rcone.xml")"
+  check_contains "test_run_checks_failure_synthesizes_junit_failure_case[$QV_ENGINE]: the testcase is named __run-checks__" \
+    "$X7A" '<testcase name="__run-checks__"'
+  check_contains "test_run_checks_message_names_which_checks_failed[$QV_ENGINE]: the message names the one failed check" \
+    "$X7A" '<failure message="run checks failed: ledgerComplete"'
+  check_contains "test_run_checks_failure_carries_the_verifier_reason[$QV_ENGINE]: the body carries qa-verify's own reason" \
+    "$X7A" "absent from the findings journal"
+  check "test_run_checks_failure_counted_once[$QV_ENGINE]: failures is exactly 1 (no double count with VERIFY_RC)" \
+    "$(attr1 "$T/rcone.xml" failures)" 'failures="1"'
+  check "test_run_checks_failure_counted_once[$QV_ENGINE]: exactly ONE __run-checks__ testcase" \
+    "$(grep -c '<testcase name="__run-checks__"' "$T/rcone.xml" | tr -d ' ')" "1"
+  check "test_run_checks_failure_counted_once[$QV_ENGINE]: tests is 1 criterion + 1 synthetic" \
+    "$(attr1 "$T/rcone.xml" tests)" 'tests="2"'
+  check_not_contains "test_run_checks_does_not_imply_unverified[$QV_ENGINE]: a captured run gets no __run-verified__ case" \
+    "$X7A" "__run-verified__"
+  check_contains "test_run_checks_is_also_surfaced_as_a_property[$QV_ENGINE]" \
+    "$X7A" 'name="qa.runChecks"'
+  # The assurance tier must not stamp "every recorded pass independently
+  # verified" next to a failed structural gate — the same too-quiet-stamp
+  # failure this plan exists to remove, one level up.
+  check_contains "test_assurance_tier_names_the_failed_run_check[$QV_ENGINE]" \
+    "$X7A" "the run-scoped checks did NOT all pass"
+
+  # --- 7b: TWO failed checks — a navigation with no browser_network_requests
+  # before the next one (loadWindowCovered) on top of the missing ledger
+  # entry. The message must name BOTH, in the canonical field order.
+  rc_ts "$T" rctwo "$RC_NAV"; rc_ts "$T" rctwo "$RC_SNAP"
+  rc_ts "$T" rctwo "$RC_NAV"; rc_ts "$T" rctwo "$RC_NETREQ"
+  rc_netlog "$T" rctwo "$RC_NETLOG"
+  rc_jr "$T" rctwo '{"event":"run_started"}'
+  rc_ckpt "$T" rctwo EC10
+  qv rctwo
+  check "test_run_checks_two_failures[$QV_ENGINE]: fixture sanity — ledgerComplete AND loadWindowCovered are false" \
+    "$(rc_checks "$T/.qa/runs/rctwo")" \
+    "fail ledgerComplete=false classificationsAgree=true loadWindowCovered=false knownDefectsOk=true"
+  junit_run "$T" rctwo "$T/rctwo"; RC7B=$?
+  check "test_run_checks_two_failures[$QV_ENGINE]: exit is NON-ZERO" \
+    "$([[ "$RC7B" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_run_checks_message_names_which_checks_failed[$QV_ENGINE]: both names, canonical order" \
+    "$(cat "$T/rctwo.xml")" '<failure message="run checks failed: ledgerComplete, loadWindowCovered"'
+  check "test_run_checks_two_failures[$QV_ENGINE]: still ONE testcase for the whole run-checks record" \
+    "$(grep -c '<testcase name="__run-checks__"' "$T/rctwo.xml" | tr -d ' ')" "1"
+  check "test_run_checks_two_failures[$QV_ENGINE]: still failures=1 — one record, one failure" \
+    "$(attr1 "$T/rctwo.xml" failures)" 'failures="1"'
+
+  # --- 7c: all four pass -> no testcase, exit code untouched, and the
+  # positive result still visible as a property.
+  rc_ts "$T" rcok "$RC_NAV"; rc_ts "$T" rcok "$RC_NETREQ"
+  rc_netlog "$T" rcok "$RC_NETLOG"
+  rc_jr "$T" rcok '{"event":"run_started"}'
+  rc_jr "$T" rcok "$RC_FINDING_500"
+  rc_ckpt "$T" rcok EC10
+  qv rcok; RCV_OK=$?
+  check "test_run_checks_all_pass[$QV_ENGINE]: fixture sanity — qa-verify exits 0" "$RCV_OK" "0"
+  check "test_run_checks_all_pass[$QV_ENGINE]: fixture sanity — all four true" \
+    "$(rc_checks "$T/.qa/runs/rcok")" \
+    "pass ledgerComplete=true classificationsAgree=true loadWindowCovered=true knownDefectsOk=true"
+  junit_run "$T" rcok "$T/rcok"; RC7C=$?
+  check "test_run_checks_all_pass_exit_code_unchanged[$QV_ENGINE]: exits 0" "$RC7C" "0"
+  check_not_contains "test_run_checks_all_pass_emits_no_failure_case[$QV_ENGINE]: no testcase is synthesized" \
+    "$(cat "$T/rcok.xml")" '<testcase name="__run-checks__"'
+  check "test_run_checks_all_pass[$QV_ENGINE]: failures stays 0" \
+    "$(attr1 "$T/rcok.xml" failures)" 'failures="0"'
+  check_contains "test_run_checks_all_pass_is_still_visible[$QV_ENGINE]: the property records that the gate ran and passed" \
+    "$(cat "$T/rcok.xml")" 'ledgerComplete=true classificationsAgree=true loadWindowCovered=true knownDefectsOk=true'
+
+  # --- 7d: a run-check failure AND an UNVERIFIED run in the SAME report.
+  # No toolstream at all (canary channel=none -> UNVERIFIED) and a journal
+  # that calls a baseUrl-origin 500 `third-party` (classificationsAgree
+  # false). Neither signal may mask the other.
+  rc_jr "$T" rcboth '{"event":"finding_observed","criterionId":"EC10","source":"network","channel":"driver-log","method":"GET","url":"https://app.test/broken","status":500,"originClass":"third-party","statusClass":"fatal","message":"claimed third-party"}'
+  rc_ckpt "$T" rcboth EC10
+  qv rcboth
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: fixture sanity — classificationsAgree is false" \
+    "$(rc_checks "$T/.qa/runs/rcboth")" \
+    "fail ledgerComplete=true classificationsAgree=false loadWindowCovered=true knownDefectsOk=true"
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: fixture sanity — and there is no capture channel" \
+    "$(canary_channel "$T/.qa/runs/rcboth")" "none"
+  junit_run "$T" rcboth "$T/rcboth"; RC7D=$?
+  X7D="$(cat "$T/rcboth.xml")"
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: exit is NON-ZERO" \
+    "$([[ "$RC7D" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_run_checks_and_unverified_coexist[$QV_ENGINE]: the UNVERIFIED case is NOT masked" \
+    "$X7D" '<testcase name="__run-verified__"'
+  check_contains "test_run_checks_and_unverified_coexist[$QV_ENGINE]: the run-checks case is NOT masked" \
+    "$X7D" '<testcase name="__run-checks__"'
+  check_contains "test_run_checks_and_unverified_coexist[$QV_ENGINE]: the UNVERIFIED reason survives" \
+    "$X7D" "UNVERIFIED — no independent capture"
+  check_contains "test_run_checks_and_unverified_coexist[$QV_ENGINE]: the run-check name survives" \
+    "$X7D" 'run checks failed: classificationsAgree'
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: BOTH are counted (1 criterion + 2 synthetic)" \
+    "$(attr1 "$T/rcboth.xml" tests)" 'tests="3"'
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: failures counts both, exactly once each" \
+    "$(attr1 "$T/rcboth.xml" failures)" 'failures="2"'
+
+  # --- 7e: FAIL CLOSED on qa-verify's own error record for this pass. Its
+  # build_error_record shape carries verifierVerdict "error" and NO
+  # runChecks key (the four checks never completed). Hand-authored here
+  # because forcing an internal crash inside run_run_checks_pass is not
+  # reachable from the outside — the SHAPE is pinned by qa-verify.sh's
+  # build_error_record, quoted verbatim.
+  rc_ts "$T" rcerr "$RC_NAV"
+  rc_ckpt "$T" rcerr EC10
+  printf '%s' '[{"criterionId":"__run-checks__","persona":"","inRunVerdict":"pass","verifierVerdict":"error","confidence":"high","reasons":["qa-verify internal error while re-checking this criterion: run_run_checks_pass exited 1 (see qa-verify'"'"'s own stderr above for the underlying failure) — the four run-scoped checks did not complete — recorded as error rather than silently dropped"]}]' \
+    > "$T/.qa/runs/rcerr/verification.json"
+  check "test_run_checks_error_record[$QV_ENGINE]: fixture sanity — the record carries no runChecks object" \
+    "$(rc_checks "$T/.qa/runs/rcerr")" "error no-runChecks"
+  junit_run "$T" rcerr "$T/rcerr"; RC7E=$?
+  check "test_run_checks_error_record_still_fails[$QV_ENGINE]: a gate that did not complete exits NON-ZERO" \
+    "$([[ "$RC7E" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_run_checks_error_record_still_fails[$QV_ENGINE]: the failure names the incompleteness, not four false checks" \
+    "$(cat "$T/rcerr.xml")" '<failure message="run checks failed: the four run-scoped checks did not complete (verifierVerdict=error)"'
+  check_not_contains "test_run_checks_error_record_still_fails[$QV_ENGINE]: it does not claim a specific check failed" \
+    "$(cat "$T/rcerr.xml")" "run checks failed: ledgerComplete"
+
+  # --- 7f: a verification.json with NO __run-checks__ record at all is an
+  # unchanged no-op (the shape every pre-Task-8 run has).
+  rc_ts "$T" rcnone "$RC_NAV"
+  rc_ckpt "$T" rcnone EC10
+  printf '%s' '[]' > "$T/.qa/runs/rcnone/verification.json"
+  junit_run "$T" rcnone "$T/rcnone"; RC7F=$?
+  check "test_run_checks_absent_is_a_noop[$QV_ENGINE]: exits 0" "$RC7F" "0"
+  check_not_contains "test_run_checks_absent_is_a_noop[$QV_ENGINE]: no testcase" \
+    "$(cat "$T/rcnone.xml")" '__run-checks__'
+  check_not_contains "test_run_checks_absent_is_a_noop[$QV_ENGINE]: no property either" \
+    "$(cat "$T/rcnone.xml")" 'qa.runChecks'
+done
+
+# --- 7j: an UNRECORDED check fails CLOSED. A `runChecks` object that simply
+# OMITS a field (or carries a non-boolean) has not PROVEN that check — and an
+# unproven structural check is not a pass. Hand-authored because qa-verify
+# always writes all four today; this pins the reader's posture so a future
+# producer that adds a fifth field, or omits one on a degrade, cannot turn a
+# silent omission into a green build.
+RC_PARTIAL="$WORK/p7-partial"; mkdir -p "$RC_PARTIAL"
+( cd "$RC_PARTIAL" && bash "$TOOLSTREAM" append partial "{\"tool\":\"$RC_NAV\",\"args\":{},\"resultDigest\":{\"len\":0,\"sha256\":\"x\"},\"responseBody\":\"\"}" >/dev/null )
+( cd "$RC_PARTIAL" && bash "$CKPT" partial EC10 blocked --last-action "environment stopped us" >/dev/null )
+printf '%s' '[{"criterionId":"__run-checks__","persona":"","inRunVerdict":"n/a","verifierVerdict":"pass","confidence":"high","reasons":["a producer that recorded only three of the four checks"],"runChecks":{"ledgerComplete":true,"classificationsAgree":true,"knownDefectsOk":null}}]' \
+  > "$RC_PARTIAL/.qa/runs/partial/verification.json"
+junit_run "$RC_PARTIAL" partial "$RC_PARTIAL/rep"; RC7J=$?
+check "test_run_checks_unrecorded_check_fails_closed: exit is NON-ZERO even though verifierVerdict says pass" \
+  "$([[ "$RC7J" -ne 0 ]] && echo yes)" "yes"
+check_contains "test_run_checks_unrecorded_check_fails_closed: the message names the two it could not prove" \
+  "$(cat "$RC_PARTIAL/rep.xml")" '<failure message="run checks failed: loadWindowCovered, knownDefectsOk"'
+check_contains "test_run_checks_unrecorded_check_fails_closed: the property distinguishes unrecorded from false" \
+  "$(cat "$RC_PARTIAL/rep.xml")" 'loadWindowCovered=unrecorded knownDefectsOk=unrecorded'
+
+# --- 7i: END TO END through qa-ci.sh with the REAL qa-verify.sh (no stub).
+# The build must fail ONCE, and the report it leaves behind must name the
+# failed check — the whole point of this fix round: qa-verify's exit code
+# already failed the build, silently.
+DIR_H="$WORK/ci-h"; mkdir -p "$DIR_H/.qa"
+printf '%s' '{"baseUrl":"https://app.test"}' > "$DIR_H/.qa/config.json"
+cat > "$DIR_H/agent-stub.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+# The incident shape: the driver log holds a navigation 500 that the findings
+# journal never recorded, and every criterion is recorded non-pass so the
+# per-criterion pass loop visits nothing.
+bash "$TOOLSTREAM" append rcci '{"tool":"${MCP}__browser_navigate","args":{},"resultDigest":{"len":0,"sha256":"x"},"responseBody":""}' >/dev/null
+bash "$TOOLSTREAM" append rcci '{"tool":"${MCP}__browser_network_requests","args":{},"resultDigest":{"len":0,"sha256":"x"},"responseBody":""}' >/dev/null
+mkdir -p .qa/runs/rcci
+printf '%s' '$RC_NETLOG' > .qa/runs/rcci/network-log.json
+bash "$JOURNAL" append rcci '{"event":"run_started"}' >/dev/null
+bash "$CKPT" rcci EC10 blocked --last-action "environment stopped us" >/dev/null
+EOF
+chmod +x "$DIR_H/agent-stub.sh"
+( cd "$DIR_H" && QA_SKIP_PREFLIGHT=1 QA_SKIP_SESSION_PREFLIGHT=1 \
+    QA_AGENT_CMD="bash ./agent-stub.sh" QA_JUNIT_OUT="$DIR_H/out.xml" \
+    bash "$QACI" "some target" >"$DIR_H/stdout.log" 2>&1 )
+RC_H=$?
+check "qa-ci Case H: a failed run-scoped check fails the build (real qa-verify, no stub)" \
+  "$([[ "$RC_H" -ne 0 ]] && echo yes)" "yes"
+check_contains "qa-ci Case H: the exported report NAMES the failed check" \
+  "$(cat "$DIR_H/out.xml")" '<failure message="run checks failed: ledgerComplete"'
+check "qa-ci Case H: exactly one __run-checks__ row in the report" \
+  "$(grep -c '<testcase name="__run-checks__"' "$DIR_H/out.xml" | tr -d ' ')" "1"
+check "qa-ci Case H: the report counts it once" \
+  "$(attr1 "$DIR_H/out.xml" failures)" 'failures="1"'
+check_contains "qa-ci Case H: qa.verified is true — qa-verify DID run; the run-check is what failed" \
+  "$(cat "$DIR_H/out.xml")" 'name="qa.verified" value="true"'
+
+# --- 7g: engine PARITY over every __run-checks__ fixture, streams compared
+# SEPARATELY (the producer is dual-engine; the reader is python3-only).
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  for RCFX in rcone rctwo rcok rcboth rcerr rcnone; do
+    for STREAM in xml stdout stderr; do
+      check "test_engines_agree[$RCFX/$STREAM]: identical across qa-verify engines" \
+        "$(diff <(norm "$WORK/p7-jq/$RCFX.$STREAM" "$WORK/p7-jq") \
+                <(norm "$WORK/p7-python3/$RCFX.$STREAM" "$WORK/p7-python3") >/dev/null && echo same)" "same"
+    done
+  done
+else
+  echo "SKIP - test_engines_agree[__run-checks__]: both jq and python3 are needed"
+fi
+
+# --- 7h: the pre-existing qa-verify OVERRIDE report is untouched: an
+# override is a CRITERION failure and must not gain a run-checks row.
+check_not_contains "test_override_report_gains_no_run_checks_row: PART 1a's override XML has no __run-checks__" \
+  "$(cat "$WORK/overridden.xml")" '__run-checks__'
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
