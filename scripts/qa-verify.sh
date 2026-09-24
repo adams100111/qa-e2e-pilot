@@ -1444,6 +1444,13 @@ to_upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 # `finding_observed` message and a console entry recomputed from the
 # toolstream) go through THIS function, so the two can never disagree with
 # each other, whatever either JSON engine would have done.
+# On `${s:0:200}`: bash substring extraction is BYTE-based under LC_ALL=C
+# where the fold engines are codepoint-based, so a multi-byte message is cut
+# at a different point here than fold.jq/fold.py would cut it. That cannot
+# cause a disagreement, because BOTH operands of every comparison in this
+# pass pass through this same function — the difference cancels. It would
+# matter only if this identity were ever compared against a fold-derived
+# one, which it never is.
 nmsg_bash() {
   local s
   s="$(printf '%s' "$1" | tr '\t\n\r\013\014' '     ' | tr -s ' ')"
@@ -1925,6 +1932,78 @@ with open(sys.argv[1]) as fh:
 }
 
 # ---------------------------------------------------------------------------
+# navigate_urls <run-id> -> stdout the `url` ARGUMENT of every
+# `browser_navigate` toolstream call, one per line.
+#
+# WHY (fix round 1, item 6): known-defect clearing counts a request only when
+# it is a DOCUMENT navigation, and only `driver_rows` can report a resource
+# type — `observe_rows`' netrow has none to report, because neither an
+# `__qaObserve` payload nor a `browser_network_requests` result carries one.
+# Since nothing in the repo writes a HAR, `navigations` was ALWAYS empty and
+# no registry entry could ever clear: the only exit from the registry was
+# renewal, forever. That inverts R4, which made clearing require positive
+# evidence so a defect could not be declared fixed by SILENCE — not so that
+# a genuinely fixed defect could never be cleared.
+#
+# The type is INFERRED, never faked. A `browser_navigate` call's own `url`
+# argument is the document the browser was told to load, recorded by the
+# capture hook out of the agent`s reach; a request in the network record
+# whose url equals it IS that document request. Nothing is invented: the
+# status still comes from the network record, the origin filter still
+# applies, the 2xx requirement is still known-defects.sh`s, and a request
+# that matches no navigate argument and carries no resource type is still
+# not a navigation.
+#
+# `endswith`, not a regex, so the bare and MCP-prefixed tool names classify
+# identically without the two engines having to agree on a regex dialect.
+# `browser_navigate_back` does not end in `browser_navigate` and is excluded,
+# matching load_window_reasons.
+# ---------------------------------------------------------------------------
+navigate_urls() {
+  local f
+  f="$(toolstream_file_for "$1")"
+  [[ -f "$f" ]] || return 0
+  if has_jq; then
+    jq -R -r '
+      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
+      (try fromjson catch null) as $o
+      | if ($o | type) == "object"
+           and (($o.tool | type) == "string")
+           and ($o.tool | endswith("browser_navigate"))
+           and (($o.args | type) == "object")
+           and (($o.args.url | type) == "string")
+           and (($o.args.url | length) > 0)
+        then ($o.args.url | sane)
+        else empty end
+    ' "$f" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(o, dict):
+            continue
+        tool = o.get("tool")
+        args = o.get("args")
+        if not isinstance(tool, str) or not tool.endswith("browser_navigate"):
+            continue
+        if not isinstance(args, dict):
+            continue
+        u = args.get("url")
+        if isinstance(u, str) and len(u) > 0:
+            print(u.replace("\n", " ").replace("\r", " "))
+' "$f" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # load_window_reasons <run-id> -> one reason line per UNCOVERED navigation.
 #
 # CHECK 3 (I5/R9). A `browser_navigate` must be followed by a
@@ -1994,6 +2073,52 @@ classify_one() {
   [[ -n "$CF_ORIGIN" && -n "$CF_STATUS" ]]
 }
 
+# ---------------------------------------------------------------------------
+# ORIGIN SCOPING FOR CLEARING EVIDENCE (fix round 1, Critical 2).
+#
+# `known-defects.sh:245`'s `rawpath` strips the scheme AND the authority
+# before matching a navigation against an entry's `surface`, so
+# `https://other.test/dashboard` and `https://app.test/dashboard` are the
+# same evidence to it. Unfiltered, a 2xx from ANY origin — an analytics
+# beacon, a CDN, a browser extension — clears an in-scope defect. Separating
+# third-party from in-scope is exactly what classify-finding.sh exists for,
+# and it was already applied to findings but not to navigations.
+#
+# THE DIRECTION OF FAIL-CLOSED IS OPPOSITE FOR THE TWO SIDES, which is why
+# the classifier cannot simply be reused as-is. For a FINDING, "assume it is
+# ours" is the strict answer: it blocks clearing. For a NAVIGATION, "assume
+# it is ours" is the LAX answer: it clears. classify-finding.sh is
+# fail-closed for findings by design — an unknowable origin yields
+# `in-scope` — so accepting its `in-scope` verbatim here would let precisely
+# the unknowable cases clear a defect.
+#
+# Two guards therefore sit in front of it:
+#   1. origin_scoping_live — probe the classifier with a url that is
+#      definitely foreign. With a usable `baseUrl` it must answer
+#      `third-party`; any other answer means origin comparison is not
+#      actually running (absent/unparseable baseUrl, unparseable config, or
+#      a `findings.benign` rule broad enough to swallow the probe), and NO
+#      navigation may be used as clearing evidence at all.
+#   2. nav_is_in_scope — the url must be ABSOLUTE (contain "://") before it
+#      is classified, so a relative url, a bare path, `about:blank` and a
+#      `data:` URI are all excluded rather than fail-closed to `in-scope`.
+#      Port handling is the classifier's: a default port is normalized away,
+#      an explicit non-default port is a different origin.
+# ---------------------------------------------------------------------------
+ORIGIN_PROBE_URL="https://qa-verify-origin-probe.invalid/__qa_verify_origin_probe__"
+origin_scoping_live() {
+  classify_one "$1" "$ORIGIN_PROBE_URL" "200" || return 1
+  [[ "$CF_ORIGIN" == "third-party" ]]
+}
+nav_is_in_scope() {
+  case "$2" in
+    *://*) ;;
+    *) return 1 ;;
+  esac
+  classify_one "$1" "$2" "200" || return 1
+  [[ "$CF_ORIGIN" == "in-scope" ]]
+}
+
 # enc_nav <url> <status-digits> / enc_finding <url> <statusClass>
 # <status-digits-or-empty> -> ONE compact JSON object for the known-defects
 # evidence document. The exact ratified evidence shape (known-defects.sh's
@@ -2012,6 +2137,11 @@ print(json.dumps({"url": sys.argv[1], "status": int(sys.argv[2])}, separators=("
 ' "$1" "$2"
   fi
 }
+# enc_finding emits `url` even when it is the EMPTY STRING (fix round 1,
+# Critical 1). `rawpath("")` is null in both known-defects engines, which is
+# the input its "a fatal finding with no usable path BLOCKS clearing" guard
+# is written for. Dropping such a finding instead — as this producer used to
+# — made that guard permanently unreachable, since this is its only producer.
 enc_finding() {
   if [[ -n "$3" ]]; then
     if has_jq; then
@@ -2106,7 +2236,13 @@ if isinstance(d, list):
 # ---------------------------------------------------------------------------
 run_run_checks_pass() {
   local run_id="$1"
-  local ledger_ok="true" class_ok="true" window_ok="true" kd_ok="true"
+  # window_ok is THREE-STATE (fix round 1, item 5): "true" (evaluated and
+  # covered), "false" (evaluated and violated), "not-evaluated" (there was
+  # no tool sequence to evaluate). It starts at not-evaluated, because a
+  # check that never ran must not read as one that passed — spec I5 says the
+  # load window is NEVER unobserved, and a silent skip turned that into a
+  # green signal for a question nobody asked.
+  local ledger_ok="true" class_ok="true" window_ok="not-evaluated" kd_ok="true"
   local -a reasons=()
   local channel_driver=0 channel_toolstream=0 has_evidence=0
   local cfg cfg_tmp="" netlog="" today
@@ -2127,18 +2263,44 @@ run_run_checks_pass() {
   fi
 
   # --- CHECK 3: load-window coverage. Evaluated first because it needs
-  # neither channel — only the ordered `tool` sequence. ---
+  # neither findings channel — only the ordered `tool` sequence.
+  #
+  # It is EVALUABLE exactly when that sequence exists, i.e. when the
+  # toolstream yielded at least one line with a `tool` name. A toolstream
+  # with tools but no navigation is EVALUATED and vacuously covered; a
+  # toolstream that is absent, empty or unparseable is NOT EVALUATED, and
+  # that is recorded rather than passed. ---
+  local tool_count=0
   if has_toolstream "$run_id"; then
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      tool_count=$((tool_count + 1))
+    done < <(tool_sequence "$run_id")
+  fi
+  if [[ "$tool_count" -gt 0 ]]; then
+    window_ok="true"
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       window_ok="false"
       reason_add "$line"
     done < <(load_window_reasons "$run_id")
+  else
+    reason_add "load-window coverage: NOT EVALUATED — this run produced no ordered tool sequence (no toolstream.jsonl, or none of its lines carry a tool name), so whether every browser_navigate was followed by a browser_network_requests could not be determined. Recorded as unperformed, NOT as covered: spec I5 requires that the load window is never unobserved, and a check that silently does not run is worse than one that fails. This does not fail the run on its own — see runChecks.findingsChannel for whether any independent evidence existed at all"
   fi
 
   # --- the agent's ledger claim ---
+  # jf_* accumulate, per journaled finding, the url/status it carried and the
+  # statusClass THIS SCRIPT computed for it. The known-defect evidence below
+  # is built from those arrays rather than from a second pass over the
+  # journal, for two reasons that were both fail-open bugs (fix round 1,
+  # Critical 1): the evidence must carry the COMPUTED statusClass, never the
+  # agent's own claim (omitting `statusClass` otherwise unblocks clearing
+  # just as effectively as mis-stating it), and it must carry findings with
+  # NO url, which is the exact input known-defects.sh's "a fatal finding with
+  # no usable path blocks clearing" guard exists to receive.
+  local -a jf_url=() jf_status=() jf_sclass=()
   local j_source j_method j_url j_ulen j_status j_origin j_statusclass j_message
-  local j_ident j_prefix j_count=0
+  local j_ident j_prefix j_count=0 j_cls_ok
   while IFS= read -r j_source; do
     IFS= read -r j_method   || break
     IFS= read -r j_url      || break
@@ -2161,13 +2323,28 @@ run_run_checks_pass() {
     [[ -n "$j_prefix" ]] && jprefixes="${jprefixes}${j_prefix}
 "
 
+    # classify_one runs for EVERY finding, not only for one that claims a
+    # class, because the known-defect evidence below needs the computed
+    # statusClass whether or not the agent stated one.
+    j_cls_ok=0
+    if classify_one "$cfg" "$j_url" "$j_status"; then
+      j_cls_ok=1
+      jf_sclass[${#jf_sclass[@]}]="$CF_STATUS"
+    else
+      # No computed class available. `fatal` is the fail-closed choice: it
+      # BLOCKS clearing rather than permitting it.
+      jf_sclass[${#jf_sclass[@]}]="fatal"
+    fi
+    jf_url[${#jf_url[@]}]="$j_url"
+    jf_status[${#jf_status[@]}]="$j_status"
+
     # --- CHECK 2: classification re-check. An agent must not be able to
     # mis-class a 500 by writing a journal event that says otherwise. Only a
     # CLAIMED class can be contradicted: an event carrying neither
     # originClass nor statusClass claims nothing, so there is nothing to
     # re-check, and silence is never an override. ---
     if [[ -n "$j_origin" || -n "$j_statusclass" ]]; then
-      if classify_one "$cfg" "$j_url" "$j_status"; then
+      if [[ "$j_cls_ok" -eq 1 ]]; then
         # A url whose FULL length exceeded the ledger's 1024-character cap
         # cannot be re-classified faithfully — its path, and therefore the
         # findings.benign match, may have been cut off. The absence of a
@@ -2317,11 +2494,32 @@ run_run_checks_pass() {
   elif [[ "$channel_toolstream" -eq 1 ]]; then
     channel="toolstream"
   fi
+  # findingsChannel is a RATIFIED INTERFACE (fix round 1, item 3): exactly
+  # one of `toolstream` | `driver-log` | `none`, naming the channel that
+  # actually yielded findings, and Lane L treats `none` as an UNVERIFIED
+  # trigger. It is NOT the same fact as the `capture_probed` canary, which
+  # records whether a capture path exists at all — a run can have a live
+  # toolstream and still yield no findings channel from it, and the comment
+  # here used to claim Task 10 covered this case when it did not. The richer
+  # `channel` field beside it may also read `both`; this one may not, so when
+  # both channels contributed it names `driver-log`, the channel spec §5.4
+  # makes authoritative for requests.
+  local findings_channel="none"
+  if [[ "$channel_driver" -eq 1 ]]; then
+    findings_channel="driver-log"
+  elif [[ "$channel_toolstream" -eq 1 ]]; then
+    findings_channel="toolstream"
+  fi
   if [[ "$channel" == "none" ]]; then
-    reason_add "ledger completeness: no independent findings channel is available for this run (no usable driver network log resolved and no __qaObserve payload recoverable from the toolstream) — the ledger could be neither confirmed nor contradicted, so the absence is recorded and the run is NOT failed for it (spec §5.5; Task 10 turns the absence into UNVERIFIED)"
+    reason_add "ledger completeness: no independent findings channel is available for this run (no usable driver network log resolved and no __qaObserve payload recoverable from the toolstream) — the ledger could be neither confirmed nor contradicted, so the absence is recorded and the run is NOT failed for it (spec §5.5); runChecks.findingsChannel is \"none\", which is the signal report-to-junit.sh reads to mark the run UNVERIFIED"
   fi
 
   # --- CHECK 4: known-defect gate -----------------------------------------
+  # navigationsChannel names where the clearing evidence came from, so the
+  # "no entry can ever clear" failure mode is VISIBLE rather than silent
+  # (fix round 1, item 6). `none` means no admissible document navigation
+  # was found at all, which is why an entry stayed outstanding.
+  local navigations_channel="none"
   local reg kd_json="[]"
   reg="$(known_defects_file)"
   if [[ -f "$reg" ]]; then
@@ -2342,39 +2540,90 @@ run_run_checks_pass() {
       fi
     fi
 
-    # Evidence, in the ratified shape. `navigations` are DOCUMENT requests
-    # only: a log that records no resource type contributes no navigations,
-    # so nothing clears — the same burden-of-proof direction decision R4
-    # already mandates (absence of a finding never clears anything).
-    local navs="" finds="" obj
+    # Evidence, in the ratified shape.
+    #
+    # `navigations` are DOCUMENT requests only (a log that records no
+    # resource type contributes no navigations, so nothing clears — the same
+    # burden-of-proof direction R4 mandates) AND must be ORIGIN-SCOPED to
+    # the application under test (fix round 1, Critical 2 — see
+    # origin_scoping_live / nav_is_in_scope above). When origin comparison
+    # is not actually running, NO navigation is admitted at all: an entry
+    # then stays `outstanding`, which is the honest answer, because nothing
+    # here can show the surface was reached in the application rather than
+    # somewhere else.
+    #
+    # `findings` carry the COMPUTED statusClass and include url-less
+    # findings (fix round 1, Critical 1).
+    local navs="" finds="" obj origin_live=0
+    if origin_scoping_live "$cfg"; then
+      origin_live=1
+    else
+      reason_add "known-defect registry: origin comparison is not available for this run (classify-finding.sh does not report a known-foreign origin as third-party, i.e. .baseUrl is absent, unusable, or swallowed by a findings.benign rule), so NO navigation was admitted as clearing evidence — every entry stays outstanding rather than being cleared by a request that cannot be shown to belong to the application under test"
+    fi
+    # The set of urls this run actually navigated to, from the capture
+    # hook`s record of each browser_navigate call`s own `url` argument. A
+    # network row whose url equals one of them IS that document request —
+    # the inference the `document` resource type cannot make on the
+    # toolstream channel (fix round 1, item 6).
+    local nav_arg_urls="" nav_arg_count=0
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      nav_arg_count=$((nav_arg_count + 1))
+      nav_arg_urls="${nav_arg_urls}${line}
+"
+    done < <(navigate_urls "$run_id")
+
+    local nav_from_driver=0 nav_from_toolstream=0 is_doc
     idx=0
     while [[ "$idx" -lt "$total" ]]; do
-      if [[ "${obs_kind[$idx]}" == "net" && "${obs_type[$idx]}" == "document" && -n "${obs_url[$idx]}" ]]; then
+      is_doc=0
+      if [[ "${obs_kind[$idx]}" == "net" && -n "${obs_url[$idx]}" ]]; then
+        if [[ "${obs_type[$idx]}" == "document" ]]; then
+          is_doc=1
+        elif set_contains "$nav_arg_urls" "${obs_url[$idx]}"; then
+          is_doc=1
+        fi
+      fi
+      if [[ "$origin_live" -eq 1 && "$is_doc" -eq 1 ]]; then
         case "${obs_status[$idx]}" in
           ''|*[!0-9]*) ;;
           *)
-            obj="$(enc_nav "${obs_url[$idx]}" "${obs_status[$idx]}")"
-            [[ -n "$obj" ]] && { [[ -n "$navs" ]] && navs="${navs},"; navs="${navs}${obj}"; }
+            if nav_is_in_scope "$cfg" "${obs_url[$idx]}"; then
+              obj="$(enc_nav "${obs_url[$idx]}" "${obs_status[$idx]}")"
+              if [[ -n "$obj" ]]; then
+                [[ -n "$navs" ]] && navs="${navs},"
+                navs="${navs}${obj}"
+                if [[ "${obs_chan[$idx]}" == "driver-log" ]]; then
+                  nav_from_driver=1
+                else
+                  nav_from_toolstream=1
+                fi
+              fi
+            fi
             ;;
         esac
       fi
       idx=$((idx + 1))
     done
-    while IFS= read -r j_source; do
-      IFS= read -r j_method   || break
-      IFS= read -r j_url      || break
-      IFS= read -r j_ulen     || break
-      IFS= read -r j_status   || break
-      IFS= read -r j_origin   || break
-      IFS= read -r j_statusclass || break
-      IFS= read -r j_message  || break
-      [[ -n "$j_url" ]] || continue
-      case "$j_status" in
-        ''|*[!0-9]*) obj="$(enc_finding "$j_url" "$j_statusclass" "")" ;;
-        *)           obj="$(enc_finding "$j_url" "$j_statusclass" "$j_status")" ;;
+    if [[ "$nav_from_driver" -eq 1 && "$nav_from_toolstream" -eq 1 ]]; then
+      navigations_channel="both"
+    elif [[ "$nav_from_driver" -eq 1 ]]; then
+      navigations_channel="driver-log"
+    elif [[ "$nav_from_toolstream" -eq 1 ]]; then
+      navigations_channel="toolstream"
+    fi
+    if [[ "$navigations_channel" == "none" ]]; then
+      reason_add "known-defect registry: no admissible document navigation was found for this run (a navigation must be same-origin, carry a numeric status, and be identifiable as a document request — either a resource type of \"document\" in the driver log, or a url equal to a recorded browser_navigate argument), so NO entry could be cleared by this run. This is recorded as runChecks.navigationsChannel = none: a registry whose entries can never clear is a one-way ratchet, which is not what decision R4 asks for"
+    fi
+    local fidx=0 ftotal=${#jf_url[@]}
+    while [[ "$fidx" -lt "$ftotal" ]]; do
+      case "${jf_status[$fidx]}" in
+        ''|*[!0-9]*) obj="$(enc_finding "${jf_url[$fidx]}" "${jf_sclass[$fidx]}" "")" ;;
+        *)           obj="$(enc_finding "${jf_url[$fidx]}" "${jf_sclass[$fidx]}" "${jf_status[$fidx]}")" ;;
       esac
       [[ -n "$obj" ]] && { [[ -n "$finds" ]] && finds="${finds},"; finds="${finds}${obj}"; }
-    done < <(journal_finding_rows "$run_id")
+      fidx=$((fidx + 1))
+    done
 
     local ev_tmp sout srrc
     ev_tmp="$(mktemp)" || ev_tmp=""
@@ -2408,7 +2657,12 @@ run_run_checks_pass() {
   # --- emit ---------------------------------------------------------------
   local any_false=0
   [[ "$ledger_ok" == "false" || "$class_ok" == "false" || "$window_ok" == "false" || "$kd_ok" == "false" ]] && any_false=1
-  if [[ "$any_false" -eq 0 && "$has_evidence" -eq 0 ]]; then
+  # The record is withheld ONLY when nothing was wrong AND there was no
+  # findings evidence to reason about AND every check actually ran. An
+  # unperformed check must never be silent: an absent record reads as
+  # "nothing wrong", which is the exact green-for-a-question-never-asked
+  # this feature exists to remove (fix round 1, item 5).
+  if [[ "$any_false" -eq 0 && "$has_evidence" -eq 0 && "$window_ok" == "true" ]]; then
     return 0
   fi
 
@@ -2418,6 +2672,16 @@ run_run_checks_pass() {
   elif [[ "$channel" == "none" ]]; then
     conf="low"
   fi
+
+  # window_ok is three-state, so it reaches --argjson as a JSON LITERAL:
+  # `true`, `false`, or the string "not-evaluated". report-to-junit.sh reads
+  # any non-`true` value as not-proven (`checks.get(f) is not True`), which
+  # is the correct reading of an unperformed structural check.
+  local window_json
+  case "$window_ok" in
+    true|false) window_json="$window_ok" ;;
+    *)          window_json='"not-evaluated"' ;;
+  esac
 
   local reasons_json
   if [[ ${#reasons[@]} -eq 0 ]]; then
@@ -2431,16 +2695,18 @@ run_run_checks_pass() {
       --arg verV "$verdict" --arg conf "$conf" --arg channel "$channel" \
       --argjson reasons "$reasons_json" --argjson kd "$kd_json" \
       --argjson ledger "$ledger_ok" --argjson class "$class_ok" \
-      --argjson window "$window_ok" --argjson kdok "$kd_ok" \
+      --argjson window "$window_json" --argjson kdok "$kd_ok" \
+      --arg fchan "$findings_channel" --arg nchan "$navigations_channel" \
       '{criterionId: "__run-checks__", persona: "", inRunVerdict: "n/a",
         verifierVerdict: $verV, confidence: $conf, reasons: $reasons,
         channel: $channel, knownDefects: $kd,
         runChecks: {ledgerComplete: $ledger, classificationsAgree: $class,
-                    loadWindowCovered: $window, knownDefectsOk: $kdok}}'
+                    loadWindowCovered: $window, knownDefectsOk: $kdok,
+                    findingsChannel: $fchan, navigationsChannel: $nchan}}'
   else
     python3 -c '
 import json, sys
-verV, conf, channel, reasons, kd, ledger, klass, window, kdok = sys.argv[1:10]
+verV, conf, channel, reasons, kd, ledger, klass, window, kdok, fchan, nchan = sys.argv[1:12]
 print(json.dumps({
     "criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a",
     "verifierVerdict": verV, "confidence": conf, "reasons": json.loads(reasons),
@@ -2450,9 +2716,11 @@ print(json.dumps({
         "classificationsAgree": json.loads(klass),
         "loadWindowCovered": json.loads(window),
         "knownDefectsOk": json.loads(kdok),
+        "findingsChannel": fchan,
+        "navigationsChannel": nchan,
     },
 }, separators=(",", ":")))
-' "$verdict" "$conf" "$channel" "$reasons_json" "$kd_json" "$ledger_ok" "$class_ok" "$window_ok" "$kd_ok"
+' "$verdict" "$conf" "$channel" "$reasons_json" "$kd_json" "$ledger_ok" "$class_ok" "$window_json" "$kd_ok" "$findings_channel" "$navigations_channel"
   fi
 }
 
