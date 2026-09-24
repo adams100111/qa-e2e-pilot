@@ -325,16 +325,22 @@ check "missing run: no verification.json written" "$([[ -f "$(vf no-such-run)" ]
 # stderr on EVERY invocation, and skipped the `rm -f`, leaking the mktemp
 # file every run. Assert both symptoms are gone on a plain invocation.
 # ---------------------------------------------------------------------------
-TMP_BASE="${TMPDIR:-/tmp}"
-LEAK_BEFORE="$(find "$TMP_BASE" -maxdepth 1 -name 'tmp.*' 2>/dev/null | sort)"
-STDERR_OUT="$( ( cd "$WORK" && bash "$QAVERIFY" genuine ) 2>&1 1>/dev/null )"
-LEAK_AFTER="$(find "$TMP_BASE" -maxdepth 1 -name 'tmp.*' 2>/dev/null | sort)"
+# The leak assertion runs against a PRIVATE TMPDIR, created for this
+# invocation only. It used to snapshot the whole shared `$TMPDIR` for
+# `tmp.*`, which made it go red whenever any other process on the machine
+# touched /tmp during the run — a flaky assertion inside a 47-suite gate is
+# the thing teams learn to route around, so the fix is isolation, not a
+# retry.
+PRIVATE_TMP="$WORK/private-tmp"
+mkdir -p "$PRIVATE_TMP"
+STDERR_OUT="$( ( cd "$WORK" && TMPDIR="$PRIVATE_TMP" bash "$QAVERIFY" genuine ) 2>&1 1>/dev/null )"
+LEAK_AFTER="$(find "$PRIVATE_TMP" -mindepth 1 2>/dev/null | sort)"
 check "no leaked results_tmp: qa-verify exits 0 on a plain invocation" \
-  "$( ( cd "$WORK" && bash "$QAVERIFY" genuine >/dev/null 2>&1 ); echo $? )" "0"
+  "$( ( cd "$WORK" && TMPDIR="$PRIVATE_TMP" bash "$QAVERIFY" genuine >/dev/null 2>&1 ); echo $? )" "0"
 check "no unbound-variable stderr on a plain qa-verify invocation" \
   "$(grep -ci 'unbound variable' <<< "$STDERR_OUT")" "0"
-check "no leaked mktemp results_tmp file after qa-verify exits" \
-  "$([[ "$LEAK_BEFORE" == "$LEAK_AFTER" ]] && echo same || echo diff)" "same"
+check "no temp file left in qa-verify's own TMPDIR after it exits" \
+  "$([[ -z "$LEAK_AFTER" ]] && echo empty || echo "$LEAK_AFTER")" "empty"
 
 # ---------------------------------------------------------------------------
 # Appendix A: verification.json is written atomically (temp-in-same-dir +
@@ -432,6 +438,10 @@ ts_append() { # <root> <run> <tool> <responseBody-json-string>
   ( cd "$1" && bash "$TOOLSTREAM" append "$2" \
     "{\"tool\":\"$3\",\"args\":{},\"resultDigest\":{\"len\":0,\"sha256\":\"x\"},\"responseBody\":$4}" >/dev/null )
 }
+ts_append_args() { # <root> <run> <tool> <args-json> <responseBody-json-string>
+  ( cd "$1" && bash "$TOOLSTREAM" append "$2" \
+    "{\"tool\":\"$3\",\"args\":$4,\"resultDigest\":{\"len\":0,\"sha256\":\"x\"},\"responseBody\":$5}" >/dev/null )
+}
 jr_append() { # <root> <run> <event-json>
   ( cd "$1" && bash "$JOURNAL" append "$2" "$3" >/dev/null )
 }
@@ -451,6 +461,14 @@ NETREQ="${MCP}__browser_network_requests"
 SNAP="${MCP}__browser_snapshot"
 
 FINDING_500='{"event":"finding_observed","criterionId":"EC10","source":"network","channel":"driver-log","method":"GET","url":"https://app.test/dashboard","status":500,"originClass":"in-scope","statusClass":"fatal","message":"500 on the dashboard document request"}'
+
+ts_reset() { rm -f "$1/.qa/runs/$2/toolstream.jsonl"; }
+
+# --- nothing: a run with NO toolstream, NO journal findings, NO driver log
+#     and NO registry. Every check that COULD run passes; the load-window
+#     check could NOT run, and that must be stated rather than implied
+#     (fix round 1, item 5). ------------------------------------------------
+mk_ckpt "$WORK2" nothing EC0
 
 # --- ledgerok: the driver log holds a 500 and the journal records it -------
 ts_append "$WORK2" ledgerok "$NAV" '""'
@@ -613,6 +631,20 @@ run_qv2() { # <root> <engine> <run>
 for ENGINE in jq python3; do
   LABEL="$ENGINE"
 
+  # ---- FIX ROUND 1, ITEM 5: a check that did not run says so -------------
+  run_qv2 "$WORK2" "$ENGINE" nothing >/dev/null 2>&1; RC=$?
+  check "[$LABEL] item5: a run with no capture at all still exits 0" "$RC" "0"
+  check "[$LABEL] item5: ... but it DOES get a __run-checks__ record (silence reads as 'nothing wrong')" \
+    "$(rc_count "$(vf2 nothing)")" "1"
+  check "[$LABEL] item5: loadWindowCovered is not-evaluated, NEVER true" \
+    "$(rc_field "$(vf2 nothing)" '.runChecks.loadWindowCovered')" "not-evaluated"
+  check "[$LABEL] item5: findingsChannel carries WHY" \
+    "$(rc_field "$(vf2 nothing)" '.runChecks.findingsChannel')" "none"
+  check "[$LABEL] item5: confidence degrades rather than claiming a verified run" \
+    "$(rc_field "$(vf2 nothing)" '.confidence')" "low"
+  check_contains "[$LABEL] item5: a reason names the unperformed check" \
+    "$(rc_field "$(vf2 nothing)" '.reasons | join("; ")')" "load-window coverage: NOT EVALUATED"
+
   # ---- ledger completeness ------------------------------------------------
   run_qv2 "$WORK2" "$ENGINE" ledgerok >/dev/null 2>&1; RC=$?
   check "[$LABEL] ledgerok: exits 0" "$RC" "0"
@@ -734,6 +766,14 @@ for ENGINE in jq python3; do
     "$(rc_field "$(vf2 identsplit)" '.reasons | join("; ")')" "$SPLIT_B_LEN"
   check "[$LABEL] identsplit: exactly ONE finding is reported missing, not both" \
     "$(rc_field "$(vf2 identsplit)" '[.reasons[] | select(startswith("ledger completeness: an observed finding is absent"))] | length')" "1"
+
+  # ---- item 5, the three load-window states, once their runs have executed
+  check "[$LABEL] item5: a toolstream with tools but no navigation is EVALUATED and covered" \
+    "$(rc_field "$(vf2 consolemiss)" '.runChecks.loadWindowCovered')" "true"
+  check "[$LABEL] item5: a run with no toolstream reports not-evaluated, not covered" \
+    "$(rc_field "$(vf2 nochannel)" '.runChecks.loadWindowCovered')" "not-evaluated"
+  check "[$LABEL] item5: a violated load window is still plainly false" \
+    "$(rc_field "$(vf2 navnofollow)" '.runChecks.loadWindowCovered')" "false"
 
   # ---- malformed network logs: no evidence, never an override -----------
   for BAD in '{"not":"an array"}' 'null' 'false' '[1,2,3]' '' '{"a":1}
@@ -869,12 +909,204 @@ for ENGINE in jq python3; do
   run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
   check "[$LABEL] kd evidence: a fatal finding on the surface blocks clearing" \
     "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+  # ======================= FIX ROUND 1, CRITICAL 1 =======================
+  # A fatal finding with NO USABLE URL must BLOCK clearing. known-defects.sh
+  # has that guard (`:293-297`, py `:495-498`) and this script is its ONLY
+  # producer, so dropping url-less findings made the guard unreachable: a
+  # `page-crash` on the defect's own surface used to declare it FIXED.
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"finding_observed","criterionId":"EC1","source":"network","channel":"driver-log","method":"GET","url":"","status":"page-crash","originClass":"in-scope","statusClass":"fatal","message":"renderer crashed on the dashboard"}'
+  netlog "$WORK3" kdrun '[{"method":"GET","url":"https://app.test/dashboard","status":200,"type":"document"}]'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C1: a url-less FATAL finding blocks clearing (page-crash on the surface)" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+
+  # ... and it must do so from the COMPUTED statusClass, so omitting the
+  # field entirely is not a way to unblock clearing either.
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"finding_observed","criterionId":"EC1","source":"network","channel":"driver-log","method":"GET","url":"","status":"page-crash","message":"crash with no statusClass claimed"}'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C1: omitting statusClass does NOT unblock clearing (computed value wins)" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+
+  # A url-less NON-fatal finding is not a blocker — the guard must not
+  # over-reach into "any url-less finding blocks everything".
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"finding_observed","criterionId":"EC1","source":"console","channel":"toolstream","method":"","url":"","status":"","originClass":"in-scope","statusClass":"non-fatal","message":"a mere warning"}'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C1 control: a url-less NON-fatal finding still allows clearing" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "cleared"
+
+  # ======================= FIX ROUND 1, CRITICAL 2 =======================
+  # Clearing evidence must be ORIGIN-SCOPED. rawpath() strips scheme and
+  # host, so without a baseUrl filter a 2xx from any origin cleared an
+  # in-scope defect.
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"run_started"}'
+  netlog "$WORK3" kdrun '[{"method":"GET","url":"https://other.test/dashboard","status":200,"type":"document"}]'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C2: a THIRD-PARTY 2xx does not clear an in-scope defect" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+  check "[$LABEL] C2: a third-party nav still exits 0" "$RC" "0"
+
+  # The malformed/edge origin space. NONE of these may clear.
+  for BADNAV in 'dashboard' '/dashboard' 'about:blank' 'data:text/html,%3Cp%3Ex' \
+                'https://app.test:8443/dashboard' 'http://app.test/dashboard' \
+                '//app.test/dashboard' 'https://app.test.evil.com/dashboard' \
+                'https://APP.TEST.evil/dashboard' ''; do
+    netlog "$WORK3" kdrun "$(jq -cn --arg u "$BADNAV" '[{method:"GET",url:$u,status:200,type:"document"}]')"
+    run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+    check "[$LABEL] C2 origin space: '$BADNAV' never clears" \
+      "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+    check "[$LABEL] C2 origin space: '$BADNAV' still exits 0" "$RC" "0"
+  done
+
+  # Default-port normalization is the classifier's job and must still clear:
+  # baseUrl https://app.test and https://app.test:443 are ONE origin.
+  netlog "$WORK3" kdrun '[{"method":"GET","url":"https://app.test:443/dashboard","status":200,"type":"document"}]'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C2: an explicit DEFAULT port is the same origin and still clears" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "cleared"
+
+  # Case-insensitive host: HTTPS://APP.TEST is the same origin.
+  netlog "$WORK3" kdrun '[{"method":"GET","url":"HTTPS://APP.TEST/dashboard","status":200,"type":"document"}]'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] C2: a differently-cased same origin still clears" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "cleared"
+
+  # ======================== FIX ROUND 1, ITEM 6 ==========================
+  # Clearing must be REACHABLE. Only driver_rows can report a resource type
+  # and nothing writes a HAR, so `navigations` used to be always empty and
+  # no entry could ever clear — the registry was a one-way ratchet whose
+  # only exit was renewal. A browser_network_requests result paired with the
+  # url the run actually navigated to is a document request, inferred from
+  # the capture hook`s own record rather than faked.
+  #
+  # The matrix the coordinator asked for: same-origin AND 2xx AND matching
+  # the surface clears; getting any one of the three wrong must not.
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"run_started"}'
+  rm -f "$WORK3/.qa/runs/kdrun/network-log.json"
+
+  # (a) all three right -> CLEARS, from the toolstream channel alone.
+  ts_reset "$WORK3" kdrun
+  ts_append_args "$WORK3" kdrun "$NAV" '{"url":"https://app.test/dashboard"}' '""'
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://app.test/dashboard\",\"status\":200}]"'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1; RC=$?
+  check "[$LABEL] item6: a toolstream-sourced same-origin 2xx to the surface CLEARS" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "cleared"
+  check "[$LABEL] item6: navigationsChannel names the toolstream" \
+    "$(rc_field "$(vf3 kdrun)" '.runChecks.navigationsChannel')" "toolstream"
+  check "[$LABEL] item6: clearing exits 0" "$RC" "0"
+
+  # (b) wrong ORIGIN -> does not clear, and no navigation is admitted.
+  ts_reset "$WORK3" kdrun
+  ts_append_args "$WORK3" kdrun "$NAV" '{"url":"https://other.test/dashboard"}' '""'
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://other.test/dashboard\",\"status\":200}]"'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1
+  check "[$LABEL] item6: wrong origin does not clear" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+  check "[$LABEL] item6: wrong origin admits no navigation at all" \
+    "$(rc_field "$(vf3 kdrun)" '.runChecks.navigationsChannel')" "none"
+
+  # (c) wrong STATUS -> admitted as a navigation, but 2xx is known-defects.sh's
+  #     requirement and a 500 is not positive evidence of anything.
+  ts_reset "$WORK3" kdrun
+  ts_append_args "$WORK3" kdrun "$NAV" '{"url":"https://app.test/dashboard"}' '""'
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://app.test/dashboard\",\"status\":500}]"'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1
+  check "[$LABEL] item6: a 500 document navigation does not clear" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+
+  # (d) wrong SURFACE -> a real same-origin 2xx navigation, to somewhere else.
+  ts_reset "$WORK3" kdrun
+  ts_append_args "$WORK3" kdrun "$NAV" '{"url":"https://app.test/settings"}' '""'
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://app.test/settings\",\"status\":200}]"'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1
+  check "[$LABEL] item6: a 2xx to a DIFFERENT surface does not clear" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+  check "[$LABEL] item6: ... but the navigation itself was still admitted" \
+    "$(rc_field "$(vf3 kdrun)" '.runChecks.navigationsChannel')" "toolstream"
+
+  # (e) a request that matches NO navigate argument and carries no resource
+  #     type is still not a navigation — the inference must not widen into
+  #     "every 2xx is a document".
+  ts_reset "$WORK3" kdrun
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://app.test/dashboard\",\"status\":200}]"'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1
+  check "[$LABEL] item6: an unnavigated same-origin 2xx is NOT a document navigation" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "outstanding"
+  check "[$LABEL] item6: ... and navigationsChannel says none, visibly" \
+    "$(rc_field "$(vf3 kdrun)" '.runChecks.navigationsChannel')" "none"
+  check_contains "[$LABEL] item6: a reason explains why nothing could clear" \
+    "$(rc_field "$(vf3 kdrun)" '.reasons | join("; ")')" "no admissible document navigation"
+
+  # (f) BOTH directions in one run: the surface clears while a fatal finding
+  #     elsewhere does not block it.
+  ts_reset "$WORK3" kdrun
+  ts_append_args "$WORK3" kdrun "$NAV" '{"url":"https://app.test/dashboard"}' '""'
+  ts_append "$WORK3" kdrun "$NETREQ" '"[{\"method\":\"GET\",\"url\":\"https://app.test/dashboard\",\"status\":200}]"'
+  rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
+  jr_append "$WORK3" kdrun '{"event":"finding_observed","criterionId":"EC1","source":"network","channel":"toolstream","method":"GET","url":"https://app.test/settings","status":500,"originClass":"in-scope","statusClass":"fatal","message":"broken elsewhere"}'
+  run_qv2 "$WORK3" "$ENGINE" kdrun >/dev/null 2>&1
+  check "[$LABEL] item6: a fatal finding on ANOTHER surface does not block clearing" \
+    "$(rc_field "$(vf3 kdrun)" '.knownDefects[0].state')" "cleared"
+
   # reset for the next engine iteration
+  ts_reset "$WORK3" kdrun
   rm -f "$WORK3/.qa/runs/kdrun/journal.ndjson"
   jr_append "$WORK3" kdrun '{"event":"run_started"}'
   rm -f "$WORK3/.qa/runs/kdrun/network-log.json"
 done
 rm -f "$WORK3/.qa/known-defects.json"
+
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, CRITICAL 2 — the other half: when ORIGIN COMPARISON IS NOT
+# RUNNING at all (no usable `.baseUrl`), classify-finding.sh is fail-closed
+# for findings and answers `in-scope` for EVERY url, including a foreign one.
+# Accepting that verbatim would let any 2xx clear a defect. Its own project
+# tree, because `.qa/config.json` is project-level.
+# ---------------------------------------------------------------------------
+WORK4="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$WORK2" "$WORK3" "$WORK4"' EXIT
+mkdir -p "$WORK4/.qa"
+printf '%s' '{}' > "$WORK4/.qa/config.json"
+printf '%s' "$(kd_entry "$OUTSTANDING_EXPIRY")" > "$WORK4/.qa/known-defects.json"
+jr_append "$WORK4" nobase '{"event":"run_started"}'
+mk_ckpt "$WORK4" nobase EC1
+netlog "$WORK4" nobase '[{"method":"GET","url":"https://anything.test/dashboard","status":200,"type":"document"}]'
+vf4() { echo "$WORK4/.qa/runs/$1/verification.json"; }
+for ENGINE in jq python3; do
+  run_qv2 "$WORK4" "$ENGINE" nobase >/dev/null 2>&1; RC=$?
+  check "[$ENGINE] C2: with no usable baseUrl, NO navigation is admitted as clearing evidence" \
+    "$(rc_field "$(vf4 nobase)" '.knownDefects[0].state')" "outstanding"
+  check "[$ENGINE] C2: the reason says origin comparison was unavailable" \
+    "$(rc_field "$(vf4 nobase)" '[.reasons[] | select(contains("origin comparison is not available"))] | length')" "1"
+  check "[$ENGINE] C2: an unavailable origin comparison still exits 0" "$RC" "0"
+done
+
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, ITEM 3 — `runChecks.findingsChannel` is a ratified interface:
+# exactly one of toolstream | driver-log | none, and never `both`.
+# ---------------------------------------------------------------------------
+for ENGINE in jq python3; do
+  run_qv2 "$WORK2" "$ENGINE" ledgerok >/dev/null 2>&1
+  check "[$ENGINE] findingsChannel: a driver log alone reports driver-log" \
+    "$(rc_field "$(vf2 ledgerok)" '.runChecks.findingsChannel')" "driver-log"
+  run_qv2 "$WORK2" "$ENGINE" consolemiss >/dev/null 2>&1
+  check "[$ENGINE] findingsChannel: an __qaObserve payload alone reports toolstream" \
+    "$(rc_field "$(vf2 consolemiss)" '.runChecks.findingsChannel')" "toolstream"
+  run_qv2 "$WORK2" "$ENGINE" nochannel >/dev/null 2>&1
+  check "[$ENGINE] findingsChannel: no channel reports none" \
+    "$(rc_field "$(vf2 nochannel)" '.runChecks.findingsChannel')" "none"
+  run_qv2 "$WORK2" "$ENGINE" prefixdup >/dev/null 2>&1
+  check "[$ENGINE] findingsChannel: BOTH channels collapse to driver-log, never 'both'" \
+    "$(rc_field "$(vf2 prefixdup)" '.runChecks.findingsChannel')" "driver-log"
+  check "[$ENGINE] findingsChannel: the richer channel field may still say both" \
+    "$(rc_field "$(vf2 prefixdup)" '.channel')" "both"
+  check "[$ENGINE] findingsChannel: the value is always one of the three ratified strings" \
+    "$(for R in ledgerok consolemiss nochannel prefixdup; do rc_field "$(vf2 $R)" '.runChecks.findingsChannel'; done | sort -u | grep -cvE '^(toolstream|driver-log|none)$')" "0"
+done
 
 # ---------------------------------------------------------------------------
 # FAIL-CLOSED CLASSIFIER. classify-finding.sh is resolved by a path relative
