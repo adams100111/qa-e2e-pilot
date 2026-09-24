@@ -117,9 +117,12 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
      ```
    - **The three rules that carry the weight** (all enforced by the engine's `scripts/known-defects.sh`.
      Note the packaging boundary from ADR-0022: `${CLAUDE_PLUGIN_ROOT}` is **per-plugin** and resolves to
-     qa-kit's own root, which does not contain that script — invoke it from the engine's checkout/plugin
-     root. `migrate-inverted-criterion.sh` prints the exact `known-defects.sh validate <registry>` line to
-     run when it finishes):
+     qa-kit's own root, which does not contain that script, so **qa-kit cannot give you a runnable
+     path — you resolve it against the engine's checkout or plugin root yourself**.
+     `migrate-inverted-criterion.sh` closes by printing
+     `Fill both fields in, then: known-defects.sh validate <registry>` — the script NAME and the
+     registry path, with no `bash` and no directory; treat it as a reminder of which command to run,
+     never as a command to paste):
      - **Severity floor, on structure not prose.** `observedClass: "non-rendering"` forces
        `severity` to `high` or `critical`. The floor gates on the `observedClass` **enum**, never on
        `observedBehaviour` — a gate that greps prose is defeated by rewording. This is the check that
