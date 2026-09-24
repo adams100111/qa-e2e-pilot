@@ -79,11 +79,11 @@ machinery.
 
 | | Invariant | Enforced by |
 |---|---|---|
-| **I1** | No observed error is dropped, whether or not it relates to the criterion under test | findings journaled as keyed events; `qa-verify.sh` recomputes from the driver network log and the toolstream |
+| **I1** | No observed error is dropped, whether or not it relates to the criterion under test | findings journaled as keyed events; `qa-verify.sh` recomputes from `browser_network_requests` results and `__qaObserve` payloads in the toolstream (a file-based driver log is also read, but nothing writes one yet — §5.4) |
 | **I1a** | Capture is proven live, not merely configured | `capture_probed` once-guard (§5.6); `enforcement.captureHook: true` is a claim, a written line is evidence |
 | **I1b** | Without independent capture, a run may not present as clean | run-level `UNVERIFIED`, threaded to the CI exit code (§5.7) |
 | **I2** | Disposition is deterministic | `scripts/classify-finding.sh` — origin vs `baseUrl` plus a git-tracked allowlist; fail-closed |
-| **I3** | A criterion may never assert that the application failed | `validate-checklist-json.sh` rejects it structurally, with assisted migration |
+| **I3** | A criterion may not assert application failure **through the reserved health namespace** (§4.1) | `validate-checklist-json.sh` rejects it structurally, with assisted migration |
 | **I4** | A known defect cannot be presented as green | `known-defects.json` + `known-defects.sh`: ticket, capped expiry, severity floor |
 | **I5** | The load window is never unobserved | `qa-verify.sh` fails a run that navigates without the mandated follow-up call (§5.5) |
 
@@ -195,9 +195,15 @@ Four constraints, each forced by the substrate:
 - **Reserved names.** `event`, `seq`, `t`, `childId`, `childSeq` are the substrate's. The event must
   never carry a caller-supplied `seq` (`journal.sh:46-48`).
 
-`findings.json` is rendered **from** the journal for the report and is never a source of truth. That
-is what makes "nothing can be deleted, only classified" structural: the substrate is append-only, so
-a later classification is a new event and the original observation remains.
+The projection is rendered **from** the journal and is never a source of truth. That is what makes
+"nothing can be deleted, only classified" structural: the substrate is append-only, so a later
+classification is a new event and the original observation remains.
+
+**Correction (2026-09-24):** earlier drafts of this section named a `findings.json` artifact. **No
+such file exists.** The projection lands as `checkpoint.json`'s `findings` array (`fold.py:496-558`,
+`fold.jq:375-401`), and **no report reads it** — neither `render-report.py` nor `report-to-junit.sh`
+references it. Surfacing findings in the human report is an unshipped follow-up, not a shipped
+feature.
 
 ### 5.2 `scripts/classify-finding.sh` (new, deterministic, no LLM)
 
@@ -211,7 +217,7 @@ classify-finding.sh <config-path> <url> <status>
 |---|---|
 | URL origin equals the effective `baseUrl` origin | `in-scope` |
 | URL origin differs from the `baseUrl` origin | `third-party` |
-| URL path matches a `findings.benign[]` regex from `.qa/config.json` | `benign` |
+| URL path matches a `findings.benign[]` regex from `.qa/config.json`, **and** `baseUrl` parsed | `benign` |
 | Anything else — unparseable URL, missing `baseUrl`, relative URL of unknown origin | **`in-scope`** |
 
 `statusClass` is `fatal` for `status >= 500`, for an unhandled exception, and for a page crash;
@@ -262,13 +268,17 @@ becomes permanent.
   incident's `severity: "low"`.
 - **Never a verdict.** A known defect is not a criterion. It has no `pass`/`fail`, contributes
   nothing to the tally, and cannot be counted as verification of anything.
-- **Run status.** While `outstanding`, the run's top line reads `GREEN with N known defects`. Past
-  `expiry` the entry is `expired` and **blocks** the run.
+- **Run status.** Past `expiry` the entry is `expired` and **blocks** the run. **Correction
+  (2026-09-24):** an earlier draft said the run's top line reads `GREEN with N known defects`. **No
+  code writes that string.** Per-entry states reach `verification.json`'s `__run-checks__` only;
+  `render-report.py` has no known-defect handling at all. The human-report headline is an unshipped
+  follow-up.
 - **Clearing requires positive evidence.** An entry is `cleared` only when the journal holds a
   successful (2xx) navigation to its `surface` **and** no fatal finding on it. Absence of a finding
   never clears anything — that is the same error as grading a crash correct, since a run that never
   reached the surface produces exactly the same silence. An entry not provably exercised stays
-  `outstanding`, and the report says it was not exercised this run.
+  `outstanding`. **Correction (2026-09-24):** an earlier draft added "and the report says it was not
+  exercised this run" — nothing writes that either.
 
 ### 5.4 Where findings actually come from (two channels)
 
@@ -299,8 +309,8 @@ machinery, not by `fetch` or XHR, and no script runs on a 500 page to be interce
 mechanism can ever see it. Only the driver-backed `browser_network_requests` does —
 `SKILL.md:160` names "the navigating document request" as what that call, and only that call, sees.
 
-The driver-backed request record is therefore authoritative for requests, and it reaches
-`qa-verify.sh` two ways:
+The driver-backed request record is therefore the **preferred** source for requests, and it reaches
+`qa-verify.sh` two ways — only the first of which has a producer today:
 
 1. **`browser_network_requests` results in the toolstream** — the path that works **today**.
    `qa-verify.sh`'s `observe_rows` parses each `responseBody` that is a JSON array of request
@@ -348,7 +358,7 @@ exactly why `EC10`, recorded `fail`, was never re-examined by anything.
 ### 5.6 Capture canary (I1a)
 
 Emitted as a `capture_probed` event behind the codebase's existing **once-per-run guard keyed on
-journal emptiness** (`checkpoint.sh:1024-1031`; the scan-for-existing-event variant is
+journal emptiness** (`checkpoint.sh:1141-1148`; the scan-for-existing-event variant is
 `journal-emit.sh`'s `plan_frozen_exists()`). Both idioms are resume-safe by construction.
 
 It must **not** live in the agent's Phase 0 pre-flight: `commands/qa-resume.md` dispatches a resumed
@@ -366,8 +376,9 @@ that literal text when `qa-verify` did not run. It lives in `<properties>`, whic
 from the exit code** (`:395` exits on `failures or errors` only), and `__phase-surface__`
 (`qa-verify.sh:940`) is an explicit precedent for a run-level row that deliberately never fails.
 
-The run's report headline becomes `UNVERIFIED — no independent capture`, with the tally printed
-beneath it, and **`report-to-junit.sh` synthesizes a `<testcase>` + `<failure>`** so it reaches the
+The run is announced as `UNVERIFIED — no independent capture` on `report-to-junit.sh`'s **stderr**
+and in its `qa.unverifiedReason` property — **not** in `report.md`/`report.html`, which contain no
+`UNVERIFIED` string (an unshipped follow-up). Critically, **`report-to-junit.sh` synthesizes a `<testcase>` + `<failure>`** so it reaches the
 exit code. The JUnit route is the only one that works when `qa-verify` did not run at all — routing
 through `qa-verify.sh`'s `run_failed` (`:1409`) would be unreachable exactly when needed.
 
