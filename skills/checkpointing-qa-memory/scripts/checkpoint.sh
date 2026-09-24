@@ -245,36 +245,154 @@ print(json.dumps({"event": "phase_entered", "phase": sys.argv[1]}))
 
 # detect_capture_channel <run-id> -> "toolstream" | "driver-log" | "none"
 #
-# The driver-log probe MIRRORS scripts/session-preflight.sh's
-# resolve_session_log (QA_SESSION_LOG when it names an existing file — an
-# explicit setting never falls back — else any *.md under .playwright-mcp/,
-# the --output-dir every harness profile uses for --save-session). It is a
-# pure predicate: it never runs session-preflight.sh, which would WRITE a
-# toolstream as a side effect. Pure-bash globbing (no ls/head) so it stays
-# honest under the restricted PATHs this script's own characterization
-# sub-cases use.
+# FIX ROUND 1 (Wave-2 integration Critical). The canary must assert the SAME
+# thing the verifier can actually resolve. It used to report `driver-log` on
+# the MERE PRESENCE of a .playwright-mcp/*.md; report-to-junit.sh accepted
+# that as independent capture, but qa-verify.sh resolves a driver log only
+# from QA_NETWORK_LOG / .qa/runs/<run-id>/network-log.json /
+# .playwright-mcp/*.har. A run with a stub session.md, no toolstream and no
+# HAR therefore presented as "every recorded pass independently verified",
+# exit 0 — the exact failure invariant I1b exists to prevent. FILE PRESENCE
+# IS NOT CAPTURE.
+#
+# `driver-log` now requires ONE of:
+#   1. a driver log qa-verify.sh would resolve, or
+#   2. a --save-session log that CONVERTS to at least one toolstream event
+#      (what session-preflight.sh would actually derive).
+# Otherwise `none` — including a session .md that converts to zero events.
+# `toolstream` still wins when a toolstream line already exists.
+#
+# `none` is never an error: it is the honest input to the run-level
+# UNVERIFIED status.
 detect_capture_channel() {
   local run_id="$1"
   if [[ -s "${QA_BASE}/${run_id}/toolstream.jsonl" ]]; then
     echo "toolstream"
     return 0
   fi
-  if [[ -n "${QA_SESSION_LOG:-}" ]]; then
-    if [[ -f "$QA_SESSION_LOG" ]]; then
-      echo "driver-log"
-    else
-      echo "none"
-    fi
+  if driver_network_log_resolvable "$run_id"; then
+    echo "driver-log"
     return 0
   fi
-  local candidate
-  for candidate in .playwright-mcp/*.md; do
+  local session_log
+  session_log="$(resolve_session_log_mirror)"
+  if [[ -n "$session_log" ]] && session_log_yields_events "$session_log"; then
+    echo "driver-log"
+    return 0
+  fi
+  echo "none"
+}
+
+# driver_network_log_resolvable <run-id> -> 0 when a driver network log that
+# qa-verify.sh would resolve exists.
+#
+# DUPLICATED RESOLUTION ORDER — SOURCE OF TRUTH IS `network_log_file()` in
+# scripts/qa-verify.sh (~:1557). That function cannot be reused from here:
+# qa-verify.sh ends with an unconditional `main "$@"` (no sourcing guard), so
+# `source`-ing it would immediately run ITS main against checkpoint.sh's
+# arguments, and it exposes no subcommand that just prints the resolved path.
+# Keep the two in step; if they ever diverge, this comment is where to look.
+#
+# The order, verbatim from that function: QA_NETWORK_LOG wins when it names
+# an existing file and, being an explicit setting, NEVER falls back;
+# otherwise the run's own .qa/runs/<run-id>/network-log.json; otherwise any
+# *.har under .playwright-mcp/. EXISTENCE, not non-emptiness — a zero-byte
+# log is a resolved channel that happens to carry nothing, which is a
+# different fact from no channel at all, and the canary must claim exactly
+# what the verifier resolves, never something stricter. Pure-bash globbing
+# (no ls/head) so it stays honest under a restricted PATH.
+driver_network_log_resolvable() {
+  local run_id="$1" candidate
+  if [[ -n "${QA_NETWORK_LOG:-}" ]]; then
+    [[ -f "$QA_NETWORK_LOG" ]] && return 0
+    return 1
+  fi
+  if [[ -f "${QA_BASE}/${run_id}/network-log.json" ]]; then
+    return 0
+  fi
+  for candidate in .playwright-mcp/*.har; do
     if [[ -f "$candidate" ]]; then
-      echo "driver-log"
       return 0
     fi
   done
-  echo "none"
+  return 1
+}
+
+# resolve_session_log_mirror -> stdout the resolved --save-session log, or
+# nothing. Follows scripts/session-preflight.sh's resolve_session_log
+# (QA_SESSION_LOG when it names the log — an explicit setting never falls
+# back — else any *.md under .playwright-mcp/, the --output-dir every harness
+# profile uses for --save-session), with ONE DELIBERATE DIVERGENCE:
+#
+#   `-s` (a WRITTEN LINE), not `-f` (mere existence).
+#
+# That operator IS the Wave-2 Critical. Spec §3 I1a and §5.6 are explicit:
+# "Capture is proven live, not merely configured … a written line is
+# evidence", and "the probe asserts that the capture path is actually
+# PRODUCING lines". An empty session.md produces nothing, so it is not a
+# channel — even though session-preflight.sh will happily "resolve" it and
+# then derive zero events. The realistic trigger is not synthetic: on a host
+# with no node, session-preflight.sh:131 exits 0 as an honest degrade, so an
+# empty (or unconvertible) log sits there converting to nothing forever.
+#
+# The `-s` is necessary but NOT sufficient — a NON-empty log that converts to
+# zero events is equally not capture — which is why every caller pairs this
+# with session_log_yields_events below. HONEST NOTE ON ITS CURRENT WEIGHT:
+# with that conversion gate in place the `-s` is a cheap early-out and a
+# second line of defence, not the sole load-bearing guard — reverting it to
+# `-f` on its own changes no observable behaviour, because an empty log
+# converts to zero events anyway (measured: tests/checkpoint is byte-identical
+# either way). It is kept because it states the invariant at the point of the
+# test, and because it holds the line if the conversion gate is ever loosened.
+# `-f &&` is paired with it deliberately: `-s` alone is TRUE for a non-empty
+# DIRECTORY, and a directory is not a session log.
+resolve_session_log_mirror() {
+  local candidate
+  if [[ -n "${QA_SESSION_LOG:-}" ]]; then
+    if [[ -f "$QA_SESSION_LOG" && -s "$QA_SESSION_LOG" ]]; then
+      echo "$QA_SESSION_LOG"
+    fi
+    return 0
+  fi
+  for candidate in .playwright-mcp/*.md; do
+    if [[ -f "$candidate" && -s "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# session_log_yields_events <session-log> -> 0 when session-to-toolstream.js
+# converts that log into AT LEAST ONE toolstream event — i.e. when
+# session-preflight.sh would derive a real toolstream from it, rather than
+# printing "no session log / 0 events" and exiting 0.
+#
+# Runs the CONVERTER only, never session-preflight.sh itself: the preflight
+# WRITES .qa/runs/<run-id>/toolstream.jsonl, and a toolstream written from
+# inside this probe would silently flip the channel on the next upsert. This
+# probe is read-only. Counts non-blank stdout lines — exactly the lines
+# session-preflight.sh would feed to `toolstream.sh append`.
+#
+# No node (or a converter that fails) -> no derivable toolstream -> not a
+# driver-log channel. That is the honest answer, not an error: a harness that
+# cannot convert its session log has no independent capture.
+session_log_yields_events() {
+  local session_log="$1"
+  command -v node >/dev/null 2>&1 || return 1
+  local converter="${BASH_SOURCE[0]%/*}"
+  [[ "$converter" == "${BASH_SOURCE[0]}" ]] && converter="."
+  converter="${converter}/../../driving-browser-qa/scripts/session-to-toolstream.js"
+  [[ -f "$converter" ]] || return 1
+  local events line
+  events="$(node "$converter" "$session_log" 2>/dev/null)" || return 1
+  [[ -n "$events" ]] || return 1
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      return 0
+    fi
+  done <<< "$events"
+  return 1
 }
 
 build_capture_probed_event() {
