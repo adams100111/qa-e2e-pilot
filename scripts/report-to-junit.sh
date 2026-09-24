@@ -46,6 +46,25 @@
 #     what a run aborted before any verdict looks like, and such a run must not read as clean.
 #   - `QA_SKIP_VERIFY=1` is set in the environment (the same literal-`1` test qa-ci.sh branches on,
 #     so a hand-rolled CI that calls this exporter directly cannot lose the status either).
+#   - `qa-verify.sh`'s `__run-checks__` record reports `runChecks.findingsChannel == "none"` (or any
+#     value that is not an actual capture channel). This is a SECOND, INDEPENDENT WITNESS to the
+#     same fact the canary is supposed to report, and it exists because the canary can be wrong:
+#     three lanes meant three different things by "driver-log" — the canary reported it on the mere
+#     presence of a `.playwright-mcp/*.md` while qa-verify resolves a driver log only from a
+#     `*.har`/`network-log.json`, so a stub session log with no toolstream and no HAR produced a
+#     green build at confidence `high`. The verifier saying no channel yielded findings settles it
+#     regardless of what the canary claimed. RATIFIED INTERFACE (Lane K): `findingsChannel` is
+#     exactly `toolstream` | `driver-log` | `none`. A field that is ABSENT is not a witness at all
+#     (older records predate it) and never fails a run; a field that is RECORDED but
+#     uninterpretable fails closed, same as an unrecognized canary channel. Both witnesses share
+#     the one ratified reason string `no independent capture` — it is named once however many
+#     witnesses fired, and which ones fired is spelled out in the failure body.
+#   - the sibling `fold-anomalies.json` is present but UNREADABLE (not valid JSON, or valid JSON
+#     whose `anomalies` is not a list). That file is derived and atomically written beside
+#     checkpoint.json, so present-but-corrupt means we CANNOT KNOW whether the record is damaged —
+#     which is what unverified means. Reported as `run record damaged (unreadable anomalies)`,
+#     never as a fabricated rule name. An ABSENT file stays benign: absence is a normal older run
+#     whose fold never wrote one, corruption is not.
 #   - the sibling `fold-anomalies.json` reports `unparseable-line` or `seq-gap`. ONLY those two:
 #     both mean the run's own RECORD is damaged, so its verdicts cannot be trusted. Every other
 #     anomaly (`illegal-edge`, `cross-child-duplicate`, `duplicate-plan-frozen`,
@@ -257,20 +276,31 @@ def load_capture_channel(checkpoint_file):
 
 
 def load_fold_anomaly_counts(checkpoint_file):
-    """{rule: count} from the sibling fold-anomalies.json. Absent or
-    malformed -> {} : unreadable JSON must never INVENT damage (and must
-    never crash the export), same posture as the other optional siblings."""
+    """({rule: count}, unreadable) from the sibling fold-anomalies.json.
+
+    ABSENT     -> ({}, False): a normal older run whose fold never wrote the
+                  file. Absence is benign and must never retro-fail a run.
+    UNREADABLE -> ({}, True): present but not parseable, or parseable with an
+                  `anomalies` that is not a list. Still never INVENTS a rule
+                  name and never crashes the export — but it is not benign:
+                  this file is derived and atomically written beside
+                  checkpoint.json, so a corrupt one means the damage question
+                  cannot be answered, and an unanswerable gate input is
+                  exactly what UNVERIFIED is for. Same posture as the
+                  adjudicated init-config.sh ruling (refuse rather than act
+                  on what you could not read) and as the `is not True`
+                  handling of runChecks below."""
     path = os.path.join(os.path.dirname(checkpoint_file) or ".", "fold-anomalies.json")
     if not os.path.isfile(path):
-        return {}
+        return {}, False
     try:
         with open(path) as f:
             raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}, True
     items = raw.get("anomalies") if isinstance(raw, dict) else raw
     if not isinstance(items, list):
-        return {}
+        return {}, True
     out = {}
     for item in items:
         if not isinstance(item, dict):
@@ -278,28 +308,15 @@ def load_fold_anomaly_counts(checkpoint_file):
         rule = item.get("rule")
         if isinstance(rule, str) and rule:
             out[rule] = out.get(rule, 0) + 1
-    return out
+    return out, False
 
 
 capture_channel = load_capture_channel(checkpoint_path)
-anomaly_counts = load_fold_anomaly_counts(checkpoint_path)
+anomaly_counts, anomalies_unreadable = load_fold_anomaly_counts(checkpoint_path)
 # The SAME literal-`1` test qa-ci.sh's own QA_SKIP_VERIFY branch uses — any
 # other value (0, true, yes, "1 ") leaves verification running, so it must
 # not mark the run unverified either.
 skip_verify = os.environ.get("QA_SKIP_VERIFY") == "1"
-
-unverified_reasons = []
-if capture_channel not in CAPTURE_CHANNELS:
-    unverified_reasons.append("no independent capture")
-if skip_verify:
-    unverified_reasons.append("verification skipped (QA_SKIP_VERIFY)")
-damaging = [r for r in RECORD_DAMAGE_ANOMALIES if anomaly_counts.get(r)]
-if damaging:
-    unverified_reasons.append("run record damaged (%s)" % ", ".join(damaging))
-# Fixed reason order (capture, skip, damage) so the headline and the failure
-# message are deterministic for a run with more than one reason.
-unverified = bool(unverified_reasons)
-unverified_message = "UNVERIFIED — " + "; ".join(unverified_reasons)
 
 verification_by_key = {}
 if verification_records is not None:
@@ -327,14 +344,39 @@ RUN_CHECK_FIELDS = ("ledgerComplete", "classificationsAgree",
 run_checks_rec = verification_by_key.get(("__run-checks__", ""))
 run_checks_message = ""   # "" = nothing to synthesize
 run_checks_summary = ""   # the informational property's value
+# The second capture witness. None = the field was never recorded, which is
+# NOT a witness either way (every record written before Lane K emitted it);
+# a recorded value is judged against CAPTURE_CHANNELS, so `none`, an empty
+# string and an unrecognized value all read as "no channel yielded
+# findings". `findingsChannel` is a CHANNEL, never a fifth boolean check —
+# RUN_CHECK_FIELDS must stay the four booleans or the `is not True` test
+# below would report it as a failed check.
+findings_channel = None
 if run_checks_rec:
     checks = run_checks_rec.get("runChecks")
+    if isinstance(checks, dict) and "findingsChannel" in checks:
+        fc = checks.get("findingsChannel")
+        findings_channel = fc if isinstance(fc, str) else ""
+
     rc_verdict = run_checks_rec.get("verifierVerdict", "fail")
     if isinstance(checks, dict):
+        # A recorded STRING value is printed verbatim — Lane K's
+        # `loadWindowCovered` is three-state (`true`/`false`/
+        # `"not-evaluated"`), and rendering `not-evaluated` as `unrecorded`
+        # would misreport a value that WAS recorded. `unrecorded` is kept for
+        # a field that is genuinely absent or of an unusable type. Either way
+        # the `is not True` test below treats it as not proven.
+        def _render(value):
+            if value is True:
+                return "true"
+            if value is False:
+                return "false"
+            if isinstance(value, str) and value:
+                return value
+            return "unrecorded"
+
         run_checks_summary = " ".join(
-            "%s=%s" % (f, "true" if checks.get(f) is True else
-                          ("false" if checks.get(f) is False else "unrecorded"))
-            for f in RUN_CHECK_FIELDS
+            "%s=%s" % (f, _render(checks.get(f))) for f in RUN_CHECK_FIELDS
         )
         # `is not True`, not `is False`: a check that is missing or not a
         # boolean has not been PROVEN, and an unproven structural check is
@@ -357,6 +399,35 @@ if run_checks_rec:
                 f"(verifierVerdict={rc_verdict})"
             )
 
+# --- the UNVERIFIED reasons, now that BOTH capture witnesses are known ----
+# Computed here rather than beside the loaders above because the second
+# witness lives in the __run-checks__ record, which is only resolved once
+# verification_by_key exists.
+canary_no_capture = capture_channel not in CAPTURE_CHANNELS
+verifier_no_capture = (findings_channel is not None
+                       and findings_channel not in CAPTURE_CHANNELS)
+
+unverified_reasons = []
+# ONE reason string however many witnesses fired — a CI grep for
+# `UNVERIFIED — no independent capture` must keep working. Which witnesses
+# fired is spelled out in the failure body below.
+if canary_no_capture or verifier_no_capture:
+    unverified_reasons.append("no independent capture")
+if skip_verify:
+    unverified_reasons.append("verification skipped (QA_SKIP_VERIFY)")
+damaging = [r for r in RECORD_DAMAGE_ANOMALIES if anomaly_counts.get(r)]
+if anomalies_unreadable:
+    # Appended last so a readable file's real rule names always lead. The two
+    # are mutually exclusive in practice (an unreadable file yields no rule
+    # names at all), but the order is fixed rather than incidental.
+    damaging = damaging + ["unreadable anomalies"]
+if damaging:
+    unverified_reasons.append("run record damaged (%s)" % ", ".join(damaging))
+# Fixed reason order (capture, skip, damage) so the headline and the failure
+# message are deterministic for a run with more than one reason.
+unverified = bool(unverified_reasons)
+unverified_message = "UNVERIFIED — " + "; ".join(unverified_reasons)
+
 # Honest, per-report assurance-tier note (spec §6 / docs/harness-adapters.md).
 # qa-verify is the universal, deterministic floor — the live Claude hooks
 # (PostToolUse capture + PreToolUse block) are best-effort/tamper-evident,
@@ -375,18 +446,25 @@ elif verify_overrides:
     assurance_tier = (f"qa-verify: ran, authoritative -- {verify_overrides} recorded pass(es) "
                        "OVERRIDDEN below (see each testcase's <failure> for the verifier's "
                        "reason). " + _TIER_NOTE)
-elif run_checks_message:
-    # Do not stamp "every recorded pass independently verified" beside a
-    # failed run-scoped check: no pass was overridden, but a structural
-    # proof about the run's own record did not hold, and a stamp too quiet
-    # to stop anyone reading the run as a clean verification is the failure
-    # this whole plan exists to remove.
-    assurance_tier = ("qa-verify: ran, authoritative -- recorded passes were independently "
-                       "verified, but the run-scoped checks did NOT all pass: "
-                       f"{run_checks_message} (see the __run-checks__ testcase). " + _TIER_NOTE)
 else:
-    assurance_tier = ("qa-verify: ran, authoritative -- every recorded pass independently "
-                       "verified. " + _TIER_NOTE)
+    # Do not stamp "every recorded pass independently verified" beside a
+    # failed run-scoped check or an UNVERIFIED run: no pass was overridden,
+    # but either a structural proof about the run's own record did not hold
+    # or the run could not be verified at all — and a stamp too quiet to
+    # stop anyone reading that as a clean verification is the failure this
+    # whole plan exists to remove.
+    _caveats = []
+    if unverified:
+        _caveats.append(f"the run is {unverified_message} (see the __run-verified__ testcase)")
+    if run_checks_message:
+        _caveats.append("the run-scoped checks did NOT all pass: "
+                        f"{run_checks_message} (see the __run-checks__ testcase)")
+    if _caveats:
+        assurance_tier = ("qa-verify: ran, authoritative -- recorded passes were independently "
+                           "verified, but " + "; ".join(_caveats) + ". " + _TIER_NOTE)
+    else:
+        assurance_tier = ("qa-verify: ran, authoritative -- every recorded pass independently "
+                           "verified. " + _TIER_NOTE)
 
 # The synthetic __run-verified__ case counts as a test AND a failure — that
 # is the whole mechanism: `failures` is what the exit code at the bottom
@@ -506,12 +584,28 @@ if unverified:
         "agent's self-report, not a verification result.",
     ]
     if "no independent capture" in unverified_reasons:
+        # Name every witness that fired, and — when they disagree — what the
+        # other one claimed, so a stub session log the canary read as
+        # `driver-log` shows up as a disagreement rather than a mystery.
+        witnesses = []
+        if canary_no_capture:
+            witnesses.append(
+                "the capture_probed canary recorded "
+                + (("channel=" + (capture_channel or "<empty>")) if isinstance(capture_channel, str)
+                   else "no capture_probed event at all (an aborted run reads the same as an "
+                        "uncaptured one)")
+            )
+        if verifier_no_capture:
+            claim = (f", although the canary claimed channel={capture_channel}"
+                     if not canary_no_capture else "")
+            witnesses.append(
+                "qa-verify reported runChecks.findingsChannel="
+                + (findings_channel or "<empty>")
+                + " -- no channel yielded findings" + claim
+            )
         detail_lines.append(
-            "no independent capture: the run's capture_probed canary recorded "
-            + (("channel=" + capture_channel) if isinstance(capture_channel, str)
-               else "no capture_probed event at all (an aborted run reads the same as an uncaptured one)")
-            + " -- no toolstream and no resolvable driver-log session, so nothing in this run "
-              "can be reconciled against an independent record."
+            "no independent capture: " + "; ".join(witnesses)
+            + ". Nothing in this run can be reconciled against an independent record."
         )
     if "verification skipped (QA_SKIP_VERIFY)" in unverified_reasons:
         detail_lines.append(

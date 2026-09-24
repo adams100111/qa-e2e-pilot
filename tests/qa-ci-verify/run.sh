@@ -18,6 +18,10 @@
 #   PART 3 — qa-ci.sh: the qa-verify step's exit code genuinely gates the
 #     FINAL exit (independent of report-to-junit's own exit code), and
 #     QA_SKIP_VERIFY is explicit and LOGGED, never silent.
+#   PART 8 — Fix round 2: the `driver-log` arm of the capture check (which
+#     had no test), and `runChecks.findingsChannel == "none"` as a SECOND
+#     witness that holds even when the canary claims a channel that is not
+#     there; plus a corrupt (not absent) fold-anomalies.json as UNVERIFIED.
 #   PART 7 — Fix round 1: the Lane K `__run-checks__` record reaches the
 #     REPORT (it already reached the exit code), naming WHICH run-scoped
 #     check failed, counted once, never masking (or masked by) UNVERIFIED.
@@ -120,9 +124,19 @@ check_contains "junit: confidence:low system-out mentions the toolstream reason"
 check_contains "junit: confidence:low pass still names the criterion with the suffix" "$LC_CONTENT" 'C2 (confidence: low)'
 check_not_contains "junit: the C2 testcase ITSELF still never gets a <failure> (per-criterion semantics unchanged)" \
   "$(awk '/<testcase name="C2/,/<\/testcase>/' "$LC_XML")" "<failure"
-check "junit: exactly ONE <failure> in the document — the run-level one, not C2's" \
-  "$(grep -c '<failure' "$LC_XML" | tr -d ' ')" "1"
-check_contains "junit: that one failure is the run-level __run-verified__ case" "$LC_CONTENT" '__run-verified__'
+# Two RUN-LEVEL failures, and neither belongs to C2. The second arrived with
+# Lane K's three-state `loadWindowCovered`: this run has no toolstream, so
+# there was no ordered tool sequence to evaluate the load window against, and
+# the check records `not-evaluated` rather than `true`. A check that silently
+# does not run must not read as a check that passed — so it is named, not
+# assumed. C2's own rendering is untouched either way.
+check "junit: exactly TWO <failure>s, both run-level (UNVERIFIED + the un-evaluated load-window check)" \
+  "$(grep -c '<failure' "$LC_XML" | tr -d ' ')" "2"
+check_contains "junit: one is the run-level __run-verified__ case" "$LC_CONTENT" '<testcase name="__run-verified__"'
+check_contains "junit: the other names the un-evaluated check, never a passed one" \
+  "$LC_CONTENT" '<failure message="run checks failed: loadWindowCovered"'
+check "junit: and C2 itself still carries no <failure> of its own" \
+  "$(awk '/<testcase name="C2/,/<\/testcase>/' "$LC_XML" | grep -c '<failure' | tr -d ' ')" "0"
 
 # ===========================================================================
 # PART 2 — back-compat: no verification.json at all -> unchanged rendering,
@@ -377,6 +391,30 @@ print(total)
 PYEOF
 }
 
+# rc_runchecks_field <run-dir> <field> -> that runChecks field as text, or
+# "absent". python3 rather than grep: verification.json is written through
+# `jq -s '.'` on one engine and json.dumps on the other, so its whitespace
+# is not stable enough to match on.
+rc_runchecks_field() {
+  python3 - "$1/verification.json" "$2" <<'RCFEOF'
+import json, os, sys
+path, field = sys.argv[1], sys.argv[2]
+out = "absent"
+if os.path.isfile(path):
+    try:
+        recs = json.load(open(path))
+    except Exception:
+        recs = []
+    for r in recs if isinstance(recs, list) else []:
+        if isinstance(r, dict) and r.get("criterionId") == "__run-checks__":
+            checks = r.get("runChecks")
+            if isinstance(checks, dict) and field in checks:
+                out = str(checks[field])
+            break
+print(out)
+RCFEOF
+}
+
 # junit_run <cwd> <run-id> <artifact-prefix> — stdout and stderr captured
 # SEPARATELY (<prefix>.stdout / <prefix>.stderr), XML to <prefix>.xml.
 junit_run() {
@@ -602,18 +640,70 @@ else
   echo "SKIP - test_engines_agree: both jq and python3 are needed for the parity comparison"
 fi
 
-# --- 5j: a MALFORMED fold-anomalies.json never invents damage, and never
-# crashes the export (same posture as the other optional siblings). --------
+# --- 5j: a CORRUPT fold-anomalies.json is UNVERIFIED; an ABSENT one is
+# benign. The two differ because fold-anomalies.json is DERIVED and
+# atomically written beside checkpoint.json: its absence is a normal older
+# run that predates the fold writing it, while a present-but-unreadable file
+# means we CANNOT KNOW whether the run's record is damaged — which is the
+# definition of unverified. Treating it as `{}` (the earlier behaviour this
+# case pinned) made it the only gate input in this feature that reads as
+# benign when unreadable, the opposite of the adjudicated init-config.sh
+# ruling (refuse rather than overwrite what you could not read) and of the
+# `is not True` posture on runChecks two sections below.
 V5J="$WORK/p5j"; mkdir -p "$V5J"
 ( cd "$V5J" && bash "$TOOLSTREAM" append junkanom '{"tool":"browser_snapshot","args":{},"resultDigest":{"len":0,"sha256":"j1"}}' >/dev/null )
 ( cd "$V5J" && bash "$CKPT" junkanom J1 pass --last-action "viewed the list" >/dev/null )
 printf 'not json at all {{{' > "$V5J/.qa/runs/junkanom/fold-anomalies.json"
 junit_run "$V5J" junkanom "$V5J/rep"; RC5J=$?
-check "test_malformed_fold_anomalies_is_not_fatal: the export still succeeds and exits 0" "$RC5J" "0"
-check_not_contains "test_malformed_fold_anomalies_is_not_fatal: no damage is invented from unreadable JSON" \
-  "$(cat "$V5J/rep.xml")" "__run-verified__"
-check_not_contains "test_malformed_fold_anomalies_is_not_fatal: no anomaly-count property is fabricated" \
+check "test_corrupt_fold_anomalies_marks_unverified_while_absent_stays_benign: a present-but-unreadable file exits NON-ZERO" \
+  "$([[ "$RC5J" -ne 0 ]] && echo yes)" "yes"
+check_contains "test_corrupt_fold_anomalies_marks_unverified_while_absent_stays_benign: reason names the unreadable file, not an invented rule" \
+  "$(cat "$V5J/rep.xml")" 'UNVERIFIED — run record damaged (unreadable anomalies)'
+check_not_contains "test_corrupt_fold_anomalies_marks_unverified_while_absent_stays_benign: no rule name is fabricated" \
+  "$(cat "$V5J/rep.xml")" 'unparseable-line'
+check_not_contains "test_corrupt_fold_anomalies_marks_unverified_while_absent_stays_benign: no anomaly-COUNT property is fabricated either" \
   "$(cat "$V5J/rep.xml")" 'qa.foldAnomalies'
+check "test_corrupt_fold_anomalies_marks_unverified_while_absent_stays_benign: the export still succeeds (a corrupt sibling never crashes it)" \
+  "$([[ -s "$V5J/rep.xml" ]] && echo yes)" "yes"
+
+# Valid JSON of the WRONG SHAPE is the same class: present, and unusable.
+for BADSHAPE in '{"anomalies":"boom"}' '5' '{"openActs":[]}' '"[]"'; do
+  BSD="$WORK/p5j-shape"; rm -rf "$BSD"; mkdir -p "$BSD"
+  ( cd "$BSD" && bash "$TOOLSTREAM" append shapeanom '{"tool":"browser_snapshot","args":{},"resultDigest":{"len":0,"sha256":"s1"}}' >/dev/null )
+  ( cd "$BSD" && bash "$CKPT" shapeanom S1 pass --last-action "viewed the list" >/dev/null )
+  printf '%s' "$BADSHAPE" > "$BSD/.qa/runs/shapeanom/fold-anomalies.json"
+  junit_run "$BSD" shapeanom "$BSD/rep"; RC_BS=$?
+  check "test_wrong_shape_fold_anomalies_marks_unverified[$BADSHAPE]: exits NON-ZERO" \
+    "$([[ "$RC_BS" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_wrong_shape_fold_anomalies_marks_unverified[$BADSHAPE]: reason names the unreadable file" \
+    "$(cat "$BSD/rep.xml")" 'run record damaged (unreadable anomalies)'
+done
+
+# A well-formed, EMPTY anomaly set is a clean run — the common case, and the
+# proof this guard reads the file rather than merely noticing it exists.
+V5J2="$WORK/p5j-empty"; mkdir -p "$V5J2"
+( cd "$V5J2" && bash "$TOOLSTREAM" append emptyanom '{"tool":"browser_snapshot","args":{},"resultDigest":{"len":0,"sha256":"e1"}}' >/dev/null )
+( cd "$V5J2" && bash "$CKPT" emptyanom E1 pass --last-action "viewed the list" >/dev/null )
+printf '%s' '{"anomalies":[],"openActs":[]}' > "$V5J2/.qa/runs/emptyanom/fold-anomalies.json"
+junit_run "$V5J2" emptyanom "$V5J2/rep"; RC5J2=$?
+check "test_empty_fold_anomalies_is_clean: an empty anomaly set exits 0" "$RC5J2" "0"
+check_not_contains "test_empty_fold_anomalies_is_clean: nothing is synthesized" \
+  "$(cat "$V5J2/rep.xml")" "__run-verified__"
+
+# ABSENT stays benign: an older run whose fold never wrote the file must not
+# be retro-failed. checkpoint.sh folds on every upsert, so the absence has
+# to be built deliberately — a captured run whose journal carries the canary
+# and whose run dir has no fold-anomalies.json at all.
+V5J3="$WORK/p5j-absent"; mkdir -p "$V5J3/.qa/runs/noanom"
+printf '{"run_id":"noanom","criteria":[{"criterion_id":"A1","verdict":"pass","confidence":"high"}]}' \
+  > "$V5J3/.qa/runs/noanom/checkpoint.json"
+( cd "$V5J3" && bash "$JOURNAL" append noanom '{"event":"capture_probed","channel":"toolstream"}' >/dev/null )
+check "test_absent_fold_anomalies_stays_benign: fixture sanity — the run dir has no fold-anomalies.json" \
+  "$([[ -e "$V5J3/.qa/runs/noanom/fold-anomalies.json" ]] && echo present || echo absent)" "absent"
+junit_run "$V5J3" noanom "$V5J3/rep"; RC5J3=$?
+check "test_absent_fold_anomalies_stays_benign: an absent file exits 0 — absence is an older run, corruption is not" "$RC5J3" "0"
+check_not_contains "test_absent_fold_anomalies_stays_benign: nothing is synthesized" \
+  "$(cat "$V5J3/rep.xml")" "__run-verified__"
 
 # --- 5k: QA_SKIP_VERIFY at the report level -------------------------------
 # report-to-junit.sh reads the SAME env var qa-ci.sh branches on, so the
@@ -644,8 +734,8 @@ check_contains "test_multiple_reasons_all_named: the capture reason is named" \
   "$(cat "$V5L/rep.xml")" "no independent capture"
 check_contains "test_multiple_reasons_all_named: the skip reason is named too" \
   "$(cat "$V5L/rep.xml")" "verification skipped (QA_SKIP_VERIFY)"
-check "test_multiple_reasons_all_named: still exactly ONE synthetic case" \
-  "$(grep -c '__run-verified__' "$V5L/rep.xml" | tr -d ' ')" "1"
+check "test_multiple_reasons_all_named: still exactly ONE synthetic testcase element" \
+  "$(grep -c '<testcase name="__run-verified__"' "$V5L/rep.xml" | tr -d ' ')" "1"
 
 # --- 5m: an EMPTY checkpoint.json never reads as clean -------------------
 V5M="$WORK/p5m"; mkdir -p "$V5M/.qa/runs/emptyckpt"
@@ -912,9 +1002,16 @@ for QV_ENGINE in jq python3; do
   rc_jr "$T" rcboth '{"event":"finding_observed","criterionId":"EC10","source":"network","channel":"driver-log","method":"GET","url":"https://app.test/broken","status":500,"originClass":"third-party","statusClass":"fatal","message":"claimed third-party"}'
   rc_ckpt "$T" rcboth EC10
   qv rcboth
-  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: fixture sanity — classificationsAgree is false" \
+  # `loadWindowCovered=not-evaluated`, NOT `true`: this fixture has no
+  # toolstream by design, so there was no ordered tool sequence to evaluate
+  # the load window against. Lane K made the field three-state precisely so
+  # that a check which never ran cannot present as a check that passed (the
+  # earlier expectation `true` here encoded exactly that bug), and
+  # report-to-junit.sh's `is not True` test treats an unperformed structural
+  # check as not proven.
+  check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: fixture sanity — classificationsAgree false, load window not-evaluated (a skipped check is not a passed one)" \
     "$(rc_checks "$T/.qa/runs/rcboth")" \
-    "fail ledgerComplete=true classificationsAgree=false loadWindowCovered=true knownDefectsOk=true"
+    "fail ledgerComplete=true classificationsAgree=false loadWindowCovered=not-evaluated knownDefectsOk=true"
   check "test_run_checks_and_unverified_coexist[$QV_ENGINE]: fixture sanity — and there is no capture channel" \
     "$(canary_channel "$T/.qa/runs/rcboth")" "none"
   junit_run "$T" rcboth "$T/rcboth"; RC7D=$?
@@ -1039,5 +1136,274 @@ fi
 # override is a CRITERION failure and must not gain a run-checks row.
 check_not_contains "test_override_report_gains_no_run_checks_row: PART 1a's override XML has no __run-checks__" \
   "$(cat "$WORK/overridden.xml")" '__run-checks__'
+
+# ===========================================================================
+# PART 8 — Fix round 2: the `driver-log` arm, and the SECOND witness
+# (`runChecks.findingsChannel`) that does not depend on the canary being
+# honest.
+#
+# WHY THIS PART EXISTS. Three lanes meant three different things by
+# "driver-log": checkpoint.sh's canary reports it on the mere PRESENCE of a
+# `.playwright-mcp/*.md`, report-to-junit.sh accepts it as independent
+# capture, and qa-verify.sh resolves a driver log only from `*.har` /
+# `network-log.json`. A stub `session.md` with no toolstream and no HAR
+# therefore produced exit 0 at confidence `high` with the report stamping
+# "every recorded pass independently verified" — I1b failing OPEN. Lane I is
+# tightening the canary; this side adds a trigger that holds even when the
+# canary lies:
+#
+#   runChecks.findingsChannel == "none"  ->  UNVERIFIED
+#
+# RATIFIED INTERFACE (Lane K), used verbatim: `runChecks.findingsChannel` is
+# exactly one of `toolstream` | `driver-log` | `none`. The verifier reporting
+# that NO channel yielded findings is independent evidence of the same fact
+# the canary is supposed to report, so it reuses the ratified reason string
+# `no independent capture` (the reason set stays the three the plan pins) and
+# the WITNESSES are named in the failure body. The two witnesses are
+# deliberately not merged into one reason line: a CI grep for
+# `UNVERIFIED — no independent capture` must keep working.
+#
+# ALSO PINNED HERE: the `driver-log` arm of CAPTURE_CHANNELS itself, which
+# had no test at all before this round — and an untested arm is where this
+# project keeps finding Criticals. It is exercised through the REAL
+# checkpoint.sh canary (a `.playwright-mcp/*.md` in the tree), under BOTH of
+# that script's engines, with the report's streams compared separately.
+#
+# The findingsChannel fixtures write verification.json directly: at the time
+# of writing Lane K has not yet emitted the field (`grep findingsChannel`
+# over the tree finds nothing), so these are literals of the ratified
+# contract, and each carries the four booleans alongside so the reader is
+# proven to treat findingsChannel as a CHANNEL and never as a fifth boolean
+# check.
+# ===========================================================================
+
+# write_runchecks_vj <run-dir> <findingsChannel|""> [verifierVerdict]
+# "" omits the field entirely — today's record shape, which must stay benign.
+write_runchecks_vj() {
+  python3 - "$1/verification.json" "$2" "${3:-pass}" <<'PYEOF'
+import json, sys
+path, fc, verdict = sys.argv[1], sys.argv[2], sys.argv[3]
+checks = {"ledgerComplete": True, "classificationsAgree": True,
+          "loadWindowCovered": True, "knownDefectsOk": True}
+if fc != "":
+    checks["findingsChannel"] = fc
+open(path, "w").write(json.dumps([{
+    "criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a",
+    "verifierVerdict": verdict, "confidence": "high",
+    "reasons": ["run-scoped checks recorded for this fixture"],
+    "channel": fc or "none", "knownDefects": [], "runChecks": checks,
+}]))
+PYEOF
+}
+
+for CK_ENGINE in jq python3; do
+  if ! command -v "$CK_ENGINE" >/dev/null 2>&1; then
+    echo "SKIP - driver-log arm [$CK_ENGINE]: $CK_ENGINE not on this host"; continue
+  fi
+  D="$WORK/p8-$CK_ENGINE"; mkdir -p "$D/.playwright-mcp"
+  # A stub session.md is deliberately present and deliberately INERT: Lane I's
+  # canary fix made file presence stop counting as capture, so this converts
+  # to zero events and yields `none`. The driver-log fixtures below get a
+  # per-run network-log.json instead — a log qa-verify.sh would actually
+  # resolve, which is what `driver-log` is now allowed to mean. Keeping the
+  # stub here is the regression: if presence ever counts again, the
+  # `bothnone` fixture at the end of this loop stops reporting `none`.
+  printf 'stub session log\n' > "$D/.playwright-mcp/session.md"
+  mkck() { ( cd "$D" && QA_ENGINE="$CK_ENGINE" bash "$CKPT" "$1" "$2" pass --last-action "viewed the list" >/dev/null ); }
+  # mk_netlog <run> — the run's own network-log.json, second in the
+  # resolution order qa-verify.sh's network_log_file() uses.
+  mk_netlog() { mkdir -p "$D/.qa/runs/$1"; printf '%s' '[]' > "$D/.qa/runs/$1/network-log.json"; }
+
+  # --- 8a: the driver-log ARM itself — the arm that had NO test at all
+  # before this round, which is how three lanes came to mean three different
+  # things by the label. With a driver network log the verifier would
+  # resolve and no verifier record to consult, the canary is the only
+  # witness and accepting it is correct (post-Lane-I, `driver-log` can no
+  # longer be claimed on file presence alone).
+  mk_netlog dlonly
+  mkck dlonly DL1
+  check "test_driver_log_channel_is_accepted_as_capture[$CK_ENGINE]: fixture sanity — the canary reports driver-log" \
+    "$(canary_channel "$D/.qa/runs/dlonly")" "driver-log"
+  junit_run "$D" dlonly "$D/dlonly"; RC8A=$?
+  check "test_driver_log_channel_is_accepted_as_capture[$CK_ENGINE]: exits 0 on the canary's word alone (no second witness present)" \
+    "$RC8A" "0"
+  check_not_contains "test_driver_log_channel_is_accepted_as_capture[$CK_ENGINE]: nothing is synthesized" \
+    "$(cat "$D/dlonly.xml")" "__run-verified__"
+
+  # --- 8b: THE HEADLINE CASE. The canary says driver-log; the verifier says
+  # no channel yielded findings. The second witness wins: a stub session.md
+  # must not buy a green build.
+  mk_netlog dlnone
+  mkck dlnone DL2
+  write_runchecks_vj "$D/.qa/runs/dlnone" none
+  check "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: fixture sanity — the canary claims driver-log" \
+    "$(canary_channel "$D/.qa/runs/dlnone")" "driver-log"
+  junit_run "$D" dlnone "$D/dlnone"; RC8B=$?
+  check "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: exits NON-ZERO" \
+    "$([[ "$RC8B" -ne 0 ]] && echo yes)" "yes"
+  X8B="$(cat "$D/dlnone.xml")"
+  check_contains "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: the ratified reason string is reused verbatim" \
+    "$X8B" '<failure message="UNVERIFIED — no independent capture"'
+  check_contains "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: the body names the verifier witness" \
+    "$X8B" "runChecks.findingsChannel=none"
+  check_contains "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: and names what the canary claimed, so the disagreement is visible" \
+    "$X8B" "channel=driver-log"
+  check "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: counted once (1 criterion + 1 synthetic)" \
+    "$(attr1 "$D/dlnone.xml" tests)" 'tests="2"'
+  check "test_findings_channel_none_overrides_a_driver_log_canary[$CK_ENGINE]: failures is exactly 1" \
+    "$(attr1 "$D/dlnone.xml" failures)" 'failures="1"'
+  check_not_contains "test_findings_channel_is_never_read_as_a_fifth_boolean_check[$CK_ENGINE]: no run-checks failure is invented" \
+    "$X8B" 'run checks failed'
+  check_contains "test_findings_channel_is_never_read_as_a_fifth_boolean_check[$CK_ENGINE]: the property still reports exactly the four booleans" \
+    "$X8B" 'value="ledgerComplete=true classificationsAgree=true loadWindowCovered=true knownDefectsOk=true"'
+  check_not_contains "test_assurance_tier_never_stamps_all_clear_on_an_unverified_run[$CK_ENGINE]: the all-clear stamp is gone" \
+    "$X8B" "every recorded pass independently verified"
+  check_contains "test_assurance_tier_never_stamps_all_clear_on_an_unverified_run[$CK_ENGINE]: the tier itself names the UNVERIFIED status" \
+    "$X8B" 'recorded passes were independently verified, but the run is UNVERIFIED — no independent capture'
+
+  # --- 8c: both witnesses agree there IS a channel -> clean. ---
+  mk_netlog dlok
+  mkck dlok DL3
+  write_runchecks_vj "$D/.qa/runs/dlok" driver-log
+  junit_run "$D" dlok "$D/dlok"; RC8C=$?
+  check "test_findings_channel_driver_log_agrees[$CK_ENGINE]: exits 0" "$RC8C" "0"
+  check_not_contains "test_findings_channel_driver_log_agrees[$CK_ENGINE]: nothing is synthesized" \
+    "$(cat "$D/dlok.xml")" "__run-verified__"
+
+  # --- 8d: the field OMITTED is today's record shape and stays benign —
+  # this witness may never retro-fail a run recorded before Lane K emitted
+  # it. (Fail-closed applies to a field that IS recorded but unusable, not
+  # to one that was never written.) ---
+  mk_netlog dlomit
+  mkck dlomit DL4
+  write_runchecks_vj "$D/.qa/runs/dlomit" ""
+  check "test_findings_channel_absent_stays_benign[$CK_ENGINE]: fixture sanity — the field is genuinely absent" \
+    "$(grep -c findingsChannel "$D/.qa/runs/dlomit/verification.json" | tr -d ' ')" "0"
+  junit_run "$D" dlomit "$D/dlomit"; RC8D=$?
+  check "test_findings_channel_absent_stays_benign[$CK_ENGINE]: exits 0" "$RC8D" "0"
+
+  # --- 8e: a RECORDED but unrecognized value fails closed, exactly like an
+  # unrecognized canary channel. A value this reader cannot interpret is not
+  # evidence that a channel produced findings. ---
+  for BADFC in carrier-pigeon "" TOOLSTREAM; do
+    mk_netlog dlbad
+    mkck "dlbad" DL5
+    write_runchecks_vj "$D/.qa/runs/dlbad" "$BADFC"
+    if [[ "$BADFC" == "" ]]; then
+      # "" omits the field in the writer, so write the empty-string value
+      # explicitly — an empty string IS a recorded, uninterpretable value.
+      python3 - "$D/.qa/runs/dlbad/verification.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+recs = json.load(open(path))
+recs[0]["runChecks"]["findingsChannel"] = ""
+open(path, "w").write(json.dumps(recs))
+PYEOF
+    fi
+    junit_run "$D" dlbad "$D/dlbad"; RC8E=$?
+    check "test_findings_channel_unrecognized_value_fails_closed[$CK_ENGINE/'$BADFC']: exits NON-ZERO" \
+      "$([[ "$RC8E" -ne 0 ]] && echo yes)" "yes"
+    check_contains "test_findings_channel_unrecognized_value_fails_closed[$CK_ENGINE/'$BADFC']: reason is the ratified capture string" \
+      "$(cat "$D/dlbad.xml")" "UNVERIFIED — no independent capture"
+  done
+
+  # --- 8f: a toolstream canary with findingsChannel=none is the same
+  # disagreement in the other direction — a toolstream that exists but
+  # yielded no findings channel to the verifier. ---
+  ( cd "$D" && bash "$TOOLSTREAM" append tsnone '{"tool":"browser_snapshot","args":{},"resultDigest":{"len":0,"sha256":"t1"}}' >/dev/null )
+  mkck tsnone DL6
+  write_runchecks_vj "$D/.qa/runs/tsnone" none
+  check "test_findings_channel_none_overrides_a_toolstream_canary[$CK_ENGINE]: fixture sanity — the canary reports toolstream" \
+    "$(canary_channel "$D/.qa/runs/tsnone")" "toolstream"
+  junit_run "$D" tsnone "$D/tsnone"; RC8F=$?
+  check "test_findings_channel_none_overrides_a_toolstream_canary[$CK_ENGINE]: exits NON-ZERO" \
+    "$([[ "$RC8F" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_findings_channel_none_overrides_a_toolstream_canary[$CK_ENGINE]: the body names both witnesses" \
+    "$(cat "$D/tsnone.xml")" "channel=toolstream"
+
+  # --- 8g: BOTH witnesses negative -> the reason appears exactly ONCE.
+  # No per-run network log, no toolstream, and the tree's session.md stub
+  # converts to zero events, so the canary honestly reports `none` — which
+  # is also the regression guard for Lane I's fix: were file presence to
+  # count as capture again, this fixture would report `driver-log` and the
+  # sanity check below would fail.
+  mkck bothnone DL7
+  write_runchecks_vj "$D/.qa/runs/bothnone" none
+  check "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: fixture sanity — the canary is none too" \
+    "$(canary_channel "$D/.qa/runs/bothnone")" "none"
+  junit_run "$D" bothnone "$D/bothnone"; RC8G=$?
+  check "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: exits NON-ZERO" \
+    "$([[ "$RC8G" -ne 0 ]] && echo yes)" "yes"
+  check "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: the headline names the reason ONCE" \
+    "$(head -1 "$D/bothnone.stderr")" "UNVERIFIED — no independent capture"
+  check "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: exactly one synthetic testcase element" \
+    "$(grep -c '<testcase name="__run-verified__"' "$D/bothnone.xml" | tr -d ' ')" "1"
+  check_contains "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: the body names both witnesses" \
+    "$(cat "$D/bothnone.xml")" "runChecks.findingsChannel=none"
+  check_not_contains "test_both_witnesses_negative_reason_is_not_duplicated[$CK_ENGINE]: with no phantom canary claim, since the canary agreed" \
+    "$(cat "$D/bothnone.xml")" "although the canary claimed"
+
+  # --- 8i: `loadWindowCovered: "not-evaluated"` while the capture witnesses
+  # are BOTH positive — the checks could not be evaluated for a reason other
+  # than missing capture, and nothing pinned that combination before.
+  #
+  # It is genuinely reachable, not synthetic: a run with a driver
+  # network-log.json (so the canary AND runChecks.findingsChannel both say
+  # `driver-log`) but no toolstream has no ordered tool sequence, so the
+  # load-window check has nothing to evaluate. Built with the REAL
+  # qa-verify.sh, whose own exit code is 0 here — the un-evaluated check does
+  # not fail the run at the verifier — so this export is the ONLY thing
+  # standing between a check that never ran and a green build.
+  #
+  # WHERE THE SIGNAL LANDS, stated explicitly so a future change to it is
+  # visible rather than silent: the build fails through the `__run-checks__`
+  # row, which NAMES the un-evaluated check; there is no `__run-verified__`
+  # row, because neither capture witness is negative. The run therefore never
+  # reads as verified — the assurance tier carries the caveat too.
+  mkdir -p "$D/.qa/runs/nevalch"
+  printf '%s' "$RC_NETLOG" > "$D/.qa/runs/nevalch/network-log.json"
+  rc_jr "$D" nevalch '{"event":"run_started"}'
+  rc_jr "$D" nevalch "$RC_FINDING_500"
+  ( cd "$D" && QA_ENGINE="$CK_ENGINE" bash "$CKPT" nevalch EC10 blocked --last-action "environment stopped us" >/dev/null )
+  ( cd "$D" && QA_ENGINE="$CK_ENGINE" bash "$QAVERIFY" nevalch >/dev/null 2>&1 ); RCV_NE=$?
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: fixture sanity — qa-verify itself exits 0" "$RCV_NE" "0"
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: fixture sanity — only the load window is un-evaluated" \
+    "$(rc_checks "$D/.qa/runs/nevalch")" \
+    "pass ledgerComplete=true classificationsAgree=true loadWindowCovered=not-evaluated knownDefectsOk=true"
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: fixture sanity — the canary reports a real channel" \
+    "$(canary_channel "$D/.qa/runs/nevalch")" "driver-log"
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: fixture sanity — and so does the verifier's findingsChannel" \
+    "$(rc_runchecks_field "$D/.qa/runs/nevalch" findingsChannel)" "driver-log"
+  junit_run "$D" nevalch "$D/nevalch"; RC8I=$?
+  X8I="$(cat "$D/nevalch.xml")"
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: the build FAILS even though qa-verify exited 0" \
+    "$([[ "$RC8I" -ne 0 ]] && echo yes)" "yes"
+  check_contains "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: the report NAMES the un-evaluated check" \
+    "$X8I" '<failure message="run checks failed: loadWindowCovered"'
+  check_not_contains "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: no capture reason is invented — both witnesses were positive" \
+    "$X8I" "no independent capture"
+  check_not_contains "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: so there is no __run-verified__ row" \
+    "$X8I" '<testcase name="__run-verified__"'
+  check_not_contains "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: and the tier never stamps the all-clear" \
+    "$X8I" "every recorded pass independently verified"
+  check_contains "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: the property reports the recorded value verbatim, not as unrecorded" \
+    "$X8I" 'loadWindowCovered=not-evaluated'
+  check "test_not_evaluated_check_with_real_capture[$CK_ENGINE]: counted once (1 criterion + 1 synthetic)" \
+    "$(attr1 "$D/nevalch.xml" failures)" 'failures="1"'
+
+done
+
+# --- 8h: engine PARITY across the canary's two engines, streams SEPARATE.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  for FX in dlonly dlnone dlok dlomit dlbad tsnone bothnone nevalch; do
+    for STREAM in xml stdout stderr; do
+      check "test_engines_agree[$FX/$STREAM]: identical across checkpoint.sh engines" \
+        "$(diff <(norm "$WORK/p8-jq/$FX.$STREAM" "$WORK/p8-jq") \
+                <(norm "$WORK/p8-python3/$FX.$STREAM" "$WORK/p8-python3") >/dev/null && echo same)" "same"
+    done
+  done
+else
+  echo "SKIP - test_engines_agree[driver-log arm]: both jq and python3 are needed"
+fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
