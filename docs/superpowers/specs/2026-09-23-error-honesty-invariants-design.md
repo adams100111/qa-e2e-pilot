@@ -442,7 +442,8 @@ trigger `UNVERIFIED`. Anything larger is separate work.
 ## 6. Data flow
 
 ```
-driver network log (HAR / --save-session)  ──┐   authoritative for REQUESTS
+browser_network_requests results (toolstream) ─┐  the REQUEST channel that ships
+  (a file-based HAR is also read — no producer yet) │  (sees the navigating document request)
                                              │   (sees the navigating document request)
 observe.js console[] (in-page interceptors) ─┤   authoritative for CONSOLE
                                              │   (JS exceptions; a HAR cannot see these)
