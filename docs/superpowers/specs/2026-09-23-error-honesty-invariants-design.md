@@ -442,24 +442,28 @@ trigger `UNVERIFIED`. Anything larger is separate work.
 ## 6. Data flow
 
 ```
-browser_network_requests results (toolstream) ─┐  the REQUEST channel that ships
-  (a file-based HAR is also read — no producer yet) │  (sees the navigating document request)
-                                             │   (sees the navigating document request)
-observe.js console[] (in-page interceptors) ─┤   authoritative for CONSOLE
-                                             │   (JS exceptions; a HAR cannot see these)
-                                             ▼
-                                  classify-finding.sh  (deterministic, fail-closed)
-                                     originClass × statusClass
-                                             │
-                                             ▼
-                          journal.sh append  (finding_observed, keyed-set)
-                                             │
-  capture-hook.sh ──► toolstream.jsonl ──────┼──► qa-verify.sh   (run-scoped, out-of-agent)
-     (PostToolUse; responseBody capped 4KB)  │       ├─ ledger completeness    → override
-                                             │       ├─ classification re-check → override
-                                             │       ├─ load-window coverage    → fail
-                                             │       └─ known-defect status     → fail
-                                             └──► findings.json (projection, report only)
+browser_network_requests results  ──┐   the REQUEST channel that SHIPS: it is the only
+  (parsed out of the toolstream)    │   thing that sees the navigating document request,
+                                    │   so it is what carries a navigation-time 500.
+                                    │   (A file-based HAR / network-log.json is also
+                                    │    read, but nothing writes one yet — §5.4.)
+observe.js console[]  ──────────────┤   the CONSOLE channel: JS exceptions,
+  (in-page interceptors)            │   window.onerror, unhandled rejections.
+                                    │   A request log cannot see these.
+                                    ▼
+                      classify-finding.sh   (deterministic, fail-closed)
+                        originClass × statusClass
+                                    │
+                                    ▼
+              journal.sh append   (finding_observed, keyed-set dedup)
+                                    │
+  capture-hook.sh ─► toolstream.jsonl ─┼─► qa-verify.sh  (run-scoped, out-of-agent)
+   (PostToolUse; responseBody          │     ├─ ledger completeness     → override
+    capped at 4000 bytes)              │     ├─ classification re-check → override
+                                       │     ├─ load-window coverage    → fail
+                                       │     └─ known-defect status     → fail
+                                       └─► checkpoint.json `findings`
+                                             (projection; no report reads it yet)
 ```
 
 ## 7. Error handling
