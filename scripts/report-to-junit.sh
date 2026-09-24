@@ -59,6 +59,23 @@
 # precisely when it is needed. `qa.verified` / `qa.assuranceTier` and the per-criterion
 # `confidence: low` semantics are UNCHANGED; low confidence simply stops being the headline.
 #
+# RUN-SCOPED CHECKS (`__run-checks__`, Task 8): qa-verify.sh writes AT MOST one synthetic run-level
+# record carrying `runChecks: {ledgerComplete, classificationsAgree, loadWindowCovered,
+# knownDefectsOk}`. Unlike `__phase-surface__` it already flips qa-verify's OWN exit code, so
+# qa-ci.sh's VERIFY_RC path fails the build either way — but the per-criterion loop below never
+# looks it up (no checkpoint.json row has that id), so a red build named NO failing check. A
+# non-pass record therefore synthesizes a `<testcase name="__run-checks__">` carrying a
+# `<failure message="run checks failed: <names>">` naming WHICH of the four did not pass, counted
+# in tests/failures like the UNVERIFIED case. It is counted exactly ONCE: `verify_overrides` is
+# computed over checkpoint criteria only and `__run-checks__` is not one, so there is no double
+# count against VERIFY_RC. It never suppresses (nor is suppressed by) an UNVERIFIED
+# `__run-verified__` failure — a run can legitimately be both, and then both rows appear. A record
+# whose `runChecks` object is missing entirely (qa-verify's build_error_record path: the four checks
+# did not COMPLETE) fails closed with a message that says exactly that rather than naming four
+# false checks — a lost gate must never render as a clean run. An all-pass record synthesizes
+# nothing and is surfaced as the informational `qa.runChecks` property, so "the gate ran and
+# passed" stays visible.
+#
 # COST TELEMETRY (audit-2 W4-3): when a sibling run-manifest.json carries a non-null `cost`
 # object (checkpointing-qa-memory writes it from scripts/cost-summary.sh's output), ONE
 # additional <property name="qa.cost" .../> line is emitted on the <testsuite>, e.g.
@@ -301,6 +318,45 @@ if verification_records is not None:
             if rec and rec.get("verifierVerdict") != "pass":
                 verify_overrides += 1
 
+# --- run-scoped checks (`__run-checks__`, Task 8) -------------------------
+# Canonical field order — it is the order the failure message names them in,
+# so it must not depend on dict iteration.
+RUN_CHECK_FIELDS = ("ledgerComplete", "classificationsAgree",
+                    "loadWindowCovered", "knownDefectsOk")
+
+run_checks_rec = verification_by_key.get(("__run-checks__", ""))
+run_checks_message = ""   # "" = nothing to synthesize
+run_checks_summary = ""   # the informational property's value
+if run_checks_rec:
+    checks = run_checks_rec.get("runChecks")
+    rc_verdict = run_checks_rec.get("verifierVerdict", "fail")
+    if isinstance(checks, dict):
+        run_checks_summary = " ".join(
+            "%s=%s" % (f, "true" if checks.get(f) is True else
+                          ("false" if checks.get(f) is False else "unrecorded"))
+            for f in RUN_CHECK_FIELDS
+        )
+        # `is not True`, not `is False`: a check that is missing or not a
+        # boolean has not been PROVEN, and an unproven structural check is
+        # not a pass (gates fail closed).
+        not_passed = [f for f in RUN_CHECK_FIELDS if checks.get(f) is not True]
+        if not_passed:
+            run_checks_message = "run checks failed: " + ", ".join(not_passed)
+        elif rc_verdict != "pass":
+            # Every check reads as passed yet the verifier did not: trust the
+            # verdict, never the derived summary.
+            run_checks_message = (
+                "run checks failed: the four run-scoped checks did not complete "
+                f"(verifierVerdict={rc_verdict})"
+            )
+    else:
+        run_checks_summary = f"verifierVerdict={rc_verdict} (no runChecks recorded)"
+        if rc_verdict != "pass":
+            run_checks_message = (
+                "run checks failed: the four run-scoped checks did not complete "
+                f"(verifierVerdict={rc_verdict})"
+            )
+
 # Honest, per-report assurance-tier note (spec §6 / docs/harness-adapters.md).
 # qa-verify is the universal, deterministic floor — the live Claude hooks
 # (PostToolUse capture + PreToolUse block) are best-effort/tamper-evident,
@@ -319,6 +375,15 @@ elif verify_overrides:
     assurance_tier = (f"qa-verify: ran, authoritative -- {verify_overrides} recorded pass(es) "
                        "OVERRIDDEN below (see each testcase's <failure> for the verifier's "
                        "reason). " + _TIER_NOTE)
+elif run_checks_message:
+    # Do not stamp "every recorded pass independently verified" beside a
+    # failed run-scoped check: no pass was overridden, but a structural
+    # proof about the run's own record did not hold, and a stamp too quiet
+    # to stop anyone reading the run as a clean verification is the failure
+    # this whole plan exists to remove.
+    assurance_tier = ("qa-verify: ran, authoritative -- recorded passes were independently "
+                       "verified, but the run-scoped checks did NOT all pass: "
+                       f"{run_checks_message} (see the __run-checks__ testcase). " + _TIER_NOTE)
 else:
     assurance_tier = ("qa-verify: ran, authoritative -- every recorded pass independently "
                        "verified. " + _TIER_NOTE)
@@ -327,8 +392,14 @@ else:
 # is the whole mechanism: `failures` is what the exit code at the bottom
 # reads, and a run-level row that is not counted is a <properties> block
 # with extra steps.
-tests = len(criteria) + len(advisory_items) + (1 if unverified else 0)
-failures = counts["fail"] + verify_overrides + (1 if unverified else 0)
+# Both synthetic run-level rows count, independently of each other: a run
+# can be UNVERIFIED *and* have a failed run-check, and neither may hide the
+# other. Neither is double-counted against verify_overrides, which only ever
+# visits checkpoint criteria.
+tests = (len(criteria) + len(advisory_items)
+         + (1 if unverified else 0) + (1 if run_checks_message else 0))
+failures = (counts["fail"] + verify_overrides
+            + (1 if unverified else 0) + (1 if run_checks_message else 0))
 errors = counts["error"]
 skipped = counts["blocked"] + counts["deferred"] + len(advisory_items)
 
@@ -385,6 +456,15 @@ if anomaly_counts:
     )
     lines.append(
         f'      <property name="qa.foldAnomalies" value={quoteattr(anomaly_text)}/>'
+    )
+
+# Run-scoped checks (Task 8): the four outcomes as ONE informational line,
+# emitted whenever the record exists — including when it failed, where the
+# <testcase> below is the signal and this is the echo. Same posture as
+# qa.phaseSurfaceFindings: it never affects tests/failures/errors.
+if run_checks_summary:
+    lines.append(
+        f'      <property name="qa.runChecks" value={quoteattr(run_checks_summary)}/>'
     )
 
 # Cost telemetry (audit-2 W4-3): ONE properties line, honest tool-calls-as-proxy
@@ -452,6 +532,26 @@ if unverified:
     lines.append(
         f'      <failure message={quoteattr(unverified_message)}>'
         f'{escape(" ".join(detail_lines))}</failure>'
+    )
+    lines.append('    </testcase>')
+
+# The synthesized run-scoped-checks case (Task 8 hand-off). Emitted after
+# __run-verified__ and before any criterion: both are run-level rows that
+# qualify the verdicts beneath them. qa-verify already failed its own exit
+# code on this record — this row exists so the REPORT names which check
+# failed, because a build that fails without saying why gets routed around.
+if run_checks_message:
+    rc_reasons = run_checks_rec.get("reasons") or []
+    rc_detail = "; ".join(str(r) for r in rc_reasons) or \
+        "qa-verify recorded a run-scoped check failure with no reason text"
+    rc_channel = run_checks_rec.get("channel")
+    if rc_channel:
+        rc_detail += f" [capture channel: {rc_channel}]"
+    lines.append(
+        f'    <testcase name="__run-checks__" classname={quoteattr(run_id)}>'
+    )
+    lines.append(
+        f'      <failure message={quoteattr(run_checks_message)}>{escape(rc_detail)}</failure>'
     )
     lines.append('    </testcase>')
 
