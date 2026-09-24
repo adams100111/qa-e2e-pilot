@@ -52,17 +52,54 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
    - **Present** → each record carries both `inRunVerdict` and `verifierVerdict`. An **override** is
      exactly `verifierVerdict != inRunVerdict` — no `checkpoint.json` join needed. List each override
      as `criterionId[@persona]: inRunVerdict → verifierVerdict` with its `reasons`, and each
-     confidence downgrade. Skip the synthetic `criterionId == "__phase-surface__"` record as a
-     criterion row; fold it into a one-line run-level note if present. Point at the engine's
-     `report.md` as the authoritative source for these overrides (this command restates, it does not
-     re-adjudicate).
+     confidence downgrade. Point at the engine's `report.md` as the authoritative source for these
+     overrides (this command restates, it does not re-adjudicate).
+   - **EXCLUDE THE SYNTHETIC RUN-LEVEL RECORDS FROM THE OVERRIDE LIST.** `verification.json` carries
+     up to **two** records that are not criteria at all. Both use `persona: ""` and
+     `inRunVerdict: "n/a"`, so the override test above (`verifierVerdict != inRunVerdict`) matches
+     them **trivially** — `n/a → pass` is not an override, it is a run-level record with no in-run
+     verdict to disagree with. Counting either as a criterion override reports a defect that does not
+     exist; missing a `__run-checks__` failure reports a run-scoped gate failure as an ordinary
+     criterion failure. Handle each by name:
+     - **`criterionId == "__phase-surface__"`** (at most one) — a tool call that fell outside every
+       acting window, or one forbidden in the active phase. `verifierVerdict` is **always `"pass"`**
+       and `confidence` **always `"low"`**; its `reasons` name the phase/tool/timestamp. It is
+       **record-only and deliberately does NOT flip `qa-verify`'s exit code** (an ambiguous
+       wall-clock correlation must degrade, never falsely override). Fold it into a one-line
+       run-level note.
+     - **`criterionId == "__run-checks__"`** (at most one) — the four run-scoped checks, carried as
+       `runChecks: {ledgerComplete, classificationsAgree, loadWindowCovered, knownDefectsOk}` plus a
+       `channel` and the known-defect registry's per-entry `knownDefects` states. `verifierVerdict`
+       is `"pass"` or `"fail"`, `confidence` is `"high"` (or `"low"` when `channel` is `none`). A
+       record whose `runChecks` object is **absent** means the checks did not COMPLETE — fail closed
+       and say exactly that rather than naming four false checks. **Unlike `__phase-surface__`, a
+       non-`pass` here DOES flip `qa-verify`'s exit code.** Report it as a **run-scoped gate
+       failure**, above the criterion rows, naming **which** of the four did not pass — a check that
+       is missing or non-boolean has not been proven, so it counts as not passed. An all-pass record
+       is informational: the engine surfaces it as a `qa.runChecks` property rather than a failure, so
+       "the gate ran and passed" stays visible — say so instead of reporting nothing.
+   - **`__run-verified__` is NOT in `verification.json`** — `qa-verify.sh` never writes it, so an
+     operator reading that file will never see it and must not go looking. It is a JUnit
+     `<testcase name="__run-verified__">` **synthesized by the engine's `report-to-junit.sh`** for a
+     run-level `UNVERIFIED` (no independent capture channel, the `capture_probed` canary absent, an
+     `unparseable-line`/`seq-gap` fold anomaly, or `QA_SKIP_VERIFY=1`). It is counted into the
+     suite's tests/failures, so it **does** reach the exporter's exit code and `qa-ci.sh`'s. Read it
+     from the JUnit XML or the `qa.unverifiedReason` property, not from here; the two are
+     independent, and a run can carry both a `__run-verified__` and a `__run-checks__` failure at
+     once. See `docs/running-in-ci.md`.
 
 4. **Write `verification.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-verify-template.md`: out-of-plan
    list, override list, confidence downgrades, and the verified/overridden/not-verified state.
 
-5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades — and the next step
-   (`/qa-status "<target>"`). Lead with out-of-plan acts and overrides when any exist.
+5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades — plus the run-scoped
+   checks' state (passed / which of the four failed / did not complete / no record) and whether the
+   run was reported `UNVERIFIED`, and the next step (`/qa-status "<target>"`). Lead with out-of-plan
+   acts, a run-scoped gate failure and overrides when any exist. **Never sum the synthetic run-level
+   records into the override count.**
 
 Guardrails: read-only w.r.t. artifacts (never edits `checkpoint.json`/`checklist.json`/
 `verification.json`/`report.md`). This is an agent-followed command — it has no exit code; it
-REPORTS. The deterministic gate for automation is `verify-plan.sh`'s exit code, read directly by CI.
+REPORTS. The deterministic gates for automation are read directly by CI, not from here:
+`verify-plan.sh`'s exit code for out-of-plan acts, `qa-verify.sh`'s own exit code for an overridden
+pass or a failed `__run-checks__`, and `report-to-junit.sh`'s for a `fail`/`error` criterion or an
+`UNVERIFIED` run.

@@ -1330,5 +1330,415 @@ check "C5b: duplicate checklist id emits a note" "$(printf '%s' "$DUP_ERR" | gre
 check "C5b: pass still recorded" \
   "$([[ -f "$WORK/.qa/runs/${DUP_RUN_ID}/checkpoint.json" ]] && echo yes)" "yes"
 
+
+# ===========================================================================
+# Task 7 (Lane I) — the `capture_probed` once-guard.
+#
+# checkpoint.sh emits exactly ONE `capture_probed` event per run, recording
+# WHICH capture channel this run's evidence can come from:
+#   toolstream  — a toolstream line for this run already exists
+#   driver-log  — scripts/session-preflight.sh could resolve a session log
+#   none        — neither. An honest degrade, NOT an error: it is the input
+#                 to the run-level UNVERIFIED status.
+# The guard lives in cmd_upsert beside the journal-emptiness `run_started`
+# guard — deliberately NOT in the agent's Phase 0 pre-flight, because
+# commands/qa-resume.md dispatches a resumed run into its recorded phase,
+# "not from Pre-flight", so a Phase-0 assertion is silently skipped on every
+# resumed run.
+#
+# Each case runs in its OWN cwd (checkpoint.sh's QA_BASE is relative to the
+# cwd, and the .playwright-mcp/ discovery probe is too), so one case's
+# channel fixtures can never leak into another's.
+# ===========================================================================
+
+# cp_count <cwd> <run-id> -> how many capture_probed events that journal holds
+cp_count() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -R -s '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ] | length' \
+    < "$j" 2>/dev/null
+}
+
+# cp_field <cwd> <run-id> <jq-field> -> that field of the FIRST capture_probed
+cp_field() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -r -R -s --arg f "$3" '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ]
+              | if length == 0 then "NOEVENT" else (.[0][$f] // "NOFIELD") end' \
+    < "$j" 2>/dev/null
+}
+
+# cp_keys <cwd> <run-id> -> sorted key list of the FIRST capture_probed event
+cp_keys() {
+  local j="$1/.qa/runs/$2/journal.ndjson"
+  [[ -f "$j" ]] || { echo "NOJOURNAL"; return 0; }
+  jq -r -R -s '[ split("\n")[] | select(length > 0) | (try fromjson catch null)
+              | select(type == "object") | select(.event == "capture_probed") ]
+              | if length == 0 then "NOEVENT" else (.[0] | keys | join(",")) end' \
+    < "$j" 2>/dev/null
+}
+
+# --- CP1: fresh run, no capture channel at all -> ONE event, channel none ---
+CP1_DIR="$WORK/cp-none"; mkdir -p "$CP1_DIR"
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C1 pass >/dev/null 2>&1 )
+CP1_RC=$?
+check "CP1: channel none is NOT an error (exit 0)" "$CP1_RC" "0"
+check "CP1: exactly one capture_probed on a fresh run" "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP1: channel is none when neither channel exists" "$(cp_field "$CP1_DIR" cp1 channel)" "none"
+check "CP1: event name is capture_probed" "$(cp_field "$CP1_DIR" cp1 event)" "capture_probed"
+check "CP1: event carries exactly {channel,event} + journal seq/t" \
+  "$(cp_keys "$CP1_DIR" cp1)" "channel,event,seq,t"
+# the canary must not displace run_started as the run's first event, and the
+# ordinary upsert record must be untouched by it
+check "CP1: run_started is still seq 1" \
+  "$(jq -r -R -s '[ split("\n")[] | select(length>0) | fromjson ] | .[0] | "\(.event):\(.seq)"' \
+     < "$CP1_DIR/.qa/runs/cp1/journal.ndjson" 2>/dev/null)" "run_started:1"
+check "CP1: criterion record still written" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria[0].criterion_id')" "C1"
+check "CP1: criterion verdict still pass" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria[0].verdict')" "pass"
+
+# --- CP2: never re-emitted by later upserts in the same run ----------------
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C1 fail >/dev/null 2>&1 )
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C2 blocked >/dev/null 2>&1 )
+check "CP2: still exactly one capture_probed after 3 upserts" "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP2: the later upserts still recorded (2 criteria)" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '.criteria | length')" "2"
+
+# --- CP3: RESUME — a resumed session appends to a NON-EMPTY journal that
+# already carries the canary; it must NOT re-fire. This is the central claim
+# of the task, so it is asserted against a journal that has been appended to
+# out-of-band (exactly what a resumed run's journal looks like).
+printf '%s\n' '{"event":"phase_exited","phase":"verify","seq":98,"t":"2026-09-23T00:00:00Z"}' \
+  >> "$CP1_DIR/.qa/runs/cp1/journal.ndjson"
+( cd "$CP1_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp1 C3 pass >/dev/null 2>&1 )
+CP3_RC=$?
+check "CP3: resumed upsert exits 0" "$CP3_RC" "0"
+check "CP3: resume does NOT re-emit capture_probed (still exactly one)" \
+  "$(cp_count "$CP1_DIR" cp1)" "1"
+check "CP3: the resumed verdict was still recorded" \
+  "$(get "$CP1_DIR/.qa/runs/cp1/checkpoint.json" '[.criteria[] | select(.criterion_id=="C3")] | length')" "1"
+
+# --- CP4: the journal was created by journal-emit.sh (freeze/started) BEFORE
+# the first checkpoint.sh upsert — the real orchestrator order (the plan is
+# frozen at the Generate→Verify boundary, before any verdict). The canary
+# must still fire exactly once: a bare journal-emptiness test would be dead
+# code in every real run.
+CP4_DIR="$WORK/cp-emit-first"; mkdir -p "$CP4_DIR/.qa/runs/cp4"
+printf '%s\n' '{"event":"run_started","runId":"cp4","seq":1,"t":"2026-09-23T00:00:00Z"}' \
+  > "$CP4_DIR/.qa/runs/cp4/journal.ndjson"
+printf '%s\n' '{"event":"criterion_started","scenarioId":"__shared__","criterionId":"C1","personaId":"","seq":2,"t":"2026-09-23T00:00:00Z"}' \
+  >> "$CP4_DIR/.qa/runs/cp4/journal.ndjson"
+( cd "$CP4_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp4 C1 pass >/dev/null 2>&1 )
+CP4_RC=$?
+check "CP4: upsert onto a journal-emit-created journal exits 0" "$CP4_RC" "0"
+check "CP4: canary fires once even though the journal was already non-empty" \
+  "$(cp_count "$CP4_DIR" cp4)" "1"
+( cd "$CP4_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp4 C2 pass >/dev/null 2>&1 )
+check "CP4: and still exactly one after a second upsert" "$(cp_count "$CP4_DIR" cp4)" "1"
+
+# --- CP5: channel toolstream when a toolstream line for this run exists ----
+CP5_DIR="$WORK/cp-toolstream"; mkdir -p "$CP5_DIR/.qa/runs/cp5"
+printf '%s\n' '{"seq":1,"tool":"browser_navigate","args":{}}' > "$CP5_DIR/.qa/runs/cp5/toolstream.jsonl"
+( cd "$CP5_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp5 C1 pass >/dev/null 2>&1 )
+check "CP5: exactly one capture_probed" "$(cp_count "$CP5_DIR" cp5)" "1"
+check "CP5: channel is toolstream when a toolstream line exists" \
+  "$(cp_field "$CP5_DIR" cp5 channel)" "toolstream"
+
+# A "real" --save-session fixture: session-to-toolstream.js converts this to
+# ONE browser_click event (same fixture idiom as tests/session-preflight and
+# tests/session-to-toolstream). A `# session` stub converts to ZERO.
+# write_real_session_log <path>
+write_real_session_log() {
+  cat > "$1" <<'SESSIONEOF'
+# Session log
+
+### Tool call: browser_click
+- Params: {"element":"Add founder button","ref":"e12"}
+- Result
+```json
+{"code":"await page.locator('#add').click();"}
+```
+SESSIONEOF
+}
+
+# --- CP6: FIX ROUND 1 — a QA_SESSION_LOG .md that converts to ZERO events is
+# NOT capture. File presence is not capture: session-preflight.sh derives 0
+# events from it, qa-verify.sh resolves no driver log from it, so the canary
+# must not claim one either. (Wave-2 Critical: the canary said driver-log,
+# report-to-junit accepted it as independent capture, and a run with no
+# capture at all presented as fully verified.)
+CP6_DIR="$WORK/cp-sesslog-stub"; mkdir -p "$CP6_DIR"
+printf '%s\n' '# session' > "$CP6_DIR/session.md"
+( cd "$CP6_DIR" || exit 1; QA_SESSION_LOG="session.md" bash "$SCRIPT" cp6 C1 pass >/dev/null 2>&1 )
+CP6_RC=$?
+check "CP6: a zero-event QA_SESSION_LOG is not an error (exit 0)" "$CP6_RC" "0"
+check "CP6: exactly one capture_probed" "$(cp_count "$CP6_DIR" cp6)" "1"
+check "CP6: a QA_SESSION_LOG .md that converts to 0 events is channel none" \
+  "$(cp_field "$CP6_DIR" cp6 channel)" "none"
+
+# --- CP7: FIX ROUND 1 — THE REVIEWER'S REPRODUCTION, INVERTED. A stub
+# .playwright-mcp/session.md, no toolstream, no HAR: the exact run that used
+# to present as "independently verified" end-to-end. It must be `none`.
+CP7_DIR="$WORK/cp-pwmcp-stub"; mkdir -p "$CP7_DIR/.playwright-mcp"
+printf '%s\n' '# session' > "$CP7_DIR/.playwright-mcp/session-2026.md"
+( cd "$CP7_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp7 C1 pass >/dev/null 2>&1 )
+CP7_RC=$?
+check "CP7: stub .md + no toolstream + no HAR is not an error (exit 0)" "$CP7_RC" "0"
+check "CP7: exactly one capture_probed" "$(cp_count "$CP7_DIR" cp7)" "1"
+check "CP7: mere presence of a .playwright-mcp/*.md is NOT driver-log" \
+  "$(cp_field "$CP7_DIR" cp7 channel)" "none"
+
+# --- CP8: toolstream WINS over a resolvable driver log (a live-hook
+# toolstream is the channel session-preflight.sh itself refuses to overwrite)
+CP8_DIR="$WORK/cp-both"; mkdir -p "$CP8_DIR/.qa/runs/cp8" "$CP8_DIR/.playwright-mcp"
+printf '%s\n' '{"seq":1,"tool":"browser_click","args":{}}' > "$CP8_DIR/.qa/runs/cp8/toolstream.jsonl"
+printf '%s' '{"log":{"entries":[]}}' > "$CP8_DIR/.playwright-mcp/net.har"
+( cd "$CP8_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp8 C1 pass >/dev/null 2>&1 )
+check "CP8: channel is toolstream when BOTH channels are present" \
+  "$(cp_field "$CP8_DIR" cp8 channel)" "toolstream"
+
+# --- CP9: QA_SESSION_LOG set but pointing at nothing -> no fallback to the
+# .playwright-mcp discovery, even when a CONVERTIBLE log sits there. Mirrors
+# session-preflight.sh's resolve_session_log ("an explicit setting never
+# falls back"), and stays exit 0.
+CP9_DIR="$WORK/cp-badsess"; mkdir -p "$CP9_DIR/.playwright-mcp"
+write_real_session_log "$CP9_DIR/.playwright-mcp/session.md"
+( cd "$CP9_DIR" || exit 1; QA_SESSION_LOG="no-such-session.md" bash "$SCRIPT" cp9 C1 pass >/dev/null 2>&1 )
+CP9_RC=$?
+check "CP9: a missing QA_SESSION_LOG target is not an error (exit 0)" "$CP9_RC" "0"
+check "CP9: channel is none (explicit QA_SESSION_LOG never falls back)" \
+  "$(cp_field "$CP9_DIR" cp9 channel)" "none"
+
+# --- CP10: an EMPTY toolstream.jsonl holds no toolstream LINE -> not the
+# toolstream channel ---------------------------------------------------------
+CP10_DIR="$WORK/cp-empty-ts"; mkdir -p "$CP10_DIR/.qa/runs/cp10"
+: > "$CP10_DIR/.qa/runs/cp10/toolstream.jsonl"
+( cd "$CP10_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp10 C1 pass >/dev/null 2>&1 )
+check "CP10: an empty toolstream.jsonl is not the toolstream channel" \
+  "$(cp_field "$CP10_DIR" cp10 channel)" "none"
+
+# --- CP11: the python3 branch of the canary (jq masked from PATH) ----------
+# Uses a COMPLETE jq-less fakebin (every external tool checkpoint.sh's
+# journal.sh/fold.sh subprocesses need, minus jq), so has_jq() genuinely
+# fails and the python3 builder + python3 journal scan really run.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  NOJQBIN="$WORK/nojqbin"; mkdir -p "$NOJQBIN"
+  for tool in bash date mkdir cat mv rm dirname mktemp grep sort python3 node; do
+    tp="$(command -v "$tool" 2>/dev/null)"; [ -n "$tp" ] && ln -sf "$tp" "$NOJQBIN/$tool"
+  done
+  CP11_DIR="$WORK/cp-pyengine"; mkdir -p "$CP11_DIR"
+  ( cd "$CP11_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11 C1 pass >/dev/null 2>&1 )
+  CP11_RC=$?
+  check "CP11: py-engine upsert exits 0" "$CP11_RC" "0"
+  check "CP11: py-engine emits exactly one capture_probed" "$(cp_count "$CP11_DIR" cp11)" "1"
+  check "CP11: py-engine channel none" "$(cp_field "$CP11_DIR" cp11 channel)" "none"
+  ( cd "$CP11_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11 C2 pass >/dev/null 2>&1 )
+  check "CP11: py-engine does NOT re-emit on the second upsert" "$(cp_count "$CP11_DIR" cp11)" "1"
+
+  # FIX ROUND 1 — the Critical on BOTH engines: a stub .md is `none`, a real
+  # (convertible) one is `driver-log`, a .har is `driver-log`.
+  CP11B_DIR="$WORK/cp-pyengine-stub"; mkdir -p "$CP11B_DIR/.playwright-mcp"
+  printf '%s\n' '# session' > "$CP11B_DIR/.playwright-mcp/session.md"
+  ( cd "$CP11B_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11b C1 pass >/dev/null 2>&1 )
+  check "CP11: py-engine — stub .md, no toolstream, no HAR -> none" \
+    "$(cp_field "$CP11B_DIR" cp11b channel)" "none"
+
+  CP11C_DIR="$WORK/cp-pyengine-real"; mkdir -p "$CP11C_DIR/.playwright-mcp"
+  write_real_session_log "$CP11C_DIR/.playwright-mcp/session.md"
+  ( cd "$CP11C_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11c C1 pass >/dev/null 2>&1 )
+  check "CP11: py-engine — a .md converting to >=1 event -> driver-log" \
+    "$(cp_field "$CP11C_DIR" cp11c channel)" "driver-log"
+
+  CP11D_DIR="$WORK/cp-pyengine-har"; mkdir -p "$CP11D_DIR/.playwright-mcp"
+  printf '%s' '{"log":{"entries":[]}}' > "$CP11D_DIR/.playwright-mcp/net.har"
+  ( cd "$CP11D_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NOJQBIN" "$(command -v bash)" "$SCRIPT" cp11d C1 pass >/dev/null 2>&1 )
+  check "CP11: py-engine — a .har -> driver-log" \
+    "$(cp_field "$CP11D_DIR" cp11d channel)" "driver-log"
+  echo "note - capture_probed python3-engine sub-case: RAN (jq masked from PATH via a jq-less fakebin)"
+else
+  echo "SKIP - capture_probed python3-engine sub-case: jq or python3 not present on this host (7 assertions skipped)"
+fi
+
+# ===========================================================================
+# FIX ROUND 1 (Wave-2 integration Critical) — `driver-log` must mean the SAME
+# thing the verifier can actually resolve.
+#
+# Three lanes disagreed: the canary claimed `driver-log` on the mere presence
+# of a .playwright-mcp/*.md, report-to-junit.sh:223 accepted that as
+# independent capture, but qa-verify.sh resolves a driver log ONLY from
+# QA_NETWORK_LOG / .qa/runs/<run-id>/network-log.json / .playwright-mcp/*.har.
+# A run with a stub session.md, no toolstream and no HAR therefore presented
+# as "every recorded pass independently verified" with exit 0 — invariant I1b
+# defeated, and the false claim started here.
+#
+# `driver-log` now requires ONE of:
+#   - a driver log qa-verify.sh would resolve (its network_log_file order), OR
+#   - a --save-session log that converts to >= 1 toolstream event.
+# CP12..CP20 pin both directions so the fix cannot drift back and cannot
+# become over-strict.
+# ===========================================================================
+
+# --- CP12: a .playwright-mcp/*.har -> driver-log (qa-verify's third rule) ---
+CP12_DIR="$WORK/cp-har"; mkdir -p "$CP12_DIR/.playwright-mcp"
+printf '%s' '{"log":{"entries":[{"request":{"method":"GET","url":"https://x.test/"},"response":{"status":200}}]}}' \
+  > "$CP12_DIR/.playwright-mcp/net.har"
+( cd "$CP12_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp12 C1 pass >/dev/null 2>&1 )
+check "CP12: exactly one capture_probed" "$(cp_count "$CP12_DIR" cp12)" "1"
+check "CP12: a .playwright-mcp/*.har is driver-log" \
+  "$(cp_field "$CP12_DIR" cp12 channel)" "driver-log"
+
+# --- CP13: .qa/runs/<run-id>/network-log.json -> driver-log (second rule) ---
+CP13_DIR="$WORK/cp-netlog"; mkdir -p "$CP13_DIR/.qa/runs/cp13"
+printf '%s' '[{"method":"GET","url":"https://x.test/","status":200}]' \
+  > "$CP13_DIR/.qa/runs/cp13/network-log.json"
+( cd "$CP13_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp13 C1 pass >/dev/null 2>&1 )
+check "CP13: the run's own network-log.json is driver-log" \
+  "$(cp_field "$CP13_DIR" cp13 channel)" "driver-log"
+
+# --- CP14: QA_NETWORK_LOG naming an existing file -> driver-log (first rule)
+CP14_DIR="$WORK/cp-qanetlog"; mkdir -p "$CP14_DIR"
+printf '%s' '[]' > "$CP14_DIR/custom-net.json"
+( cd "$CP14_DIR" || exit 1; unset QA_SESSION_LOG
+  QA_NETWORK_LOG="custom-net.json" bash "$SCRIPT" cp14 C1 pass >/dev/null 2>&1 )
+check "CP14: QA_NETWORK_LOG naming an existing file is driver-log" \
+  "$(cp_field "$CP14_DIR" cp14 channel)" "driver-log"
+
+# --- CP15: QA_NETWORK_LOG naming a MISSING file never falls back — not even
+# to a .har sitting right there (qa-verify.sh's network_log_file: an explicit
+# setting wins and never falls back). No session log either -> none.
+CP15_DIR="$WORK/cp-badnetlog"; mkdir -p "$CP15_DIR/.playwright-mcp"
+printf '%s' '{"log":{"entries":[]}}' > "$CP15_DIR/.playwright-mcp/net.har"
+( cd "$CP15_DIR" || exit 1; unset QA_SESSION_LOG
+  QA_NETWORK_LOG="no-such-net.json" bash "$SCRIPT" cp15 C1 pass >/dev/null 2>&1 )
+CP15_RC=$?
+check "CP15: a missing QA_NETWORK_LOG target is not an error (exit 0)" "$CP15_RC" "0"
+check "CP15: QA_NETWORK_LOG never falls back to a .har -> none" \
+  "$(cp_field "$CP15_DIR" cp15 channel)" "none"
+
+# --- CP16: a .playwright-mcp/*.md that CONVERTS to >= 1 event -> driver-log
+CP16_DIR="$WORK/cp-md-real"; mkdir -p "$CP16_DIR/.playwright-mcp"
+write_real_session_log "$CP16_DIR/.playwright-mcp/session.md"
+( cd "$CP16_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp16 C1 pass >/dev/null 2>&1 )
+check "CP16: exactly one capture_probed" "$(cp_count "$CP16_DIR" cp16)" "1"
+check "CP16: a session .md converting to >=1 event is driver-log" \
+  "$(cp_field "$CP16_DIR" cp16 channel)" "driver-log"
+# and the probe is READ-ONLY: counting the convertible events must never
+# leave a derived toolstream behind (that is session-preflight.sh's job, and
+# a toolstream written here would silently flip the channel on the next run).
+check "CP16: the conversion probe wrote no toolstream.jsonl" \
+  "$([[ -e "$CP16_DIR/.qa/runs/cp16/toolstream.jsonl" ]] && echo present || echo absent)" "absent"
+
+# --- CP17: the same via an explicit QA_SESSION_LOG ------------------------
+CP17_DIR="$WORK/cp-qasess-real"; mkdir -p "$CP17_DIR"
+write_real_session_log "$CP17_DIR/session.md"
+( cd "$CP17_DIR" || exit 1; QA_SESSION_LOG="session.md" bash "$SCRIPT" cp17 C1 pass >/dev/null 2>&1 )
+check "CP17: a QA_SESSION_LOG converting to >=1 event is driver-log" \
+  "$(cp_field "$CP17_DIR" cp17 channel)" "driver-log"
+
+# --- CP18: a ZERO-BYTE .har still resolves -> driver-log. qa-verify.sh's
+# network_log_file tests for EXISTENCE, not non-emptiness ("a resolved
+# channel that happens to carry nothing is a different fact from no channel
+# at all"), and the canary must assert the same thing the verifier resolves —
+# not something stricter.
+CP18_DIR="$WORK/cp-empty-har"; mkdir -p "$CP18_DIR/.playwright-mcp"
+: > "$CP18_DIR/.playwright-mcp/empty.har"
+( cd "$CP18_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp18 C1 pass >/dev/null 2>&1 )
+check "CP18: a zero-byte .har is still the resolved driver-log channel" \
+  "$(cp_field "$CP18_DIR" cp18 channel)" "driver-log"
+
+# --- CP19: a .har WINS over a stub .md (the driver log is resolvable even
+# though the session log converts to nothing) -------------------------------
+CP19_DIR="$WORK/cp-har-and-stub"; mkdir -p "$CP19_DIR/.playwright-mcp"
+printf '%s' '{"log":{"entries":[]}}' > "$CP19_DIR/.playwright-mcp/net.har"
+printf '%s\n' '# session' > "$CP19_DIR/.playwright-mcp/session.md"
+( cd "$CP19_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp19 C1 pass >/dev/null 2>&1 )
+check "CP19: a resolvable .har beside a zero-event .md is driver-log" \
+  "$(cp_field "$CP19_DIR" cp19 channel)" "driver-log"
+
+# --- CP20: nothing anywhere -> none, and the once-guard still holds --------
+CP20_DIR="$WORK/cp-nothing"; mkdir -p "$CP20_DIR"
+( cd "$CP20_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp20 C1 pass >/dev/null 2>&1 )
+( cd "$CP20_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp20 C2 pass >/dev/null 2>&1 )
+check "CP20: no channel at all -> none" "$(cp_field "$CP20_DIR" cp20 channel)" "none"
+check "CP20: still exactly one capture_probed" "$(cp_count "$CP20_DIR" cp20)" "1"
+
+# ===========================================================================
+# FIX ROUND 1 (claims audit) — THE OPERATOR ITSELF. The Critical reduces to
+# one test operator: `-s` (a written line) for the toolstream, but `-f` (mere
+# existence) for the session log. An EMPTY .playwright-mcp/session.md
+# therefore satisfied the canary and reported `channel: driver-log`, the
+# report did not mark UNVERIFIED, qa-verify returned early, and the build was
+# green with tests="1" failures="0" — a run with no capture at all.
+#
+# Spec §3 I1a: "Capture is proven live, not merely configured … a written
+# line is evidence". Spec §5.6: "the probe asserts that the capture path is
+# actually PRODUCING lines". CP21-CP24 make those two sentences true.
+# ===========================================================================
+
+# --- CP21: the cheapest possible reproduction — a ZERO-BYTE session.md ------
+CP21_DIR="$WORK/cp-empty-md"; mkdir -p "$CP21_DIR/.playwright-mcp"
+: > "$CP21_DIR/.playwright-mcp/session.md"
+( cd "$CP21_DIR" || exit 1; unset QA_SESSION_LOG; bash "$SCRIPT" cp21 C1 pass >/dev/null 2>&1 )
+CP21_RC=$?
+check "CP21: an empty session.md is not an error (exit 0)" "$CP21_RC" "0"
+check "CP21: exactly one capture_probed" "$(cp_count "$CP21_DIR" cp21)" "1"
+check "CP21: a ZERO-BYTE .playwright-mcp/session.md is channel none (-s, not -f)" \
+  "$(cp_field "$CP21_DIR" cp21 channel)" "none"
+
+# --- CP22: the same through an explicit, EMPTY QA_SESSION_LOG --------------
+CP22_DIR="$WORK/cp-empty-qasess"; mkdir -p "$CP22_DIR"
+: > "$CP22_DIR/session.md"
+( cd "$CP22_DIR" || exit 1; QA_SESSION_LOG="session.md" bash "$SCRIPT" cp22 C1 pass >/dev/null 2>&1 )
+check "CP22: a ZERO-BYTE QA_SESSION_LOG is channel none (-s, not -f)" \
+  "$(cp_field "$CP22_DIR" cp22 channel)" "none"
+
+# --- CP23/CP24: NO NODE on the host — session-preflight.sh:131's "honest
+# degrade" exit 0. A perfectly convertible session log cannot be converted,
+# so no toolstream can ever be derived from it: that is `none`, not
+# `driver-log`. This is the Critical's realistic trigger, not a synthetic one.
+#
+# Builds its OWN complete no-node fakebin rather than reusing the suite's
+# $NNBIN: that one is deliberately minimal for the human-action gate case
+# (which dies before any journal append) and lacks `wc`, which journal.sh:306
+# needs on the jq path — an upsert under it cannot complete at all, so it
+# could not tell us anything about the channel.
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  NONODEFULL="$WORK/nonodebin-full"; mkdir -p "$NONODEFULL"
+  for tool in bash date mkdir cat mv rm dirname mktemp grep sort wc jq python3; do
+    tp="$(command -v "$tool" 2>/dev/null)"; [ -n "$tp" ] && ln -sf "$tp" "$NONODEFULL/$tool"
+  done
+  check "CP23: fixture sanity — the no-node fakebin really has no node" \
+    "$([[ -e "$NONODEFULL/node" ]] && echo present || echo absent)" "absent"
+
+  CP23_DIR="$WORK/cp-nonode-md"; mkdir -p "$CP23_DIR/.playwright-mcp"
+  write_real_session_log "$CP23_DIR/.playwright-mcp/session.md"
+  ( cd "$CP23_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NONODEFULL" "$(command -v bash)" "$SCRIPT" cp23 C1 pass >/dev/null 2>&1 )
+  CP23_RC=$?
+  check "CP23: no-node host — a convertible .md is not an error (exit 0)" "$CP23_RC" "0"
+  check "CP23: no-node host — a convertible .md yields no toolstream -> none" \
+    "$(cp_field "$CP23_DIR" cp23 channel)" "none"
+
+  # ... but a .har needs no converter at all, so no-node must NOT suppress it
+  # (the fix must not become over-strict).
+  CP24_DIR="$WORK/cp-nonode-har"; mkdir -p "$CP24_DIR/.playwright-mcp"
+  printf '%s' '{"log":{"entries":[]}}' > "$CP24_DIR/.playwright-mcp/net.har"
+  ( cd "$CP24_DIR" || exit 1; unset QA_SESSION_LOG
+    PATH="$NONODEFULL" "$(command -v bash)" "$SCRIPT" cp24 C1 pass >/dev/null 2>&1 )
+  check "CP24: no-node host — a .har still resolves -> driver-log" \
+    "$(cp_field "$CP24_DIR" cp24 channel)" "driver-log"
+  echo "note - capture_probed no-node sub-case: RAN (node masked from PATH via a complete no-node fakebin)"
+else
+  echo "SKIP - capture_probed no-node sub-case: jq or python3 not present on this host (4 assertions skipped)"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

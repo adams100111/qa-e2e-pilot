@@ -141,8 +141,12 @@ for ENGINE in "" python3; do
   run_qv "$ENGINE" notoolstream >/dev/null 2>&1
   RC_NT=$?
   check "[$LABEL] notoolstream: qa-verify exits 0" "$RC_NT" "0"
-  check "[$LABEL] notoolstream: verification.json is empty (pass skipped, not just no violations)" \
-    "$(jq 'length' "$(vf notoolstream)")" "0"
+  # `__run-checks__` is ALWAYS emitted once the run-scoped checks cannot be
+  # evaluated (Task 8's three-state loadWindowCovered), so "the file is empty"
+  # is no longer the right proxy for "the phase-surface pass was skipped".
+  # Assert what this case actually means: no record for a real criterion.
+  check "[$LABEL] notoolstream: no non-synthetic record (phase-surface pass skipped, not just no violations)" \
+    "$(jq '[.[] | select(((.criterionId // "") | startswith("__")) | not)] | length' "$(vf notoolstream)")" "0"
 
   # --- (e) undeterminable: a mutating call whose ts precedes every
   # phase_entered in the journal -> confidence:low, NEVER an override. -------

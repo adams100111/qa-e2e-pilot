@@ -169,8 +169,10 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
 
 1. **Observe.** Call `browser_evaluate` with `return __qaObserve({ digestSelector: 'body', runUx: true })`. This ONE call returns:
    ```
-   { round, domDigest: { liveText, interactive[] }, console[], network[], ux[], axe }
+   { round, console[], network[], domDigest: { liveText, interactive[] }, ux[], axe }
    ```
+   **The key order is load-bearing.** `console` and `network` are serialized **before** the bulky `domDigest` so that `capture-hook.sh`'s 4000-byte `RESPONSE_BODY_CAP` (a recorded decision; it is not raised) truncates the DOM inventory instead of the error evidence. Consumers read by key, so nothing downstream depends on the order — but the *truncation* does.
+   - **A truncated `domDigest` is now the EXPECTED loss — re-observe, do not treat it as evidence loss.** The DOM inventory is reconstructible by calling `__qaObserve` again; the console/network arrays of a round that already happened are not. So a round whose captured response is cut off mid-`domDigest` is the cap working as designed: re-observe to get a fresh digest, and keep the `console[]`/`network[]` you already have. Never record a criterion `blocked`/`error`, and never discount a finding, because a digest came back truncated.
    - `domDigest.interactive` lists visible buttons/links/inputs with `data-testid`/label/href — this is the snapshot substitute for finding what to act on next. It does not carry a Playwright ref, so build a selector from it (prefer `[data-testid="…"]`) and pass that as the act call's `target` — `browser_click`/`browser_evaluate` accept a unique CSS selector, not only a snapshot ref. Fall back to `scripts/click-by-text.js` for RTL/label-only targeting, or a one-off `browser_snapshot` only when no stable selector exists.
    - `console[]` and `network[]` are DRAINED since the previous round — every console error/warning, `window.onerror`, unhandled rejection, and fetch/XHR that happened between rounds is already in this payload.
 2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), or select (`browser_select_option`) using the selector from step 1 — a SEPARATE call from the observe. Per the interaction discipline (ADR-0015, [`references/interaction-discipline.md`](./references/interaction-discipline.md)), the act itself is UI-only; `browser_evaluate` on this path is reserved for the logged `nonUiActionReason` opt-out (§ below), never a routine substitute for typing/clicking.
@@ -184,6 +186,7 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
 - Console and network status/method/URL are carried directly in every observe payload — read them every round, even when the DOM digest looks unchanged.
 - A deeper read the old loop could also reach — a network **response body**, a cross-origin request the in-page buffer can't see, or a backend read-back — is still made as a separate, targeted call: `browser_network_request` for a body, or hand off to `verifying-backend-persistence` / `probing-apis-through-browser`. The observe-round removes the *redundant* per-step console/network/snapshot calls the old loop paid for even when nothing changed; it does not remove a diagnostic a step genuinely needs.
 - If the configured driver's `evaluate` capability is absent (see `references/driver-capabilities.md`), the observe-round cannot run at all on that driver — record the affected step `blocked`, never silently fall back to a reduced-diagnostic loop.
+- **When a finding from this payload is journaled** (`finding_observed`, see `skills/checkpointing-qa-memory/SKILL.md`), its `url` is **capped at 1024 characters** with the full length carried in a separate `urlLen` field and the untruncated url in the `detailRef` detail file under `evidence/<criterion>/findings/`. The cap exists because an event serialized above 4096 bytes is not guaranteed to append torn-free (`journal.sh`'s PIPE_BUF boundary), and a torn line is dropped by the fold, manufactures a `seq-gap`, and marks the whole run `UNVERIFIED`. **The contract requires the browser-reported, PERCENT-ENCODED url** — a 1024-**codepoint** decoded IRI breaches the byte bound even though it fits the character cap. Pass through what the driver reported; never decode a url before recording it.
 
 ## React Controlled Inputs
 
@@ -246,7 +249,7 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 
 | Script | Purpose |
 |---|---|
-| `scripts/observe.js` | Install-once observe-round: drains console + network since last round, returns compact `domDigest` (ADR-0006) |
+| `scripts/observe.js` | Install-once observe-round: drains console + network since last round, returns compact `domDigest` (ADR-0006). Payload key order is `{round, console, network, domDigest, ux, axe}` — errors before the bulky digest, so the capture hook's 4000-byte cap sacrifices the re-observable digest |
 | `scripts/react-set-input.js` | Read-only (ADR-0015): reads a React-controlled input's current value/validity back for assertion |
 | `scripts/click-by-text.js` | Resolve-only (ADR-0015): finds an element by visible text (LTR/RTL-safe), returns its selector/href; act via `browser_click` |
 | `scripts/parse-session-log.js` | Classifies `session.md` (`--save-session`) Playwright code into `{class, mutating, code}` — bridges tool calls to code |

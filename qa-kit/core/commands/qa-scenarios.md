@@ -49,6 +49,61 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
    `expect.value`. Set `expect.oracleSource:"human"` only when BOTH are confirmed (→ eligible for
    `confidence: high` at run); otherwise `"llm-suggested"` (→ `confidence: low`, stated honestly).
 
+5b. **Never author a criterion that expects the application to FAIL.** A criterion's expected answer is
+   what the application does when it is *working*. A 3xx or 4xx may be asserted as correct — an
+   authorization refusal, a validation rejection, a 404 on a deleted record are all the application
+   working, and `"the save is expected to fail with a validation error"` is a sound oracle for an
+   `error-state` criterion. A **5xx, an unhandled exception or a page crash never may**: that is the
+   application failing, and pinning it as the expected value grades the crash correct. That is precisely
+   what the originating incident did — `page.rendersWithoutServerError` pinned to the string `"false"`, so
+   an HTTP 500 recorded `match: true`.
+   - **What the engine's validator rejects** (`skills/generating-qa-checklist/scripts/validate-checklist-json.sh`,
+     run by the checklist writer in step 3 before the checklist is presented): a `fixture.expect` or
+     top-level `expect` whose `path` is in the reserved health namespace at a failing value —
+     `page.rendersWithoutServerError` = false, `page.crashed` = true, `console.hasError` = true, or
+     `http.status` ≥ 500 — in **any** spelling (the boolean, the string form, the `0`/`1` form). It also
+     hard-rejects the phrase `deferred by design` in an oracle/expect field (`oracle`, `oracleNote`,
+     `expected`, or a string member of `fixture.expect`/`expect`), and **never** inspects `action`. An
+     `http.status` in the 3xx/4xx range stays legal, and domain paths (`counts.evaluators = 2`) are
+     untouched.
+   - **Instead of authoring one, write a registry entry.** Where you would have authored a criterion
+     expecting a failure, file the defect in the project-level **`.qa/known-defects.json`** instead — see
+     `/qa-spec` step 6c for the schema and the three rules (required `id`, `title`, `ticket`, `expiry`,
+     `severity`, `observedClass`, `surface`, `observedBehaviour`; `observedClass ∈
+     non-rendering | wrong-value | degraded` with a `high`/`critical` severity floor when it is
+     `non-rendering`; `expiry` capped at 90 days; clearing needs a recorded 2xx navigation to the
+     surface, and the absence of a finding never clears). The registry is **project-level** — never a
+     per-spec copy under `.qa/specs/<target>/`. A known defect is never a verdict: it has no `pass`/`fail`
+     and contributes nothing to the tally, so filing one does not buy the plan any coverage.
+   - **For a criterion that is ALREADY in the plan, run the migration — do not hand-edit:**
+     ```
+     bash "{{PLUGIN_ROOT}}/scripts/migrate-inverted-criterion.sh" \
+         .qa/specs/<target>/checklist.json <criterion-id>
+     ```
+     It removes every row with that id from the checklist, appends a registry entry with `ticket` and
+     `expiry` **empty**, prints `REQUIRED-FIELDS: ticket expiry`, and then refuses to report success.
+     > **READ THE EXIT CODE CAREFULLY. `2` is the SUCCESS path** — the migration is recorded (or was
+     > already recorded) and human input is pending. **`1` is the failure path** — nothing was written.
+     > **`0` is never returned**; there is no "done" state for this command. A caller or an operator that
+     > treats any non-zero as "it failed" **silently loses a migration that actually landed**. Re-running
+     > is idempotent, so the cost is confusion rather than corruption.
+     Nothing under `.qa/runs/` is ever rewritten — a past run's record, including the original
+     `match: true`, stays as recorded, and a target path under `.qa/runs/` is refused outright. Fill in
+     `ticket` and `expiry` by hand, then validate the registry with
+     `known-defects.sh validate .qa/known-defects.json`.
+     **You have to supply the path yourself.** `known-defects.sh` is an **engine** script and qa-kit
+     cannot address it: `{{PLUGIN_ROOT}}` is per-plugin and resolves to qa-kit's own root, which does not
+     contain it (ADR-0022). The migration script's last line prints
+     `Fill both fields in, then: known-defects.sh validate <registry>` — a **bare script name with no
+     `bash` and no path**, i.e. a reminder of *which* command to run, not a runnable one. Resolve it
+     against the engine's checkout or plugin root before running it. This gap is a known packaging
+     limitation, not something to paper over with a guessed path.
+   - **The three demoted phrases.** `expected to fail`, `known defect` and `not a regression` are
+     deliberately **not** validator rejections — they describe the application's behaviour and are often
+     correct. `/qa-analyze` surfaces them as `plan-defect` flags above its verdict line instead. The
+     governing line, applied when you author an oracle: **reject process language, never behaviour
+     language.**
+
 6. **Alignment check (deterministic, reject on failure).** Every role referenced by any scenario/criterion
    MUST be one of `spec-roles.json`'s `roles[].id`. If a scenario introduces a role not in the snapshot,
    **reject** it — either drop the criterion or send the operator back to `/qa-spec` to add that role via
@@ -62,7 +117,11 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
    criterion NOT in this plan.
 
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
-   check-fixtures result (pinned vs unpinned computed), and the next step (`/qa-analyze <target>`).
+   check-fixtures result (pinned vs unpinned computed), any criterion migrated to
+   `.qa/known-defects.json` (naming the `ticket`/`expiry` a human still owes — and stating that the
+   migration script's exit **2** meant success), and the next step (`/qa-analyze <target>`).
 
 Guardrails: reuse the engine's checklist writer (never fork the `checklist.json` schema); every scenario
-role ∈ `spec-roles.json`; the plan you write is the contract the run is held to.
+role ∈ `spec-roles.json`; the plan you write is the contract the run is held to; **no criterion may
+assert that the application failed** — a 5xx, an unhandled exception or a crash goes to
+`.qa/known-defects.json`, never into an `expect`.

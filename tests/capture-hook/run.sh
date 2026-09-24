@@ -360,4 +360,163 @@ else
   echo "SKIP - jq-fallback sub-case (clock-flag): jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# ===========================================================================
+# Case 22 (plan task 5): the observe-round payload must be ordered so that
+# capture-hook.sh's RESPONSE_BODY_CAP (4000 bytes, applied with `head -c`)
+# eats the DOM digest rather than the findings. These cases exercise
+# skills/driving-browser-qa/scripts/observe.js directly, in node, against a
+# stubbed window/document. The cap itself is NOT changed -- see
+# scripts/provenance.sh residual (a): it is accepted, documented evidence
+# loss, and raising it would grow every toolstream file.
+#
+#   test_existing_capture_hook_cases_unchanged
+#   test_payload_key_order_console_before_domdigest
+#   test_findings_survive_4000_byte_cap_at_80_elements
+#   test_testid_capped_at_64
+#   test_href_capped_at_128
+# ===========================================================================
+
+# Every pre-existing case above (including case 2's 20,000-byte truncation
+# assertions) must still pass; this pins that before the new observe-payload
+# cases touch the counters.
+check "test_existing_capture_hook_cases_unchanged: no pre-existing case failed" "$FAIL" "0"
+
+OBSERVE_JS="$ROOT/skills/driving-browser-qa/scripts/observe.js"
+check "observe.js present" "$([[ -f "$OBSERVE_JS" ]] && echo yes || echo no)" "yes"
+
+if command -v node >/dev/null 2>&1; then
+  HARNESS="$WORK/observe-harness.js"
+  cat > "$HARNESS" <<'JS'
+// Runs skills/driving-browser-qa/scripts/observe.js (which is a
+// browser_evaluate function BODY, hence `new Function`) against a stubbed
+// window/document, then reports facts about the emitted JSON as one JSON line.
+var fs = require('fs');
+var src = fs.readFileSync(process.argv[2], 'utf8');
+
+var LONG_TESTID = 'order-row-primary-action-' + new Array(200).join('x'); // > 64
+var LONG_HREF = '/app/tenant/acme/orders/' + new Array(300).join('y');    // > 128
+
+function makeEl(spec) {
+  return {
+    tagName: spec.tag || 'BUTTON',
+    value: undefined,
+    textContent: spec.text || 'Open order',
+    getAttribute: function (name) {
+      if (name === 'data-testid') return spec.testid === undefined ? null : spec.testid;
+      if (name === 'aria-label') return spec.ariaLabel === undefined ? null : spec.ariaLabel;
+      if (name === 'href') return spec.href === undefined ? null : spec.href;
+      return null;
+    },
+    getBoundingClientRect: function () { return { width: 140, height: 32 }; }
+  };
+}
+
+// Worst case: 80 interactive elements with realistic testids/hrefs. The first
+// one carries an over-long testid + href, which pins the two length caps.
+var els = [makeEl({ tag: 'A', testid: LONG_TESTID, href: LONG_HREF, ariaLabel: 'Open order 0' })];
+for (var i = 1; i < 80; i++) {
+  els.push(makeEl({
+    tag: i % 2 ? 'A' : 'BUTTON',
+    testid: 'orders-table-row-' + i + '-primary-action-button',
+    href: '/app/tenant/acme/orders/00000000-0000-4000-8000-' + (100000000000 + i) + '?tab=details&from=list',
+    ariaLabel: 'Open order ' + i + ' details'
+  }));
+}
+
+var liveTextSource = '';
+while (liveTextSource.length < 2400) {
+  liveTextSource += 'Orders dashboard row ' + liveTextSource.length + ' total 1,240.00 SAR status fulfilled ';
+}
+
+var root = { innerText: liveTextSource, querySelectorAll: function () { return els; } };
+var doc = { body: root, querySelector: function () { return root; } };
+var win = {
+  addEventListener: function (t, h) { (this.__handlers = this.__handlers || {})[t] = h; },
+  fetch: function () { return Promise.resolve({ status: 500, ok: false }); },
+  XMLHttpRequest: null
+};
+var fakeConsole = { error: function () {}, warn: function () {}, log: function () {} };
+
+var fn = new Function('window', 'document', 'console', src);
+fn(win, doc, fakeConsole); // installs the interceptors + drains round 1
+
+var CONSOLE_ERROR = 'TypeError: Cannot read properties of undefined (reading map) at OrderList';
+
+fakeConsole.error(CONSOLE_ERROR);
+win.fetch('/api/tenant/acme/orders/42/fulfil', { method: 'POST' }).then(function () {
+  var payload = win.__qaObserve({ digestSelector: 'body', runUx: true });
+  var text = JSON.stringify(payload);
+  var buf = Buffer.from(text, 'utf8');
+  var CAP = 4000; // capture-hook.sh RESPONSE_BODY_CAP -- `head -c 4000`, i.e. bytes
+  var truncated = buf.slice(0, CAP).toString('utf8');
+  var first = payload.domDigest.interactive[0];
+  process.stdout.write(JSON.stringify({
+    keys: Object.keys(payload),
+    consoleOffset: buf.indexOf('"console"'),
+    domDigestOffset: buf.indexOf('"domDigest"'),
+    networkOffset: buf.indexOf('"network"'),
+    totalBytes: buf.length,
+    truncatedHasConsoleError: truncated.indexOf('Cannot read properties of undefined') >= 0,
+    truncatedHas500: truncated.indexOf('"status":500') >= 0,
+    consoleCount: payload.console.length,
+    networkCount: payload.network.length,
+    interactiveCount: payload.domDigest.interactive.length,
+    liveTextLen: payload.domDigest.liveText.length,
+    testidLen: first.testid.length,
+    hrefLen: first.href.length,
+    labelLen: first.label.length
+  }) + '\n');
+}, function (e) { process.stderr.write('harness-failed: ' + e + '\n'); process.exit(9); });
+JS
+
+  OBS_OUT="$(node "$HARNESS" "$OBSERVE_JS" 2>"$WORK/observe.err")"; obs_rc=$?
+  check "observe harness ran" "$obs_rc" "0"
+  if [[ "$obs_rc" -ne 0 ]]; then
+    echo "note - observe harness stderr: $(cat "$WORK/observe.err")"
+    OBS_OUT='{}'
+  fi
+
+  OBS() { echo "$OBS_OUT" | jq -r "$1"; }
+
+  # --- same keys, nothing added or dropped ---
+  check "observe payload keys unchanged (as a set)" \
+    "$(OBS '.keys | sort | join(",")')" "axe,console,domDigest,network,round,ux"
+
+  # --- test_payload_key_order_console_before_domdigest ---
+  CONSOLE_OFF="$(OBS '.consoleOffset')"
+  DIGEST_OFF="$(OBS '.domDigestOffset')"
+  NETWORK_OFF="$(OBS '.networkOffset')"
+  check "test_payload_key_order_console_before_domdigest: both keys present in the JSON text" \
+    "$([[ "$CONSOLE_OFF" -ge 0 && "$DIGEST_OFF" -ge 0 ]] && echo yes || echo no)" "yes"
+  check "test_payload_key_order_console_before_domdigest: byte offset of console < domDigest" \
+    "$([[ "$CONSOLE_OFF" -lt "$DIGEST_OFF" ]] && echo yes || echo no)" "yes"
+  check "test_payload_key_order_console_before_domdigest: byte offset of network < domDigest" \
+    "$([[ "$NETWORK_OFF" -lt "$DIGEST_OFF" ]] && echo yes || echo no)" "yes"
+
+  # --- test_findings_survive_4000_byte_cap_at_80_elements ---
+  check "test_findings_survive_4000_byte_cap_at_80_elements: worst case really is 80 elements" \
+    "$(OBS '.interactiveCount')" "80"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: liveText really is 1500 chars" \
+    "$(OBS '.liveTextLen')" "1500"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: payload really exceeds the 4000-byte cap" \
+    "$([[ "$(OBS '.totalBytes')" -gt 4000 ]] && echo yes || echo no)" "yes"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: one console error drained" \
+    "$(OBS '.consoleCount')" "1"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: one network entry drained" \
+    "$(OBS '.networkCount')" "1"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: console error survives head -c 4000" \
+    "$(OBS '.truncatedHasConsoleError')" "true"
+  check "test_findings_survive_4000_byte_cap_at_80_elements: the 500 survives head -c 4000" \
+    "$(OBS '.truncatedHas500')" "true"
+
+  # --- test_testid_capped_at_64 / test_href_capped_at_128 ---
+  check "test_testid_capped_at_64" "$(OBS '.testidLen')" "64"
+  check "test_href_capped_at_128" "$(OBS '.hrefLen')" "128"
+  check "label cap unchanged at 40 (this label is 12 chars, well under it)" "$(OBS '.labelLen')" "12"
+
+  echo "note - observe-payload cases: RAN (node present)"
+else
+  echo "SKIP - observe-payload cases: node not present on this host"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

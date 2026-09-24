@@ -122,21 +122,34 @@ Injected via `browser_evaluate` (never `browser_run_code_unsafe` — ADR-0009). 
 ```jsonc
 {
   "round": 3,
+  "console": [ { "level":"error", "text":"ReferenceError: undefinedHelpHandler is not defined ..." } ],
+  "network": [ { "method":"POST","url":"/api/.../init","status":500,"ok":false } ],
   "domDigest": {                       // the snapshot substitute
     "liveText": "status: DRAFT ...",   // compact innerText (<=1500 chars)
     "interactive": [ { "tag":"button","testid":"finalize","label":"Finalize round","visible":true } ]
   },
-  "console": [ { "level":"error", "text":"ReferenceError: undefinedHelpHandler is not defined ..." } ],
-  "network": [ { "method":"POST","url":"/api/.../init","status":500,"ok":false } ],
   "ux":     [ { "detector":"contrast","axis":"ux-objective","suspectedLayer":"FE","confidence":"low",
                 "selector":".helper","message":"Contrast 1.90:1 below WCAG AA 4.5:1 (SC 1.4.3)" } ],
   "axe":    "call-axe-run-separately"  // agent injects axe.min.js + awaits window.axe.run() once/surface
 }
 ```
 
+**Key order is load-bearing** (plan `2026-09-23-error-honesty-invariants`, Task 5): `console` and
+`network` are serialized **before** the bulky `domDigest`, so `capture-hook.sh`'s 4000-byte
+`RESPONSE_BODY_CAP` truncates the re-observable DOM inventory rather than the error evidence. Same keys
+as the original design, new order; consumers read by key, so nothing downstream changed.
+[ADR-0006](../adr/0006-consolidated-observe-round.md) still records the original
+`{round, domDigest, console, network, ux, axe}` order — deliberately, as a historical record of the
+decision as taken.
+
 `console`/`network` are captured by read-only interceptors installed on first injection and **drained
-per round** — no separate MCP calls. Reference impl: `skills/driving-browser-qa/scripts/observe.js`
-(installs, returns `observe-installed`).
+per round** — no separate MCP calls. Reference impl: `skills/driving-browser-qa/scripts/observe.js`,
+which is **self-healing and returns the round payload directly**: it re-installs `window.__qaObserve`
+only when absent (a full-page navigation replaces `window`), then invokes it, so one `browser_evaluate`
+is both the install check and the round read. Its last expression is
+`window.__qaObserve({digestSelector:'body', runUx:true})`, or the string `'install-failed'` if the
+install did not take — it does **not** return an `observe-installed` sentinel as this plan originally
+specified.
 
 **Cost, per step:**
 

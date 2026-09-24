@@ -28,9 +28,11 @@ not exist. Writing a weaker `requiredKinds` here (e.g. omitting
 evade the gate — it is simply ignored. The field exists as documentation /
 a sanity cross-check for a human reviewer, not as an input to enforcement.
 
-This validator (`scripts/validate-checklist-json.sh`) checks only that the
-file is **structurally well-shaped** — right fields, right types, enum
-membership, no duplicate ids — so the gate scripts can parse it reliably. It
+This validator (`scripts/validate-checklist-json.sh`) checks two things.
+First, that the file is **structurally well-shaped** — right fields, right
+types, enum membership, no duplicate ids — so the gate scripts can parse it
+reliably. Second (see "Error-honesty invariants" below), that **no criterion
+is authored so that an application failure is the correct answer**. It still
 makes no judgment about whether a row's claims (`requiredKinds`,
 `assertedState`, `humanAction`) are *honest*; that is exactly the boundary
 `checkpoint.sh`'s independent re-derivation exists to police (see
@@ -120,6 +122,105 @@ Fixed at four kinds, no fifth (`docs/adr/0018-out-of-agent-evidence-enforcement.
 `CONTEXT.md`). This is the same vocabulary `required-kinds.sh derive` and
 `checkpoint.sh --kinds` use.
 
+## Error-honesty invariants — a criterion may not assert that the application failed
+
+Beyond shape, the validator enforces one semantic rule (spec
+`docs/superpowers/specs/2026-09-23-error-honesty-invariants-design.md` §4.1,
+[ADR-0026](../../../docs/adr/0026-engine-invariants-outrank-frozen-plan.md)):
+**a criterion may not be authored so that an APPLICATION FAILURE is the
+correct answer.** This is the check that would have caught the originating
+incident, whose criterion pinned `page.rendersWithoutServerError` to the
+string `"false"` and so graded an HTTP 500 as a match.
+
+### The governing principle: reject process language, never behaviour language
+
+> **A 3xx or 4xx can be correct behaviour. A 5xx, an unhandled exception, or
+> a page crash never can.**
+
+An authorization refusal (a 302 to login, a 403), a validation rejection, a
+404 on a deleted record — those are the application **working**, and real
+criteria assert exactly that, so they stay legal. A 500, an unhandled
+exception page, or a load-time crash is the application **failing**, and no
+criterion may pin it as expected.
+
+The same line governs the prose layer. *"Deferred by design"* describes a
+decision about the team's backlog and has no business in an oracle, so it is
+hard-rejected. *"Expected to fail"* describes the **application** and is
+frequently correct — *"the save is expected to fail with a validation
+error"* is a sound oracle for an `error-state` criterion. An earlier draft
+rejected that phrase in the oracle field, which is precisely where its
+legitimate use lives; that would have produced the false-positive class that
+makes authors route around a validator.
+
+### Layer 1 — the reserved health namespace (structural)
+
+Checked on `fixture.expect` **and** on a top-level `expect`. These
+`expect.path` values describe whole-page or transport health rather than a
+domain value:
+
+| `expect.path` | Rejected when |
+|---|---|
+| `page.rendersWithoutServerError` | `value` is false |
+| `page.crashed` | `value` is true |
+| `console.hasError` | `value` is true |
+| `http.status` | `value` >= 500 |
+
+- **Every spelling of the same assertion is caught.** `value` is normalised
+  first, so the boolean (`false`), its string form (`"false"`, `"TRUE"`,
+  `" false "` — trimmed, case-folded) and its `0`/`1` form (`page.crashed: 1`
+  *is* `page.crashed: true`) all land on the same verdict. For
+  `http.status`, both the number `500` and the string `" 500 "` count.
+- **`path` is trimmed but deliberately NOT case-folded** — a fuzzy path match
+  risks rejecting a legitimate domain path.
+- **An `http.status` in the 3xx/4xx range is LEGAL** and must stay so.
+- **Paths outside the namespace are untouched** — a domain assertion like
+  `counts.evaluators = 2` is unaffected.
+- **Deliberate accepts**, pinned by the test matrix so they stay decisions
+  rather than surprises: a non-ASCII digit spelling (`٥٠٠`, `５００`), an
+  underscored `"1_000"` and an exponent `"5e2"` are not numbers under the
+  strict ASCII parse, so an `http.status` pinned to one of them is accepted.
+- Each structural message ends with the remediation pointer
+  `— move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)`.
+
+### Layer 2 — the reserved prose phrase
+
+Exactly one phrase is hard-rejected, matched **case-insensitively**:
+**`deferred by design`**.
+
+- Scanned **only** in the oracle/expect string fields: `oracle`,
+  `oracleNote`, `expected`, and the string members of `fixture.expect` /
+  `expect`.
+- **`action` is NEVER inspected.** That is where an author legitimately
+  describes a non-rendering state ("this list does not render until the
+  challenge reaches Judging"), and an over-broad net there would make the
+  validator something authors route around.
+- `expected to fail`, `known defect` and `not a regression` are **not**
+  rejected here. They describe application behaviour, so they are demoted to
+  `/qa-analyze` **`plan-defect`** flags (printed above its verdict line, so
+  they cannot be quietly blessed) — see `qa-kit/commands/qa-analyze.md`.
+
+### The fields this layer reads
+
+`fixture`, `expect`, `oracle`, `oracleNote` and `expected` are **optional
+extension fields** — this validator does not require them and does not
+type-check them. A `fixture` that is not an object, or an `expect` that is
+not an object, contributes no violation rather than an error; the honesty
+layer simply has nothing to read. `fixture.expect` is written by qa-kit's
+`/qa-scenarios` TDQA augmentation (`{path, value, tolerance, oracleSource}`
+for a computing criterion) and gated separately for presence/shape by
+`qa-kit/scripts/check-fixtures.sh`.
+
+### Where an inverted criterion is supposed to go
+
+A real, known, unfixed application defect belongs in the project-level
+registry `.qa/known-defects.json` (validated by `scripts/known-defects.sh`),
+never in a criterion. For one already in a plan, run
+`qa-kit/scripts/migrate-inverted-criterion.sh <checklist.json> <criterion-id>`
+— it removes the criterion, files the defect with `ticket`/`expiry` empty,
+and **exits 2 as its success path** (exit 1 is failure; 0 is never returned).
+A known defect is never a verdict: it has no `pass`/`fail` and contributes
+nothing to the tally.
+
 ## Worked example — a mutating criterion with `assertedState`
 
 A "create a founder" happy-path criterion, tagged `human-action` because its
@@ -180,16 +281,25 @@ No write, no fingerprint target — `required-kinds.sh derive` on this shape
 (a `loading-state` kind, no mutating verb, tagged `read-only`) correctly
 derives the empty set, matching this row's own `requiredKinds: []`.
 
-## Validating structurally
+## Validating
 
 ```
 skills/generating-qa-checklist/scripts/validate-checklist-json.sh <path-to-checklist.json>
 ```
 
-Exits `0` iff the file is valid JSON, its top-level is an array, and every
-entry matches this schema (types, enum membership, no duplicate `id`s).
-Exits non-zero with an `ERROR: ...` line per violation, each naming the
-offending entry's index and field — e.g.
-`ERROR: entry[2].kind: bogus-kind: must be one of the kind enum`. This
-checks *shape* only; it does not re-derive `requiredKinds` or validate that
-`assertedState` values are honest (see "PROPOSAL, not ground truth" above).
+Exits `0` iff the file is valid JSON, its top-level is an array, every entry
+matches this schema (types, enum membership, no duplicate `id`s), **and no
+entry asserts that the application failed**. Exits non-zero with an
+`ERROR: ...` line per violation, each naming the offending entry's index and
+field — e.g. `ERROR: entry[2].kind: bogus-kind: must be one of the kind enum`
+or
+`ERROR: entry[0].fixture.expect: page.rendersWithoutServerError may not be pinned to false — move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)`.
+**Every** violation is reported, not just the first. It does not re-derive
+`requiredKinds` or validate that `assertedState` values are honest (see
+"PROPOSAL, not ground truth" above).
+
+Engines: `jq` preferred, `python3` fallback (`QA_ENGINE=jq|python3` forces
+one). Both engines normalise identically and neither uses its own language's
+string-to-number coercion — `tests/validate-checklist-json/run.sh` carries a
+dual-engine parity matrix, because legality must not depend on `QA_ENGINE` or
+`PATH`.

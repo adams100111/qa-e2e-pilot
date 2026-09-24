@@ -26,7 +26,8 @@
 # INPUT:  {"events": [<valid, schema-known event objects, any order>],
 #          "skipped": [<wrapper-level anomaly objects, e.g. unparseable-line
 #                       / unknown-event>]}
-# OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...]},
+# OUTPUT: {"checkpoint": {"run_id", "updated_at", "criteria": [...],
+#                         "findings": [...keyed-set, first-seen order...]},
 #          "anomalies": [...wrapper skipped ++ engine-detected...],
 #          "openActs": [...act_intent keys with no matching act_committed...],
 #          "cursor": {"run_id", "phase", "criteria_total", "criteria_done",
@@ -44,6 +45,132 @@
 
 def tuple_key($e):
   ($e.scenarioId // "") + "" + ($e.criterionId // "") + "" + ($e.personaId // "");
+
+# ---- findings-ledger helpers (Task 6, plan 2026-09-23-error-honesty-
+# invariants). Every one of these is a TOTAL function whose result is
+# provably identical to its fold.py counterpart, because a findings ledger
+# that differs between the two engines is worse than one that drops a
+# malformed field. ----------------------------------------------------------
+#
+# kstr: the ONLY stringification used to build a findingKey component or to
+# project a findings field.
+#   string                          -> as-is
+#   integer-valued number, |v|<1e15 -> its decimal integer form ("500")
+#   anything else                   -> "" (null, absent, boolean,
+#                                          non-integer number, object, array)
+# The narrow number case and the "" default are deliberate: jq and python3
+# disagree on how they render a boolean, a non-integral float, a very large
+# number, or a container as text, so none of those is ever stringified here.
+def kstr($v):
+  if ($v | type) == "string" then $v
+  elif ($v | type) == "number"
+       and ($v == ($v | floor))
+       and $v > -1000000000000000
+       and $v < 1000000000000000
+    then ($v | floor | tostring)
+  else "" end;
+
+# nmsg: `message` normalization + the 200-character cap (plan Global
+# Constraints: `message` capped at 200 characters; long detail belongs in
+# evidence/<criterion>/findings/ behind `detailRef`, because an event above
+# the PIPE_BUF boundary of 4096 bytes is not guaranteed to land torn-free
+# and the torn-line recovery path is itself a duplicate-append path).
+# Runs of ASCII whitespace (space, TAB, LF, CR, VT, FF) collapse to a single
+# space; one leading and one trailing space are trimmed; the result is cut
+# to 200 codepoints and re-trimmed. The class is written out EXPLICITLY and
+# never as the shorthand escape for whitespace: oniguruma treats that class
+# as ASCII-only while python3 re treats it as unicode-aware, so the
+# shorthand would silently diverge on NBSP / U+2028 / U+0085.
+# Non-string -> "".
+def nmsg($v):
+  if ($v | type) == "string" then
+    ($v
+     | gsub("[ \t\n\r\u000B\u000C]+"; " ")
+     | ltrimstr(" ") | rtrimstr(" ")
+     | .[0:200]
+     | ltrimstr(" ") | rtrimstr(" "))
+  else "" end;
+
+# URL_CAP: `url` is the one event field whose length comes from the
+# application under test — observe.js records every fetch/XHR url, so a
+# `data:` URI or a long query string reaches the PIPE_BUF boundary of 4096
+# bytes on its own. An event above that boundary is not guaranteed to land
+# torn-free; the fold then drops the torn line, that manufactures a
+# `seq-gap`, and under plan decision R15 a `seq-gap` marks the WHOLE RUN
+# UNVERIFIED. One oversized URL must not be able to invalidate an otherwise
+# clean run, so the event contract caps `url` at 1024 characters, carries
+# the full length in the integer `urlLen`, and keeps the untruncated url in
+# the detail file at `detailRef`.
+#
+# The bound is arithmetic over the whole documented budget, not an example:
+# 16 (event name) + 64 (criterionId) + 7 (source) + 10 (channel) +
+# 7 (method) + 1024 (url) + 15 (urlLen digits) + 19 (status) +
+# 11 (originClass) + 9 (statusClass) + 1200 (message: 200 codepoints at the
+# worst 6-byte JSON escape) + 256 (detailRef) + 15 (seq) + 20 (t) + ~180 for
+# key names and punctuation < 4096. `url` is ASCII by contract, not by
+# assumption: RFC 3986 defines a URI as a sequence of US-ASCII characters,
+# and observe.js records the percent-encoded url the browser reports.
+# tests/findings-ledger/run.sh holds every line of that arithmetic, including
+# what happens when the ASCII precondition is violated.
+def url_cap: 1024;
+
+# url_len: the FULL length of the finding's url, whether or not the emitter
+# already truncated it. An emitter that caps the url itself MUST supply
+# `urlLen`; when it is absent (or not a usable non-negative integer) the
+# length of the url actually carried is used. This is what makes the derived
+# key identical for a capped event and an uncapped one — Task 8 recomputes
+# the key from the driver log, where the url is never truncated, so the two
+# derivations have to agree.
+def url_len($e):
+  ($e.urlLen) as $n
+  | if ($n | type) == "number" and ($n == ($n | floor))
+       and $n >= 0 and $n < 1000000000000000
+    then ($n | floor)
+    else (kstr($e.url) | length)
+    end;
+
+# finding_key: the run-scoped identity of one observed finding —
+#   <criterionId>|<source>|<method>|<url>|<status>
+# verbatim from the plan Global Constraints. For a console finding
+# (`source == "console"`) the event sets `method` and `url` to "" and the URL
+# COMPONENT of the key carries the normalized, capped `message` instead —
+# still exactly five `|`-separated components.
+#
+# When the url is TRUNCATED (its full `urlLen` exceeds url_cap) the URL
+# component is the capped url followed by "#" and the full length. Without
+# that discriminator two genuinely different long URLs sharing their first
+# 1024 characters would collapse into ONE finding — a finding silently
+# hiding another, which is strictly worse than the torn write the cap exists
+# to prevent. The marker is appended ONLY on truncation, so an ordinary url
+# keys exactly as it reads, and its position is unambiguous: it begins after
+# character 1024, and truncation is independently visible as `urlLen >
+# 1024` on the entry.
+#
+# ACCEPTED RESIDUAL: `urlLen` separates long URLs of DIFFERENT length. Two
+# different URLs that share a 1024-character prefix AND have the same total
+# length still collapse. Distinguishing those needs a digest of the full
+# url, which the event contract does not carry; the case is pinned by a test
+# so it is a known stopping point rather than a surprise.
+#
+# The key is DERIVED HERE; a caller-supplied `findingKey` field on the event
+# is advisory and is never trusted. Dedup has to be a property of the fold
+# rather than of whichever emitter happened to run, or the resume
+# double-count this ledger exists to prevent comes back through the emitter.
+# Task 8 qa-verify recomputes the key the same way, so an emitter that
+# derives it differently shows up there as a missing finding instead of
+# being silently absorbed here.
+def finding_key($e):
+  (kstr($e.criterionId)) as $cid
+  | (kstr($e.source)) as $src
+  | (kstr($e.method)) as $meth
+  | (if $src == "console" then nmsg($e.message)
+     else
+       (kstr($e.url) | .[0:url_cap]) as $capped
+       | (url_len($e)) as $full
+       | (if $full > url_cap then $capped + "#" + ($full | tostring) else $capped end)
+     end) as $u
+  | (kstr($e.status)) as $st
+  | $cid + "|" + $src + "|" + $meth + "|" + $u + "|" + $st;
 
 (.events // []) as $events
 | (.skipped // []) as $wrapper_skipped
@@ -245,6 +372,77 @@ def tuple_key($e):
 | ([ $tuple_childids | to_entries[] | select((.value.childIds | length) > 1)
      | {rule: "cross-child-duplicate", tuple: (.value.scenarioId + "/" + .value.criterionId + "/" + .value.personaId)} ]) as $cross_child_anoms
 
+# ---- findings ledger (Task 6): KEYED-SET reduction over finding_observed.
+#
+# This copies the shape of the $intents pass above (an `order` list plus a
+# `seen` map, skipping a key already present) — it is DELIBERATELY NOT the
+# last-wins pattern the criterion_verdict groups use, and it deliberately
+# carries NO count/occurrence field: the set IS the answer. A count would
+# re-introduce exactly the resume double-counting this ledger exists to
+# prevent, because a resumed run re-observes and re-appends the findings it
+# already recorded (the journal has no dedup of its own). First-seen order
+# is the $ev order, i.e. ascending `seq`.
+#
+# The projected entry is the event's CONTRACT FIELDS ONLY, each passed
+# through kstr/nmsg: `findingKey`, `criterionId`, `source`, `channel`,
+# `method`, `url`, `status`, `originClass`, `statusClass`, `message`,
+# `detailRef`. The reserved names (`event`, `seq`, `t`, `childId`,
+# `childSeq`) are never carried — `seq`/`t` belong to journal.sh, which
+# restamps them on append, and a caller-supplied `seq` must never travel
+# into a derived artifact. `status` is projected in its kstr form (so an
+# HTTP 500 appears as "500") precisely so the field and the key component
+# built from it can never disagree.
+#
+# `capture_probed` is registered in fold.sh but intentionally NOT projected
+# here: Task 7 emits it behind the journal-emptiness once-guard and Task 10
+# reads its `channel` straight off the journal. Registration alone is what
+# keeps it from being discarded as an `unknown-event`.
+| (reduce $ev[] as $e ({order: [], seen: {}, anoms: []};
+    if $e.event == "finding_observed" then
+      (finding_key($e)) as $k
+      | if (.seen | has($k)) then .
+        else
+          (kstr($e.url)) as $raw_url
+          | ($raw_url | .[0:url_cap]) as $capped_url
+          | (url_len($e)) as $full_len
+          | (kstr($e.detailRef)) as $ref
+          | (.order += [$k])
+          | .seen[$k] = {
+              findingKey: $k,
+              criterionId: kstr($e.criterionId),
+              source: kstr($e.source),
+              channel: kstr($e.channel),
+              method: kstr($e.method),
+              url: $capped_url,
+              urlLen: $full_len,
+              status: kstr($e.status),
+              originClass: kstr($e.originClass),
+              statusClass: kstr($e.statusClass),
+              message: nmsg($e.message),
+              detailRef: $ref
+            }
+          # finding-url-oversize: the EVENT ITSELF carried a url longer than
+          # url_cap, i.e. the emitter did not cap it, i.e. that journal line
+          # was already at risk of a torn append before this fold ran. The
+          # fold cannot un-write it, so it reports the contract breach rather
+          # than silently absorbing it — a truncation the ledger performed
+          # quietly would leave the run looking clean while its record was
+          # damaged.
+          | (if ($raw_url | length) > url_cap then
+               .anoms += [{rule: "finding-url-oversize", findingKey: $k, urlLen: $full_len}]
+             else . end)
+          # finding-detail-missing: the url was truncated, so the untruncated
+          # form exists ONLY in the detail file — an empty detailRef means it
+          # is unrecoverable from the run record.
+          | (if $full_len > url_cap and $ref == "" then
+               .anoms += [{rule: "finding-detail-missing", findingKey: $k}]
+             else . end)
+        end
+    else . end
+  )) as $findings_state
+| ([ $findings_state.order[] | $findings_state.seen[.] ]) as $findings
+| ($findings_state.anoms) as $findings_anoms
+
 # ---- pass 3 (Task 4): resumable cursor projection — independent of pass 2's
 # checkpoint groups. Tracks tuples touched by criterion_started, plan_frozen's
 # criteria[] entries (a "planned" tuple counts the same as "started" for
@@ -351,9 +549,10 @@ def tuple_key($e):
     checkpoint: {
       run_id: $state.run_id,
       updated_at: $state.last_t,
-      criteria: $finalized.criteria
+      criteria: $finalized.criteria,
+      findings: $findings
     },
-    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms),
+    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms + $findings_anoms),
     openActs: $open_acts,
     cursor: $cursor_doc
   }
