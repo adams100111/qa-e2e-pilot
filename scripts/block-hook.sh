@@ -23,6 +23,16 @@
 # node dep" — parse-session-log.js is an EXISTING dependency-free node
 # script; block-hook.sh only calls it, same as check-action-trace.js does).
 #
+# OBSERVE ROUND IS ALLOWED: the engine's own read-only observe payload
+# (skills/driving-browser-qa/scripts/observe.js, passed verbatim as the
+# evaluate body) is NOT denied — mutates() excises the shipped file's exact
+# source (content-addressed, whitespace-insensitive; read from disk, never a
+# name/marker match) before classifying, so observe's pass-through
+# instrumentation (`window.fetch = ...` wrapper, `window.__qa*` state) is not
+# a write, while a tampered copy, or observe plus appended mutating code, is
+# still denied. Comparisons (`===`/`==`) are no longer mistaken for
+# assignments. See parse-session-log.js for the full rationale (0.8.1).
+#
 # CONTRACT (Claude PreToolUse): stdin JSON carries {tool_name, tool_input,
 # ...}. DENY = print `{hookSpecificOutput:{hookEventName:"PreToolUse",
 # permissionDecision:"deny",permissionDecisionReason:"..."}}` on stdout and

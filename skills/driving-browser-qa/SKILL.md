@@ -137,7 +137,10 @@ structured observe call per round**. Acts stay separate calls; waits stay separa
 inject `scripts/observe.js` via `browser_evaluate`. It is idempotent (`window.__qaObserveInstalled`
 guard) — re-injecting it at the top of every criterion is a safe no-op. On install it patches
 `console.error`/`warn`, `window.onerror`, `unhandledrejection`, `fetch`, and `XMLHttpRequest` to
-buffer entries; it is read-only and never issues a request of its own.
+buffer entries; it is read-only and never issues a request of its own. **Pass the file VERBATIM**
+(wrapping it as `() => { <file> }` and re-indenting are fine): the block-hook recognizes the shipped
+source byte-for-byte (whitespace aside) and allows it; an edited, trimmed, or comment-stripped copy
+is classified like any other payload and its `window.fetch` wrapper gets it denied as mutating.
 
 **REQUIRED — after ANY navigation, re-inject before re-observing (binding).** The interceptors
 `observe.js` installs live on the current document's `window`. A full-page `browser_navigate`, a
