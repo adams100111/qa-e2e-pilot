@@ -349,13 +349,16 @@ print("true" if v else "false")
     response_for_body='"<redacted: responseBody withheld, redact failed>"'
   elif [[ "$browser_secrets" != "[]" ]]; then
     local masked=""
+    # The body goes in on STDIN, never argv/env: a browser response carries a
+    # page snapshot and can exceed Linux's 128KB MAX_ARG_STRLEN (the v0.7.1
+    # provenance.sh "Argument list too long" lesson).
     if has_jq; then
-      masked="$(jq -rn --arg body "$tool_response" --argjson secrets "$browser_secrets" \
-        'reduce $secrets[] as $s ($body; split($s) | join("<redacted>"))' 2>/dev/null)"
+      masked="$(printf '%s' "$tool_response" | jq -Rrs --argjson secrets "$browser_secrets" \
+        'reduce $secrets[] as $s (.; split($s) | join("<redacted>"))' 2>/dev/null)"
     elif has_py; then
-      masked="$(QA_CAPTURE_BODY="$tool_response" python3 -c '
-import json, os, sys
-body = os.environ.get("QA_CAPTURE_BODY", "")
+      masked="$(printf '%s' "$tool_response" | python3 -c '
+import json, sys
+body = sys.stdin.read()
 for s in json.loads(sys.argv[1]):
     if isinstance(s, str) and s:
         body = body.replace(s, "<redacted>")
