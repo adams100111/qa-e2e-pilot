@@ -77,7 +77,7 @@ Layer 3 of the human-eye-UX engine: the multimodal model reading a screenshot + 
 _Avoid_: treating a critic suspicion as a **Verdict** on its own; conflating it with the definite-oracle detectors (layers 1–2, `detecting-visual-ux` Steps 1–3) that can ground a verdict unassisted.
 
 **Capture-hook / Toolstream**:
-The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies; `Bash` args/response secret-redacted, `browser_*` recorded in full — a documented residual) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-check, not the file.
+The **capture-hook** is a plugin-bundled `PostToolUse` hook that records every browser/Bash call (+ bounded read bodies; `Bash` args/response secret-redacted, typed values of secret fields in `browser_type`/`browser_fill_form` redacted, other `browser_*` recorded in full) to an **append-only** `toolstream.jsonl` — the **agent-unauthored**, tamper-*evident* record (+ the `--save-session` log) that **qa-verify** reconciles evidence against. No hash-chain (an agent could recompute it — false assurance); its trust comes from qa-verify's independent re-check, not the file.
 _Avoid_: log (unqualified), trace (reserve "action-trace" for the agent's self-report), hash-chain (cut).
 
 **Block-hook**:

@@ -8,6 +8,53 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.8.1 — 2026-09-27 · "The observer is not the actor"
+
+Bug-fix release. Two defects found on a real QA run of 0.8.0 against another project.
+
+- **The block-hook no longer denies the engine's own observe round.** `scripts/block-hook.sh`
+  reuses `parse-session-log.js`'s `mutates()`, and `mutates(observe.js)` was `true`: the
+  sanctioned read-only observe payload was denied, the run had no findings channel,
+  `loadWindowCovered` went false and the run verified **UNVERIFIED** even though every tool call
+  was captured. Two constructs tripped the `window\.\w+\s*=` alternative. First, the `===`
+  comparisons (`typeof window.__qaObserve === 'function'`): every `x = ...` alternative also
+  matched `==`/`===`, so any read-only probe comparing a value was denied too. Assignment tails
+  now require `=(?!=)`, and they now also catch compound assignments (`el.value += 'x'` used to
+  slip through). Second, observe's own instrumentation: `window.__qaObserveInstalled`,
+  `window.__qaObserve`, and a pass-through `window.fetch = function (...)` wrapper. A regex cannot
+  tell a pass-through fetch wrapper from one that forges responses, so this allowance is
+  **content-addressed**. The shipped `observe.js` is read from disk, and any occurrence of it in a
+  payload is cut out before classification. The comparison ignores whitespace, so the
+  `() => { … }` wrapper and re-indentation do not matter. A tampered copy is still denied. So is
+  observe with a write appended, and so is a payload that only *names* observe.
+  `classify()` now also decodes the quoted `page.evaluate('…')` argument in session-log code. That
+  keeps the live hook, `check-action-trace.js`, `mutation-flag.sh` and `qa-verify.sh`'s
+  record-only phase-surface re-check in agreement. Pass `observe.js` **verbatim**; an edited or
+  comment-stripped copy gets no allowance.
+- **Secrets typed into the browser are no longer recorded.** Up to 0.8.0, `browser_type` and
+  `browser_fill_form` args were stored in full in `toolstream.jsonl`, and a real run stored a
+  shared login password there six times. The new `toolstream.sh redact-browser` handles fields
+  whose descriptors (element / name / selector / ref / type) name a password, passcode, secret,
+  token, API key, credential, OTP, PIN or CVV. That list is built in, and it is extended by any
+  field that the effective `enforcement.secretPatterns` match. Such a field keeps its descriptor
+  and records `<redacted>` as its value. Every other typed value goes through the same
+  `redactedKeys` + `secretPatterns` pass as Bash args. The same values are masked in the recorded
+  `responseBody`, which echoes the generated `.fill('<value>')` code. Masking covers the value's
+  JSON- and JS-escaped spellings and runs on the full response, before the 4 KB truncation. A
+  redaction failure withholds the args or body rather than writing them unredacted, and the hook
+  still never fails or blocks the call.
+
+#### Behaviour changes
+
+- A read-only `browser_evaluate` that compares values (`===`, `==`) is now allowed. One that uses a
+  compound assignment on a watched target (`el.value += …`, `window.x ??= …`) is now denied.
+- `"secretPatterns": []` does **not** switch off the built-in secret-*field* set. That opt-out
+  still governs pattern redaction of free text. A value typed into a password field is never
+  recorded.
+- Evaluate payloads, URLs and every other `browser_*` call are still recorded in full, because
+  `qa-verify` re-classifies evaluate payloads and they must not be pattern-mangled. If an agent
+  types a credential into a URL itself, `redactedKeys` is not applied there.
+
 ### v0.8.0 — 2026-09-24 · "A run that cannot verify says so"
 
 Feature release, and the first one that can turn a previously-green pipeline **red**. It exists

@@ -77,6 +77,16 @@ seed_run duringreport duringreport.journal.ndjson duringreport.toolstream.jsonl
 seed_run notoolstream notoolstream.journal.ndjson ""
 seed_run undeterminable undeterminable.journal.ndjson undeterminable.toolstream.jsonl
 
+# observe: the engine's OWN observe round (observe.js, verbatim, wrapped as the
+# browser_evaluate function body) during Verify but OUTSIDE any acting window.
+# It is read-only, so it must classify browser-evaluate-readonly (allowed in
+# Verify) -> no finding. Regression: 0.8.0's mutates() called it mutating.
+# Built at test time from the shipped file so it can never go stale.
+seed_run observe clean.journal.ndjson ""
+jq -c -n --rawfile src "$HERE/../../skills/driving-browser-qa/scripts/observe.js" \
+  '{seq:1, ts:"2026-01-01T00:00:07Z", tool:"browser_evaluate", args:{function:("() => {\n" + $src + "\n}")}, resultDigest:{len:0, sha256:"o"}}' \
+  > "$WORK/.qa/runs/observe/toolstream.jsonl"
+
 run_qv() { # <engine: "" | python3> <run>
   local engine="$1" run="$2"
   if [[ -n "$engine" ]]; then
@@ -134,6 +144,14 @@ for ENGINE in "" python3; do
     "$(jq -r '.[0].reasons | join("; ")' "$(vf duringreport)")" "Report"
   check_contains "[$LABEL] duringreport: reason names the forbidden toolClass (browser-navigate)" \
     "$(jq -r '.[0].reasons | join("; ")' "$(vf duringreport)")" "browser-navigate"
+
+  # --- observe: the shipped observe.js round outside the acting window is a
+  # READ (browser-evaluate-readonly, allowed in Verify) -> no phase-surface
+  # finding. -----------------------------------------------------------------
+  run_qv "$ENGINE" observe >/dev/null 2>&1
+  check "[$LABEL] observe: qa-verify exits 0" "$?" "0"
+  check "[$LABEL] observe: observe.js round is NOT flagged (no phase-surface record)" \
+    "$(jq '[.[] | select(.criterionId == "__phase-surface__")] | length' "$(vf observe)")" "0"
 
   # --- (d) notoolstream: journal.ndjson exists (a real timeline) but NO
   # toolstream.jsonl at all -> the phase-surface pass is skipped entirely,

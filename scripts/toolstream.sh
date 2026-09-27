@@ -56,6 +56,39 @@
 #       no-op when secretPatterns is explicitly [] AND redactedKeys is empty
 #       or absent. redact must never die mid-hook.
 #
+#   toolstream.sh redact-browser <tool-name> <args-json> [config-json]
+#       Secret-TYPING redaction for the browser tools that put a value into a
+#       page field: browser_type ({element, ref, text, ...}) and
+#       browser_fill_form ({fields: [{name, type, ref, value}, ...]}). Every
+#       other tool name passes <args-json> through unchanged. Prints
+#       {"args": <redacted args>, "secrets": [<string>, ...]}.
+#         - A field is SECRET when its descriptor strings (every string in
+#           the call/field object EXCEPT the typed value: element, ref,
+#           selector, name, type, label, ...) match the built-in secret-FIELD
+#           set ($SECRET_FIELD_PATTERN: password/passwd/passcode/passphrase/
+#           pwd/secret/token/api key/credential/private key/access key/client
+#           secret/otp/one-time code/cvv/cvc/security code/pin), OR a
+#           descriptor (whole string, or any word of it) probed as
+#           "<descriptor>=x" matches the EFFECTIVE secretPatterns (the same
+#           list `redact` uses, so a project pattern like "(ssn)..." also
+#           marks an "SSN" field secret). A secret field's typed value is
+#           replaced WHOLESALE with "<redacted>". The built-in field set is
+#           NOT disabled by `"secretPatterns": []` — that opt-out governs
+#           pattern redaction of free text; a value typed into a password
+#           field is never test data worth recording.
+#         - A non-secret field's typed value gets the SAME string pass as
+#           `redact` (redactedKeys literal substrings, then the effective
+#           secretPatterns) — so a declared credential value typed into an
+#           innocuously named field is still masked.
+#         - Descriptors (which field, ref, submit/slowly flags) are never
+#           altered, so the audit trail survives.
+#       "secrets" lists every ORIGINAL typed value that was changed, plus the
+#       redactedKeys, each also in its JSON-escaped and JS-quote-escaped
+#       spellings (longest first) — the caller masks these literally in the
+#       recorded tool_response, which echoes the generated `.fill('<value>')`
+#       code. Malformed args (non-object, fields not an array, non-object
+#       field entries) pass through unchanged; never dies on them.
+#
 # PORTABILITY: secretPatterns MUST be POSIX-ERE-compatible (no lookaround, no
 # backreferences) — the jq engine matches them via jq's built-in Oniguruma
 # regex (gsub), the python3 fallback via `re`. NEITHER engine shells out to
@@ -276,6 +309,13 @@ cmd_read() {
   return 0
 }
 
+# SECRET_FIELD_PATTERN — built-in secret-FIELD descriptor set for
+# redact-browser (Defect 2, 0.8.1). Matched case-insensitively against a
+# field's descriptor strings (element/name/selector/ref/type/...), never its
+# value. POSIX-ERE-safe (Oniguruma + python `re`); word boundaries use
+# explicit non-alphanumeric guards rather than `\b` so both engines agree.
+SECRET_FIELD_PATTERN='pass(word|wd|code|phrase)|(^|[^a-z0-9])pwd([^a-z0-9]|$)|secret|token|api[ _-]?key|credential|private[ _-]?key|access[ _-]?key|(^|[^a-z0-9])otp([^a-z0-9]|$)|one[ _-]?time[ _-]?(code|pass)|(^|[^a-z0-9])(cvv|cvc)([^a-z0-9]|$)|security[ _-]?code|(^|[^a-z0-9])pin([^a-z0-9]|$)'
+
 # ---------------------------------------------------------------------------
 # cmd_redact <args-json> [config-json]
 # ---------------------------------------------------------------------------
@@ -364,10 +404,172 @@ print(json.dumps(walk(args), separators=(",", ":")))
 }
 
 # ---------------------------------------------------------------------------
+# cmd_redact_browser <tool-name> <args-json> [config-json]
+# ---------------------------------------------------------------------------
+cmd_redact_browser() {
+  local tool_name="$1" args_json="$2" config_json="${3:-}"
+  [[ -z "$config_json" ]] && config_json='{}'
+
+  if has_jq; then
+    jq -e . >/dev/null 2>&1 <<< "$args_json"   || die "redact-browser: args-json is not valid JSON."
+    jq -e . >/dev/null 2>&1 <<< "$config_json" || die "redact-browser: config-json is not valid JSON."
+    jq -c --arg tool "$tool_name" --argjson cfg "$config_json" \
+      --argjson defaultPats "$DEFAULT_SECRET_PATTERNS_JSON" \
+      --arg fieldPat "$SECRET_FIELD_PATTERN" --arg sq "'" --arg dq '"' '
+      (if ($cfg | type) == "object" then ($cfg.enforcement // {}) else {} end) as $enf0
+      | (if ($enf0 | type) == "object" then $enf0 else {} end) as $enf
+      | (if ($enf | has("secretPatterns"))
+         then ($enf.secretPatterns // [] | if type == "array" then map(select(type == "string")) else [] end)
+         else $defaultPats end
+         | map(sub("^\\(\\?i\\)"; ""))) as $pats
+      | (($enf.redactedKeys // []) | if type == "array" then map(select(type == "string" and length > 0)) else [] end) as $keys
+      | def redact_str(s):
+          (reduce $keys[] as $k (s; . / $k | join("<redacted>"))) as $s1
+          | reduce $pats[] as $p ($s1; (try (. | gsub($p; "<redacted>"; "i")) catch .));
+        def pat_hit(c): any($pats[]; . as $p | (try ((c + "=x") | test($p; "i")) catch false));
+        def is_secret_desc(strs):
+          any(strs[]; (try test($fieldPat; "i") catch false))
+          or any(strs[]; . as $d | pat_hit($d) or any(($d | [scan("[A-Za-z0-9_-]+")])[]; pat_hit(.)));
+        # redact one {value-key: v, ...descriptors} object -> [newObj, [changed originals]]
+        def redact_field(vkey):
+          . as $o
+          | [ $o | to_entries[] | select(.key != vkey and .key != "values") | .value | select(type == "string") ] as $desc
+          | if ($o | has(vkey)) | not then [$o, []]
+            elif is_secret_desc($desc) then
+              ($o[vkey]) as $v
+              | if $v == null then [$o, []]
+                else [($o | .[vkey] = "<redacted>"), [ ($v | if type == "string" then . else tojson end) ]] end
+            elif ($o[vkey] | type) == "string" then
+              ($o[vkey]) as $v | redact_str($v) as $r
+              | if $r == $v then [$o, []] else [($o | .[vkey] = $r), [$v]] end
+            else [$o, []] end;
+        def variants(s):
+          [ s,
+            (s | tojson | .[1:-1]),
+            (s | split("\\") | join("\\\\") | split($sq) | join("\\" + $sq)),
+            (s | split("\\") | join("\\\\") | split($sq) | join("\\" + $sq) | tojson | .[1:-1]),
+            (s | split("\\") | join("\\\\") | split($dq) | join("\\" + $dq)),
+            (s | split("\\") | join("\\\\") | split($dq) | join("\\" + $dq) | tojson | .[1:-1]) ];
+      . as $args
+      | (if ($args | type) != "object" then [$args, []]
+         elif ($tool | test("browser_type$")) then ($args | redact_field("text"))
+         elif ($tool | test("browser_fill_form$")) then
+           if ($args.fields | type) == "array" then
+             ([ $args.fields[] | if type == "object" then redact_field("value") else [., []] end ]) as $rs
+             | [ ($args | .fields = [ $rs[] | .[0] ]), [ $rs[] | .[1][] ] ]
+           else [$args, []] end
+         else [$args, []] end) as $res
+      | {args: $res[0],
+         secrets: ( [ ($res[1] + (if ($res[1] | length) > 0 then $keys else [] end))[]
+                      | select(type == "string" and length > 0) | variants(.)[] ]
+                    | unique | map(select(length > 0)) | sort_by(-length) )}
+    ' <<< "$args_json"
+  elif has_py; then
+    python3 -c '
+import json, re, sys
+tool, config_json, default_pats_json, field_pat = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    args = json.loads(sys.stdin.read())
+except json.JSONDecodeError:
+    print("ERROR: redact-browser: args-json is not valid JSON.", file=sys.stderr); sys.exit(1)
+try:
+    cfg = json.loads(config_json)
+except json.JSONDecodeError:
+    print("ERROR: redact-browser: config-json is not valid JSON.", file=sys.stderr); sys.exit(1)
+try:
+    default_patterns = json.loads(default_pats_json)
+except json.JSONDecodeError:
+    default_patterns = []
+enf = cfg.get("enforcement") if isinstance(cfg, dict) else None
+if not isinstance(enf, dict):
+    enf = {}
+if "secretPatterns" in enf:
+    sp = enf.get("secretPatterns") or []
+    patterns = [p for p in sp if isinstance(p, str)] if isinstance(sp, list) else []
+else:
+    patterns = [p for p in default_patterns if isinstance(p, str)]
+rk = enf.get("redactedKeys") or []
+keys = [k for k in rk if isinstance(k, str) and k] if isinstance(rk, list) else []
+compiled = []
+for p in patterns:
+    pp = p[4:] if p.startswith("(?i)") else p
+    try:
+        compiled.append(re.compile(pp, re.IGNORECASE))
+    except re.error as e:
+        print(f"WARN: redact-browser: skipping unparseable secretPattern {p!r}: {e}", file=sys.stderr)
+field_rx = re.compile(field_pat, re.IGNORECASE)
+
+def redact_str(s):
+    for k in keys:
+        s = s.replace(k, "<redacted>")
+    for rx in compiled:
+        s = rx.sub("<redacted>", s)
+    return s
+
+def pat_hit(c):
+    return any(rx.search(c + "=x") for rx in compiled)
+
+def is_secret_desc(strs):
+    if any(field_rx.search(d) for d in strs):
+        return True
+    for d in strs:
+        if pat_hit(d) or any(pat_hit(w) for w in re.findall(r"[A-Za-z0-9_-]+", d)):
+            return True
+    return False
+
+def redact_field(o, vkey):
+    if vkey not in o:
+        return o, []
+    desc = [v for k, v in o.items() if k != vkey and k != "values" and isinstance(v, str)]
+    v = o[vkey]
+    if is_secret_desc(desc):
+        if v is None:
+            return o, []
+        n = dict(o); n[vkey] = "<redacted>"
+        return n, [v if isinstance(v, str) else json.dumps(v, separators=(",", ":"))]
+    if isinstance(v, str):
+        r = redact_str(v)
+        if r != v:
+            n = dict(o); n[vkey] = r
+            return n, [v]
+    return o, []
+
+changed = []
+out = args
+if isinstance(args, dict):
+    if tool.endswith("browser_type"):
+        out, changed = redact_field(args, "text")
+    elif tool.endswith("browser_fill_form") and isinstance(args.get("fields"), list):
+        nf = []
+        for f in args["fields"]:
+            if isinstance(f, dict):
+                nf_i, ch = redact_field(f, "value"); nf.append(nf_i); changed += ch
+            else:
+                nf.append(f)
+        out = dict(args); out["fields"] = nf
+
+def jsesc(s, q):
+    return s.replace("\\", "\\\\").replace(q, "\\" + q)
+def jsoninner(s):
+    return json.dumps(s)[1:-1]
+secrets = set()
+for s in (changed + (keys if changed else [])):
+    if isinstance(s, str) and s:
+        for v in (s, jsoninner(s), jsesc(s, "\x27"), jsoninner(jsesc(s, "\x27")), jsesc(s, "\""), jsoninner(jsesc(s, "\""))):
+            if v:
+                secrets.add(v)
+print(json.dumps({"args": out, "secrets": sorted(secrets, key=lambda x: (-len(x), x))}, separators=(",", ":")))
+' "$tool_name" "$config_json" "$DEFAULT_SECRET_PATTERNS_JSON" "$SECRET_FIELD_PATTERN" <<< "$args_json"
+  else
+    die "toolstream.sh needs either 'jq' or 'python3' to redact browser args."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 main() {
-  [[ $# -lt 1 ]] && die "Usage: toolstream.sh append <run-id> <event-json>\n       toolstream.sh read <run-id>\n       toolstream.sh redact <args-json> [config-json]"
+  [[ $# -lt 1 ]] && die "Usage: toolstream.sh append <run-id> <event-json>\n       toolstream.sh read <run-id>\n       toolstream.sh redact <args-json> [config-json]\n       toolstream.sh redact-browser <tool-name> <args-json> [config-json]"
 
   case "$1" in
     append)
@@ -382,8 +584,12 @@ main() {
       [[ $# -lt 2 ]] && die "redact requires: <args-json> [config-json]"
       cmd_redact "$2" "${3:-}"
       ;;
+    redact-browser)
+      [[ $# -lt 3 ]] && die "redact-browser requires: <tool-name> <args-json> [config-json]"
+      cmd_redact_browser "$2" "$3" "${4:-}"
+      ;;
     *)
-      die "usage: toolstream.sh {append|read|redact} …"
+      die "usage: toolstream.sh {append|read|redact|redact-browser} …"
       ;;
   esac
 }

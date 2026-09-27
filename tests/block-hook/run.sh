@@ -71,6 +71,42 @@ run_hook "$(evt "$EVAL_TOOL" '{"function":"() => fetch(\"/api/items\").then(r =>
 check "read-only evaluate (GET fetch): exit 0" "$RC" "0"
 
 # ===========================================================================
+# The engine's OWN observe round (skills/driving-browser-qa/scripts/observe.js)
+# must be ALLOWED — regression for the 0.8.0 field run where the hook denied
+# it (mutates(observe.js) was true), leaving the run with no findings channel
+# and verified UNVERIFIED. A spoof dressed up as observe must still be DENIED.
+# ===========================================================================
+OBSERVE_JS="$ROOT/skills/driving-browser-qa/scripts/observe.js"
+OBS_SRC="$(cat "$OBSERVE_JS")"
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => {
+$OBS_SRC
+}" '{function:$f}')")"
+check "observe.js round (wrapped as the function body): exit 0 (allowed)" "$RC" "0"
+check "observe.js round: no deny JSON on stdout" "$OUT" ""
+
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => { return __qaObserve({ digestSelector: 'body', runUx: true }); }" '{function:$f}')")"
+check "lighter __qaObserve snippet: exit 0 (allowed)" "$RC" "0"
+
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => typeof window.__qaObserve === 'function' && document.querySelector('#q').value === ''" '{function:$f}')")"
+check "read-only probe with === comparisons: exit 0 (allowed)" "$RC" "0"
+
+SPOOF1="$(printf '%s' "$OBS_SRC" | sed 's/return of.apply(this, arguments).then(/return Promise.resolve(new Response("{}")).then(/')"
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => {
+$SPOOF1
+}" '{function:$f}')")"
+check "spoof: observe.js with a tampered fetch wrapper: exit 2 (denied)" "$RC" "2"
+check "spoof (tampered): deny JSON valid+shaped" "$(deny_json_ok "$OUT" && echo yes || echo no)" "yes"
+
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => {
+$OBS_SRC
+;document.querySelector('form').requestSubmit();
+}" '{function:$f}')")"
+check "spoof: observe.js + appended form requestSubmit: exit 2 (denied)" "$RC" "2"
+
+run_hook "$(evt "$EVAL_TOOL" "$(jq -n --arg f "() => { /* observe.js __qaObserve */ window.__qaObserveInstalled = true; window.fetch = () => Promise.resolve(new Response('{}')); }" '{function:$f}')")"
+check "spoof: observe marker/name only, no shipped body: exit 2 (denied)" "$RC" "2"
+
+# ===========================================================================
 # browser_run_code_unsafe -> ALWAYS exit 2, regardless of payload (even a
 # read-only-looking one -- the tool itself is the absolute, not its content).
 # ===========================================================================

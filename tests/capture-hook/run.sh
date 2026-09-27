@@ -205,10 +205,11 @@ check "case11: explicit secretPatterns:[] opt-out honored (args NOT redacted)" \
   "$(echo "$LINE11" | jq -r '.args.command')" "echo password=Sup3rSecret!"
 
 # ===========================================================================
-# Case 12 (unchanged): a browser_* call still records its args IN FULL even
-# with the default pattern set active (no enforcement block) -- redaction
-# is Bash-only; browser_* is the documented residual, unaffected by
-# Finding 1/2's fixes.
+# Case 12 (0.8.1 -- the documented residual is CLOSED): a browser_type whose
+# typed TEXT itself carries a secret-looking assignment is now redacted with
+# the same effective pattern set toolstream.sh redact applies to Bash (here
+# the built-in default, since the config has no enforcement block). Until
+# 0.8.1 this case pinned the opposite (recorded IN FULL).
 # ===========================================================================
 setup_run
 printf '%s' '{"baseUrl":"http://localhost:3000"}' > "$WORK/.qa/config.json"
@@ -216,8 +217,126 @@ BROWSER_PW_EVENT='{"tool_name":"mcp__plugin_playwright_playwright__browser_type"
 ( cd "$WORK" && printf '%s' "$BROWSER_PW_EVENT" | bash "$HOOK" >/dev/null 2>"$WORK/hook13.err" ); rc13=$?
 check "case12: hook exit 0" "$rc13" "0"
 LINE12="$(tail -n1 "$(TF)" 2>/dev/null)"
-check "case12: browser_* arg kept IN FULL despite default patterns being active" \
-  "$(echo "$LINE12" | jq -r '.args.text')" "password=Sup3rSecret!"
+not_contains "case12: secret-looking typed text redacted (default patterns now cover browser_type)" "$LINE12" "Sup3rSecret!"
+
+# ===========================================================================
+# Case 12b-12h (0.8.1, Defect 2): secrets TYPED into the browser are not
+# recorded. A real run stored a shared login password 6x in toolstream.jsonl
+# via browser_type / browser_fill_form. The TYPED VALUE of a secret field is
+# replaced with "<redacted>" in args AND in the recorded responseBody (the
+# Playwright MCP response echoes the generated .fill('<value>') code); the
+# rest of the event -- which field, ref, tool, ts -- is kept for the audit
+# trail. Non-secret fields are recorded verbatim.
+# ===========================================================================
+PW="Hunt3r2-Shared!pw"
+# (the single quote is passed in via --arg q, keeping the jq program single-quoted)
+PW_RESP="$(jq -cn --arg pw "$PW" --arg q "'" '[{type:"text",text:("### Ran Playwright code\nawait page.getByRole(\"textbox\", { name: \"Password\" }).fill(" + $q + $pw + $q + ");\n")}]')"
+# 12b: browser_type into a password field (element description names it)
+setup_run
+EV12B="$(jq -cn --arg pw "$PW" --argjson resp "$PW_RESP" '{tool_name:"mcp__plugin_playwright_playwright__browser_type",tool_input:{element:"Password textbox",ref:"e12",text:$pw,submit:true},tool_response:$resp,session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12B" | bash "$HOOK" >/dev/null 2>"$WORK/hook12b.err" ); rc=$?
+check "case12b: hook exit 0" "$rc" "0"
+L="$(tail -n1 "$(TF)" 2>/dev/null)"
+not_contains "case12b: password typed into a password field is NOT in the toolstream line (args or responseBody)" "$L" "$PW"
+check "case12b: args.text replaced with the stable marker" "$(echo "$L" | jq -r '.args.text')" "<redacted>"
+check "case12b: audit trail kept -- element" "$(echo "$L" | jq -r '.args.element')" "Password textbox"
+check "case12b: audit trail kept -- ref" "$(echo "$L" | jq -r '.args.ref')" "e12"
+check "case12b: audit trail kept -- submit flag" "$(echo "$L" | jq -r '.args.submit')" "true"
+contains "case12b: responseBody still recorded, secret masked in it" "$(echo "$L" | jq -r '.responseBody')" "<redacted>"
+
+# 12c: browser_fill_form with a password field among others
+setup_run
+EV12C="$(jq -cn --arg pw "$PW" --argjson resp "$PW_RESP" '{tool_name:"mcp__plugin_playwright_playwright__browser_fill_form",tool_input:{fields:[{name:"Email",type:"textbox",ref:"e1",value:"qa.admin@example.test"},{name:"Password",type:"textbox",ref:"e2",value:$pw},{name:"Remember me",type:"checkbox",ref:"e3",value:"true"}]},tool_response:$resp,session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12C" | bash "$HOOK" >/dev/null 2>"$WORK/hook12c.err" ); rc=$?
+check "case12c: hook exit 0" "$rc" "0"
+L="$(tail -n1 "$(TF)" 2>/dev/null)"
+not_contains "case12c: fill_form password value NOT in the toolstream line" "$L" "$PW"
+check "case12c: password field value -> marker" "$(echo "$L" | jq -r '.args.fields[1].value')" "<redacted>"
+check "case12c: password field name kept" "$(echo "$L" | jq -r '.args.fields[1].name')" "Password"
+check "case12c: password field ref kept" "$(echo "$L" | jq -r '.args.fields[1].ref')" "e2"
+check "case12c: non-secret field (Email) verbatim" "$(echo "$L" | jq -r '.args.fields[0].value')" "qa.admin@example.test"
+check "case12c: non-secret checkbox verbatim" "$(echo "$L" | jq -r '.args.fields[2].value')" "true"
+check "case12c: field count unchanged" "$(echo "$L" | jq -r '.args.fields | length')" "3"
+
+# 12d: a non-secret browser_type is recorded verbatim
+setup_run
+EV12D="$(jq -cn --arg q "'" '{tool_name:"mcp__plugin_playwright_playwright__browser_type",tool_input:{element:"Search products",ref:"e7",text:"blue widgets"},tool_response:[{type:"text",text:("fill(" + $q + "blue widgets" + $q + ")")}],session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12D" | bash "$HOOK" >/dev/null 2>"$WORK/hook12d.err" ); rc=$?
+check "case12d: hook exit 0" "$rc" "0"
+L="$(tail -n1 "$(TF)" 2>/dev/null)"
+check "case12d: non-secret typed text verbatim" "$(echo "$L" | jq -r '.args.text')" "blue widgets"
+contains "case12d: non-secret responseBody verbatim" "$(echo "$L" | jq -r '.responseBody')" "blue widgets"
+
+# 12e: the field is identified by a selector / input type rather than a label
+setup_run
+EV12E="$(jq -cn --arg pw "$PW" '{tool_name:"mcp__plugin_playwright_playwright__browser_type",tool_input:{element:"input",selector:"input[type=password]",text:$pw},tool_response:null,session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12E" | bash "$HOOK" >/dev/null 2>"$WORK/hook12e.err" ); rc=$?
+check "case12e: hook exit 0" "$rc" "0"
+not_contains "case12e: password field found via selector -> redacted" "$(tail -n1 "$(TF)")" "$PW"
+
+# 12f: a declared credential VALUE (enforcement.redactedKeys, setup_run has
+# "s3cr3t-cred-value") typed into an innocuously named field is still masked
+setup_run
+EV12F="$(jq -cn '{tool_name:"mcp__plugin_playwright_playwright__browser_type",tool_input:{element:"Notes",ref:"e9",text:"login with s3cr3t-cred-value please"},tool_response:{ok:true},session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12F" | bash "$HOOK" >/dev/null 2>"$WORK/hook12f.err" ); rc=$?
+check "case12f: hook exit 0" "$rc" "0"
+L="$(tail -n1 "$(TF)" 2>/dev/null)"
+not_contains "case12f: declared credential value masked" "$L" "s3cr3t-cred-value"
+check "case12f: rest of the typed text kept" "$(echo "$L" | jq -r '.args.text')" "login with <redacted> please"
+
+# 12g: a project-specific secretPatterns entry also marks a field secret
+# (the effective pattern list is reused to classify field names)
+setup_run
+printf '%s' '{"enforcement":{"captureHook":true,"secretPatterns":["(ssn)\\s*[:=]\\s*\\S+"]}}' > "$WORK/.qa/config.json"
+EV12G="$(jq -cn '{tool_name:"mcp__plugin_playwright_playwright__browser_type",tool_input:{element:"SSN",ref:"e4",text:"078-05-1120"},tool_response:{ok:true},session_id:"s"}')"
+( cd "$WORK" && printf '%s' "$EV12G" | bash "$HOOK" >/dev/null 2>"$WORK/hook12g.err" ); rc=$?
+check "case12g: hook exit 0" "$rc" "0"
+check "case12g: field named by a project secretPattern -> redacted" "$(tail -n1 "$(TF)" | jq -r '.args.text')" "<redacted>"
+
+# 12h: malformed browser_* inputs never fail the hook (and never block)
+setup_run
+for bad in \
+  '{"tool_name":"mcp__plugin_playwright_playwright__browser_type","tool_input":{"element":"Password","text":12345},"tool_response":null}' \
+  '{"tool_name":"mcp__plugin_playwright_playwright__browser_fill_form","tool_input":{"fields":"not-an-array"},"tool_response":null}' \
+  '{"tool_name":"mcp__plugin_playwright_playwright__browser_fill_form","tool_input":{"fields":[null,7,{"name":"Password"}]},"tool_response":null}' \
+  '{"tool_name":"mcp__plugin_playwright_playwright__browser_type","tool_input":"just a string","tool_response":null}' \
+  '{"tool_name":"mcp__plugin_playwright_playwright__browser_type","tool_input":{"element":"Password","text":"x"' ; do
+  ( cd "$WORK" && printf '%s' "$bad" | bash "$HOOK" >/dev/null 2>"$WORK/hook12h.err" ); rc=$?
+  check "case12h: malformed browser input -> exit 0 ($(printf '%s' "$bad" | head -c 60)...)" "$rc" "0"
+done
+check "case12h: every recorded line is valid JSON" \
+  "$(jq -c . "$(TF)" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+
+# 12i: dual-engine -- the same redaction under the python3 fallback
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  setup_run
+  BASH_BIN="$(command -v bash)"
+  FAKEBIN12="$WORK/fakebin12"
+  mkdir -p "$FAKEBIN12"
+  for tool in bash date mkdir mv rm cat dirname sed wc python3 tr head awk sha256sum shasum grep; do
+    TOOL_PATH="$(command -v "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$FAKEBIN12/$tool"
+  done
+  ( cd "$WORK" && printf '%s' "$EV12B" | PATH="$FAKEBIN12" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook12i.err" ); rc=$?
+  check "py-fallback case12b: hook exit 0" "$rc" "0"
+  L="$(tail -n1 "$(TF)" 2>/dev/null)"
+  not_contains "py-fallback case12b: password NOT in the line" "$L" "$PW"
+  check "py-fallback case12b: args.text -> marker" "$(echo "$L" | jq -r '.args.text')" "<redacted>"
+  check "py-fallback case12b: element kept" "$(echo "$L" | jq -r '.args.element')" "Password textbox"
+  ( cd "$WORK" && printf '%s' "$EV12C" | PATH="$FAKEBIN12" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook12i2.err" ); rc=$?
+  check "py-fallback case12c: hook exit 0" "$rc" "0"
+  L="$(tail -n1 "$(TF)" 2>/dev/null)"
+  not_contains "py-fallback case12c: password NOT in the line" "$L" "$PW"
+  check "py-fallback case12c: Email verbatim" "$(echo "$L" | jq -r '.args.fields[0].value')" "qa.admin@example.test"
+  check "py-fallback case12c: Password -> marker" "$(echo "$L" | jq -r '.args.fields[1].value')" "<redacted>"
+  ( cd "$WORK" && printf '%s' "$EV12D" | PATH="$FAKEBIN12" "$BASH_BIN" "$HOOK" >/dev/null 2>"$WORK/hook12i3.err" ); rc=$?
+  check "py-fallback case12d: non-secret verbatim" "$(tail -n1 "$(TF)" | jq -r '.args.text')" "blue widgets"
+  ( cd "$WORK" && printf '%s' '{"tool_name":"mcp__plugin_playwright_playwright__browser_fill_form","tool_input":{"fields":"not-an-array"},"tool_response":null}' | PATH="$FAKEBIN12" "$BASH_BIN" "$HOOK" >/dev/null 2>&1 ); rc=$?
+  check "py-fallback case12h: malformed fill_form -> exit 0" "$rc" "0"
+  echo "note - jq-fallback sub-case (browser secret capture): RAN"
+else
+  echo "SKIP - jq-fallback sub-case (browser secret capture): jq or python3 not present"
+fi
 
 # ===========================================================================
 # Case 13 (Finding 1+2, python3-fallback dual-engine proof): re-run cases 9

@@ -60,6 +60,58 @@ check "classify: getComputedStyle NOT mutating"     "$(mut "getComputedStyle(doc
 # substring method like postMessage is NOT flagged (guards against dropping `\s*\(`)
 check "classify: .postMessage NOT mutating"         "$(mut "window.postMessage('x','*')")"            "false"
 
+# --- the shipped observe payload (driving-browser-qa/scripts/observe.js) ------
+# Regression (0.8.0 field run): mutates(observe.js) was TRUE, so the block-hook
+# denied the engine's own read-only observe round and the run went UNVERIFIED.
+# Two constructs tripped `window\.\w+\s*=`: the `===` comparisons
+# (`typeof window.__qaObserve === 'function'`) -- a plain bug, a comparison is
+# not an assignment -- and observe's own instrumentation assignments
+# (`window.__qaObserveInstalled = true`, `window.fetch = function ...` pass-
+# through wrapper). The fix: assignment alternatives no longer match `==`/`===`,
+# and the SHIPPED observe.js source (content-addressed, whitespace-insensitive,
+# never a name/marker match) is excised before classification.
+OBSERVE="$HERE/../../skills/driving-browser-qa/scripts/observe.js"
+OBS_SRC="$(cat "$OBSERVE")"
+check "classify: observe.js (whole file, as shipped) NOT mutating" "$(mut "$OBS_SRC")" "false"
+check "classify: observe.js wrapped as '() => { <file> }' NOT mutating" "$(mut "() => {
+$OBS_SRC
+}")" "false"
+check "classify: observe.js re-indented (whitespace-only change) NOT mutating" \
+  "$(mut "$(printf '%s' "$OBS_SRC" | sed 's/^/    /')")" "false"
+check "classify: lighter __qaObserve snippet NOT mutating" \
+  "$(mut "return __qaObserve({ digestSelector: 'body', runUx: true });")" "false"
+# The session.md path: @playwright/mcp records the call as generated Playwright
+# code, the payload single-quote-escaped inside page.evaluate('...').
+SESSION_OBS="$(node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8");const q=JSON.stringify("() => {\n"+s+"\n}").slice(1,-1).replace(/\\"/g,"\"").replace(/\x27/g,"\\\x27");process.stdout.write("await page.evaluate(\x27"+q+"\x27);")' "$OBSERVE")"
+check "classify: observe.js inside session.md page.evaluate('...') code -> evaluate, NOT mutating" \
+  "$(node -e 'const{classify}=require(process.argv[1]);const c=classify(process.argv[2]);process.stdout.write(c.class+":"+c.mutating)' "$PARSE" "$SESSION_OBS")" "evaluate:false"
+# comparisons are reads, not writes
+check "classify: window.x === comparison NOT mutating"   "$(mut "typeof window.__qaObserve === 'function'")" "false"
+check "classify: el.value === comparison NOT mutating"   "$(mut "document.querySelector('#q').value === 'x'")" "false"
+check "classify: document.title == comparison NOT mutating" "$(mut "document.title == 'Home'")"           "false"
+# ...but the guard is not weakened: real writes are still writes
+check "classify: window.x = assignment still mutating"   "$(mut "window.appState = {}")"                  "true"
+check "classify: window.fetch override still mutating"   "$(mut "window.fetch = () => Promise.resolve(new Response('{}'))")" "true"
+check "classify: document.cookie write still mutating"   "$(mut "document.cookie = 'sid=x'")"              "true"
+check "classify: el.value = still mutating"              "$(mut "document.querySelector('#q').value = 'x'")" "true"
+check "classify: el.value += (compound) mutating"        "$(mut "document.querySelector('#q').value += 'x'")" "true"
+check "classify: form.submit() still mutating"           "$(mut "document.forms[0].submit()")"             "true"
+check "classify: el.click() still mutating"              "$(mut "document.querySelector('#add').click()")" "true"
+check "classify: dispatchEvent still mutating"           "$(mut "el.dispatchEvent(new Event('input'))")"   "true"
+# spoofs: anything that is not byte-for-byte (modulo whitespace) the shipped
+# file gets NO allowance
+SPOOF_TAMPERED="$(printf '%s' "$OBS_SRC" | sed 's/return of.apply(this, arguments).then(/return Promise.resolve(new Response("{}")).then(/')"
+check "spoof fixture: the tamper actually changed the source" "$([[ "$SPOOF_TAMPERED" != "$OBS_SRC" ]] && echo changed || echo same)" "changed"
+check "spoof: observe.js with a tampered fetch wrapper IS mutating" "$(mut "$SPOOF_TAMPERED")" "true"
+check "spoof: observe.js + appended localStorage.setItem IS mutating" "$(mut "$OBS_SRC
+localStorage.setItem('k','v');")" "true"
+check "spoof: observe.js + appended fetch POST IS mutating" "$(mut "() => { $OBS_SRC
+; fetch('/api/x', {method:'POST'}); }")" "true"
+check "spoof: prepended form submit before observe.js IS mutating" "$(mut "document.forms[0].submit();
+$OBS_SRC")" "true"
+check "spoof: observe name/marker only (no shipped body) IS mutating" \
+  "$(mut "/* observe.js -- the CONSOLIDATED observe-round payload */ window.__qaObserveInstalled = true; window.fetch = function () { return Promise.resolve(new Response('{}')); };")" "true"
+
 # --- #3 act-path integration: a NEW mutation form on the ACT PATH (through the
 #     gate, not just the classifier unit) is workaround-rejected — spec §5A/#2 ---
 cat > "$WORK/axiosact.json" <<'J'

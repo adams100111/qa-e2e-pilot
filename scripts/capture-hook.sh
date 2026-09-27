@@ -24,10 +24,26 @@
 #       `curl -v` echoing an Authorization header) can leak a secret just as
 #       easily as its arguments can, so `responseBody` is redacted for Bash
 #       calls using the exact same toolstream.sh redact pass as tool_input.
-#   (c) browser_* args (and non-Bash tool_response) are recorded in FULL
-#       (test data) — DOCUMENTED RESIDUAL: a `browser_type` into a password
-#       field can still capture a typed secret; this is not silently claimed
-#       safe.
+#   (c) SECRETS TYPED INTO THE BROWSER are redacted (0.8.1 — this was a
+#       documented residual until a real run stored a shared login password
+#       6x in toolstream.jsonl). For browser_type and browser_fill_form,
+#       toolstream.sh's `redact-browser` replaces the typed value of any
+#       SECRET field (its element/name/selector/ref/type names a password,
+#       passcode, secret, token, api key, credential, OTP, PIN, CVV, ... —
+#       the built-in field set plus the effective secretPatterns) with
+#       "<redacted>", and runs the normal redactedKeys + secretPatterns pass
+#       over every other typed value. Which field, ref and flags were used
+#       stay recorded (the audit trail). The same values are masked in the
+#       recorded responseBody, which echoes the generated `.fill('<value>')`
+#       code — masked on the FULL response, before the 4KB truncation, so a
+#       cut can never leave a secret's prefix behind. A redact failure
+#       withholds the args/body rather than recording them unredacted.
+#   (d) every OTHER browser_* call's args (and non-Bash tool_response) are
+#       recorded in FULL (test data): URLs, clicks, evaluate payloads (which
+#       qa-verify re-classifies, so they must not be pattern-mangled). A
+#       secret only reaches those if the agent puts one there itself (e.g. a
+#       credential in a navigate URL) — `redactedKeys` is the knob for
+#       declared credential values, and it is not applied to them.
 #
 # CONTRACT: this is a PostToolUse RECORD hook, never a gate. It must NEVER
 # fail (or block) the tool call it observes:
@@ -252,14 +268,13 @@ print("true" if v else "false")
   local advisory=""
   advisory="$(detect_clock_advisory "$tool_name" "$tool_input" 2>/dev/null)" || advisory=""
 
-  # --- redact Bash args only; browser_* (and anything else) recorded in
-  # full. A redact failure falls back to the UNREDACTED args rather than
-  # dropping the event -- but only for non-Bash tools would that be benign;
-  # for Bash specifically, a failed redact must not silently leak secrets,
-  # so treat it as: keep going with the (still fully redaction-attempted)
-  # output when non-empty, else skip capturing this event's args by
-  # replacing them with a marker instead of risking an unredacted leak. ---
+  # --- redact Bash args; browser_type/browser_fill_form typed values (secret
+  # fields + redactedKeys/secretPatterns, see header (c)); every other tool's
+  # args are recorded in full. A redact failure never records the args
+  # unredacted: for Bash and the browser typing tools alike, a failed/empty
+  # redact output is replaced by a placeholder marker instead. ---
   local args_json="$tool_input"
+  local browser_secrets="[]" browser_redact_failed="false"
   if [[ "$tool_name" == "Bash" ]]; then
     local redacted
     redacted="$(bash "$TOOLSTREAM" redact "$tool_input" "$config_json" 2>/dev/null)"
@@ -268,6 +283,26 @@ print("true" if v else "false")
     else
       warn "redact failed for a Bash call, recording a placeholder instead of risking an unredacted leak"
       args_json='{"_captureHookNote":"redact failed; args withheld to avoid a potential unredacted secret"}'
+    fi
+  elif [[ "$tool_name" == *browser_type || "$tool_name" == *browser_fill_form ]]; then
+    local rb="" rb_args="" rb_secrets=""
+    rb="$(bash "$TOOLSTREAM" redact-browser "$tool_name" "$tool_input" "$config_json" 2>/dev/null)"
+    if [[ -n "$rb" ]]; then
+      if has_jq; then
+        rb_args="$(jq -c '.args' <<< "$rb" 2>/dev/null)"
+        rb_secrets="$(jq -c '.secrets // []' <<< "$rb" 2>/dev/null)"
+      elif has_py; then
+        rb_args="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.stdin.read())["args"], separators=(",", ":")))' <<< "$rb" 2>/dev/null)"
+        rb_secrets="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.stdin.read()).get("secrets") or [], separators=(",", ":")))' <<< "$rb" 2>/dev/null)"
+      fi
+    fi
+    if [[ -n "$rb_args" && -n "$rb_secrets" ]]; then
+      args_json="$rb_args"
+      browser_secrets="$rb_secrets"
+    else
+      warn "redact-browser failed for ${tool_name}, recording a placeholder instead of risking a typed secret"
+      args_json='{"_captureHookNote":"redact failed; args withheld to avoid a potential unredacted secret"}'
+      browser_redact_failed="true"
     fi
   fi
 
@@ -300,12 +335,46 @@ print("true" if v else "false")
   # Authorization header). The truncated text is wrapped as {"body": <text>}
   # so toolstream.sh redact (which walks JSON string leaves) can run over it
   # like any other args object, then unwrapped again. Non-Bash tools are NOT
-  # redacted here -- recorded in full per spec (see the header residual
-  # note). A redact failure on a Bash response withholds the body rather
-  # than risking an unredacted leak, mirroring the args-redact-failure
-  # handling above. ---
+  # pattern-redacted here -- browser_type/browser_fill_form responses were
+  # already masked of their typed secrets above (header (c)); everything else
+  # is recorded in full (header (d)). A redact failure on a Bash response
+  # withholds the body rather than risking an unredacted leak, mirroring the
+  # args-redact-failure handling above. ---
+  # --- browser typing tools: mask the typed secrets in the FULL response
+  # BEFORE truncation (header (c)). Literal replacement of every spelling
+  # redact-browser returned. If masking fails -- or redact-browser itself
+  # failed -- the body is withheld, never recorded unredacted. ---
+  local response_for_body="$tool_response"
+  if [[ "$browser_redact_failed" == "true" ]]; then
+    response_for_body='"<redacted: responseBody withheld, redact failed>"'
+  elif [[ "$browser_secrets" != "[]" ]]; then
+    local masked=""
+    # The body goes in on STDIN, never argv/env: a browser response carries a
+    # page snapshot and can exceed Linux's 128KB MAX_ARG_STRLEN (the v0.7.1
+    # provenance.sh "Argument list too long" lesson).
+    if has_jq; then
+      masked="$(printf '%s' "$tool_response" | jq -Rrs --argjson secrets "$browser_secrets" \
+        'reduce $secrets[] as $s (.; split($s) | join("<redacted>"))' 2>/dev/null)"
+    elif has_py; then
+      masked="$(printf '%s' "$tool_response" | python3 -c '
+import json, sys
+body = sys.stdin.read()
+for s in json.loads(sys.argv[1]):
+    if isinstance(s, str) and s:
+        body = body.replace(s, "<redacted>")
+sys.stdout.write(body)
+' "$browser_secrets" 2>/dev/null)"
+    fi
+    if [[ -n "$masked" ]]; then
+      response_for_body="$masked"
+    else
+      warn "masking typed secrets in the ${tool_name} response failed, withholding responseBody"
+      response_for_body='"<redacted: responseBody withheld, redact failed>"'
+    fi
+  fi
+
   local truncated_response
-  truncated_response="$(printf '%s' "$tool_response" | head -c "$RESPONSE_BODY_CAP")"
+  truncated_response="$(printf '%s' "$response_for_body" | head -c "$RESPONSE_BODY_CAP")"
 
   if [[ "$tool_name" == "Bash" ]]; then
     local wrapped="" redacted_wrapped="" redacted_body=""
