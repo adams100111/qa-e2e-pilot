@@ -128,4 +128,34 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "QA_ENGINE=python3: line written" "$(wc -l < "$QETF" | tr -d ' ')" "1"
 fi
 
+# --- redact-browser (0.8.1, Defect 2): secrets TYPED into the browser -------
+# browser_type / browser_fill_form typed values of SECRET fields -> "<redacted>",
+# descriptors kept; non-secret values get the normal redact pass; malformed
+# args pass through; both engines agree byte-for-byte.
+RB_TYPE='{"element":"Password textbox","ref":"e12","text":"Hunt3r2!pw","submit":true}'
+RB_FORM='{"fields":[{"name":"Email","type":"textbox","ref":"e1","value":"qa@example.test"},{"name":"Password","type":"textbox","ref":"e2","value":"Hunt3r2!pw"}]}'
+RB_PLAIN='{"element":"Search","ref":"e3","text":"blue widgets"}'
+for ENG in jq python3; do
+  command -v "$ENG" >/dev/null 2>&1 || { echo "SKIP - redact-browser [$ENG]: not present"; continue; }
+  O="$( cd "$WORK" && QA_ENGINE=$ENG bash "$T" redact-browser mcp__plugin_playwright_playwright__browser_type "$RB_TYPE" "$CFG" )"
+  check "redact-browser [$ENG]: password field text -> marker" "$(echo "$O" | jq -r '.args.text')" "<redacted>"
+  check "redact-browser [$ENG]: descriptors kept" "$(echo "$O" | jq -c '.args | del(.text)')" '{"element":"Password textbox","ref":"e12","submit":true}'
+  check "redact-browser [$ENG]: secrets lists the typed value (for response masking)" "$(echo "$O" | jq -r '.secrets | index("Hunt3r2!pw") != null')" "true"
+  O="$( cd "$WORK" && QA_ENGINE=$ENG bash "$T" redact-browser mcp__plugin_playwright_playwright__browser_fill_form "$RB_FORM" "$CFG" )"
+  check "redact-browser [$ENG]: fill_form password value -> marker, email verbatim" "$(echo "$O" | jq -c '[.args.fields[].value]')" '["qa@example.test","<redacted>"]'
+  O="$( cd "$WORK" && QA_ENGINE=$ENG bash "$T" redact-browser mcp__plugin_playwright_playwright__browser_type "$RB_PLAIN" "$CFG" )"
+  check "redact-browser [$ENG]: non-secret field unchanged, no secrets" "$(echo "$O" | jq -c .)" "{\"args\":$RB_PLAIN,\"secrets\":[]}"
+  O="$( cd "$WORK" && QA_ENGINE=$ENG bash "$T" redact-browser mcp__plugin_playwright_playwright__browser_navigate '{"url":"https://x.test/?token=abc"}' "$CFG" )"
+  check "redact-browser [$ENG]: other tools pass through untouched" "$(echo "$O" | jq -r '.args.url')" "https://x.test/?token=abc"
+  O="$( cd "$WORK" && QA_ENGINE=$ENG bash "$T" redact-browser mcp__plugin_playwright_playwright__browser_fill_form '{"fields":"nope"}' "$CFG" )"
+  check "redact-browser [$ENG]: malformed fields pass through" "$(echo "$O" | jq -c .args)" '{"fields":"nope"}'
+done
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  for A in "$RB_TYPE" "$RB_FORM" "$RB_PLAIN"; do
+    JQO="$( cd "$WORK" && QA_ENGINE=jq bash "$T" redact-browser x__browser_fill_form "$A" "$CFG" ; cd "$WORK" && QA_ENGINE=jq bash "$T" redact-browser x__browser_type "$A" "$CFG" )"
+    PYO="$( cd "$WORK" && QA_ENGINE=python3 bash "$T" redact-browser x__browser_fill_form "$A" "$CFG" ; cd "$WORK" && QA_ENGINE=python3 bash "$T" redact-browser x__browser_type "$A" "$CFG" )"
+    check "redact-browser: jq and python3 engines agree ($(printf '%s' "$A" | head -c 30)...)" "$JQO" "$PYO"
+  done
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

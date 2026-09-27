@@ -174,8 +174,9 @@ Everything above runs **inside** the agent's own process on evidence it wrote it
   run resolved from `.qa/runs/latest`. `Bash` args **and** `tool_response` are redacted
   (stdout leaks as easily as args) via `enforcement.secretPatterns`, or a built-in
   default when absent (never a silent no-redact fallback); `[]` opts out deliberately.
-  `browser_*` args are recorded in full — a `browser_type` into a password field can
-  still capture a typed secret (documented residual). Fail-open always.
+  `browser_type`/`browser_fill_form` into a secret field (password, token, OTP, PIN, ...)
+  records the field but `<redacted>` for the typed value, in args and response alike;
+  other `browser_*` args are recorded in full. Fail-open always.
 - **Block-hook** (`scripts/block-hook.sh`, `PreToolUse`) denies, pre-run, only the
   phase-independent absolutes: a **mutating** `browser_evaluate` (via the `mutates()`
   classifier `parse-session-log.js` uses) and `browser_run_code_unsafe` — exit 2 + deny
