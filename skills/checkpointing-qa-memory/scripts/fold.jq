@@ -286,7 +286,7 @@ def finding_key($e):
 # tuple has no plan_frozen entry at all (`$mutates_map[$k]` is `null`), the
 # guard check is skipped — "cannot judge" is not "illegal" (graceful
 # default for a legacy/plan_frozen-less journal, per the Task 2 brief). -----
-| (reduce $state.order[] as $k ({criteria: [], vws: [], illegalEdges: []};
+| (reduce $state.order[] as $k ({criteria: [], seqs: [], vws: [], illegalEdges: []};
       ($state.groups[$k]) as $g
       | if $g.verdict == null then .
         else
@@ -303,6 +303,7 @@ def finding_key($e):
             nonUiActionReason: (if ($g.verdict.nonUiActionReason // "") == "" then null else $g.verdict.nonUiActionReason end),
             checkpointed_at: $g.verdict.t
           }])
+          | (.seqs += [($g.verdict.seq | if type == "number" then . else 0 end)])
           | (if ($g.startedAtVerdict // false) then . else
               .vws += [{rule: "verdict-without-started", scenarioId: $g.scenarioId, criterionId: $g.criterionId, personaId: $g.personaId}]
             end)
@@ -327,6 +328,42 @@ def finding_key($e):
             else . end)
         end
   )) as $finalized
+
+# ---- supersession (ADR-0029): a PERSONA-LESS (shared, personaId "") row is
+# a criterion-level record; when the SAME criterionId later (higher verdict
+# seq) receives a verdict under a persona, that later persona-scoped verdict
+# is the authoritative outcome and the earlier persona-less row (typically a
+# `deferred`/`blocked` placeholder written before the criterion was
+# attempted) is SUPERSEDED: it leaves `criteria[]` and is listed under
+# `superseded[]` with the row that replaced it. Deliberately ASYMMETRIC: a
+# persona-scoped row is never superseded (not by another persona -- two
+# personas are two cases, ADR-0012 -- and not by a persona-less row, which
+# would let one shared record erase every persona's result). The superseding
+# row is the persona-scoped row with the HIGHEST verdict seq. The journal is
+# untouched -- projection only. Mirrors fold.py's supersession exactly. ------
+| ($finalized.criteria) as $rows
+| ($finalized.seqs) as $rseqs
+| (reduce range(0; ($rows | length)) as $i ({};
+    ($rows[$i]) as $c
+    | if $c.persona == "" then .
+      elif (has($c.criterion_id) | not) or ($rseqs[$i] > $rseqs[.[$c.criterion_id]]) then .[$c.criterion_id] = $i
+      else . end
+  )) as $latest_scoped
+| (reduce range(0; ($rows | length)) as $i ({kept: [], superseded: [], anoms: []};
+    ($rows[$i]) as $c
+    | ($latest_scoped[$c.criterion_id]) as $j
+    | if $c.persona == "" and $j != null and ($rseqs[$j] > $rseqs[$i]) then
+        ($rows[$j]) as $by
+        | .superseded += [{
+            criterion_id: $c.criterion_id,
+            persona: $c.persona,
+            verdict: $c.verdict,
+            checkpointed_at: $c.checkpointed_at,
+            superseded_by: {persona: $by.persona, verdict: $by.verdict, checkpointed_at: $by.checkpointed_at}
+          }]
+        | .anoms += [{rule: "superseded-row", criterionId: $c.criterion_id, personaId: $c.persona, supersededBy: $by.persona}]
+      else .kept += [$c] end
+  )) as $supersession
 
 # ---- openActs: act_intent keys with no matching act_committed key,
 # first-seen order. ---------------------------------------------------------
@@ -546,13 +583,15 @@ def finding_key($e):
   } as $cursor_doc
 
 | {
-    checkpoint: {
+    # `superseded` is present ONLY when non-empty, so every journal without a
+    # supersession projects byte-identically to before ADR-0029.
+    checkpoint: ({
       run_id: $state.run_id,
       updated_at: $state.last_t,
-      criteria: $finalized.criteria,
+      criteria: $supersession.kept,
       findings: $findings
-    },
-    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms + $findings_anoms),
+    } + (if ($supersession.superseded | length) > 0 then {superseded: $supersession.superseded} else {} end)),
+    anomalies: ($wrapper_skipped + $state.anomalies + $finalized.vws + $finalized.illegalEdges + $seqgap_anoms + $cross_child_anoms + $findings_anoms + $supersession.anoms),
     openActs: $open_acts,
     cursor: $cursor_doc
   }
