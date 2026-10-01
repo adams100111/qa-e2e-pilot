@@ -402,6 +402,49 @@ for ENGINE in "" python3; do
   check "[$LABEL] human-action kind, expectedSubject mismatch: HA1 overridden to fail" \
     "$(jq -r '.[] | select(.criterionId=="HA1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
   rm -f "$WORK/.qa/config.json"
+
+  # --- 0.9.0 (ADR-0027): a SHARED criterion on a multi-persona project. It
+  # runs once as its row's role (ADR-0012), so omitting --persona is right;
+  # the real run captured that role's identity once at login
+  # (evidence/admin/identity.json). That run-level capture is now bound to
+  # the pass with the SAME rules as a persona-scoped pass. -------------------
+  build_shared_admin_run() { # <run>
+    local run="$1" ref
+    ( cd "$WORK" && bash "$TOOLSTREAM" append "$run" \
+      "$(printf '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"sa1"},"responseBody":"{\\"marker\\":\\"SHARED-%s\\"}"}' "$run")" >/dev/null )
+    ref="$( cd "$WORK" && bash "$REC" "$run" SA1 probe --status 403 --shape "{\"marker\":\"SHARED-${run}\"}" --ok true )"
+    ( cd "$WORK" && bash "$CKPT" "$run" SA1 pass --kinds probe --evidence-refs "$ref" >/dev/null )
+    write_checklist "$run" '[{"id":"SA1","surface":"/admin","kind":"error-state","tags":["cross-tenant"],"role":"admin","action":"As admin open another hackathon'"'"'s registrations (expect isolation)"}]'
+  }
+  mkdir -p "$WORK/.qa"
+  printf '%s' '{"personas":[{"id":"admin","role":"admin","plane":"global","auth":"seeded"},{"id":"user","role":"user","plane":"global","auth":"seeded"}]}' \
+    > "$WORK/.qa/config.json"
+  RUN="sharedadmin_${ENGINE:-jq}"
+  build_shared_admin_run "$RUN"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona admin --subject "qa.admin@innovation.test (user id 286)" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] shared admin row + run-level admin identity: stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="SA1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] shared admin row + run-level admin identity: confidence stays high (no false downgrade)" \
+    "$(jq -r '.[] | select(.criterionId=="SA1") | .confidence' "$(vf "$RUN")")" "high"
+
+  RUN="sharednoid_${ENGINE:-jq}"
+  build_shared_admin_run "$RUN"
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] shared admin row, NO identity capture: degrades to low" \
+    "$(jq -r '.[] | select(.criterionId=="SA1") | .confidence' "$(vf "$RUN")")" "low"
+  check_contains "[$LABEL] shared admin row, NO identity capture: the reason says how to fix it" \
+    "$(jq -r '.[] | select(.criterionId=="SA1") | .reasons | join("; ")' "$(vf "$RUN")")" "identity --persona admin"
+
+  printf '%s' '{"personas":[{"id":"admin","role":"admin","plane":"global","auth":"seeded","expectedSubject":"qa.admin@innovation.test"},{"id":"user","role":"user","plane":"global","auth":"seeded"}]}' \
+    > "$WORK/.qa/config.json"
+  RUN="sharedwrongid_${ENGINE:-jq}"
+  build_shared_admin_run "$RUN"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona admin --subject "qa.user@innovation.test" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] shared admin row, run-level identity is the WRONG user (expectedSubject): overridden to fail" \
+    "$(jq -r '.[] | select(.criterionId=="SA1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
+  rm -f "$WORK/.qa/config.json"
 done
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

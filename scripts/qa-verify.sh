@@ -79,7 +79,18 @@
 #          than degrade must configure `personas[].expectedSubject` for
 #          that persona in `.qa/config.json`.
 #      __shared__/empty-persona/non-high-stakes (read-only) passes are
-#      exempt — never checked.
+#      exempt — never checked — on a project with 0/1 personas. On a
+#      MULTI-persona project a persona-less high-stakes pass is a SHARED
+#      criterion run once as its checklist row's role (ADR-0012): when
+#      evidence/<row role>/identity.json exists for the run, that run-level
+#      capture is bound with exactly the rules above (0.9.0); without one the
+#      pass degrades to confidence:low with a reason saying how to record it.
+#
+#   3.4. API-WRITE BACKSTOP (0.9.0, ADR-0027) — a row tagged `api-write`
+#      proves its act with probe evidence; that evidence must be bound by
+#      --source-ref seq:<N> to a captured sanctioned write probe
+#      (write-probe-gate.js) on a config that allows API writes, else
+#      OVERRIDE.
 #
 #   4. WRITE .qa/runs/<run-id>/verification.json — a JSON array, one record
 #      per checked criterion:
@@ -1128,6 +1139,101 @@ maybe_redrive() {
 # `.verifierVerdict` back OUT of the printed JSON (see rec_verdict below),
 # never via a side-channel global.
 # ---------------------------------------------------------------------------
+# identity_binding <run-id> <persona> — the persona-identity check of Step
+# 3.5, factored out (0.9.0) so a persona-scoped pass and a persona-less
+# shared pass resolved to its row's role run the SAME logic. Results land in
+# globals (bash cannot return arrays): IB_OVERRIDE (0|1), IB_LOW (0|1) and
+# IB_REASONS (array). See process_criterion's Step 3.5 comment.
+IB_OVERRIDE=0; IB_LOW=0; IB_REASONS=()
+identity_binding() {
+  local run_id="$1" persona="$2"
+  IB_OVERRIDE=0; IB_LOW=0; IB_REASONS=()
+  local identity_rel identity_full
+  identity_rel="evidence/${persona}/identity.json"
+  identity_full="$(run_dir "$run_id")/${identity_rel}"
+
+  if [[ ! -f "$identity_full" ]] || [[ ! -s "$identity_full" ]] || ! json_is_valid "$identity_full"; then
+    IB_LOW=1
+    IB_REASONS+=("persona identity unverified: no ${identity_rel} recorded for this run — persona-identity binding degrades rather than blocks on an unverifiable identity (spec §5.5)")
+  else
+    local id_method id_subject
+    id_method="$(json_field "$identity_full" "method")"
+    id_subject="$(json_field "$identity_full" "capturedSubject")"
+
+    if [[ -z "$id_method" ]] || [[ "$id_method" == "none" ]]; then
+      IB_LOW=1
+      IB_REASONS+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
+    else
+      local expected="" cs_lower expected_lower persona_lower matched=0
+      expected="$(config_expected_subject_for "$persona")"
+      cs_lower="$(to_lower "$id_subject")"
+
+      if [[ -n "$expected" ]]; then
+        # Operator-provided ground truth is configured — this is the ONLY
+        # path allowed to OVERRIDE. Comparing a bare persona id to an
+        # opaque captured subject is never confident enough on its own
+        # (see the header comment's H3 fast-follow note); expectedSubject
+        # removes that ambiguity.
+        expected_lower="$(to_lower "$expected")"
+        if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
+          matched=1
+        fi
+
+        if [[ "$matched" -eq 1 ]]; then
+          : # verified — captured identity matches the operator-configured expectedSubject.
+        else
+          IB_OVERRIDE=1
+          IB_REASONS+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
+        fi
+      else
+        # No ground truth configured — a persona-id-vs-captured-subject
+        # comparison is inherently unreliable (a legitimate numeric id, a
+        # short hash, or a JWT `sub` claim is indistinguishable from a
+        # genuine impersonation by this heuristic alone). Substring match
+        # verifies; anything else DEGRADES — it must NEVER override,
+        # because an override here has no operator-confirmed ground truth
+        # behind it (that was the false-override bug: `admin` vs a
+        # legitimate `42` used to hard-fail every such run).
+        persona_lower="$(to_lower "$persona")"
+        if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
+          matched=1
+        fi
+
+        if [[ "$matched" -eq 1 ]]; then
+          : # verified — best-effort substring match against the persona id.
+        else
+          IB_LOW=1
+          IB_REASONS+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
+        fi
+      fi
+    fi
+  fi
+}
+
+# row_identity_persona <checklist-row-json> -> the persona whose run-level
+# identity capture applies to a persona-less (shared) pass: the row's
+# `persona`, else its `role`, when that is a simple token. Empty otherwise.
+row_identity_persona() {
+  local row="$1" v=""
+  [[ -z "$row" ]] && return 0
+  if has_jq; then
+    v="$(jq -r 'if (.persona | type) == "string" and (.persona | length) > 0 then .persona elif (.role | type) == "string" then .role else "" end' <<< "$row" 2>/dev/null)"
+  else
+    v="$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    d = {}
+p = d.get("persona") if isinstance(d, dict) else None
+r = d.get("role") if isinstance(d, dict) else None
+print(p if isinstance(p, str) and p else (r if isinstance(r, str) else ""))
+' "$row" 2>/dev/null)"
+  fi
+  case "$v" in ""|*/*|*\\*|*..*|-*|__shared__) return 0 ;; esac
+  printf '%s' "$v"
+}
+
 process_criterion() {
   local run_id="$1" crit_id="$2" persona="$3" confidence="$4" nonui_reason="$5" kinds_csv="$6"
   local -a reasons=()
@@ -1305,72 +1411,32 @@ process_criterion() {
   # never having been captured at all; same "ambiguous -> confidence:low"
   # doctrine as every other degrade in this function). ----------------------
   if [[ -n "$persona" ]] && [[ "$persona" != "__shared__" ]] && is_high_stakes "$kinds_csv" "$row"; then
-    local identity_rel identity_full
-    identity_rel="evidence/${persona}/identity.json"
-    identity_full="$(run_dir "$run_id")/${identity_rel}"
-
-    if [[ ! -f "$identity_full" ]] || [[ ! -s "$identity_full" ]] || ! json_is_valid "$identity_full"; then
-      confidence="low"
-      reasons+=("persona identity unverified: no ${identity_rel} recorded for this run — persona-identity binding degrades rather than blocks on an unverifiable identity (spec §5.5)")
-    else
-      local id_method id_subject
-      id_method="$(json_field "$identity_full" "method")"
-      id_subject="$(json_field "$identity_full" "capturedSubject")"
-
-      if [[ -z "$id_method" ]] || [[ "$id_method" == "none" ]]; then
-        confidence="low"
-        reasons+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
-      else
-        local expected="" cs_lower expected_lower persona_lower matched=0
-        expected="$(config_expected_subject_for "$persona")"
-        cs_lower="$(to_lower "$id_subject")"
-
-        if [[ -n "$expected" ]]; then
-          # Operator-provided ground truth is configured — this is the ONLY
-          # path allowed to OVERRIDE. Comparing a bare persona id to an
-          # opaque captured subject is never confident enough on its own
-          # (see the header comment's H3 fast-follow note); expectedSubject
-          # removes that ambiguity.
-          expected_lower="$(to_lower "$expected")"
-          if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
-            matched=1
-          fi
-
-          if [[ "$matched" -eq 1 ]]; then
-            : # verified — captured identity matches the operator-configured expectedSubject.
-          else
-            override=1
-            reasons+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
-          fi
-        else
-          # No ground truth configured — a persona-id-vs-captured-subject
-          # comparison is inherently unreliable (a legitimate numeric id, a
-          # short hash, or a JWT `sub` claim is indistinguishable from a
-          # genuine impersonation by this heuristic alone). Substring match
-          # verifies; anything else DEGRADES — it must NEVER override,
-          # because an override here has no operator-confirmed ground truth
-          # behind it (that was the false-override bug: `admin` vs a
-          # legitimate `42` used to hard-fail every such run).
-          persona_lower="$(to_lower "$persona")"
-          if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
-            matched=1
-          fi
-
-          if [[ "$matched" -eq 1 ]]; then
-            : # verified — best-effort substring match against the persona id.
-          else
-            confidence="low"
-            reasons+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
-          fi
-        fi
-      fi
-    fi
+    identity_binding "$run_id" "$persona"
+    [[ "$IB_OVERRIDE" -eq 1 ]] && override=1
+    [[ "$IB_LOW" -eq 1 ]] && confidence="low"
+    reasons+=(${IB_REASONS[@]+"${IB_REASONS[@]}"})
   elif { [[ -z "$persona" ]] || [[ "$persona" == "__shared__" ]]; } && is_high_stakes "$kinds_csv" "$row"; then
-    local persona_count
+    local persona_count row_persona
     persona_count="$(config_persona_count)"
     if [[ "$persona_count" =~ ^[0-9]+$ ]] && [[ "$persona_count" -gt 1 ]]; then
-      confidence="low"
-      reasons+=("persona identity unverified: this run's .qa/config.json declares ${persona_count} personas (role-sensitivity is real for this target), but this high-stakes pass was checkpointed with NO --persona at all — identity-binding was never checked, not exempted (Appendix A tighten)")
+      # 0.9.0 (ADR-0027): a SHARED criterion is run once, as the role its
+      # checklist row names (ADR-0012), and omitting --persona is correct for
+      # it. When that role's identity was captured for this run
+      # (evidence/<role>/identity.json — record-evidence.sh identity
+      # --persona <role>), bind THAT capture exactly as a persona-scoped pass
+      # would be bound (same verify / degrade / override rules). Only when
+      # there is no such capture does the pass degrade, and the reason now
+      # says how to fix it.
+      row_persona="$(row_identity_persona "$row")"
+      if [[ -n "$row_persona" && -s "$(run_dir "$run_id")/evidence/${row_persona}/identity.json" ]]; then
+        identity_binding "$run_id" "$row_persona"
+        [[ "$IB_OVERRIDE" -eq 1 ]] && override=1
+        [[ "$IB_LOW" -eq 1 ]] && confidence="low"
+        reasons+=(${IB_REASONS[@]+"${IB_REASONS[@]}"})
+      else
+        confidence="low"
+        reasons+=("persona identity unverified: this run's .qa/config.json declares ${persona_count} personas (role-sensitivity is real for this target), but this high-stakes pass was checkpointed with NO --persona and no run-level identity capture exists for its row's role${row_persona:+ '${row_persona}'} — record one with \`record-evidence.sh <run> <crit> identity --persona ${row_persona:-<role>} --subject <s> --method whoami\` at that role's login (a shared criterion then needs no --persona), or checkpoint the pass with --persona <id> (Appendix A tighten)")
+      fi
     fi
   fi
 
