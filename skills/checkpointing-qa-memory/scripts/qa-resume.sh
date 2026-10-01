@@ -28,6 +28,17 @@
 #                                                 act_intent with no matching
 #                                                 act_committed. Empty array
 #                                                 means nothing to reconcile.
+#           "retry":    [{"scenarioId","criterionId","personaId"}, ...]
+#                                                 -- 0.11.0 (ADR-0029): every
+#                                                 tuple whose latest verdict
+#                                                 is `deferred`. Deferred is
+#                                                 "not done yet", so it is NOT
+#                                                 in `skip`: re-run it under
+#                                                 EXACTLY this identity
+#                                                 (same --persona, or none),
+#                                                 so the new verdict replaces
+#                                                 the placeholder instead of
+#                                                 adding a second row.
 #           "skip":     [{"scenarioId","criterionId"}, ...]
 #                                                 -- every tuple that ALREADY
 #                                                 has a criterion_verdict
@@ -157,18 +168,23 @@ resolve_run_id() {
 
 # ---------------------------------------------------------------------------
 # build_briefing_jq/py <cursor-json> <checkpoint-json> <openacts-json> ->
-# stdout ONE line of JSON: {run_id, phase, cursor, openActs, skip}.
+# stdout ONE line of JSON: {run_id, phase, cursor, openActs, skip, retry}.
 # ---------------------------------------------------------------------------
 
 build_briefing_jq() {
   local cursor_json="$1" checkpoint_json="$2" openacts_json="$3"
   jq -cn --argjson cursor "$cursor_json" --argjson checkpoint "$checkpoint_json" --argjson openActs "$openacts_json" '
     ($checkpoint.criteria // []) as $criteria
-    | [ $criteria[] | {
+    | [ $criteria[] | select(.verdict != "deferred") | {
         scenarioId: (if (.persona // "") == "" then "__shared__" else .persona end),
         criterionId: .criterion_id
       } ] as $skip
-    | { run_id: $cursor.run_id, phase: $cursor.phase, cursor: $cursor.cursor, openActs: $openActs, skip: $skip }
+    | [ $criteria[] | select(.verdict == "deferred") | {
+        scenarioId: (if (.persona // "") == "" then "__shared__" else .persona end),
+        criterionId: .criterion_id,
+        personaId: (.persona // "")
+      } ] as $retry
+    | { run_id: $cursor.run_id, phase: $cursor.phase, cursor: $cursor.cursor, openActs: $openActs, skip: $skip, retry: $retry }
   ' || die "qa-resume.sh: jq failed to build the resume briefing."
 }
 
@@ -182,10 +198,14 @@ checkpoint = json.loads(sys.argv[2])
 open_acts = json.loads(sys.argv[3])
 
 skip = []
+retry = []
 for c in (checkpoint.get("criteria") or []):
     persona = c.get("persona") or ""
     scenario_id = "__shared__" if persona == "" else persona
-    skip.append({"scenarioId": scenario_id, "criterionId": c.get("criterion_id")})
+    if c.get("verdict") == "deferred":
+        retry.append({"scenarioId": scenario_id, "criterionId": c.get("criterion_id"), "personaId": persona})
+    else:
+        skip.append({"scenarioId": scenario_id, "criterionId": c.get("criterion_id")})
 
 out = {
     "run_id": cursor.get("run_id"),
@@ -193,6 +213,7 @@ out = {
     "cursor": cursor.get("cursor"),
     "openActs": open_acts,
     "skip": skip,
+    "retry": retry,
 }
 print(json.dumps(out))
 ' "$cursor_json" "$checkpoint_json" "$openacts_json" \

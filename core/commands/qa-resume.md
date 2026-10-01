@@ -14,11 +14,12 @@ Full input: `$ARGUMENTS`
 
 ## What to do
 
-1. Run `bash "{{ENGINE_SKILLS_DIR}}/checkpointing-qa-memory/scripts/qa-resume.sh" $1` (omit `$1` when not supplied). This resolves the run (arg, else `.qa/runs/latest` — dying clearly if neither exists), folds `journal.ndjson`, and prints the resume briefing: `{run_id, phase, cursor:{scenarioId,criterionId}|null, openActs:[…], skip:[…]}`.
+1. Run `bash "{{ENGINE_SKILLS_DIR}}/checkpointing-qa-memory/scripts/qa-resume.sh" $1` (omit `$1` when not supplied). This resolves the run (arg, else `.qa/runs/latest` — dying clearly if neither exists), folds `journal.ndjson`, and prints the resume briefing: `{run_id, phase, cursor:{scenarioId,criterionId}|null, openActs:[…], skip:[…], retry:[…]}`.
 2. Read the briefing. If `openActs` is non-empty, **reconcile every open act BEFORE touching the UI**: for each `{key, scenarioId, criterionId, personaId, writeSet}`, read back each write-set member with your own browser/probe capability, then run `bash "{{ENGINE_SKILLS_DIR}}/checkpointing-qa-memory/scripts/qa-reconcile.sh" apply <run_id> <key> --readbacks <json>`. Handle the outcome: `done` → move on; `blocked` → the criterion is now recorded `blocked`, move on; `retry` → re-drive the act once (through real UI affordances, bracketed by `journal-emit.sh act-intent`/`act-commit` as usual) and call `apply` again; `deferred` → a write-only write-set member with no read path — landing cannot be confirmed — record it as a low-confidence deferred note and move on: do NOT loop or block on it, and do NOT re-drive the act.
 3. Dispatch the **qa-e2e-pilot** agent ({{DISPATCH}}) with:
    - the resolved `run_id` and `phase` from the briefing — resume in that phase, not from Pre-flight,
    - the `skip` list — never re-run or re-verdict any `(scenarioId, criterionId)` tuple already in it,
+   - the `retry` list — the `deferred` tuples: re-run each one under **exactly** its `personaId` (`--persona <personaId>` to `checkpoint.sh`/`record-evidence.sh`, or no `--persona` when it is empty) so the new verdict replaces the placeholder; `checkpoint.sh` refuses a criterion id or persona the frozen plan does not name (ADR-0029),
    - the `cursor` — continue **Verify at exactly this tuple**. **Verify replays the FROZEN plan (`plan_frozen`/`plan_amended` events already in the journal) — no re-observation of the app** for any already-planned criterion.
 4. When the agent returns, surface: the run directory path, the per-verdict tally (`pass/fail/blocked/deferred/error`), any **confidence: low** verdicts, and a one-line pointer to the HTML report.
 

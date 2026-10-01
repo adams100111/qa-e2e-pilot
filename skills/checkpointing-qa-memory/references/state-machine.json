@@ -171,6 +171,7 @@
     "Verify": {
       "allowedToolClasses": [
         "browser-interaction",
+        "browser-mutation",
         "browser-evaluate-readonly",
         "browser-navigate",
         "browser-snapshot",

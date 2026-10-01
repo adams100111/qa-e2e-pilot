@@ -20,7 +20,8 @@ scripts/classify-finding.sh
 scripts/known-defects.sh
 qa-kit/scripts/migrate-inverted-criterion.sh
 skills/checkpointing-qa-memory/scripts/required-kinds.sh
-skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
+skills/checkpointing-qa-memory/scripts/mutation-flag.sh
+skills/checkpointing-qa-memory/scripts/plan-guard.sh"
 
 # GUARD ON THE LIST ITSELF. The claim "bash32-safety rc=0 covers <file>" is true only while <file>
 # is named in GATING above -- and deleting a line from GATING fails NOTHING: the suite just quietly
@@ -36,7 +37,8 @@ scripts/classify-finding.sh
 scripts/known-defects.sh
 qa-kit/scripts/migrate-inverted-criterion.sh
 skills/checkpointing-qa-memory/scripts/required-kinds.sh
-skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
+skills/checkpointing-qa-memory/scripts/mutation-flag.sh
+skills/checkpointing-qa-memory/scripts/plan-guard.sh"
 
 while IFS= read -r want; do
   hit="$(printf '%s\n' "$GATING" | grep -cxF "$want" || true)"

@@ -203,6 +203,14 @@
 # tool whose class is in the ACTIVE PHASE's `phaseToolSurface.
 # forbiddenToolClasses` (e.g. `browser-navigate` during `Report`).
 #
+# 0.11.0 (ADR-0029): a HUMAN-PATH `browser-mutation` (click/type/fill/...)
+# while the Verify window is open is the sanctioned surface (ADR-0015 — the
+# act is performed through real UI affordances, and arranging a criterion —
+# logging in as the next persona, opening a sheet — needs the same clicks),
+# so rule (a) no longer flags it; a mutating `browser_evaluate` outside every
+# acting window still is, and so is a human-path mutation outside Verify.
+# Phase windows also end implicitly — see build_phase_timeline.
+#
 # RECORD-ONLY -> AUTHORITY (never a live block, spec resolution): every
 # phase-surface finding is written to verification.json as confidence:"low"
 # with a reason naming the phase/tool/ts, on a SYNTHETIC run-level record
@@ -543,25 +551,55 @@ except Exception:
 # absent/malformed config just falls back (caller) to comparing against the
 # persona id itself.
 config_expected_subject_for() {
+  # 0.11.0 (ADR-0029): prints EVERY operator-configured ground-truth subject
+  # for <persona>, one per line — `expectedSubject` (a string) and each
+  # string in `expectedSubjects` (a list; an entry with * or ? is a glob,
+  # e.g. "qa.rcl.p*@innovation.test", for a persona bucket that maps to many
+  # fixture accounts). Empty output = nothing configured.
   local persona="$1" file=".qa/config.json"
   [[ -f "$file" ]] || return 0
   json_is_valid "$file" || return 0
   if has_jq; then
-    jq -r --arg p "$persona" '(.personas // []) | map(select(type == "object" and .id == $p)) | (.[0].expectedSubject // "")' "$file" 2>/dev/null
+    jq -r --arg p "$persona" '
+      (.personas // []) | map(select(type == "object" and .id == $p)) | .[0] // {}
+      | ([ (.expectedSubject // empty) | select(type == "string" and length > 0) ]
+         + [ (.expectedSubjects // [])[]? | select(type == "string" and length > 0) ])[]
+    ' "$file" 2>/dev/null
   else
     python3 -c "import json,sys
 try:
     d = json.load(open(sys.argv[1]))
     for p in (d.get('personas') or []):
         if isinstance(p, dict) and p.get('id') == sys.argv[2]:
+            out = []
             v = p.get('expectedSubject')
-            print(v if v else '')
+            if isinstance(v, str) and v:
+                out.append(v)
+            for x in (p.get('expectedSubjects') or []) if isinstance(p.get('expectedSubjects'), list) else []:
+                if isinstance(x, str) and x:
+                    out.append(x)
+            for x in out:
+                print(x)
             break
-    else:
-        print('')
 except Exception:
-    print('')" "$file" "$persona" 2>/dev/null
+    pass" "$file" "$persona" 2>/dev/null
   fi
+}
+
+# subject_matches_expected <captured-lower> <expected> — one ground-truth
+# entry. A glob entry (contains * or ?) must match the WHOLE captured subject
+# (case-insensitive); a plain entry keeps expectedSubject's historical
+# two-way substring rule.
+subject_matches_expected() {
+  local cs_lower="$1" exp_lower
+  exp_lower="$(to_lower "$2")"
+  case "$exp_lower" in
+    *'*'*|*'?'*)
+      # shellcheck disable=SC2053 — unquoted RHS is the glob match on purpose.
+      [[ "$cs_lower" == $exp_lower ]] && return 0
+      return 1 ;;
+  esac
+  str_contains "$cs_lower" "$exp_lower" || str_contains "$exp_lower" "$cs_lower"
 }
 
 # config_persona_count -> stdout the number of entries in `.qa/config.json`'s
@@ -841,20 +879,44 @@ print(json.dumps({'tool': sys.argv[1], 'ts': sys.argv[2], 'toolClass': sys.argv[
 }
 
 # build_phase_timeline <run-id> -> stdout a compact JSON array of
-# {t, phase}, one per `phase_entered` journal event, sorted ascending by t.
+# {t, phase} change points, in journal order, stable-sorted by t. `phase` is
+# the window that becomes active at `t`; "" means NO window is open (an
+# explicit phase_exited closed it).
+#
+# PHASE WINDOWS END IMPLICITLY (0.11.0, ADR-0029). Agents reliably emit
+# phase_entered (checkpoint.sh does it for them at every verdict) but forget
+# phase_exited, and the Verify window used to open only at the FIRST verdict
+# — so every login click before it read as "phase undeterminable". The
+# timeline is therefore built from the run's own structure:
+#   - phase_entered <p>        opens <p> (implicitly closing the previous one)
+#   - phase_exited <p>         closes <p> only when <p> is the open window
+#   - plan_frozen              opens Verify (the Generate->Verify boundary)
+#   - criterion_started        opens Verify unless Verify is already open
+# so a run that never writes a single phase_exited is still fully covered.
 build_phase_timeline() {
   local f; f="$(journal_file "$1")"
   [[ -s "$f" ]] || { echo "[]"; return 0; }
   if has_jq; then
     jq -c -R -s '
       [ split("\n")[] | select(length > 0) | (try fromjson catch empty) ]
-      | map(select(type == "object" and .event == "phase_entered" and (.t | type == "string") and (.phase | type == "string")))
-      | map({t: .t, phase: .phase})
+      | map(select(type == "object" and (.t | type == "string")))
+      | (reduce .[] as $e ({open: null, out: []};
+          if $e.event == "phase_entered" and ($e.phase | type == "string") then
+            .open = $e.phase | .out += [{t: $e.t, phase: $e.phase}]
+          elif $e.event == "phase_exited" and ($e.phase | type == "string") then
+            (if .open != null and .open != "" and (($e.phase | ascii_downcase) == (.open | ascii_downcase))
+             then .open = "" | .out += [{t: $e.t, phase: ""}] else . end)
+          elif $e.event == "plan_frozen" or $e.event == "criterion_started" then
+            (if .open != null and .open != "" and ((.open | ascii_downcase) == "verify") then .
+             else .open = "Verify" | .out += [{t: $e.t, phase: "Verify"}] end)
+          else . end
+        )) | .out
       | sort_by(.t)
     ' "$f" 2>/dev/null || echo "[]"
   else
     python3 -c "
 import json, sys
+open_ = None
 out = []
 with open(sys.argv[1]) as fh:
     for line in fh:
@@ -862,11 +924,23 @@ with open(sys.argv[1]) as fh:
         if not line:
             continue
         try:
-            obj = json.loads(line)
+            e = json.loads(line)
         except Exception:
             continue
-        if isinstance(obj, dict) and obj.get('event') == 'phase_entered' and isinstance(obj.get('t'), str) and isinstance(obj.get('phase'), str):
-            out.append({'t': obj['t'], 'phase': obj['phase']})
+        if not isinstance(e, dict) or not isinstance(e.get('t'), str):
+            continue
+        ev = e.get('event')
+        if ev == 'phase_entered' and isinstance(e.get('phase'), str):
+            open_ = e['phase']
+            out.append({'t': e['t'], 'phase': e['phase']})
+        elif ev == 'phase_exited' and isinstance(e.get('phase'), str):
+            if open_ and e['phase'].lower() == open_.lower():
+                open_ = ''
+                out.append({'t': e['t'], 'phase': ''})
+        elif ev in ('plan_frozen', 'criterion_started'):
+            if not (open_ and open_.lower() == 'verify'):
+                open_ = 'Verify'
+                out.append({'t': e['t'], 'phase': 'Verify'})
 out.sort(key=lambda x: x['t'])
 print(json.dumps(out))
 " "$f" 2>/dev/null || echo "[]"
@@ -965,13 +1039,16 @@ phase_surface_reasons() {
           . as $e
           | (activePhase($e.ts)) as $phase
           | (inWindow($e.ts)) as $win
-          | if ($e.mutating == true) and $windowsActive and ($win | not) then
+          | if ($e.mutating == true) and $windowsActive and ($win | not)
+               and (($e.toolClass == "browser-mutation") and ($phase != null) and (($phase | ascii_downcase) == "verify") | not) then
               (if $phase == null then
                  "mutating tool " + $e.tool + " (class " + $e.toolClass + ") at ts=" + $e.ts + " fell outside any acting window; active phase undeterminable (no phase_entered recorded before this call)"
+               elif $phase == "" then
+                 "mutating tool " + $e.tool + " (class " + $e.toolClass + ") at ts=" + $e.ts + " fell outside any acting window while no phase window was open (closed by phase_exited)"
                else
                  "mutating tool " + $e.tool + " (class " + $e.toolClass + ") at ts=" + $e.ts + " fell outside any acting window while the active phase was " + $phase
                end)
-            elif ($phase != null) and (forbiddenFor($phase) | index($e.toolClass) != null) then
+            elif ($phase != null) and ($phase != "") and (forbiddenFor($phase) | index($e.toolClass) != null) then
               "tool " + $e.tool + " (class " + $e.toolClass + ") used during phase " + $phase + ", which forbids toolClass " + $e.toolClass + " per state-machine.json phaseToolSurface"
             else empty
             end
@@ -1012,12 +1089,15 @@ for e in events:
     ts = e.get("ts")
     phase = active_phase(ts)
     win = in_window(ts)
-    if e.get("mutating") and windows_active and not win:
+    human_path_in_verify = e.get("toolClass") == "browser-mutation" and phase is not None and phase.lower() == "verify"
+    if e.get("mutating") and windows_active and not win and not human_path_in_verify:
         if phase is None:
             reasons.append("mutating tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") at ts=" + str(ts) + " fell outside any acting window; active phase undeterminable (no phase_entered recorded before this call)")
+        elif phase == "":
+            reasons.append("mutating tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") at ts=" + str(ts) + " fell outside any acting window while no phase window was open (closed by phase_exited)")
         else:
             reasons.append("mutating tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") at ts=" + str(ts) + " fell outside any acting window while the active phase was " + str(phase))
-    elif phase is not None and e.get("toolClass") in forbidden_for(phase):
+    elif phase is not None and phase != "" and e.get("toolClass") in forbidden_for(phase):
         reasons.append("tool " + str(e.get("tool")) + " (class " + str(e.get("toolClass")) + ") used during phase " + str(phase) + ", which forbids toolClass " + str(e.get("toolClass")) + " per state-machine.json phaseToolSurface")
 print(json.dumps(reasons))
 ' "$events" "$phases" "$windows" "$windows_active" "$STATE_MACHINE_JSON" 2>/dev/null || echo "[]"
@@ -1076,16 +1156,69 @@ print(json.dumps({
 list_pass_records() {
   local run_id="$1" file
   file="$(checkpoint_file "$run_id")"
+  # 0.11.0 (ADR-0029): the LATEST AUTHORITATIVE verdict per criterion. A
+  # current fold already moved every superseded persona-less row out of
+  # criteria[]; a checkpoint.json folded by an older engine still carries
+  # them, so the same rule is applied here (persona-less row + a strictly
+  # LATER persona-scoped row for the same criterion -> superseded; a tie on
+  # the second-resolution timestamp keeps both, never hiding a verdict).
   if has_jq; then
-    jq -c '.criteria[]? | select(.verdict == "pass")' "$file" 2>/dev/null
+    jq -c '
+      (.criteria // []) as $rows
+      | $rows[]
+      | . as $c
+      | select(.verdict == "pass")
+      | select(
+          (($c.persona // "") == "" and
+           ([ $rows[] | select(.criterion_id == $c.criterion_id and (.persona // "") != ""
+                               and ((.checkpointed_at // "") > ($c.checkpointed_at // ""))) ] | length > 0)) | not)
+    ' "$file" 2>/dev/null
   else
     python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-for c in d.get("criteria", []) or []:
-    if c.get("verdict") == "pass":
-        print(json.dumps(c))
+rows = d.get("criteria", []) or []
+for c in rows:
+    if c.get("verdict") != "pass":
+        continue
+    if (c.get("persona") or "") == "" and any(
+            r.get("criterion_id") == c.get("criterion_id") and (r.get("persona") or "") != ""
+            and (r.get("checkpointed_at") or "") > (c.get("checkpointed_at") or "") for r in rows):
+        continue
+    print(json.dumps(c))
 ' "$file" 2>/dev/null
+  fi
+}
+
+# criteria_summary <run-id> -> "criteria=<distinct criterion ids> superseded=<n>"
+# where n counts the rows a current fold already moved to `superseded[]` plus
+# any persona-less row a stale (older-engine) checkpoint.json still carries
+# that list_pass_records' rule would supersede. Printed in the run summary so
+# an operator sees how many rows were not counted as separate outcomes.
+criteria_summary() {
+  local file; file="$(checkpoint_file "$1")"
+  if has_jq; then
+    jq -r '
+      (.criteria // []) as $rows
+      | ([ $rows[] | .criterion_id ] | unique | length) as $n
+      | ([ $rows[] | . as $c
+           | select(($c.persona // "") == "" and
+               ([ $rows[] | select(.criterion_id == $c.criterion_id and (.persona // "") != ""
+                                   and ((.checkpointed_at // "") > ($c.checkpointed_at // ""))) ] | length > 0)) ]
+         | length) as $stale
+      | "criteria=\($n) superseded=\(((.superseded // []) | length) + $stale)"
+    ' "$file" 2>/dev/null || echo "criteria=? superseded=?"
+  else
+    python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("criteria", []) or []
+n = len({r.get("criterion_id") for r in rows})
+stale = sum(1 for c in rows if (c.get("persona") or "") == "" and any(
+    r.get("criterion_id") == c.get("criterion_id") and (r.get("persona") or "") != ""
+    and (r.get("checkpointed_at") or "") > (c.get("checkpointed_at") or "") for r in rows))
+print("criteria=%d superseded=%d" % (n, len(d.get("superseded") or []) + stale))
+' "$file" 2>/dev/null || echo "criteria=? superseded=?"
   fi
 }
 
@@ -1173,7 +1306,7 @@ identity_binding() {
       IB_LOW=1
       IB_REASONS+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
     else
-      local expected="" cs_lower expected_lower persona_lower matched=0
+      local expected="" cs_lower persona_lower matched=0 exp_line expected_shown=""
       expected="$(config_expected_subject_for "$persona")"
       cs_lower="$(to_lower "$id_subject")"
 
@@ -1181,18 +1314,22 @@ identity_binding() {
         # Operator-provided ground truth is configured — this is the ONLY
         # path allowed to OVERRIDE. Comparing a bare persona id to an
         # opaque captured subject is never confident enough on its own
-        # (see the header comment's H3 fast-follow note); expectedSubject
-        # removes that ambiguity.
-        expected_lower="$(to_lower "$expected")"
-        if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
-          matched=1
-        fi
+        # (see the header comment's H3 fast-follow note); expectedSubject /
+        # expectedSubjects remove that ambiguity. Any one entry matching
+        # verifies (a multi-account persona bucket lists them all, or a glob).
+        while IFS= read -r exp_line; do
+          [[ -z "$exp_line" ]] && continue
+          expected_shown="${expected_shown:+${expected_shown}, }${exp_line}"
+          if subject_matches_expected "$cs_lower" "$exp_line"; then
+            matched=1
+          fi
+        done <<< "$expected"
 
         if [[ "$matched" -eq 1 ]]; then
-          : # verified — captured identity matches the operator-configured expectedSubject.
+          : # verified — captured identity matches the operator-configured ground truth.
         else
           IB_OVERRIDE=1
-          IB_REASONS+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
+          IB_REASONS+=("acting identity '${id_subject}' != expected identity '${expected_shown}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject/expectedSubjects) — this pass was performed as the wrong user")
         fi
       else
         # No ground truth configured — a persona-id-vs-captured-subject
@@ -1212,7 +1349,7 @@ identity_binding() {
           : # verified — best-effort substring match against the persona id.
         else
           IB_LOW=1
-          IB_REASONS+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
+          IB_REASONS+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}' — set personas[].expectedSubject, or expectedSubjects (a list or glob) for a persona that maps to several accounts)")
         fi
       fi
     fi
@@ -3036,7 +3173,7 @@ with open(sys.argv[2], "w") as out:
     exit 1
   fi
 
-  echo "qa-verify: run=${run_id} passes_checked=${checked} overridden=$( [[ "$run_failed" -eq 1 ]] && echo yes || echo no ) -> ${out_file}" >&2
+  echo "qa-verify: run=${run_id} $(criteria_summary "$run_id") passes_checked=${checked} overridden=$( [[ "$run_failed" -eq 1 ]] && echo yes || echo no ) -> ${out_file}" >&2
 
   [[ "$run_failed" -eq 0 ]]
 }

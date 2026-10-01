@@ -8,6 +8,45 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.11.0 — 2026-10-01 · "Count each criterion once"
+
+Fix-and-feature release from a real 0.10.0 run (`register-choose-later`, 61 criteria, one resume)
+whose `checkpoint.json` ended with 100 rows for 61 criteria and a report tallying `deferred=39
+total=100`. See [ADR-0029](./docs/adr/0029-criterion-level-supersession-and-record-time-identity.md).
+
+- **Resume no longer duplicates rows.** Both fold engines now supersede a persona-less (shared) row
+  when the same criterion later gets a verdict under a persona: the placeholder moves from
+  `criteria[]` to a new `checkpoint.superseded[]` (with what replaced it) and a `superseded-row`
+  fold anomaly. Persona-scoped rows are never superseded. The journal is untouched.
+- **Reports and qa-verify count per criterion.** `render-report` tallies the latest authoritative
+  verdict per criterion — also on a checkpoint folded by an older engine — lists superseded rows and
+  rows outside the frozen plan under "Process anomalies" instead of counting them, and its summary
+  line gains `criteria= superseded= out_of_plan=`. `qa-verify` skips superseded passes and prints
+  `criteria=<n> superseded=<n>`.
+- **Identity is refused at record time** (new `plan-guard.sh`, called by `checkpoint.sh` before any
+  gate and by `journal-emit.sh started`): a criterion id with whitespace (a loop that joined ids);
+  once a plan is frozen, an id or a persona the plan does not name for that criterion (use
+  `journal-emit.sh amend`); a `started` whose scenarioId is not the persona (or `__shared__` with
+  `""`); a verdict under a different identity than the criterion's open start. Each message gives
+  the call to make instead.
+- **Resume retries deferred work under its own identity.** The briefing's `skip` no longer lists
+  `deferred` tuples; they are in a new `retry` list.
+- **Phase windows end on their own.** qa-verify opens Verify at `plan_frozen`/`criterion_started`
+  and ends a window at the next `phase_entered`, so no `phase_exited` is ever required; new
+  `journal-emit.sh phase <run> <phase>` writes the closing event itself. Human-path clicks/typing
+  while Verify is open (logins between personas, opening sheets) are no longer flagged by
+  `__phase-surface__`; a mutating `browser_evaluate` outside every acting window still is.
+- **Unjournaled findings are called out live.** The capture hook names an in-scope 5xx or console
+  error that still has no `finding_observed` N captured calls after it was observed
+  (`enforcement.findingNudgeAfter`, default 3, again at 2N and 3N; 0 turns it off), with the
+  `journal.sh append` to make.
+- **`personas[].expectedSubjects`** — a list of subjects or globs (`qa.rcl.p*@innovation.test`) for a
+  persona that maps to several accounts; any match binds the identity, none overrides like
+  `expectedSubject`. Preserved across role regeneration.
+- Tests: new `resume-supersession` suite (both engines) built from a sanitized excerpt of the real
+  run's journal, its 0.10.0 checkpoint and its toolstream; `persona-identity` gains
+  `expectedSubjects` cases; `bash32-safety` gates `plan-guard.sh`.
+
 ### v0.10.0 — 2026-10-01 · "Show it"
 
 Feature release. A real 0.8.1 run produced a 32-criterion report with no picture in it — no

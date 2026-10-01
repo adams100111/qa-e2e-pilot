@@ -43,8 +43,9 @@
 #
 # Wholesale personas regeneration (Decision 5) still REPLACES the `personas`
 # key, but per-persona id it MERGES forward a small preserve-list of
-# operator-only keys (currently just `expectedSubject` -- the ground truth
-# qa-verify.sh uses to hard-fail an acting-identity mismatch, CONTEXT.md) from
+# operator-only keys (`expectedSubject` and, since 0.11.0, `expectedSubjects` --
+# the ground truth qa-verify.sh uses to hard-fail an acting-identity mismatch,
+# CONTEXT.md) from
 # the OLD config onto the freshly discovered entry of the same id. Discovered
 # fields (id/role/plane/auth) always come from --personas-file; a persona id
 # dropped from --personas-file disappears from the config (still wholesale --
@@ -62,7 +63,7 @@ ALLOW_EMPTY=0
 # Operator-only keys preserved across wholesale personas regeneration, merged
 # forward per persona id. Single source of truth for both engine legs --
 # encoded to a JSON array string below without needing jq/python3 yet.
-PRESERVE_KEYS=(expectedSubject)
+PRESERVE_KEYS=(expectedSubject expectedSubjects)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

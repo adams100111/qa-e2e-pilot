@@ -165,6 +165,26 @@ function shotSrc(s, embed) {
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
+// frozenPlanIds(runDir) -> Set of planned criterion ids, or null when the run
+// has no journal or its journal never froze a plan. Torn/invalid lines are
+// skipped, exactly like the fold.
+function frozenPlanIds(runDir) {
+  let text;
+  try { text = fs.readFileSync(path.join(runDir, "journal.ndjson"), "utf8"); } catch (e) { return null; }
+  const ids = new Set();
+  let frozen = false;
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let e;
+    try { e = JSON.parse(line); } catch (err) { continue; }
+    if (!e || typeof e !== "object") continue;
+    if (e.event === "plan_frozen") {
+      frozen = true;
+      for (const c of Array.isArray(e.criteria) ? e.criteria : []) if (c && typeof c === "object") ids.add(String(c.criterionId || ""));
+    } else if (e.event === "plan_amended") ids.add(String(e.criterionId || ""));
+  }
+  return frozen ? ids : null;
+}
 function buildModel(runDir) {
   const checkpoint = readJSON(path.join(runDir, "checkpoint.json"), null);
   if (!checkpoint || typeof checkpoint !== "object") die("checkpoint.json in " + runDir + " is not valid JSON");
@@ -191,7 +211,36 @@ function buildModel(runDir) {
     else vByKey[(v.criterionId || "") + "\u0000" + (v.persona || "")] = v;
   }
 
-  const criteria = (Array.isArray(checkpoint.criteria) ? checkpoint.criteria : []).filter((c) => c && c.criterion_id).map((c) => {
+  // 0.11.0 (ADR-0029) — count the LATEST AUTHORITATIVE verdict per criterion.
+  // (1) Supersession: a current fold has already moved superseded persona-less
+  // rows to checkpoint.superseded[]; a checkpoint.json folded by an older
+  // engine still carries them, so the same rule applies here (a persona-less
+  // row with a strictly LATER persona-scoped row for the same criterion).
+  // (2) Out-of-plan: when the run's journal froze a plan (plan_frozen, plus any
+  // plan_amended), a row whose criterion_id is not a planned id (e.g. several
+  // ids joined into one by a shell loop) is a process anomaly, not a
+  // criterion — listed, never tallied. No journal or no plan: nothing is
+  // treated as out-of-plan.
+  const allRows = (Array.isArray(checkpoint.criteria) ? checkpoint.criteria : []).filter((c) => c && c.criterion_id);
+  const superseded = (Array.isArray(checkpoint.superseded) ? checkpoint.superseded : []).filter((c) => c && c.criterion_id)
+    .map((c) => ({ id: String(c.criterion_id), persona: c.persona || "", verdict: String(c.verdict || ""), at: asText(c.checkpointed_at || ""),
+      by: c.superseded_by && typeof c.superseded_by === "object" ? c.superseded_by : {} }));
+  const liveRows = [];
+  for (const c of allRows) {
+    const later = (c.persona || "") === "" ? allRows.filter((r) => r.criterion_id === c.criterion_id && (r.persona || "") !== ""
+      && String(r.checkpointed_at || "") > String(c.checkpointed_at || "")) : [];
+    if (later.length) {
+      const by = later.reduce((a, r) => (String(r.checkpointed_at || "") > String(a.checkpointed_at || "") ? r : a));
+      superseded.push({ id: String(c.criterion_id), persona: "", verdict: String(c.verdict || ""), at: asText(c.checkpointed_at || ""),
+        by: { persona: by.persona || "", verdict: by.verdict, checkpointed_at: by.checkpointed_at } });
+    } else liveRows.push(c);
+  }
+  const planIds = frozenPlanIds(runDir);
+  const planned = planIds !== null;
+  const outOfPlan = planned ? liveRows.filter((c) => !planIds.has(String(c.criterion_id))).map((c) => ({
+    id: String(c.criterion_id), persona: c.persona || "", verdict: String(c.verdict || ""), lastAction: asText(c.last_action || "") })) : [];
+
+  const criteria = liveRows.filter((c) => !planned || planIds.has(String(c.criterion_id))).map((c) => {
     const inRun = VERDICTS.includes(String(c.verdict || "").toLowerCase()) ? String(c.verdict).toLowerCase() : "error";
     const v = vByKey[c.criterion_id + "\u0000" + (c.persona || "")];
     const checked = !!(v && v.inRunVerdict === inRun);
@@ -229,7 +278,8 @@ function buildModel(runDir) {
     verified: verification !== null, checkedCount: criteria.filter((c) => c.checked).length,
     overridden: criteria.filter((c) => c.overridden).length, runLevel,
     evidencedTotal: evidenced.length, evidencedWithShot: evidenced.filter((c) => c.shots.some((s) => !s.legacy)).length,
-    shotCount, bugs, traceability,
+    shotCount, bugs, traceability, superseded, outOfPlan,
+    distinct: new Set(criteria.map((c) => c.id)).size,
   };
 }
 
@@ -312,6 +362,26 @@ function htmlTraceability(t) {
     + "</tr></thead><tbody>" + objs.map((r) => "<tr>" + cols.map((k) => "<td>" + esc(asText(r[k])) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
 }
 
+// One sentence on rows that exist in checkpoint.json but are not counted as
+// separate criterion outcomes (ADR-0029). Empty when there are none.
+function countNote(m) {
+  const bits = [];
+  if (m.superseded.length) bits.push(m.superseded.length + " superseded row(s) not counted (the latest verdict per criterion is)");
+  if (m.outOfPlan.length) bits.push(m.outOfPlan.length + " out-of-plan row(s) excluded (criterion id not in the frozen plan)");
+  return bits.length ? m.distinct + " criteria · " + bits.join(" · ") : "";
+}
+
+function htmlAnomalies(m) {
+  if (!m.superseded.length && !m.outOfPlan.length) return "";
+  const oop = m.outOfPlan.map((c) => "<li><span class=\"mono\">" + esc(c.id.length > 160 ? c.id.slice(0, 160) + "…" : c.id) + "</span> — "
+    + esc(c.verdict) + (c.persona ? " (" + esc(c.persona) + ")" : "") + "</li>").join("");
+  const sup = m.superseded.map((c) => "<li><span class=\"mono\">" + esc(c.id) + "</span> — " + esc(c.verdict) + " (shared, " + esc(c.at) + ") superseded by "
+    + esc(String(c.by.verdict || "")) + " (" + esc(String(c.by.persona || "")) + ", " + esc(asText(c.by.checkpointed_at || "")) + ")</li>").join("");
+  return '<h2 id="process-anomalies">Process anomalies</h2><p class="status-line">' + esc(countNote(m)) + ".</p>"
+    + (oop ? "<details open><summary>Out-of-plan rows (" + m.outOfPlan.length + ")</summary><ul>" + oop + "</ul></details>" : "")
+    + (sup ? "<details><summary>Superseded rows (" + m.superseded.length + ")</summary><ul>" + sup + "</ul></details>" : "");
+}
+
 function verificationLine(m) {
   if (!m.verified) {
     return '<p class="status-line status-warn">Not independently verified — no verification.json. Run <code>scripts/qa-verify.sh ' + esc(m.runId) + "</code>, then re-render.</p>";
@@ -345,7 +415,8 @@ function renderHtml(m, tpl, embed) {
       + (m.stack ? "<span><b>Stack</b> " + esc(m.stack) + "</span>" : "") + "</div></header>",
     '<section class="summary" aria-label="Summary">',
     '<div class="panel"><h3>Verdicts</h3><div class="chips">' + chips + "</div>"
-      + (m.low ? '<p class="status-line" style="margin-top:8px"><span class="tag low">' + m.low + " with confidence: low</span></p>" : "") + "</div>",
+      + (m.low ? '<p class="status-line" style="margin-top:8px"><span class="tag low">' + m.low + " with confidence: low</span></p>" : "")
+      + ((m.superseded.length || m.outOfPlan.length) ? '<p class="status-line status-warn" style="margin-top:8px">' + countNote(m) + ' · <a href="#process-anomalies">details</a></p>' : "") + "</div>",
     '<div class="panel"><h3>Verification</h3>' + verificationLine(m) + runLevel + "</div>",
     '<div class="panel"><h3>Screenshots</h3><p class="status-line' + (m.evidencedWithShot < m.evidencedTotal ? " status-warn" : "") + '">'
       + m.evidencedWithShot + " of " + m.evidencedTotal + " pass/fail criteria carry a recorded screenshot · " + m.shotCount + " image(s)"
@@ -358,6 +429,7 @@ function renderHtml(m, tpl, embed) {
       '<div class="deferred-item" id="' + esc(c.anchor) + '"><b>DEFERRED — <span class="mono">' + esc(c.id) + "</span>" + (c.title ? ": " + esc(c.title) : "") + "</b>"
       + "<p>" + esc(c.lastAction || c.nonUi || "No reason recorded.") + "</p>" + htmlShots(c, embed) + "</div>").join("") : "<p><em>No criteria were deferred this run.</em></p>") + "</div>",
     "<h2>Bugs</h2>" + (m.bugs.length ? m.bugs.map(htmlBug).join("") : "<p><em>No bugs logged this run.</em></p>"),
+    htmlAnomalies(m),
     htmlTraceability(m.traceability),
     '<section id="gallery-section" hidden><h2>All screenshots</h2><div class="shots" id="gallery"></div></section>',
     "<footer>Rendered by qa-e2e-pilot render-report.js from the run's own record" + (embed ? " (screenshots embedded)" : "") + ". Click a screenshot to enlarge; ← → step through, Esc closes.</footer>",
@@ -384,6 +456,13 @@ function renderMd(m, tpl) {
   if (!m.verified) sum.push("> **Not independently verified** — no verification.json. Run `scripts/qa-verify.sh " + mdText(m.runId) + "`, then re-render.", "");
   else sum.push("qa-verify re-checked " + m.checkedCount + " criterion record(s); " + m.overridden + " overridden.", "");
   sum.push("Screenshots: " + m.evidencedWithShot + " of " + m.evidencedTotal + " pass/fail criteria carry a recorded screenshot (" + m.shotCount + " image(s)).");
+  if (m.superseded.length || m.outOfPlan.length) {
+    sum.push("", "**Process anomalies:** " + mdText(countNote(m)) + ".");
+    for (const c of m.outOfPlan) sum.push("- Out-of-plan row: `" + mdText(c.id.length > 160 ? c.id.slice(0, 160) + "…" : c.id) + "` — " + mdText(c.verdict));
+    if (m.superseded.length) {
+      sum.push("- Superseded rows: " + m.superseded.map((c) => "`" + mdText(c.id) + "` " + mdText(c.verdict) + " → " + mdText(String(c.by.verdict || "")) + " (" + mdText(String(c.by.persona || "")) + ")").join("; "));
+    }
+  }
   for (const r of m.runLevel) {
     if (!Array.isArray(r.reasons) || !r.reasons.length) continue;
     sum.push("", "**" + mdText(r.criterionId) + "** (" + mdText(r.verifierVerdict) + ", confidence " + mdText(r.confidence) + "):");
@@ -454,7 +533,8 @@ function main() {
     process.stdout.write("wrote " + path.join(runDir, "report.html") + " + report.md" + (o.embed ? " (screenshots embedded)" : "") + "\n");
     process.stdout.write("tally: " + VERDICTS.map((v) => v + "=" + m.tally[v]).join(" ") + " total=" + m.total
       + " low=" + m.low + " screenshots=" + m.shotCount + " (" + m.evidencedWithShot + "/" + m.evidencedTotal + " pass/fail criteria)"
-      + " verified=" + (m.verified ? "yes" : "no") + "\n");
+      + " verified=" + (m.verified ? "yes" : "no") + " criteria=" + m.distinct + " superseded=" + m.superseded.length
+      + " out_of_plan=" + m.outOfPlan.length + "\n");
   }
 }
 

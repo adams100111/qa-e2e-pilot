@@ -389,7 +389,14 @@ def main():
                 return g_.get("requires")
         return None
 
+    def vseq(v):
+        """The kept verdict's journal seq -- an int, else 0 (mirrors fold.jq's
+        `if (.seq|type)=="number" then .seq else 0 end`)."""
+        sq = v.get("seq")
+        return sq if isinstance(sq, (int, float)) and not isinstance(sq, bool) else 0
+
     criteria = []
+    verdict_seqs = []
     vws = []
     illegal_edges = []
     for k in order:
@@ -416,6 +423,7 @@ def main():
             "nonUiActionReason": nonui,
             "checkpointed_at": v.get("t"),
         })
+        verdict_seqs.append(vseq(v))
         if not g["startedAtVerdict"]:
             vws.append({
                 "rule": "verdict-without-started",
@@ -446,6 +454,54 @@ def main():
                             "rule": "illegal-edge", "tuple": tuple_label,
                             "from": from_state, "to": "verdict", "guard": req,
                         })
+
+    # ---- supersession (ADR-0029): a PERSONA-LESS (shared, personaId "")
+    # row is a criterion-level record; when the SAME criterionId later
+    # (higher verdict seq) receives a verdict under a persona, that later
+    # persona-scoped verdict is the authoritative outcome and the earlier
+    # persona-less row (typically a `deferred`/`blocked` placeholder written
+    # before the criterion was attempted) is SUPERSEDED: it leaves
+    # `criteria[]` and is listed under `superseded[]` with the row that
+    # replaced it. Deliberately ASYMMETRIC: a persona-scoped row is never
+    # superseded (not by another persona -- two personas are two cases,
+    # ADR-0012 -- and not by a persona-less row, which would let one shared
+    # record erase every persona's result). The superseding row is the
+    # persona-scoped row with the HIGHEST verdict seq; ties cannot occur
+    # (seq is unique per journal line). The journal itself is untouched --
+    # this is projection only. Mirrors fold.jq's $supersession exactly.
+    latest_scoped = {}
+    for i, c in enumerate(criteria):
+        if c["persona"] != "":
+            cur = latest_scoped.get(c["criterion_id"])
+            if cur is None or verdict_seqs[i] > verdict_seqs[cur]:
+                latest_scoped[c["criterion_id"]] = i
+    kept = []
+    superseded = []
+    superseded_anoms = []
+    for i, c in enumerate(criteria):
+        j = latest_scoped.get(c["criterion_id"])
+        if c["persona"] == "" and j is not None and verdict_seqs[j] > verdict_seqs[i]:
+            by = criteria[j]
+            superseded.append({
+                "criterion_id": c["criterion_id"],
+                "persona": c["persona"],
+                "verdict": c["verdict"],
+                "checkpointed_at": c["checkpointed_at"],
+                "superseded_by": {
+                    "persona": by["persona"],
+                    "verdict": by["verdict"],
+                    "checkpointed_at": by["checkpointed_at"],
+                },
+            })
+            superseded_anoms.append({
+                "rule": "superseded-row",
+                "criterionId": c["criterion_id"],
+                "personaId": c["persona"],
+                "supersededBy": by["persona"],
+            })
+        else:
+            kept.append(c)
+    criteria = kept
 
     open_acts = [k for k in intent_order if k not in committed_set]
 
@@ -673,14 +729,19 @@ def main():
         "cursor": cursor_ptr,
     }
 
+    checkpoint = {
+        "run_id": run_id,
+        "updated_at": last_t,
+        "criteria": criteria,
+        "findings": findings,
+    }
+    # `superseded` is present ONLY when non-empty, so every journal without
+    # a supersession projects byte-identically to before ADR-0029.
+    if superseded:
+        checkpoint["superseded"] = superseded
     out = {
-        "checkpoint": {
-            "run_id": run_id,
-            "updated_at": last_t,
-            "criteria": criteria,
-            "findings": findings,
-        },
-        "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms + findings_anoms,
+        "checkpoint": checkpoint,
+        "anomalies": wrapper_skipped + anomalies + vws + illegal_edges + seq_gap_anoms + cross_child_anoms + findings_anoms + superseded_anoms,
         "openActs": open_acts,
         "cursor": cursor_doc,
     }

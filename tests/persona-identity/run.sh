@@ -295,6 +295,44 @@ for ENGINE in "" python3; do
     "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
   rm -f "$WORK/.qa/config.json"
 
+  # --- 0.11.0 (ADR-0029) expectedSubjects: a persona BUCKET that maps to
+  # several fixture accounts (the real register-choose-later run: persona
+  # "participant" acted as qa.rcl.p2@innovation.test, p3, p6, ... and stayed
+  # confidence:low with no way to bind it). A glob entry matches; a plain
+  # list entry matches; a subject outside the list overrides like
+  # expectedSubject does. ------------------------------------------------
+  BUCKET_CFG='{"personas":[{"id":"participant","role":"user","plane":"global","auth":"seeded","expectedSubjects":["qa.rcl.p*@innovation.test","qa.participant2@innovation.test"]}]}'
+  RUN="bucketglob_${ENGINE:-jq}"
+  build_crosstenant_run "$RUN" participant "BUCKETGLOB-${ENGINE:-jq}-42"
+  mkdir -p "$WORK/.qa"; printf '%s' "$BUCKET_CFG" > "$WORK/.qa/config.json"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona participant --subject "qa.rcl.p2@innovation.test" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] expectedSubjects glob matches a bucket account: CT1 stays pass" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "pass"
+  check "[$LABEL] expectedSubjects glob matches a bucket account: confidence stays high (identity bound)" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "high"
+
+  RUN="bucketlist_${ENGINE:-jq}"
+  build_crosstenant_run "$RUN" participant "BUCKETLIST-${ENGINE:-jq}-42"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona participant --subject "QA.Participant2@innovation.test" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  check "[$LABEL] expectedSubjects plain entry matches (case-insensitive): confidence stays high" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .confidence' "$(vf "$RUN")")" "high"
+
+  RUN="bucketmiss_${ENGINE:-jq}"
+  build_crosstenant_run "$RUN" participant "BUCKETMISS-${ENGINE:-jq}-42"
+  ( cd "$WORK" && bash "$REC" "$RUN" IDENT identity --persona participant --subject "qa.admin@innovation.test" --method whoami >/dev/null )
+  run_qv "$ENGINE" "$RUN" >/dev/null 2>&1
+  RC=$?
+  check "[$LABEL] expectedSubjects configured, subject outside the bucket: qa-verify exits non-zero" \
+    "$([[ "$RC" -ne 0 ]] && echo yes)" "yes"
+  check "[$LABEL] expectedSubjects configured, subject outside the bucket: overridden to fail" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .verifierVerdict' "$(vf "$RUN")")" "fail"
+  check_contains "[$LABEL] expectedSubjects mismatch reason lists the configured subjects" \
+    "$(jq -r '.[] | select(.criterionId=="CT1") | .reasons | join(" ")' "$(vf "$RUN")")" \
+    "qa.rcl.p*@innovation.test, qa.participant2@innovation.test"
+  rm -f "$WORK/.qa/config.json"
+
   # --- __shared__ / empty-persona: identity NOT checked at all -------------
   RUN="shared_${ENGINE:-jq}"
   ( cd "$WORK" && bash "$TOOLSTREAM" append "$RUN" \

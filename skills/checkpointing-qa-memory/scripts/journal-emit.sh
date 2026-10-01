@@ -67,6 +67,15 @@
 #       already exists for this tuple's `runId:scenarioId:criterionId` key;
 #       pass --force to bypass (logged NOTE on stderr). Best-effort only.
 #
+#   journal-emit.sh phase <run-id> <phase>
+#       (0.11.0, ADR-0029) Moves the run into <phase> (one of
+#       state-machine.json's phases, case-insensitive): journals
+#       `phase_exited` for the window that is open, then `phase_entered` for
+#       <phase>; a no-op when <phase> is already open. Callers never emit
+#       phase_exited by hand — and do not need to: qa-verify also ends a
+#       phase window implicitly at the next phase_entered, and opens Verify
+#       at plan_frozen / criterion_started.
+#
 # `.qa/runs/latest`: whichever of the subcommands above turns out to be the
 # FIRST event of a run (the journal did not exist/was empty before this
 # call) also (a) journals a `run_started{runId}` event BEFORE its own
@@ -147,6 +156,12 @@ validate_id_component() {
   case "$value" in
     *:*) die "${label} '${value}' contains ':' — reserved as qa-reconcile.sh's key delimiter (run_id:scenarioId:criterionId); choose an id without ':'." ;;
   esac
+  # 0.11.0 (ADR-0029): whitespace is never part of an id — it is the mark of a
+  # shell loop that joined several ids into one argument (one bogus record
+  # that the append-only journal can never drop). One id per call.
+  case "$value" in
+    *[[:space:]]*) die "${label} '${value}' contains whitespace — pass ONE id per call (a shell loop that joins several ids into one argument records a single bogus id that can never be removed)." ;;
+  esac
   return 0
 }
 
@@ -157,6 +172,7 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="."
 JOURNAL_SH="${SCRIPT_DIR}/journal.sh"
 MUTATION_FLAG_SH="${SCRIPT_DIR}/mutation-flag.sh"
+PLAN_GUARD_SH="${SCRIPT_DIR}/plan-guard.sh"
 # Run FSM Enforcement Task 4: state-machine.json (Task 1's statechart-as-
 # data), resolved relative to THIS script like JOURNAL_SH/MUTATION_FLAG_SH
 # above — but, unlike fold.sh's identical-looking constant, OVERRIDABLE via
@@ -742,6 +758,16 @@ cmd_started() {
   validate_id_component "$scenario_id" "scenarioId"
   validate_id_component "$criterion_id" "criterionId"
 
+  # 0.11.0 (ADR-0029): derive/validate the identity exactly the way
+  # checkpoint.sh will record the verdict (scenarioId = personaId, or
+  # __shared__ with personaId ""), and — once a plan is frozen — require the
+  # criterion and persona to be planned. Refused before anything is appended.
+  local pg_msg
+  if ! pg_msg="$(QA_BASE="$QA_BASE" QA_ENGINE="$ENGINE" "$BASH" "$PLAN_GUARD_SH" check \
+        "$run_id" "$criterion_id" "$scenario_id" "$persona_id" --for started 2>&1)"; then
+    die "${pg_msg}"
+  fi
+
   local journal_path creating=0
   journal_path="$(journal_path_for "$run_id")"
   [[ -s "$journal_path" ]] || creating=1
@@ -969,12 +995,108 @@ cmd_act_commit() {
   echo "Journaled: act_committed run=${run_id} key=${key} outcome=${outcome} persona=${persona_id}"
 }
 
+# open_phase <run-id> -> stdout the phase window currently open per the
+# journal's EXPLICIT phase events (last phase_entered, unless a later
+# phase_exited of that same phase closed it), or "" when none is open.
+open_phase() {
+  local journal_path; journal_path="$(journal_path_for "$1")"
+  [[ -s "$journal_path" ]] || { echo ""; return 0; }
+  if has_jq; then
+    jq -R -s -r '
+      [ split("\n")[] | select(length > 0) | (try fromjson catch null) | select(type == "object") ]
+      | reduce .[] as $e (""; if $e.event == "phase_entered" and ($e.phase | type == "string") then $e.phase
+          elif $e.event == "phase_exited" and ($e.phase | type == "string") and (($e.phase | ascii_downcase) == (. | ascii_downcase)) then ""
+          else . end)
+    ' < "$journal_path"
+  elif has_py; then
+    python3 -c '
+import json, sys
+cur = ""
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict) or not isinstance(e.get("phase"), str):
+            continue
+        if e.get("event") == "phase_entered":
+            cur = e["phase"]
+        elif e.get("event") == "phase_exited" and e["phase"].lower() == cur.lower():
+            cur = ""
+print(cur)
+' "$journal_path"
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to read the open phase."
+  fi
+}
+
+build_phase_event() {
+  local event="$1" phase="$2"
+  if has_jq; then
+    jq -cn --arg e "$event" --arg p "$phase" '{event: $e, phase: $p}' || die "Failed to build the ${event} event via jq."
+  elif has_py; then
+    python3 -c 'import json,sys; print(json.dumps({"event": sys.argv[1], "phase": sys.argv[2]}))' "$event" "$phase" \
+      || die "Failed to build the ${event} event via python3."
+  else
+    die "journal-emit.sh needs either 'jq' or 'python3' to build journal events."
+  fi
+}
+
+# phase <run-id> <phase> — move the run into <phase> (0.11.0, ADR-0029). It
+# closes the open window itself (phase_exited for it) before entering the new
+# one, so no caller ever has to remember a phase_exited; entering the phase
+# that is already open is a no-op. <phase> must be one of state-machine.json's
+# phases (case-insensitive) when that file is readable.
+cmd_phase() {
+  [[ $# -eq 2 ]] || die "phase requires: <run-id> <phase>"
+  local run_id="$1" phase="$2"
+  validate_token "$run_id" "run-id"
+  [[ -n "$phase" ]] || die "phase must not be empty."
+  if [[ -r "$STATE_MACHINE_JSON" ]]; then
+    local known
+    if has_jq; then
+      known="$(jq -r '[.phases[]?.id] | join(",")' "$STATE_MACHINE_JSON" 2>/dev/null)"
+    else
+      known="$(python3 -c 'import json,sys; print(",".join(p.get("id","") for p in json.load(open(sys.argv[1])).get("phases",[])))' "$STATE_MACHINE_JSON" 2>/dev/null)"
+    fi
+    if [[ -n "$known" ]]; then
+      local lc_phase lc_known
+      lc_phase="$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]')"
+      lc_known="$(printf '%s' ",${known}," | tr '[:upper:]' '[:lower:]')"
+      [[ "$lc_known" == *",${lc_phase},"* ]] || die "phase '${phase}' is not a run phase — expected one of: ${known//,/, }."
+    fi
+  fi
+
+  local journal_path creating=0
+  journal_path="$(journal_path_for "$run_id")"
+  [[ -s "$journal_path" ]] || creating=1
+  [[ "$creating" -eq 1 ]] && append_event "$run_id" "$(build_run_started_event "$run_id")"
+
+  local cur lc_cur lc_new
+  cur="$(open_phase "$run_id")"
+  lc_cur="$(printf '%s' "$cur" | tr '[:upper:]' '[:lower:]')"
+  lc_new="$(printf '%s' "$phase" | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$cur" && "$lc_cur" == "$lc_new" ]]; then
+    [[ "$creating" -eq 1 ]] && write_latest "$run_id"
+    echo "NOTE: phase '${cur}' is already open for run '${run_id}' — nothing journaled."
+    return 0
+  fi
+  [[ -n "$cur" ]] && append_event "$run_id" "$(build_phase_event phase_exited "$cur")"
+  append_event "$run_id" "$(build_phase_event phase_entered "$phase")"
+  [[ "$creating" -eq 1 ]] && write_latest "$run_id"
+  echo "Journaled: ${cur:+phase_exited ${cur} + }phase_entered ${phase} run=${run_id}"
+}
+
 # ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>\n       journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json> [--force]\n       journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown> [--force]"
+  [[ $# -lt 1 ]] && die "Usage: journal-emit.sh started <run-id> <scenarioId> <criterionId> <personaId>\n       journal-emit.sh freeze <run-id> <plan-json> [--force]\n       journal-emit.sh amend <run-id> <criterionId> <scenarioId> <personaId> <mutates>\n       journal-emit.sh act-intent <run-id> <scenarioId> <criterionId> <personaId> --criterion <criterion-json> --write-set <json> [--force]\n       journal-emit.sh act-commit <run-id> <scenarioId> <criterionId> <personaId> --outcome <landed|failed|unknown> [--force]\n       journal-emit.sh phase <run-id> <phase>"
   local cmd="$1"; shift
   case "$cmd" in
     started)    cmd_started "$@" ;;
@@ -982,7 +1104,8 @@ main() {
     amend)      cmd_amend "$@" ;;
     act-intent) cmd_act_intent "$@" ;;
     act-commit) cmd_act_commit "$@" ;;
-    *) die "Unknown subcommand '${cmd}' (expected: started|freeze|amend|act-intent|act-commit)." ;;
+    phase)      cmd_phase "$@" ;;
+    *) die "Unknown subcommand '${cmd}' (expected: started|freeze|amend|act-intent|act-commit|phase)." ;;
   esac
 }
 

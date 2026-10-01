@@ -1,0 +1,5 @@
+{"seq":1,"ts":"2026-10-01T13:50:34Z","tool":"mcp__plugin_playwright_playwright__browser_click","args":{"element":"Log in","ref":"e12"},"resultDigest":{"len":0,"sha256":"a1"}}
+{"seq":2,"ts":"2026-10-01T13:50:53Z","tool":"mcp__plugin_playwright_playwright__browser_type","args":{"element":"Email","ref":"e20","text":"admin@app.test"},"resultDigest":{"len":0,"sha256":"a2"}}
+{"seq":3,"ts":"2026-10-01T14:10:30Z","tool":"mcp__plugin_playwright_playwright__browser_click","args":{"element":"Team & Registration","ref":"e41"},"resultDigest":{"len":0,"sha256":"a3"}}
+{"seq":4,"ts":"2026-10-01T15:10:30Z","tool":"mcp__plugin_playwright_playwright__browser_click","args":{"element":"Save","ref":"e77"},"resultDigest":{"len":0,"sha256":"a4"}}
+{"seq":5,"ts":"2026-10-01T15:43:36Z","tool":"mcp__plugin_playwright_playwright__browser_evaluate","args":{"function":"() => { document.title = \"x\"; }"},"resultDigest":{"len":0,"sha256":"a5"}}

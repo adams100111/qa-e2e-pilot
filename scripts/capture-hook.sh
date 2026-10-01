@@ -203,6 +203,14 @@ detect_clock_advisory() {
 #       the last 10 minutes: the Playwright MCP is not running with
 #       --save-session, so Check 0 will be unavailable for every human-action
 #       pass. Said once, early, with how to enable it.
+#   (d) unjournaled-finding reminder (0.11.0, ADR-0029) — an in-scope fatal
+#       network row (5xx / unhandled-exception / page-crash, per
+#       classify-finding.sh) or an `error`-level console row captured in a
+#       call's `observed`, with NO matching `finding_observed` in the journal
+#       N captured calls later (N = enforcement.findingNudgeAfter, default 3;
+#       0 disables), and again at 2N and 3N: qa-verify's ledger check fails
+#       the run on exactly that gap at the end, when it can no longer be
+#       fixed. Names the observation and the journal.sh append to make.
 # ---------------------------------------------------------------------------
 cfg_get() { # cfg_get <config-json> <jq-path> -> string (python3 fallback)
   if has_jq; then
@@ -230,8 +238,153 @@ else:
   fi
 }
 
+# finding_nudge <run-id> <config-json> <config-path> -> a reminder paragraph
+# on stdout for the FIRST observed in-scope fatal finding that is N, 2N or 3N
+# captured calls old and still has no finding_observed in the journal; else
+# nothing. Read-only, best-effort, bounded: only toolstream lines carrying
+# `observed` are parsed.
+finding_nudge() {
+  local run_id="$1" config_json="$2" cfg_path="$3"
+  local tsf="${QA_BASE}/${run_id}/toolstream.jsonl" jf="${QA_BASE}/${run_id}/journal.ndjson"
+  [[ -s "$tsf" ]] || return 0
+  local n; n="$(cfg_get "$config_json" '.enforcement.findingNudgeAfter')"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=3
+  [[ "$n" -eq 0 ]] && return 0
+  local last cur
+  last="$(tail -n 1 "$tsf" 2>/dev/null)"
+  if has_jq; then
+    cur="$(jq -r '.seq // empty' <<< "$last" 2>/dev/null)"
+  else
+    cur="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("seq",""))' <<< "$last" 2>/dev/null)"
+  fi
+  [[ "$cur" =~ ^[0-9]+$ ]] || return 0
+
+  # candidates: kind<TAB>seq<TAB>method<TAB>url<TAB>status<TAB>text — only
+  # those whose age (cur - seq) is exactly N, 2N or 3N.
+  local cands
+  if has_jq; then
+    cands="$(grep '"observed":' "$tsf" 2>/dev/null | jq -r --argjson cur "$cur" --argjson n "$n" '
+      def sane: if type == "string" then gsub("[\t\n\r]"; " ") else "" end;
+      select(type == "object" and (.seq | type) == "number")
+      | .seq as $s | (($cur - $s)) as $d
+      | select($d > 0 and ($d % $n) == 0 and $d <= (3 * $n))
+      | (.observed.network // [])[]?, (.observed.console // [])[]? | select(type == "object")
+      | if has("level") then select(.level == "error") | ["console", ($s|tostring), "", "", "", (.text | sane | .[0:200])]
+        else select(((.status | type) == "number" and .status >= 500) or (.status == "unhandled-exception") or (.status == "page-crash"))
+             | ["net", ($s|tostring), (.method | sane), (.url | sane), (.status | tostring), ""]
+        end
+      | @tsv' 2>/dev/null)"
+  else
+    cands="$(grep '"observed":' "$tsf" 2>/dev/null | python3 -c '
+import json, sys
+cur, n = int(sys.argv[1]), int(sys.argv[2])
+def sane(v):
+    return v.replace("\t", " ").replace("\n", " ").replace("\r", " ") if isinstance(v, str) else ""
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(e, dict) or not isinstance(e.get("seq"), int):
+        continue
+    d = cur - e["seq"]
+    if not (d > 0 and d % n == 0 and d <= 3 * n):
+        continue
+    ob = e.get("observed") or {}
+    for r in (ob.get("network") or []):
+        if not isinstance(r, dict):
+            continue
+        st = r.get("status")
+        if (isinstance(st, int) and not isinstance(st, bool) and st >= 500) or st in ("unhandled-exception", "page-crash"):
+            print("\t".join(["net", str(e["seq"]), sane(r.get("method")), sane(r.get("url")), str(st), ""]))
+    for r in (ob.get("console") or []):
+        if isinstance(r, dict) and r.get("level") == "error":
+            print("\t".join(["console", str(e["seq"]), "", "", "", sane(r.get("text"))[:200]]))
+' "$cur" "$n" 2>/dev/null)"
+  fi
+  [[ -z "$cands" ]] && return 0
+
+  local journaled=""
+  if [[ -s "$jf" ]]; then
+    if has_jq; then
+      journaled="$(grep '"finding_observed"' "$jf" 2>/dev/null | jq -r '
+        select(type == "object" and .event == "finding_observed")
+        | if .source == "console" then "console\t" + ((.message // "") | gsub("[ \t\n\r]+"; " ") | .[0:60])
+          else "net\t" + ((.url // "") | .[0:1024]) + "\t" + (.status | tostring) end' 2>/dev/null)"
+    else
+      journaled="$(grep '"finding_observed"' "$jf" 2>/dev/null | python3 -c '
+import json, re, sys
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(e, dict) or e.get("event") != "finding_observed":
+        continue
+    if e.get("source") == "console":
+        print("console\t" + re.sub(r"[ \t\n\r]+", " ", e.get("message") or "")[:60])
+    else:
+        st = e.get("status")
+        print("net\t" + (e.get("url") or "")[:1024] + "\t" + (json.dumps(st) if not isinstance(st, str) else st))
+' 2>/dev/null)"
+    fi
+  fi
+
+  local kind seq method url status text key cls age
+  while IFS=$'\t' read -r kind seq method url status text; do
+    [[ -z "$kind" ]] && continue
+    if [[ "$kind" == "net" ]]; then
+      key="net"$'\t'"${url:0:1024}"$'\t'"${status}"
+      printf '%s\n' "$journaled" | grep -qxF -- "$key" && continue
+      cls="$(bash "${ROOT}/scripts/classify-finding.sh" "$cfg_path" "$url" "$status" 2>/dev/null | tr '\n' ' ')"
+      [[ "$cls" == *"originClass=in-scope"* && "$cls" == *"statusClass=fatal"* ]] || continue
+    else
+      key="console"$'\t'"$(printf '%s' "$text" | tr -s ' \t' ' ' | cut -c1-60)"
+      printf '%s\n' "$journaled" | grep -qxF -- "$key" && continue
+    fi
+    age=$(( cur - seq ))
+    local crit
+    crit="$(open_criterion "$jf")"
+    [[ -z "$crit" ]] && crit="<criterion-id>"
+    if [[ "$kind" == "net" ]]; then
+      printf '%s' "Unjournaled finding: ${method} ${url} returned ${status} (captured at toolstream seq ${seq}, ${age} calls ago) and the journal has no finding_observed for it. qa-verify's ledger check fails the run at the end on exactly this gap, when it can no longer be fixed — journal it now: bash ${ROOT}/skills/checkpointing-qa-memory/scripts/journal.sh append ${run_id} '{\"event\":\"finding_observed\",\"criterionId\":\"${crit}\",\"source\":\"net\",\"channel\":\"toolstream\",\"method\":\"${method}\",\"url\":\"<the url, capped at 1024>\",\"status\":${status},\"originClass\":\"in-scope\",\"statusClass\":\"fatal\",\"message\":\"<one line>\",\"detailRef\":\"evidence/${crit}/findings/<name>.json\"}' (and log the bug)."
+    else
+      printf '%s' "Unjournaled finding: a console error (\"${text:0:120}\") was captured at toolstream seq ${seq} (${age} calls ago) and the journal has no finding_observed for it. qa-verify's ledger check fails the run at the end on exactly this gap — journal it now with journal.sh append ${run_id} '{\"event\":\"finding_observed\",\"criterionId\":\"${crit}\",\"source\":\"console\",\"channel\":\"toolstream\",\"method\":\"\",\"url\":\"\",\"status\":\"\",\"message\":\"<the console text>\",...}' (classify it with scripts/classify-finding.sh)."
+    fi
+    return 0
+  done <<< "$cands"
+  return 0
+}
+
+# open_criterion <journal> -> the criterionId of the most recent
+# criterion_started that has no criterion_verdict after it, else "".
+open_criterion() {
+  local jf="$1"
+  [[ -s "$jf" ]] || return 0
+  if has_jq; then
+    grep -E '"criterion_(started|verdict)"' "$jf" 2>/dev/null | jq -rs '
+      reduce .[] as $e (""; if $e.event == "criterion_started" then ($e.criterionId // "")
+        elif $e.event == "criterion_verdict" and ($e.criterionId // "") == . then "" else . end)' 2>/dev/null
+  else
+    grep -E '"criterion_(started|verdict)"' "$jf" 2>/dev/null | python3 -c '
+import json, sys
+cur = ""
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("event") == "criterion_started":
+        cur = e.get("criterionId") or ""
+    elif e.get("event") == "criterion_verdict" and (e.get("criterionId") or "") == cur:
+        cur = ""
+print(cur)
+' 2>/dev/null
+  fi
+}
+
 live_nudges() {
-  local run_id="$1" tool_name="$2" tool_input="$3" response="$4" observed="$5" config_json="$6"
+  local run_id="$1" tool_name="$2" tool_input="$3" response="$4" observed="$5" config_json="$6" cfg_path="${7:-}"
   local tsf="${QA_BASE}/${run_id}/toolstream.jsonl" out=""
 
   # (a) findings-channel canary
@@ -277,6 +430,11 @@ live_nudges() {
       fi
       ;;
   esac
+
+  # (d) unjournaled-finding reminder
+  local fn=""
+  [[ -n "$cfg_path" ]] && fn="$(finding_nudge "$run_id" "$config_json" "$cfg_path" 2>/dev/null)"
+  [[ -n "$fn" ]] && out="${out}${fn} "
 
   printf '%s' "${out% }"
 }
@@ -664,7 +822,7 @@ print(json.dumps(d, separators=(",", ":")))
   # that shows the problem, instead of letting qa-verify discover it after
   # the run. Advisory only — additionalContext never blocks the call. ---
   local nudge=""
-  nudge="$(live_nudges "$run_id" "$tool_name" "$tool_input" "$response_for_body" "$observed_json" "$config_json" 2>/dev/null)" || nudge=""
+  nudge="$(live_nudges "$run_id" "$tool_name" "$tool_input" "$response_for_body" "$observed_json" "$config_json" "$cfg_file" 2>/dev/null)" || nudge=""
   [[ -n "$nudge" ]] && emit_context "$nudge"
 
   return 0
