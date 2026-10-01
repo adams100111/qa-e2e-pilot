@@ -101,7 +101,7 @@ The enforcement strength actually achieved on a harness — how tamper-resistant
 _Avoid_: level, mode.
 
 **Persona identity**:
-The session's actually-observed identity for a **persona**, captured via `record-evidence.sh identity` (`evidence/<persona>/identity.json {persona, capturedSubject, method}`) and bound by **qa-verify** to every persona-scoped, high-stakes pass (recorded kinds include `human-action`, or the criterion is tagged `cross-tenant`/`cross-role-fk-chain`). A mismatch overrides the verdict to `fail` only when `.qa/config.json`'s `personas[].expectedSubject` supplies operator-configured ground truth for that persona; without it, an unverifiable or non-matching captured identity degrades **Confidence** to `low` instead of a false override — a persona id is a scoping label the agent supplies, never by itself proof of who acted.
+The session's actually-observed identity for a **persona**, captured via `record-evidence.sh identity` (`evidence/<persona>/identity.json {persona, capturedSubject, method}`) and bound by **qa-verify** to every persona-scoped, high-stakes pass (recorded kinds include `human-action`, or the criterion is tagged `cross-tenant`/`cross-role-fk-chain`). A mismatch overrides the verdict to `fail` only when `.qa/config.json`'s `personas[].expectedSubject` (or `expectedSubjects`, a list of subjects/globs for a persona that maps to several accounts) supplies operator-configured ground truth for that persona; without it, an unverifiable or non-matching captured identity degrades **Confidence** to `low` instead of a false override — a persona id is a scoping label the agent supplies, never by itself proof of who acted.
 _Avoid_: whoami (the probe technique, not the artifact/check), persona (the confirmed role being played — identity is what the session actually turned out to be, checked against it).
 
 **Clock advisory**:
@@ -157,7 +157,7 @@ A cooperative, best-effort precondition on a sub-state edge that `journal-emit.s
 _Avoid_: gate (reserve for the pass/honesty enforcement), cage (this is explicitly not one).
 
 **Phase surface**:
-The set of tool classes sanctioned during a given Run phase (`state-machine.json`'s `phaseToolSurface`), enforced **record-only** by **qa-verify**: it temporally correlates **Toolstream** calls against the journal's phase timeline and criteria's acting windows, flagging a call outside its sanctioned surface as a `confidence:low` finding — never a hard override of a verdict, never a live block.
+The set of tool classes sanctioned during a given Run phase (`state-machine.json`'s `phaseToolSurface`), enforced **record-only** by **qa-verify**: it temporally correlates **Toolstream** calls against the journal's phase timeline and criteria's acting windows, flagging a call outside its sanctioned surface as a `confidence:low` finding — never a hard override of a verdict, never a live block. A phase window ends implicitly at the next `phase_entered`; `plan_frozen`/`criterion_started` open Verify, during which a human-path click/type is sanctioned (ADR-0029).
 _Avoid_: sandbox, block (see **Block-hook**, a distinct, actually-blocking but phase-independent mechanism).
 
 **Illegal-edge**:
@@ -175,6 +175,10 @@ _Avoid_: notes, memory (unqualified — it is not the global agent memory).
 **Checkpoint**:
 The per-criterion resume record — phase, verdict, evidence refs, last action — written after every criterion so a Run survives context compaction and can skip completed criteria on resume.
 _Avoid_: snapshot, save.
+
+**Superseded row**:
+A persona-less (shared) **Checkpoint** row whose criterion later received a verdict under a persona — typically a `deferred` placeholder a resume replaced. The **Fold** moves it from `criteria[]` to `superseded[]`; reports and **qa-verify** count the latest authoritative verdict per criterion and say how many rows were superseded (ADR-0029). A persona-scoped row is never superseded.
+_Avoid_: duplicate (it is a recorded, explained replacement, not an accident), overwritten (the journal is append-only — nothing is overwritten).
 
 **Cursor**:
 The `cursor.json` artifact folded from the **Journal** — the Run-level resume position (current phase, criteria done/total, personas, scenarios, and the current `(scenario, criterion)` tuple). Distinct from **Checkpoint** (the per-criterion record) and from the agent-authored `run-manifest` (identity/status) — Cursor is *where* the Run currently stands, computed by **Fold**, never hand-maintained.
