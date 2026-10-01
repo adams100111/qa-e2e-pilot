@@ -1217,6 +1217,26 @@ cmd_upsert() {
     *) die "Invalid confidence '${confidence}'. Must be: high | low" ;;
   esac
 
+  # Record-time identity guard (0.11.0, ADR-0029) — BEFORE any gate runs and
+  # before anything is appended: a criterion-id with whitespace (a shell loop
+  # that joined several ids), an id outside the run's frozen plan, a persona
+  # the plan never named for this criterion, or a verdict whose identity
+  # differs from the criterion's open criterion_started is refused here,
+  # because none of them can be corrected once journaled. plan-guard.sh is
+  # the single implementation (journal-emit.sh started calls it too); a run
+  # with no plan keeps the legacy behaviour for rules 2-3.
+  local pg_script_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$pg_script_dir" == "${BASH_SOURCE[0]}" ]] && pg_script_dir="."
+  local pg_eng="python3"
+  has_jq && pg_eng="jq"
+  local pg_scenario="__shared__"
+  [[ -n "$persona" ]] && pg_scenario="$persona"
+  local pg_msg
+  if ! pg_msg="$(QA_BASE="$QA_BASE" QA_ENGINE="$pg_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" \
+        "$BASH" "${pg_script_dir}/plan-guard.sh" check "$run_id" "$crit_id" "$pg_scenario" "$persona" --for verdict 2>&1)"; then
+    die "${pg_msg}"
+  fi
+
   # A fail/error should carry a bug-log ref (the bug-log entry is where the suspected
   # layer FE|route|service|migration|DB lives). Not mandatory — that would break
   # characterization — but surface a visible nudge, mirroring the un-gated-pass NOTE.
