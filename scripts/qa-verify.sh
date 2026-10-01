@@ -1698,15 +1698,19 @@ for line in out:
 # observe_rows <run-id> -> stdout SIX LINES PER ROW, same framing as
 # driver_rows: kind("net"|"console"), method, url, status, text, type("").
 #
-# Channel 1, in-page interception. Reads each toolstream line's
-# `responseBody`; when that string itself parses as a JSON object carrying
-# `network[]` / `console[]` it is an __qaObserve payload, and when it parses
-# as a JSON ARRAY of request records it is a browser_network_requests
-# result. Anything else is ignored — including a responseBody truncated by
-# capture-hook.sh's 4000-byte cap, which simply fails to parse and
-# contributes nothing. That loss is the cap's documented, accepted cost
-# (spec §11.1) and it can only ever HIDE a required finding, never invent
-# one, so it degrades this check rather than breaking it.
+# Channel 1, in-page interception + the driver's request list, read from the
+# toolstream by `toolstream.sh observed-rows`. Each event contributes its
+# capture-time `observed` field (0.9.0: the capture hook unwraps the real
+# MCP content array — an observe round's "### Result" JSON, or
+# browser_network_requests' markdown list — from the FULL tool_response
+# before truncation). Pre-0.9.0 toolstreams have no `observed`, so the
+# reader falls back to the responseBody: the legacy raw shapes (an
+# __qaObserve object, a JSON array of request records) and the MCP-wrapped
+# shapes. A responseBody truncated by capture-hook.sh's 4000-byte cap
+# mid-wrapper still contributes nothing — that loss can only ever HIDE a
+# required finding, never invent one. Before 0.9.0 this reader parsed only
+# the raw shapes, which the real driver never emits, so the channel was
+# "none" on every real run.
 #
 # Only `level == "error"` console entries are emitted. observe.js buffers
 # `error` and `warn`; a warning is not an observed error, and invariant I1
@@ -1716,93 +1720,16 @@ observe_rows() {
   local f
   f="$(toolstream_file_for "$1")"
   [[ -f "$f" ]] || return 0
-  if has_jq; then
-    jq -R -r '
-      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
-      def istr($v): ($v | type) == "string" and ($v | length) > 0;
-      def inum($v): ($v | type) == "number" and ($v == ($v | floor))
-                    and $v > -1000000000000000 and $v < 1000000000000000;
-      def netrow: "net", (.method | sane), (.url | sane), (.status | floor | tostring), "", "";
-      def conrow: "console", "", "", "", (.text | sane), "";
-      (try fromjson catch null) as $o
-      | if ($o | type) != "object" then empty
-        else
-          ( if ($o.responseBody | type) == "string"
-            then ($o.responseBody | try fromjson catch null)
-            else null end ) as $b
-          | if ($b | type) == "object" then
-              ( ( if ($b.network | type) == "array" then $b.network[] else empty end )
-                | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow ),
-              ( ( if ($b.console | type) == "array" then $b.console[] else empty end )
-                | select((type) == "object") | select(.level == "error") | select(istr(.text)) | conrow )
-            elif ($b | type) == "array" then
-              ( $b[] | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow )
-            else empty end
-        end
-    ' "$f" 2>/dev/null || true
-  else
-    python3 -c '
-import json, sys
-
-def sane(v):
-    if not isinstance(v, str):
-        return ""
-    return v.replace("\n", " ").replace("\r", " ")
-
-def istr(v):
-    return isinstance(v, str) and len(v) > 0
-
-def fnum(v):
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return False
-    return v == int(v) and -1000000000000000 < v < 1000000000000000
-
-out = []
-
-def netrow(e):
-    out.extend(["net", sane(e.get("method")), sane(e.get("url")), str(int(e["status"])), "", ""])
-
-def conrow(e):
-    out.extend(["console", "", "", "", sane(e.get("text")), ""])
-
-with open(sys.argv[1]) as fh:
-    for line in fh:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            o = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(o, dict):
-            continue
-        rb = o.get("responseBody")
-        b = None
-        if isinstance(rb, str):
-            try:
-                b = json.loads(rb)
-            except Exception:
-                b = None
-        if isinstance(b, dict):
-            net = b.get("network")
-            if isinstance(net, list):
-                for e in net:
-                    if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
-                        netrow(e)
-            con = b.get("console")
-            if isinstance(con, list):
-                for e in con:
-                    if isinstance(e, dict) and e.get("level") == "error" and istr(e.get("text")):
-                        conrow(e)
-        elif isinstance(b, list):
-            for e in b:
-                if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
-                    netrow(e)
-
-for line in out:
-    print(line)
-' "$f" 2>/dev/null || true
-  fi
+  # 0.9.0 (ADR-0027): one shared reader in toolstream.sh, so the capture
+  # hook's extraction and this channel can never drift. It reads each
+  # event's capture-time `observed` field first, then the legacy raw shapes,
+  # then — for pre-0.9.0 toolstreams — the real MCP content-array
+  # responseBody (an observe round's "### Result" JSON, or
+  # browser_network_requests' "[GET] url => [200]" list). The engine this
+  # script resolved is forced on the reader so both stay on one engine.
+  local eng="python3"
+  has_jq && eng="jq"
+  QA_ENGINE="$eng" bash "$TOOLSTREAM_SH" observed-rows "$f" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

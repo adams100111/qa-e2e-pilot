@@ -1,0 +1,1 @@
+[{"type":"text","text":"### Result\n\"Dashboard English | العربية Registration Open\"\n### Ran Playwright code\n```js\nawait page.evaluate('() => window.__qaObserve({digestSelector: \\'body\\'}).domDigest.liveText');\n```"}]

@@ -1109,6 +1109,50 @@ for ENGINE in jq python3; do
 done
 
 # ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — the findings channel against the REAL Playwright MCP
+# response shapes. Every fixture above fabricates a responseBody that IS the
+# raw observe object; the real driver wraps it in an MCP content array (and
+# the 4000-byte cap cuts that wrapper mid-string), and answers
+# browser_network_requests with a markdown list. On a real run (2026-10-01)
+# that left findingsChannel "none" although observe.js ran verbatim.
+#   realmcp      a pre-0.9.0 toolstream excerpt (no `observed`) holding an
+#                in-scope 500 in the request list that the journal omits
+#                -> channel toolstream, ledger INCOMPLETE (a real finding).
+#   realmcpok    the same, with the 500 journaled -> ledger complete.
+#   observedfld  a 0.9.0 event whose capture-time `observed` field carries a
+#                console error the journal omits -> ledger incomplete.
+# ---------------------------------------------------------------------------
+RMCP="$HERE/fixtures/real-mcp-legacy.toolstream.jsonl"
+for R in realmcp realmcpok; do
+  while IFS= read -r L; do ( cd "$WORK2" && bash "$TOOLSTREAM" append "$R" "$L" >/dev/null ); done < "$RMCP"
+  jr_append "$WORK2" "$R" '{"event":"run_started"}'
+done
+jr_append "$WORK2" realmcpok '{"event":"finding_observed","criterionId":"EC20","source":"network","channel":"toolstream","method":"GET","url":"https://app.test/api/v1/superset/data/hackathon-dashboard-data?hackathon_id=91&path_id=-1&stage_id=-1","status":500,"originClass":"in-scope","statusClass":"fatal","message":"dashboard data 500"}'
+mk_ckpt "$WORK2" realmcp EC20
+mk_ckpt "$WORK2" realmcpok EC20
+OBSFLD="$(QA_ENGINE=jq bash "$TOOLSTREAM" extract-observed "${MCP}__browser_evaluate" < "$HERE/../toolstream/fixtures/mcp-observe-round.response.json")"
+( cd "$WORK2" && bash "$TOOLSTREAM" append observedfld "{\"tool\":\"${MCP}__browser_evaluate\",\"args\":{},\"resultDigest\":{\"len\":0,\"sha256\":\"x\"},\"responseBody\":\"[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"### Result (cut\",\"observed\":${OBSFLD}}" >/dev/null )
+jr_append "$WORK2" observedfld '{"event":"run_started"}'
+mk_ckpt "$WORK2" observedfld EC21
+for ENGINE in jq python3; do
+  run_qv2 "$WORK2" "$ENGINE" realmcp >/dev/null 2>&1
+  check "[$ENGINE] realmcp: real MCP shapes -> findingsChannel toolstream (was none)" \
+    "$(rc_field "$(vf2 realmcp)" '.runChecks.findingsChannel')" "toolstream"
+  check "[$ENGINE] realmcp: the unjournaled in-scope 500 makes the ledger incomplete" \
+    "$(rc_field "$(vf2 realmcp)" '.runChecks.ledgerComplete')" "false"
+  check "[$ENGINE] realmcp: the reason names the 500" \
+    "$(rc_field "$(vf2 realmcp)" '[.reasons[] | select(test("hackathon-dashboard-data.*status=500"))] | length')" "1"
+  run_qv2 "$WORK2" "$ENGINE" realmcpok >/dev/null 2>&1
+  check "[$ENGINE] realmcpok: the journaled 500 completes the ledger" \
+    "$(rc_field "$(vf2 realmcpok)" '.runChecks.ledgerComplete')" "true"
+  run_qv2 "$WORK2" "$ENGINE" observedfld >/dev/null 2>&1
+  check "[$ENGINE] observedfld: the observed field is a findings channel" \
+    "$(rc_field "$(vf2 observedfld)" '.runChecks.findingsChannel')" "toolstream"
+  check "[$ENGINE] observedfld: its unjournaled console error is a ledger miss" \
+    "$(rc_field "$(vf2 observedfld)" '[.reasons[] | select(test("console error.*Cannot read properties"))] | length')" "1"
+done
+
+# ---------------------------------------------------------------------------
 # FAIL-CLOSED CLASSIFIER. classify-finding.sh is resolved by a path relative
 # to qa-verify.sh's own location, so it is poisoned the same way this suite
 # already poisons required-kinds.sh: in a COPY of the scripts/+skills/ tree.
