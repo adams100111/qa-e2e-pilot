@@ -1374,8 +1374,11 @@ process_criterion() {
   # (allowApiWrites + a disposable marker + environment != production —
   # never production). Anything else is an OVERRIDE: the api-write tag never
   # removes the proof of the act, it only changes which evidence carries it.
+  # A pass that ALSO recorded (and passed) human-action evidence proved its
+  # act through the UI — the stronger path — so the backstop does not apply.
   if [[ -n "$row" ]] && row_has_tag "$row" "api-write" \
-     && [[ ",${required_csv}," == *,probe,* && ",${required_csv}," != *,human-action,* ]]; then
+     && [[ ",${required_csv}," == *,probe,* && ",${required_csv}," != *,human-action,* ]] \
+     && [[ ",${kinds_csv}," != *,human-action,* ]]; then
     local aw_rel aw_full aw_out
     if [[ -n "$persona" ]]; then aw_rel="evidence/${persona}/${crit_id}/network-response.json"; else aw_rel="evidence/${crit_id}/network-response.json"; fi
     aw_full="$(run_dir "$run_id")/${aw_rel}"

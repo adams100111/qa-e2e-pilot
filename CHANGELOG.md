@@ -31,11 +31,11 @@ recurred although the second agent was told to avoid it. See
   artifacts recorded by 0.8.1 stay verifiable. A well-formed pointer that dangles is still
   `unbound`.
 - **Read-only criteria are classified from their structure.** `mutation-flag.sh` now decides
-  from the row's structured fields first. `kinds` containing `human-action`, a mutating
-  `httpMethod`, and `humanAction: true` always mean mutating. Next, an explicit
-  `"mutates": true|false` or the `read-only` tag decides. Prose verbs are only a fallback, and
-  that fallback ignores negated clauses ("Do NOT submit"), URL paths (`/hackathons/create`) and
-  the bare noun "set". The six real false positives — "compare rows as a **set**", "**edit**
+  from the row's structured fields first. `kinds` containing `human-action` and a mutating
+  `httpMethod` always mean mutating. Next, an explicit `"mutates": true|false` or the `read-only`
+  tag decides, then `humanAction: true`. Prose verbs are only a fallback, and that fallback
+  ignores negated clauses ("Do NOT submit"), URL paths (`/hackathons/create`) and the bare noun
+  "set". The six real false positives — "compare rows as a **set**", "**edit**
   form", "**change** marker", a quoted "**Edit** my registration" button — no longer demand
   `human-action` evidence. `validate-checklist-json.sh` validates `mutates` and rejects
   `mutates: false` beside a human-action requirement.
@@ -93,6 +93,9 @@ recurred although the second agent was told to avoid it. See
   journaled. Such a run fails ledger completeness instead of reading `findingsChannel: "none"`.
 - A read-only row should be tagged `read-only` (or carry `"mutates": false`). Prose alone still
   classifies as before, minus negations, paths and the noun "set".
+- `humanAction: true` on a row that is not tagged `read-only` now requires the `human-action`
+  trace, even when the prose verb ("withdraw", "remind", "advance") is not one the classifier
+  knows. 0.8.1 ignored the field, and passes for such rows were accepted without the trace.
 - A JSON-quoted `method` key in an evaluate payload is now a write. Only the sanctioned probe
   shape is admitted, and only on a disposable env.
 

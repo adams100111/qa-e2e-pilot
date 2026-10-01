@@ -235,16 +235,19 @@ Default everything sequential. Tag `independent` or `read-only` conservatively �
 
 Whether a criterion mutates (and so must carry `human-action`) is decided by the
 gate's `mutation-flag.sh` from the row's **structured fields before its prose**:
-`humanAction: true`, a mutating `httpMethod`, or `requiredKinds`/`kinds` containing
-`human-action` always mean mutating; otherwise an explicit `"mutates": true|false`
-or the `read-only` tag decides; only a row that declares nothing falls back to
-matching verbs in its `action` text (negated clauses like "Do NOT submit" and URL
-paths are ignored there). So for every read-only criterion, **tag it `read-only`
-and set `"humanAction": false`** (add `"mutates": false` when the row is not
-`read-only` but still performs no write, e.g. it opens a form and reads it) —
-incidental words in the instruction ("compare as a set", "the change marker", a
-quoted "Edit" button label) then cannot turn it into a human-action criterion.
-`mutates: false` beside `humanAction: true` is rejected by the validator.
+a mutating `httpMethod` or `kinds` containing `human-action` always mean mutating;
+then an explicit `"mutates": true|false` or the `read-only` tag decides; then
+`"humanAction": true` means mutating; only a row that declares none of these falls
+back to matching verbs in its `action` text (negated clauses like "Do NOT submit"
+and URL paths are ignored there). So **tag every read-only criterion `read-only`**
+(add `"mutates": false` when the row is not `read-only` but still performs no
+write, e.g. it opens a form and reads it) — incidental words in the instruction
+("compare as a set", "the change marker", a quoted "Edit" button label) then
+cannot turn it into a human-action criterion — and **set `"humanAction": true` on
+every row whose act writes**, whatever verb its prose uses ("withdraw", "remind",
+"advance" are not in the prose verb list; `humanAction: true` makes the gate
+require the `human-action` trace for them). `mutates: false` beside
+`humanAction: true` is rejected by the validator.
 
 **Setting `probe-needed` (generation-time rule, mechanical)**
 

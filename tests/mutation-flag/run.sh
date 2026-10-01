@@ -220,12 +220,17 @@ while IFS= read -r line; do
   derive_both "real-run fixture ${rid} classifies ${want}" "$(jq -c '.row' <<< "$line")" "$want"
 done < "$FIX"
 
-derive_both "rule 4: mutates:false overrides a prose verb" '{"action":"Click Save to create the record","mutates":false}' "false"
-derive_both "rule 4: mutates:true forces true on read prose" '{"action":"View the dashboard","mutates":true}' "true"
-derive_both "rule 3: humanAction:true outranks the read-only tag" '{"action":"view","tags":["read-only"],"humanAction":true}' "true"
+derive_both "rule 3: mutates:false overrides a prose verb" '{"action":"Click Save to create the record","mutates":false}' "false"
+derive_both "rule 3: mutates:true forces true on read prose" '{"action":"View the dashboard","mutates":true}' "true"
 derive_both "rule 1: kinds human-action outranks mutates:false" '{"kinds":["human-action"],"mutates":false}' "true"
 derive_both "rule 2: httpMethod POST outranks the read-only tag" '{"httpMethod":"POST","tags":["read-only"]}' "true"
-derive_both "rule 5: read-only tag suppresses a prose verb" '{"action":"Open the edit form and read it","tags":["read-only"]}' "false"
+derive_both "rule 4: read-only tag suppresses a prose verb" '{"action":"Open the edit form and read it","tags":["read-only"]}' "false"
+# run desk-group-scope DG10/DG11/DG26/DG27/DG31: tagged read-only AND
+# human-action with humanAction:true — they drive a control (a switcher, a
+# search box) and write nothing. 0.8.1 ignored humanAction and passed them on
+# computed evidence; the read-only tag keeps it that way.
+derive_both "rule 4: read-only outranks humanAction:true (drives a control, writes nothing)" '{"action":"Open the switcher and type in its search box","tags":["read-only","human-action"],"humanAction":true}' "false"
+derive_both "rule 5: humanAction:true on a row that is not read-only -> true" '{"action":"view the page","humanAction":true}' "true"
 derive_both "prose: negated clause is ignored" '{"action":"Fill the form but do not submit it"}' "false"
 derive_both "prose: 'without saving' is ignored" '{"action":"Close the dialog without saving changes"}' "false"
 derive_both "prose: the clause after the negation still counts" '{"action":"Do not refresh; submit the form"}' "true"

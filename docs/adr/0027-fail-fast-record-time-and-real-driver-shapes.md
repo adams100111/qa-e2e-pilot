@@ -66,11 +66,14 @@ authoritative; anything else falls back to containment, exactly as if it were ab
 well-formed pointer that dangles stays `unbound`. This is never weaker than omission, and keeps
 artifacts recorded by ≤0.8.1 verifiable.
 
-**C. Structured classification first.** `mutation-flag.sh` precedence: `kinds ∋ human-action`,
-mutating `httpMethod`, `humanAction: true` → mutating (never overridable); then an explicit
-`mutates: true|false` or the `read-only` tag; only then prose — lowercased, with negated clauses
-and URL/path tokens removed, `set` only as "set X to|on|off", plus an uppercase
-`POST|PUT|PATCH|DELETE`. The declaration lives on the human-reviewed frozen plan row, the trust
+**C. Structured classification first.** `mutation-flag.sh` precedence: `kinds ∋ human-action`
+and a mutating `httpMethod` → mutating (never overridable); then an explicit `mutates: true|false`
+or the `read-only` tag; then `humanAction: true` → mutating; only then prose — lowercased, with
+negated clauses and URL/path tokens removed, `set` only as "set X to|on|off", plus an uppercase
+`POST|PUT|PATCH|DELETE`. `read-only` outranks `humanAction: true` because rows that only *drive*
+a control (a switcher, a search box) carry both and write nothing (0.8.1 ignored `humanAction`);
+on any other row `humanAction: true` now requires the trace even when the prose verb ("withdraw",
+"remind", "advance") is not in the list — a strengthening. The declaration lives on the human-reviewed frozen plan row, the trust
 boundary the `read-only` tag's bake suppression already sat on; nothing the run's agent writes
 during verification is consulted. `validate-checklist-json.sh` rejects `mutates: false` beside a
 human-action requirement.

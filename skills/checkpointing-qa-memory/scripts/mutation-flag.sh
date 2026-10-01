@@ -8,12 +8,12 @@
 # (0.9.0, after two real runs lost six read-only criteria to incidental words
 # — "compare rows as a set", "Do NOT submit", "the change marker", a quoted
 # "Edit my registration" label):
-#   - structured POSITIVE signals always win and can never be overridden:
-#     `kinds` containing "human-action", a mutating `httpMethod`, and
-#     `humanAction: true`;
+#   - structured WRITE signals always win and can never be overridden:
+#     `kinds` containing "human-action" and a mutating `httpMethod`;
 #   - then an EXPLICIT plan-level declaration decides: `mutates: true|false`,
 #     or the `read-only` tag (the tag the checklist schema already defines as
 #     "no write to backend", which already suppresses `bake`);
+#   - then `humanAction: true` (a row that is not read-only);
 #   - only when the row declares nothing does the mutating-verb match on its
 #     `action`/`title` text decide — with negated clauses ("do not submit",
 #     "without saving") and URL/path tokens ("/hackathons/create") removed,
@@ -40,9 +40,9 @@
 #            (wins even when the action/title text is a read verb.)
 #         2. `httpMethod` (case-insensitive) is one of
 #            POST | PUT | PATCH | DELETE                            -> true
-#         3. `humanAction` is the boolean true                      -> true
-#         4. `mutates` is a boolean                                 -> its value
-#         5. `tags` contains "read-only"                            -> false
+#         3. `mutates` is a boolean                                 -> its value
+#         4. `tags` contains "read-only"                            -> false
+#         5. `humanAction` is the boolean true                      -> true
 #         6. `action` or `title` — after lowercasing, removing negated
 #            clauses (do not / don't / does not / must not / should not /
 #            never / without ... up to the next , ; : . ! ?) and every
@@ -218,21 +218,24 @@ derive() {
     return 0
   fi
 
-  # Rule 3: the row's structured humanAction:true.
-  if [[ "$human_action" == "true" ]]; then
-    echo true
-    return 0
-  fi
-
-  # Rule 4: an explicit plan-level `mutates` declaration.
+  # Rule 3: an explicit plan-level `mutates` declaration.
   if [[ "$declared" == "true" || "$declared" == "false" ]]; then
     echo "$declared"
     return 0
   fi
 
-  # Rule 5: the `read-only` tag ("no write to backend").
+  # Rule 4: the `read-only` tag ("no write to backend"). It outranks
+  # humanAction:true: a row tagged read-only that only DRIVES a control
+  # (open a switcher, type into a search box) writes nothing, and the gate
+  # never required a human-action trace for it (0.8.1 ignored humanAction).
   if [[ ",${tags_csv}," == *,read-only,* ]]; then
     echo false
+    return 0
+  fi
+
+  # Rule 5: the row's structured humanAction:true.
+  if [[ "$human_action" == "true" ]]; then
+    echo true
     return 0
   fi
 
