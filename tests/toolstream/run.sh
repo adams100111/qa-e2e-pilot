@@ -158,4 +158,53 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   done
 fi
 
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — extract-observed / observed-rows against the REAL
+# Playwright MCP response shapes (content array + "### Result" markdown; a
+# markdown request list), sanitized from a 2026-10-01 run whose findings
+# channel read "none" although observe.js was injected verbatim. Every case
+# runs under jq AND python3 and the two must agree byte-for-byte.
+# ---------------------------------------------------------------------------
+FX="$HERE/fixtures"
+MCPP="mcp__plugin_playwright_playwright__"
+for ENG in jq python3; do
+  ex() { QA_ENGINE="$ENG" bash "$T" extract-observed "$1" < "$FX/$2"; }
+  O="$(ex "${MCPP}browser_evaluate" mcp-observe-round.response.json)"
+  check "[$ENG] observe round (14KB, over the 4KB body cap) -> source observe" "$(jq -r '.source' <<< "$O")" "observe"
+  check "[$ENG] observe round -> the console error survives" "$(jq -r '.console[0].text' <<< "$O")" "TypeError: Cannot read properties of undefined (reading 'map')"
+  check "[$ENG] observe round -> the network row survives" "$(jq -c '.network[0]' <<< "$O")" '{"method":"POST","url":"https://app.test/hackathons/88/registrations/438","status":422}'
+  check "[$ENG] observe round -> the bulky domDigest is NOT stored" "$(jq -r 'has("domDigest")' <<< "$O")" "false"
+  N="$(ex "${MCPP}browser_network_requests" mcp-network-requests.response.json)"
+  check "[$ENG] network list -> source network-requests" "$(jq -r '.source' <<< "$N")" "network-requests"
+  check "[$ENG] network list -> 5 rows parsed" "$(jq '.network | length' <<< "$N")" "5"
+  check "[$ENG] network list -> the 500 is first (non-2xx first)" "$(jq -c '.network[0] | [.method, .status]' <<< "$N")" '["GET",500]'
+  check "[$ENG] network list -> the Note line is not a row" "$(jq '[.network[] | select(.url | test("static"))] | length' <<< "$N")" "0"
+  check "[$ENG] a projection (.domDigest.liveText) yields nothing" "$(ex "${MCPP}browser_evaluate" mcp-observe-projection.response.json)" ""
+  check "[$ENG] a navigate response yields nothing" "$(ex "${MCPP}browser_navigate" mcp-navigate.response.json)" ""
+  check "[$ENG] garbage on stdin yields nothing, exit 0" "$(printf 'not json' | QA_ENGINE="$ENG" bash "$T" extract-observed "${MCPP}browser_evaluate"; echo "rc=$?")" "rc=0"
+done
+for f in mcp-observe-round.response.json mcp-network-requests.response.json; do
+  tool="${MCPP}browser_evaluate"; [[ "$f" == mcp-network* ]] && tool="${MCPP}browser_network_requests"
+  check "extract-observed: engines agree on $f" \
+    "$(QA_ENGINE=jq bash "$T" extract-observed "$tool" < "$FX/$f")" "$(QA_ENGINE=python3 bash "$T" extract-observed "$tool" < "$FX/$f")"
+done
+# observed-rows on a PRE-0.9.0 toolstream (no `observed`; responseBody is the
+# content array truncated at 4000 bytes, exactly as recorded): the request
+# list is intact and recovered; the observe round was cut mid-wrapper and
+# honestly contributes nothing.
+LEG="$HERE/../qa-verify/fixtures/real-mcp-legacy.toolstream.jsonl"
+R_JQ="$(QA_ENGINE=jq bash "$T" observed-rows "$LEG")"
+R_PY="$(QA_ENGINE=python3 bash "$T" observed-rows "$LEG")"
+check "observed-rows (legacy): engines agree byte-for-byte" "$R_JQ" "$R_PY"
+check "observed-rows (legacy): 5 network rows recovered from the request list" "$(printf '%s\n' "$R_JQ" | grep -c '^net$')" "5"
+contains "observed-rows (legacy): the in-scope 500 is visible" "$(printf '%s\n' "$R_JQ" | paste - - - - - - )" "superset/data/hackathon-dashboard-data?hackathon_id=91&path_id=-1&stage_id=-1	500"
+check "observed-rows (legacy): the truncated observe round adds no console row" "$(printf '%s\n' "$R_JQ" | grep -c '^console$')" "0"
+# ...and on a 0.9.0 event carrying `observed`, that field is what is read.
+printf '%s\n' "{\"tool\":\"${MCPP}browser_evaluate\",\"args\":{},\"responseBody\":\"[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"### Result\\\\n{\\\\n  \\\\\\\"round\\\\\\\": 1, TRUNCATED\",\"observed\":$(QA_ENGINE=jq bash "$T" extract-observed "${MCPP}browser_evaluate" < "$FX/mcp-observe-round.response.json"),\"seq\":1,\"ts\":\"2026-10-01T00:00:00Z\"}" > "$WORK/obs.jsonl"
+for ENG in jq python3; do
+  ROWS="$(QA_ENGINE="$ENG" bash "$T" observed-rows "$WORK/obs.jsonl" | paste - - - - - -)"
+  contains "[$ENG] observed-rows (0.9.0 event): console error row from the observed field" "$ROWS" "console				TypeError: Cannot read properties"
+  contains "[$ENG] observed-rows (0.9.0 event): network row from the observed field" "$ROWS" "net	POST	https://app.test/hackathons/88/registrations/438	422"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

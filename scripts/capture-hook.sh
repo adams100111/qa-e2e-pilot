@@ -56,6 +56,15 @@
 # Every code path below falls through to the trailing `exit 0` — it is
 # unconditional, not merely the happy-path tail.
 #
+# OBSERVED + LIVE SELF-CHECKS (0.9.0, ADR-0027): for browser_evaluate and
+# browser_network_requests the event also carries `observed` — the findings
+# unwrapped from the FULL MCP response by `toolstream.sh extract-observed`
+# (see that file for the root cause it closes). After appending, the hook may
+# print ONE PostToolUse `additionalContext` JSON on stdout (findings-channel
+# canary, load-window reminder after a navigate, a one-time --save-session
+# probe — see live_nudges below). That output is advisory: it never blocks
+# the call, and the exit code stays 0.
+#
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred; python3
 # fallback — QA_ENGINE honored, same as toolstream.sh). No node.
 #
@@ -173,6 +182,115 @@ detect_clock_advisory() {
       ;;
   esac
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Live self-checks (0.9.0, ADR-0027). Each returns a one-paragraph message on
+# stdout (or nothing). All are best-effort and read-only.
+#
+#   (a) findings-channel canary — an observe round (an evaluate naming
+#       __qaObserve) or a browser_network_requests call whose response yielded
+#       no `observed` findings, while no earlier event in this run's
+#       toolstream carries one: the run's findings channel is not being
+#       captured and qa-verify would report findingsChannel "none"
+#       (UNVERIFIED). Silent once the channel has been proven once.
+#   (b) load-window reminder — after every browser_navigate: the next browser
+#       call must be browser_network_requests (block-hook.sh denies the next
+#       navigate otherwise; qa-verify fails the run on the gap).
+#   (c) save-session probe — at the run's 3rd captured browser call, when
+#       humanInteraction.saveSession is not false and no session log under
+#       humanInteraction.sessionLogDir (default .playwright-mcp) changed in
+#       the last 10 minutes: the Playwright MCP is not running with
+#       --save-session, so Check 0 will be unavailable for every human-action
+#       pass. Said once, early, with how to enable it.
+# ---------------------------------------------------------------------------
+cfg_get() { # cfg_get <config-json> <jq-path> -> string (python3 fallback)
+  if has_jq; then
+    # not `// empty`: jq's alternative operator would swallow an explicit false
+    jq -r "($2) as \$v | if \$v == null then empty else (\$v | tostring) end" <<< "$1" 2>/dev/null
+  elif has_py; then
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    d = {}
+cur = d
+for k in sys.argv[1].split("."):
+    if not k:
+        continue
+    cur = cur.get(k) if isinstance(cur, dict) else None
+if cur is None:
+    print("")
+elif isinstance(cur, bool):
+    print("true" if cur else "false")
+else:
+    print(cur)
+' "${2#.}" <<< "$1" 2>/dev/null
+  fi
+}
+
+live_nudges() {
+  local run_id="$1" tool_name="$2" tool_input="$3" response="$4" observed="$5" config_json="$6"
+  local tsf="${QA_BASE}/${run_id}/toolstream.jsonl" out=""
+
+  # (a) findings-channel canary
+  local is_observe=0
+  case "$tool_name" in
+    *browser_evaluate) [[ "$tool_input" == *__qaObserve* ]] && is_observe=1 ;;
+    *browser_network_requests) is_observe=2 ;;
+  esac
+  if [[ "$is_observe" -ne 0 && -z "$observed" ]] && ! grep -q '"observed":' "$tsf" 2>/dev/null; then
+    if [[ "$is_observe" -eq 1 ]]; then
+      out="${out}qa-e2e-pilot findings-channel check FAILED on this observe round: its result carried no console[]/network[] arrays, so nothing was captured for qa-verify (it will report findingsChannel \"none\" and mark the run UNVERIFIED). Return the FULL __qaObserve({...}) object — not a projection such as .domDigest.liveText — and pass observe.js verbatim. "
+    else
+      out="${out}qa-e2e-pilot findings-channel check FAILED: this browser_network_requests result could not be parsed into request rows (expected lines like \"[GET] https://... => [200]\"), so the driver channel is not being captured. Report this; qa-verify will degrade the run. "
+    fi
+  fi
+
+  # (b) load-window reminder
+  case "$tool_name" in
+    *browser_navigate)
+      out="${out}Load-window rule: call browser_network_requests before any other navigation — the document request (where a navigation-time 5xx lives) is only visible there. The next browser_navigate is denied until you do, and an uncovered navigation fails __run-checks__. "
+      ;;
+  esac
+
+  # (c) save-session probe, once, at the 3rd captured browser call
+  case "$tool_name" in
+    *browser_*)
+      local save_session n_browser log_dir recent=""
+      save_session="$(cfg_get "$config_json" '.humanInteraction.saveSession')"
+      if [[ "$save_session" != "false" ]]; then
+        n_browser="$(grep -c '"tool":"mcp__[^"]*browser_' "$tsf" 2>/dev/null || echo 0)"
+        if [[ "$n_browser" == "3" ]]; then
+          log_dir="$(cfg_get "$config_json" '.humanInteraction.sessionLogDir')"
+          [[ -z "$log_dir" ]] && log_dir=".playwright-mcp"
+          if [[ -n "${QA_SESSION_LOG:-}" && -s "${QA_SESSION_LOG}" ]]; then
+            recent="yes"
+          elif [[ -d "$log_dir" ]]; then
+            recent="$(find "$log_dir" -name '*.md' -mmin -10 2>/dev/null | head -1)"
+          fi
+          if [[ -z "$recent" ]]; then
+            out="${out}Independent action log unavailable: no Playwright MCP session log under ${log_dir}/ was written during this run, so the Playwright MCP is not running with --save-session and Check 0 (independent reconciliation of every human-action act) will be unavailable — human-action passes keep only the act lint + fingerprints. To enable it, restart the harness with PLAYWRIGHT_MCP_SAVE_SESSION=true PLAYWRIGHT_MCP_OUTPUT_DIR=${log_dir} in its environment (or add \"--save-session\", \"--output-dir\", \"${log_dir}\" to a Playwright MCP server you configure); to accept the degrade, set humanInteraction.saveSession:false in .qa/config.json. "
+          fi
+        fi
+      fi
+      ;;
+  esac
+
+  printf '%s' "${out% }"
+}
+
+# emit_context <text> — the Claude PostToolUse channel for telling the model
+# something: {"hookSpecificOutput":{"hookEventName":"PostToolUse",
+# "additionalContext":...}} on stdout, exit 0 (never blocks the call).
+emit_context() {
+  local text="$1"
+  if has_jq; then
+    jq -cn --arg t "$text" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $t}}' 2>/dev/null
+  elif has_py; then
+    python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": sys.argv[1]}}))' "$text" 2>/dev/null
+  fi
 }
 
 main() {
@@ -373,6 +491,19 @@ sys.stdout.write(body)
     fi
   fi
 
+  # --- observed findings (0.9.0, ADR-0027): the observe round's
+  # console[]/network[] and browser_network_requests' request list, unwrapped
+  # from the real MCP content array of the FULL response (before the cap
+  # below can cut the wrapper mid-string) into a compact `observed` field.
+  # Shared extractor: toolstream.sh extract-observed — the same library
+  # qa-verify's findings channel reads with. Best-effort: empty on failure. ---
+  local observed_json=""
+  case "$tool_name" in
+    *browser_evaluate|*browser_network_requests)
+      observed_json="$(printf '%s' "$response_for_body" | bash "$TOOLSTREAM" extract-observed "$tool_name" 2>/dev/null)" || observed_json=""
+      ;;
+  esac
+
   local truncated_response
   truncated_response="$(printf '%s' "$response_for_body" | head -c "$RESPONSE_BODY_CAP")"
 
@@ -419,8 +550,10 @@ sys.stdout.write(body)
       --arg hash "$resp_hash" \
       --argjson body "$response_body_json" \
       --arg advisory "$advisory" \
+      --arg observed "$observed_json" \
       '{tool: $tool, args: $args, resultDigest: {len: $len, sha256: $hash}, responseBody: $body}
-       + (if $advisory != "" then {advisory: $advisory} else {} end)' \
+       + (if $advisory != "" then {advisory: $advisory} else {} end)
+       + (if $observed != "" then {observed: ($observed | fromjson)} else {} end)' \
       2>/dev/null)"
   elif has_py; then
     event_json="$(python3 -c '
@@ -431,16 +564,26 @@ length = int(sys.argv[3])
 h = sys.argv[4]
 body = json.loads(sys.argv[5])
 advisory = sys.argv[6] if len(sys.argv) > 6 else ""
+observed = sys.argv[7] if len(sys.argv) > 7 else ""
 d = {"tool": tool, "args": args, "resultDigest": {"len": length, "sha256": h}, "responseBody": body}
 if advisory:
     d["advisory"] = advisory
+if observed:
+    d["observed"] = json.loads(observed)
 print(json.dumps(d, separators=(",", ":")))
-' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" "$advisory" 2>/dev/null)"
+' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" "$advisory" "$observed_json" 2>/dev/null)"
   fi
   [[ -z "$event_json" ]] && { warn "failed to build event JSON, no-op"; return 0; }
 
   bash "$TOOLSTREAM" append "$run_id" "$event_json" 2>/dev/null \
     || warn "toolstream append failed for run '${run_id}'"
+
+  # --- live self-checks (0.9.0, ADR-0027): tell the agent NOW, at the call
+  # that shows the problem, instead of letting qa-verify discover it after
+  # the run. Advisory only — additionalContext never blocks the call. ---
+  local nudge=""
+  nudge="$(live_nudges "$run_id" "$tool_name" "$tool_input" "$response_for_body" "$observed_json" "$config_json" 2>/dev/null)" || nudge=""
+  [[ -n "$nudge" ]] && emit_context "$nudge"
 
   return 0
 }

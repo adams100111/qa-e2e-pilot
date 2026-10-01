@@ -16,12 +16,22 @@
 #       §5.4) — OPTIONAL. The agent's claim of WHICH captured toolstream call
 #       (scripts/toolstream.sh's .qa/runs/<run>/toolstream.jsonl) produced this
 #       evidence, e.g. "seq:7" (or bare "7") referencing that event's `seq`.
-#       Recorded verbatim as `provenance: {sourceRef, boundAt}` (boundAt stamped
-#       here). scripts/provenance.sh's `check` resolves it against the real
-#       toolstream — a dangling/fabricated sourceRef resolves to "unbound" (a
-#       forgery signal), it is NOT taken on faith. BACK-COMPAT: omitting
-#       --source-ref produces EXACTLY today's artifact shape (no `provenance` key
-#       at all) — scripts/provenance.sh then falls back to containment instead.
+#       Recorded as `provenance: {sourceRef, boundAt}` (boundAt stamped here;
+#       a bare "7" is normalized to "seq:7"). scripts/provenance.sh's `check`
+#       resolves it against the real toolstream — a dangling/fabricated
+#       sourceRef resolves to "unbound" (a forgery signal), it is NOT taken on
+#       faith. VALIDATED AT RECORD TIME (0.9.0): anything that is not
+#       `seq:<N>`/`<N>` (a description such as "tinker:Model::find(1)") is
+#       REFUSED, and so is a seq that names no event in an existing
+#       toolstream — exit 1, nothing written, a message saying what to pass.
+#       Omitting --source-ref produces no `provenance` key at all —
+#       scripts/provenance.sh then binds by containment instead.
+#     --session-calls (action-trace) is VALIDATED AT RECORD TIME (0.9.0): it
+#       must be a non-empty JSON array of objects each naming a `class` or a
+#       `tool`; strings, {tool: count} maps, null and [] are refused (none can
+#       ever bind). With neither --session-calls nor --session-log, NO
+#       sessionCalls key is written (0.8.1 wrote [], a guaranteed AC-1), so the
+#       act-phase --steps are bound against the captured toolstream instead.
 #     kind 'identity' (Plan H3 Task 1, gap #6) — REQUIRES --persona (identity is
 #       a property of the acting persona for this run, not of one criterion).
 #       Records what identity the browser session was ACTUALLY observed to be
@@ -102,6 +112,9 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 # called -> no `provenance` key is ever added -> today's shape, byte-for-byte.
 build_provenance_json() {
   local source_ref="$1"
+  # Normalize the accepted bare-integer shorthand to the canonical selector,
+  # so what is recorded is exactly what provenance.sh resolves.
+  [[ "$source_ref" =~ ^[0-9]+$ ]] && source_ref="seq:${source_ref}"
   if has_jq; then
     jq -cn --arg sourceRef "$source_ref" --arg boundAt "$(ts)" '{sourceRef: $sourceRef, boundAt: $boundAt}'
   elif has_py; then
@@ -109,6 +122,118 @@ build_provenance_json() {
   else
     die "record-evidence.sh needs either 'jq' or 'python3' to build --source-ref provenance."
   fi
+}
+
+# ---------------------------------------------------------------------------
+# RECORD-TIME VALIDATION (0.9.0). Evidence cannot be corrected after it is
+# recorded — qa-verify rightly treats a post-hoc edit as tampering — so a
+# value that is GUARANTEED to fail verification must be refused here, at the
+# moment the agent can still fix it, never accepted and discovered at verify
+# time (two real runs lost 27 genuine passes to this).
+#
+# validate_source_ref <run-id> <ref>
+#   The ONLY accepted selector is `seq:<N>` (or the bare-integer shorthand
+#   `<N>`), naming the `seq` of an event the capture hook actually wrote to
+#   .qa/runs/<run-id>/toolstream.jsonl. Anything else — a description
+#   ("tinker:Model::find(1)", "browser_network_requests") — is refused with a
+#   message saying what to pass instead. When the toolstream exists, the seq
+#   must exist in it (a dangling pointer is refused, not recorded). When no
+#   toolstream exists yet (capture off / non-Claude harness), the shape is
+#   still enforced and the existence check is skipped with a NOTE.
+# ---------------------------------------------------------------------------
+SOURCE_REF_HELP="pass --source-ref seq:<N> naming the toolstream event (its \"seq\" in .qa/runs/<run-id>/toolstream.jsonl) that produced this evidence, or OMIT --source-ref so qa-verify binds the evidence by containment against every captured response (a description such as 'tinker:Model::find(1)' or 'browser_network_requests' is not a pointer)"
+
+toolstream_has_seq() {
+  local tsf="$1" n="$2"
+  if has_jq; then
+    jq -R -e --argjson n "$n" 'try (fromjson | select(type == "object" and .seq == $n)) catch empty' "$tsf" 2>/dev/null | grep -q .
+  else
+    python3 - "$tsf" "$n" <<'PYEOF'
+import json, sys
+n = int(sys.argv[2])
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(o, dict) and o.get("seq") == n and not isinstance(o.get("seq"), bool):
+            sys.exit(0)
+sys.exit(1)
+PYEOF
+  fi
+}
+
+validate_source_ref() {
+  local run_id="$1" ref="$2" num
+  [[ -n "$ref" ]] || die "--source-ref must not be empty — ${SOURCE_REF_HELP}."
+  if [[ "$ref" =~ ^seq:([0-9]+)$ ]]; then
+    num="${BASH_REMATCH[1]}"
+  elif [[ "$ref" =~ ^[0-9]+$ ]]; then
+    num="$ref"
+  else
+    die "--source-ref '${ref}' is not a toolstream pointer — ${SOURCE_REF_HELP}. Nothing was recorded."
+  fi
+  local tsf
+  tsf="$(run_dir "$run_id")/toolstream.jsonl"
+  if [[ ! -s "$tsf" ]]; then
+    echo "NOTE: --source-ref seq:${num} recorded unchecked — no toolstream exists yet for run '${run_id}' (capture hook off?); qa-verify degrades to no-toolstream." >&2
+    return 0
+  fi
+  toolstream_has_seq "$tsf" "$num" \
+    || die "--source-ref seq:${num} names no event in ${tsf} — a dangling pointer is recorded as a forgery signal (AC-1) at verify time. Look up the seq of the call that produced this evidence (e.g. the last line of toolstream.jsonl right after that call), or omit --source-ref to bind by containment. Nothing was recorded."
+}
+
+# validate_session_calls <json>
+#   --session-calls must be a NON-EMPTY JSON array of OBJECTS, each naming the
+#   call by `class` (human-path | evaluate | route | other, as
+#   parse-session-log.js emits) or by `tool` (e.g. "browser_click"). A plain
+#   string, a list of strings, a {tool: count} map, null, or `[]` can never
+#   bind at verify time (provenance.sh matches only class/tool objects, and an
+#   explicit empty list is the AC-1 forged-trace signal), so each is refused.
+validate_session_calls() {
+  local sc="$1" verdict
+  local help="--session-calls must be a non-empty JSON array of objects like [{\"class\":\"human-path\"}] or [{\"tool\":\"browser_click\"}] — or omit it (and --session-log) so the act-phase --steps are bound against the captured toolstream instead"
+  if has_jq; then
+    verdict="$(jq -r '
+      if type != "array" then "not-array"
+      elif length == 0 then "empty"
+      elif all(.[]; type == "object" and (((.class // null) | type) == "string" and (.class | length) > 0 or ((.tool // null) | type) == "string" and (.tool | length) > 0)) then "ok"
+      else "bad-element" end' <<< "$sc" 2>/dev/null)" || verdict="not-json"
+    [[ -z "$verdict" ]] && verdict="not-json"
+  else
+    verdict="$(python3 -c '
+import json, sys
+try:
+    v = json.loads(sys.argv[1])
+except Exception:
+    print("not-json"); sys.exit(0)
+def named(e):
+    if not isinstance(e, dict):
+        return False
+    for k in ("class", "tool"):
+        x = e.get(k)
+        if isinstance(x, str) and x:
+            return True
+    return False
+if not isinstance(v, list):
+    print("not-array")
+elif not v:
+    print("empty")
+elif all(named(e) for e in v):
+    print("ok")
+else:
+    print("bad-element")
+' "$sc" 2>/dev/null)"
+    [[ -z "$verdict" ]] && verdict="not-json"
+  fi
+  case "$verdict" in
+    ok) return 0 ;;
+    empty) die "--session-calls is an empty list — an explicit empty independent trace is the AC-1 forged-trace signal and can never verify. ${help}. Nothing was recorded." ;;
+    not-json) die "--session-calls is not valid JSON. ${help}. Nothing was recorded." ;;
+    not-array) die "--session-calls is not a JSON array. ${help}. Nothing was recorded." ;;
+    *) die "--session-calls has an element that is not an object with a non-empty \"class\" or \"tool\" (plain strings such as \"click Save\" cannot bind). ${help}. Nothing was recorded." ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -359,8 +484,12 @@ data = {
     "recorded_at": now,
     "actionUnderTest": smart(action),
     "steps": smart(steps),
-    "sessionCalls": smart(session_calls),
 }
+# "" = neither --session-calls nor --session-log was given: no sessionCalls
+# key at all (provenance.sh then binds the act-phase steps), never an
+# explicit [] (which is the AC-1 forged-trace signal).
+if session_calls != "":
+    data["sessionCalls"] = smart(session_calls)
 if fingerprints:
     data["fingerprints"] = smart(fingerprints)
 if fp_target:
@@ -392,6 +521,8 @@ cmd_bake() {
   done
   [[ "$have_read_back" -eq 1 ]]    || die "kind 'bake' requires --read-back <json-or-text>"
   [[ "$have_multiplicity" -eq 1 ]] || die "kind 'bake' requires --multiplicity <0|1|N>"
+  [[ -n "$source_ref" ]] && validate_source_ref "$run_id" "$source_ref"
+  [[ "$source_ref" =~ ^[0-9]+$ ]] && source_ref="seq:${source_ref}"
 
   ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
@@ -461,6 +592,7 @@ cmd_probe() {
   [[ "$have_status" -eq 1 ]] || die "kind 'probe' requires --status <code>"
   [[ "$have_shape" -eq 1 ]]  || die "kind 'probe' requires --shape <json-or-text>"
   [[ "$have_ok" -eq 1 ]]     || die "kind 'probe' requires --ok <true|false> — your judgment that the probe CONFIRMED its expectation (e.g. an absence probe expecting 403/404 passes --ok true when it gets 403/404; do not infer this from the raw status code alone)"
+  [[ -n "$source_ref" ]] && validate_source_ref "$run_id" "$source_ref"
 
   ensure_evidence_dir "$run_id" "$crit_id" "$persona"
   local file
@@ -487,7 +619,7 @@ cmd_probe() {
 cmd_action_trace() {
   local run_id="$1" crit_id="$2" persona="$3"
   shift 3
-  local steps="" session_calls="[]" action="" have_steps=0
+  local steps="" session_calls="" have_session_calls=0 action="" have_steps=0
   local session_log="" session_from="0"
   local fp_before="" fp_after="" have_fp=0
   local fp_target="" have_target=0
@@ -496,7 +628,7 @@ cmd_action_trace() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --steps)              steps="$2";         have_steps=1; shift 2 ;;
-      --session-calls)      session_calls="$2"; shift 2 ;;
+      --session-calls)      session_calls="$2"; have_session_calls=1; shift 2 ;;
       --session-log)        session_log="$2";   shift 2 ;;
       --session-from)       session_from="$2";  shift 2 ;;
       --fingerprint-before) fp_before="$2";     have_fp=1; shift 2 ;;
@@ -508,6 +640,12 @@ cmd_action_trace() {
     esac
   done
   [[ "$have_steps" -eq 1 ]] || die "kind 'action-trace' requires --steps <json-array>"
+  [[ -n "$source_ref" ]] && validate_source_ref "$run_id" "$source_ref"
+  # An agent-supplied --session-calls is validated only when it is the value
+  # that will be written; --session-log (the tamper-evident path) overrides it.
+  if [[ "$have_session_calls" -eq 1 && -z "$session_log" ]]; then
+    validate_session_calls "$session_calls"
+  fi
 
   # Optional before/after persisted-state fingerprints for Check 3 (the
   # tool-agnostic net that catches arbitrary non-UI mutators). Built into a
@@ -577,8 +715,19 @@ print(json.dumps({'before': smart(os.environ['FP_B']), 'after': smart(os.environ
     extra_fields+=(provenance "$provenance_json")
   fi
 
+  # sessionCalls is written only when it was supplied (--session-calls) or
+  # derived (--session-log). Absent both, the key is OMITTED: 0.8.1 wrote an
+  # explicit [] here, which provenance.sh rightly reads as the AC-1
+  # forged-trace signal, so every such trace was guaranteed unbound.
+  local sc_fields=()
+  if [[ -n "$session_log" || "$have_session_calls" -eq 1 ]]; then
+    sc_fields=(sessionCalls "$session_calls")
+  else
+    session_calls=""
+  fi
+
   if has_jq; then
-    write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" sessionCalls "$session_calls" "${extra_fields[@]}"
+    write_jq "$file" "$run_id" "$crit_id" "action-trace" actionUnderTest "$action" steps "$steps" ${sc_fields[@]+"${sc_fields[@]}"} ${extra_fields[@]+"${extra_fields[@]}"}
   elif has_py; then
     write_py_action_trace "$file" "$run_id" "$crit_id" "$action" "$steps" "$session_calls" "$fingerprints" "$fp_target" "$provenance_json"
   else

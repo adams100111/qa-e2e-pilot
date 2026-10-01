@@ -30,7 +30,8 @@ churns across versions):
 
 - **`PreToolUse`** → invoke `scripts/block-hook.sh` on `playwright-qa__browser_evaluate` and
   `playwright-qa__browser_run_code_unsafe` (or the widest `playwright-qa__browser_*` matcher your
-  config syntax supports — `block-hook.sh` itself only denies those two tool names, everything
+  config syntax supports; since 0.9.0 also route `playwright-qa__browser_navigate` to it for the
+  live load-window gate — `block-hook.sh` itself only acts on those three tool names, everything
   else is a fast allow). Deny semantics: the hook reads the same PreToolUse JSON contract Claude
   uses (`tool_name`/`tool_input` on stdin) and, on a mutating `browser_evaluate`, must cause Codex
   to refuse the call before it runs.

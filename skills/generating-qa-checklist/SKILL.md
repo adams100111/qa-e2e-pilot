@@ -215,6 +215,7 @@ Apply these tags to every criterion in the checklist:
 | `role-sensitive: true` | Outcome depends on the acting persona's permissions/ownership (authz matrix marks the entity non-uniform across personas) | Runs once per persona, not once for the whole checklist — see Step 6 |
 | `probe-needed: true` | Expected state cannot be confirmed through the visible UI alone | Sequential; `probing-apis-through-browser` invoked, evidence required |
 | `human-action: true` | The Act phase mutates state or drives a control; the action must be performed through the UI | Sequential; verifier confirms the action through the real `session.md` (`--session-log`) AND captures before/after persisted-state fingerprints (reuse the bake read-back) so Check 3 catches an arbitrary non-UI mutator; genuine tool limitation recorded as `nonUiActionReason` |
+| `api-write` | The act is ONE API write with no UI affordance by design (a server-side authorization / validation assertion: "PATCH another user's row → 403") | Sequential; only on a disposable env (`allowApiWrites` + marker, never production) via the sanctioned recorded write probe (probing-apis-through-browser Step 4); evidence is `probe` bound by `--source-ref seq:<N>`, not `human-action`. Never use it to skip a UI act a human could perform |
 
 Default everything sequential. Tag `independent` or `read-only` conservatively — if in doubt, leave untagged and run sequentially.
 
@@ -229,6 +230,24 @@ Default everything sequential. Tag `independent` or `read-only` conservatively �
   to be performed through the UI and reconciles it against `session.md`
   (checkpointing-qa-memory / ADR-0015). A genuine tool limitation is recorded per
   criterion as `nonUiActionReason` (confidence drops to low).
+
+**Declaring read-only vs mutating (0.9.0 — the classifier reads these first)**
+
+Whether a criterion mutates (and so must carry `human-action`) is decided by the
+gate's `mutation-flag.sh` from the row's **structured fields before its prose**:
+a mutating `httpMethod` or `kinds` containing `human-action` always mean mutating;
+then an explicit `"mutates": true|false` or the `read-only` tag decides; then
+`"humanAction": true` means mutating; only a row that declares none of these falls
+back to matching verbs in its `action` text (negated clauses like "Do NOT submit"
+and URL paths are ignored there). So **tag every read-only criterion `read-only`**
+(add `"mutates": false` when the row is not `read-only` but still performs no
+write, e.g. it opens a form and reads it) — incidental words in the instruction
+("compare as a set", "the change marker", a quoted "Edit" button label) then
+cannot turn it into a human-action criterion — and **set `"humanAction": true` on
+every row whose act writes**, whatever verb its prose uses ("withdraw", "remind",
+"advance" are not in the prose verb list; `humanAction: true` makes the gate
+require the `human-action` trace for them). `mutates: false` beside
+`humanAction: true` is rejected by the validator.
 
 **Setting `probe-needed` (generation-time rule, mechanical)**
 
@@ -246,6 +265,7 @@ Every criterion also carries a derived **`Kinds`** field: a CSV subset of the FO
 | Criterion `Kind` / `Tag` | Required evidence kind(s) | Artifact |
 |---|---|---|
 | Act phase mutates state or drives a control (i.e. `Tag: human-action`, set per the rule above) | `human-action` | `evidence/<crit>/action-trace.json` (carries the before/after state `fingerprints` Check 3 requires) |
+| Mutating act on a row tagged `api-write` (and no structured `humanAction: true`) | `probe` instead of `human-action` | `evidence/<crit>/network-response.json`, recorded with `--source-ref seq:<N>` of the sanctioned write probe |
 | `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
 | `multiplicity-0`, `multiplicity-1`, `multiplicity-N`, `happy-path`, `downstream-cascade`, or `empty-state` — AND the criterion is NOT tagged `read-only` (this bake-kind enum, not "any criterion") | `bake` | `evidence/<crit>/bake-read-back.json` |
 | `Tag: cross-tenant` OR `Tag: cross-role-fk-chain` OR `Tag: probe-needed` | `probe` | `evidence/<crit>/network-response.json` |

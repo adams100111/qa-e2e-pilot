@@ -26,6 +26,20 @@
 #            reuses mutation-flag.sh's own agent-untrusted classifier
 #            verbatim — required-kinds.sh never re-implements or
 #            second-guesses it.)
+#            EXCEPTION (0.9.0, ADR-0027): a row tagged `api-write` whose act
+#            has NO UI affordance by design (a server-side authorization /
+#            validation assertion: "PATCH another user's registration ->
+#            403") -> add `probe` INSTEAD of `human-action`. Its write goes
+#            through the sanctioned, recorded write probe (backend-probe.js
+#            via browser_evaluate, admitted by block-hook.sh only when
+#            allowApiWrites + a disposable-env marker + environment !=
+#            production), and qa-verify requires that probe evidence to be
+#            bound by `--source-ref seq:<N>` to a captured sanctioned write
+#            probe — so the tag swaps WHICH evidence proves the act, it never
+#            removes the proof. A row that ALSO carries a structured
+#            human-action signal (`kinds` containing "human-action", or
+#            `humanAction: true`) keeps `human-action`: a structured UI act
+#            outranks the tag.
 #         2. `kind` is `computed-logic` or `business-rule` (case-insensitive)
 #              -> add `computed`
 #         3. `kind` is one of `multiplicity-0`, `multiplicity-1`,
@@ -99,7 +113,8 @@ read_criterion() {
       || die "<criterion-json> must be a single JSON object: ${json}"
     jq -r '
       ((.kind // "") | tostring),
-      (if (.tags | type) == "array" then (.tags | map(tostring) | join(",")) else "" end)
+      (if (.tags | type) == "array" then (.tags | map(tostring) | join(",")) else "" end),
+      (if (.humanAction == true) or ((.kinds | type) == "array" and (.kinds | index("human-action")) != null) then "true" else "" end)
     ' <<< "$json" || die "jq failed to read fields from <criterion-json>: ${json}"
   elif has_py; then
     local pyout
@@ -116,8 +131,12 @@ if not isinstance(obj, dict):
 tags = obj.get("tags")
 if not isinstance(tags, list):
     tags = []
+kinds = obj.get("kinds")
+if not isinstance(kinds, list):
+    kinds = []
 print(str(obj.get("kind") or ""))
 print(",".join(str(t) for t in tags))
+print("true" if (obj.get("humanAction") is True or "human-action" in kinds) else "")
 ' "$json" 2>/dev/null)" || die "python3 failed to read fields from <criterion-json>: ${json}"
     if [[ "${pyout%%$'\n'*}" == "__REQUIRED_KINDS_PARSE_ERROR__" ]]; then
       die "<criterion-json> must be a single JSON object: ${json}"
@@ -145,13 +164,20 @@ derive() {
   while IFS= read -r _rk_line; do _rk_lines+=("$_rk_line"); done <<< "$out"
   kind="${_rk_lines[0]:-}"
   tags_csv="${_rk_lines[1]:-}"
+  local structured_human="${_rk_lines[2]:-}"
 
   local -a kinds=()
 
   # Rule 1: reuse mutation-flag.sh's own agent-untrusted classifier verbatim.
   local mutates
   mutates="$(bash "$MUTATION_FLAG" derive "$json")" || die "mutation-flag.sh derive failed on: ${json}"
-  [[ "$mutates" == "true" ]] && kinds+=("human-action")
+  if [[ "$mutates" == "true" ]]; then
+    if [[ ",${tags_csv}," == *,api-write,* && "$structured_human" != "true" ]]; then
+      kinds+=("probe")
+    else
+      kinds+=("human-action")
+    fi
+  fi
 
   # Rule 2: kind is computed-logic/business-rule -> computed.
   if grep -Eiq "$COMPUTED_KIND_RE" <<< "$kind"; then

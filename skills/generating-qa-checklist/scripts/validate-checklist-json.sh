@@ -35,6 +35,12 @@
 #                  `expectChange` (all three required when the object is
 #                  present)
 #   humanAction    optional; if present (and non-null), a boolean
+#   mutates        optional (0.9.0, ADR-0027); if present (and non-null), a
+#                  boolean — the plan's explicit write declaration, which
+#                  mutation-flag.sh honors ahead of prose verb matching.
+#                  `mutates: false` together with `humanAction: true`, or
+#                  with a `human-action` entry in `requiredKinds`, is a
+#                  contradiction and is rejected.
 # Duplicate `id` values across entries are rejected.
 #
 # ERROR-HONESTY INVARIANTS (spec `docs/superpowers/specs/
@@ -261,6 +267,10 @@ def entryViolations($i; $e):
           else [] end )
       + ( if ($e|has("humanAction")) and ($e.humanAction != null) and (($e.humanAction|type) != "boolean")
           then ["entry[\($i)].humanAction: must be a boolean"] else [] end )
+      + ( if ($e|has("mutates")) and ($e.mutates != null) and (($e.mutates|type) != "boolean")
+          then ["entry[\($i)].mutates: must be a boolean"] else [] end )
+      + ( if ($e.mutates == false) and (($e.humanAction == true) or ((($e.requiredKinds|type) == "array") and (($e.requiredKinds | index("human-action")) != null)))
+          then ["entry[\($i)].mutates: false contradicts humanAction/requiredKinds human-action — a row cannot declare itself non-mutating and require a human-action trace"] else [] end )
       + ( ( ($e.fixture) as $fx | if ($fx|type) == "object" then $fx.expect else null end ) as $fex
           | ( $e.expect ) as $tex
           | healthViolations($i; "fixture.expect"; $fex)
@@ -483,6 +493,12 @@ def entry_violations(i, e):
     if "humanAction" in e and e["humanAction"] is not None:
         if not isinstance(e["humanAction"], bool):
             v.append(f"entry[{i}].humanAction: must be a boolean")
+    if "mutates" in e and e["mutates"] is not None:
+        if not isinstance(e["mutates"], bool):
+            v.append(f"entry[{i}].mutates: must be a boolean")
+    rk = e.get("requiredKinds")
+    if e.get("mutates") is False and (e.get("humanAction") is True or (isinstance(rk, list) and "human-action" in rk)):
+        v.append(f"entry[{i}].mutates: false contradicts humanAction/requiredKinds human-action — a row cannot declare itself non-mutating and require a human-action trace")
     v.extend(honesty_violations(i, e))
     return v
 

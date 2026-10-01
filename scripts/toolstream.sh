@@ -89,6 +89,16 @@
 #       code. Malformed args (non-object, fields not an array, non-object
 #       field entries) pass through unchanged; never dies on them.
 #
+#   toolstream.sh extract-observed <tool-name>    (tool_response JSON on stdin)
+#       0.9.0. Print the compact `observed` findings object the capture hook
+#       stores on a browser_evaluate (observe round) or
+#       browser_network_requests event — unwrapped from the real MCP content
+#       array — or nothing. See "OBSERVED-FINDINGS EXTRACTION" below.
+#
+#   toolstream.sh observed-rows <toolstream-file>
+#       0.9.0. qa-verify's findings-channel reader: six lines per observed
+#       network/console row, from `observed` or (pre-0.9.0) responseBody.
+#
 # PORTABILITY: secretPatterns MUST be POSIX-ERE-compatible (no lookaround, no
 # backreferences) — the jq engine matches them via jq's built-in Oniguruma
 # regex (gsub), the python3 fallback via `re`. NEITHER engine shells out to
@@ -306,6 +316,277 @@ cmd_read() {
   local file
   file="$(toolstream_file "$run_id")"
   [[ -f "$file" ]] && cat "$file"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# OBSERVED-FINDINGS EXTRACTION (0.9.0, ADR-0027).
+#
+# ROOT CAUSE this closes (found on a real run that injected observe.js
+# verbatim and still verified with findingsChannel "none"): qa-verify's
+# findings channel parsed each event's `responseBody` as the RAW observe
+# payload ({console[], network[]}) or a raw JSON array of requests. The real
+# @playwright/mcp never returns either. Every browser tool answers with an
+# MCP content array, [{"type":"text","text":"### Result\n<value>\n### Ran
+# Playwright code\n..."}], so the observe JSON is a pretty-printed string
+# inside markdown inside JSON; and the 4000-byte responseBody cap cuts that
+# wrapper mid-string (observe's domDigest alone exceeds it), so it never
+# parses at all. browser_network_requests answers with a markdown LIST
+# ("12. [GET] https://... => [200] "), never a JSON array. Both channels were
+# structurally dead against the real driver.
+#
+# The fix extracts the findings from the FULL tool_response, at capture time
+# and in the capture hook's trust domain (never from anything the agent
+# writes), into a compact `observed` field on the event:
+#   {"source":"observe","network":[{method,url,status}],"console":[{level,text}]}
+#   {"source":"network-requests","network":[{method,url,status}]}
+# capped (100 network rows, non-2xx first; 50 console rows; url 1024 chars,
+# text 500 chars) so an event line stays small. qa-verify reads `observed`
+# first and, for toolstreams recorded before 0.9.0, unwraps the same shapes
+# out of `responseBody` when it is intact (`observed-rows`).
+#
+# One jq library and one python3 library implement both subcommands, so the
+# capture-time extraction and the verify-time reader can never drift.
+# ---------------------------------------------------------------------------
+OBSERVED_JQ_DEFS='
+def obs_text:
+  if type == "string" then (try fromjson catch .) else . end
+  | if type == "array" then [ .[] | select(type == "object" and .type == "text" and (.text | type) == "string") | .text ] | join("\n")
+    elif type == "object" and (.content | type) == "array" then [ .content[] | select(type == "object" and .type == "text" and (.text | type) == "string") | .text ] | join("\n")
+    elif type == "string" then .
+    else "" end;
+def obs_result: (split("### Result\n") | if length < 2 then null else (.[1] | split("\n### ")[0]) end);
+def obs_int($v): ($v | type) == "number" and ($v == ($v | floor));
+def obs_netrow: select(type == "object" and (.url | type) == "string" and (.url | length) > 0 and obs_int(.status))
+  | {method: ((.method // "") | tostring | .[0:16]), url: (.url | .[0:1024]), status: .status};
+def obs_cap_net: (map(select(.status < 200 or .status >= 300)) + map(select(.status >= 200 and .status < 300))) | .[0:100];
+def obs_from_payload:
+  if type == "object" and (((.network | type) == "array") or ((.console | type) == "array")) then
+    {source: "observe",
+     network: ([ (.network // [])[]? | obs_netrow ] | obs_cap_net),
+     console: ([ (.console // [])[]? | select(type == "object" and (.text | type) == "string" and (.level == "error" or .level == "warn"))
+                 | {level: .level, text: (.text | .[0:500])} ] | .[0:50])}
+  else null end;
+def obs_netlines:
+  [ split("\n")[] | (capture("^\\s*(?:[0-9]+\\.\\s+)?\\[(?<method>[A-Z]+)\\]\\s+(?<url>[^ \\t]+)\\s+=>\\s+\\[(?<status>[0-9]{3})\\]") // empty)
+    | {method: .method, url: (.url | .[0:1024]), status: (.status | tonumber)} ];
+def observed_for($tool):
+  ( obs_text ) as $t
+  | ( if ($t | type) == "string" then ($t | obs_result) else null end ) as $r
+  | if $r == null then null
+    elif ($tool | endswith("browser_network_requests")) then
+      ($r | obs_netlines) as $rows
+      | if ($rows | length) > 0 then {source: "network-requests", network: ($rows | obs_cap_net)} else null end
+    elif ($tool | endswith("browser_evaluate")) then
+      ($r | try fromjson catch null | obs_from_payload)
+    else null end;
+'
+
+OBSERVED_PY_DEFS='
+import json, re
+
+def obs_text(v):
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except Exception:
+            return v
+    items = None
+    if isinstance(v, list):
+        items = v
+    elif isinstance(v, dict) and isinstance(v.get("content"), list):
+        items = v["content"]
+    elif isinstance(v, str):
+        return v
+    if items is None:
+        return ""
+    return "\n".join(i["text"] for i in items if isinstance(i, dict) and i.get("type") == "text" and isinstance(i.get("text"), str))
+
+def obs_result(t):
+    parts = t.split("### Result\n")
+    if len(parts) < 2:
+        return None
+    return parts[1].split("\n### ")[0]
+
+def obs_int(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == int(v)
+
+def obs_netrow(e):
+    if isinstance(e, dict) and isinstance(e.get("url"), str) and e["url"] and obs_int(e.get("status")):
+        m = e.get("method")
+        m = "" if m is None else (m if isinstance(m, str) else json.dumps(m))
+        st = e["status"]
+        return {"method": m[:16], "url": e["url"][:1024], "status": int(st) if float(st).is_integer() else st}
+    return None
+
+def obs_cap_net(rows):
+    return ([r for r in rows if r["status"] < 200 or r["status"] >= 300] + [r for r in rows if 200 <= r["status"] < 300])[:100]
+
+def obs_from_payload(o):
+    if isinstance(o, dict) and (isinstance(o.get("network"), list) or isinstance(o.get("console"), list)):
+        net = [r for r in (obs_netrow(e) for e in (o.get("network") or [])) if r is not None]
+        con = [{"level": e["level"], "text": e["text"][:500]} for e in (o.get("console") or [])
+               if isinstance(e, dict) and isinstance(e.get("text"), str) and e.get("level") in ("error", "warn")][:50]
+        return {"source": "observe", "network": obs_cap_net(net), "console": con}
+    return None
+
+NETLINE = re.compile(r"^\s*(?:[0-9]+\.\s+)?\[(?P<method>[A-Z]+)\]\s+(?P<url>[^ \t]+)\s+=>\s+\[(?P<status>[0-9]{3})\]")
+
+def obs_netlines(r):
+    out = []
+    for line in r.split("\n"):
+        m = NETLINE.match(line)
+        if m:
+            out.append({"method": m.group("method"), "url": m.group("url")[:1024], "status": int(m.group("status"))})
+    return out
+
+def observed_for(tool, raw):
+    t = obs_text(raw)
+    r = obs_result(t) if isinstance(t, str) else None
+    if r is None:
+        return None
+    if tool.endswith("browser_network_requests"):
+        rows = obs_netlines(r)
+        return {"source": "network-requests", "network": obs_cap_net(rows)} if rows else None
+    if tool.endswith("browser_evaluate"):
+        try:
+            o = json.loads(r)
+        except Exception:
+            return None
+        return obs_from_payload(o)
+    return None
+'
+
+# ---------------------------------------------------------------------------
+# cmd_extract_observed <tool-name>  (stdin: the raw tool_response JSON)
+#   Prints the compact `observed` object, or NOTHING when the response
+#   carries no findings shape (exit 0 either way; never dies on bad input).
+# ---------------------------------------------------------------------------
+cmd_extract_observed() {
+  local tool="$1"
+  if has_jq; then
+    jq -c -R -s --arg tool "$tool" "${OBSERVED_JQ_DEFS}"'
+      (try fromjson catch .) | observed_for($tool) | select(. != null)' 2>/dev/null || true
+  elif has_py; then
+    python3 -c "${OBSERVED_PY_DEFS}"'
+import sys
+raw = sys.stdin.read()
+try:
+    o = observed_for(sys.argv[1], raw)
+except Exception:
+    o = None
+if o is not None:
+    print(json.dumps(o, separators=(",", ":"), ensure_ascii=False))
+' "$tool" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# cmd_observed_rows <toolstream-file>
+#   qa-verify's findings-channel reader. Prints SIX lines per observed row:
+#   kind ("net"|"console"), method, url, status, text, "" — qa-verify's
+#   observe_rows contract. Per event, in priority order: the capture-time
+#   `observed` field; else the LEGACY shapes this reader always accepted (a
+#   responseBody that IS the observe object, or IS a JSON array of request
+#   records); else the MCP-wrapped responseBody unwrapped via the shared
+#   library above (pre-0.9.0 toolstreams, intact bodies only — a body the
+#   4000-byte cap cut mid-wrapper still contributes nothing, which can only
+#   HIDE a finding, never invent one). Console rows: level "error" only.
+# ---------------------------------------------------------------------------
+cmd_observed_rows() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  if has_jq; then
+    jq -R -r "${OBSERVED_JQ_DEFS}"'
+      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
+      def istr($v): ($v | type) == "string" and ($v | length) > 0;
+      def inum($v): ($v | type) == "number" and ($v == ($v | floor)) and $v > -1000000000000000 and $v < 1000000000000000;
+      def netrow: "net", (.method | sane), (.url | sane), (.status | floor | tostring), "", "";
+      def legacy_net: select(type == "object") | select(istr(.url) and inum(.status)) | netrow;
+      def conrow: "console", "", "", "", (.text | sane), "";
+      def emit($b):
+        ( ( if ($b.network | type) == "array" then $b.network[] else empty end ) | legacy_net ),
+        ( ( if ($b.console | type) == "array" then $b.console[] else empty end )
+          | select(type == "object") | select(.level == "error") | select((.text | type) == "string" and (.text | length) > 0) | conrow );
+      (try fromjson catch null) as $o
+      | if ($o | type) != "object" then empty
+        elif ($o.observed | type) == "object" then emit($o.observed)
+        else
+          ( if ($o.responseBody | type) == "string" then ($o.responseBody | try fromjson catch null) else null end ) as $b
+          | if ($b | type) == "object" and ((($b.network | type) == "array") or (($b.console | type) == "array")) then emit($b)
+            elif ($b | type) == "array" and ([ $b[] | select(type == "object" and (.url | type) == "string") ] | length) > 0 then
+              ( $b[] | legacy_net )
+            elif ($o.tool | type) == "string" and ($o.responseBody | type) == "string" then
+              ( ($o.responseBody | observed_for($o.tool)) as $u | if $u == null then empty else emit($u) end )
+            else empty end
+        end
+    ' "$f" 2>/dev/null || true
+  elif has_py; then
+    python3 -c "${OBSERVED_PY_DEFS}"'
+import sys
+
+def sane(v):
+    return v.replace("\n", " ").replace("\r", " ") if isinstance(v, str) else ""
+
+def istr(v):
+    return isinstance(v, str) and len(v) > 0
+
+def fnum(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == int(v) and -1000000000000000 < v < 1000000000000000
+
+out = []
+def legacy_net(e):
+    if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
+        out.extend(["net", sane(e.get("method")), sane(e.get("url")), str(int(e["status"])), "", ""])
+
+def emit(b):
+    for e in (b.get("network") if isinstance(b.get("network"), list) else []):
+        legacy_net(e)
+    for e in (b.get("console") if isinstance(b.get("console"), list) else []):
+        if isinstance(e, dict) and e.get("level") == "error" and isinstance(e.get("text"), str) and e["text"]:
+            out.extend(["console", "", "", "", sane(e["text"]), ""])
+
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(o, dict):
+            continue
+        if isinstance(o.get("observed"), dict):
+            emit(o["observed"])
+            continue
+        rb = o.get("responseBody")
+        b = None
+        if isinstance(rb, str):
+            try:
+                b = json.loads(rb)
+            except Exception:
+                b = None
+        if isinstance(b, dict) and (isinstance(b.get("network"), list) or isinstance(b.get("console"), list)):
+            emit(b)
+        elif isinstance(b, list) and any(isinstance(e, dict) and isinstance(e.get("url"), str) for e in b):
+            for e in b:
+                legacy_net(e)
+        elif isinstance(o.get("tool"), str) and isinstance(rb, str):
+            try:
+                u = observed_for(o["tool"], rb)
+            except Exception:
+                u = None
+            if u is not None:
+                emit(u)
+
+for x in out:
+    print(x)
+' "$f" 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -588,8 +869,16 @@ main() {
       [[ $# -lt 3 ]] && die "redact-browser requires: <tool-name> <args-json> [config-json]"
       cmd_redact_browser "$2" "$3" "${4:-}"
       ;;
+    extract-observed)
+      [[ $# -lt 2 ]] && die "extract-observed requires: <tool-name> (tool_response JSON on stdin)"
+      cmd_extract_observed "$2"
+      ;;
+    observed-rows)
+      [[ $# -lt 2 ]] && die "observed-rows requires: <toolstream-file>"
+      cmd_observed_rows "$2"
+      ;;
     *)
-      die "usage: toolstream.sh {append|read|redact|redact-browser} …"
+      die "usage: toolstream.sh {append|read|redact|redact-browser|extract-observed|observed-rows} …"
       ;;
   esac
 }

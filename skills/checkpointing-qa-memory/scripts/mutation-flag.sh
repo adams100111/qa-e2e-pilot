@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
 # mutation-flag.sh — deterministic, agent-untrusted mutation classifier.
 #
-# THE FLAG IS DERIVED, NEVER TRUSTED FROM AN AGENT-AUTHORED BOOLEAN. Whether a
-# criterion mutates state (and therefore must bracket + gate its act phase) is
-# decided ONLY from the criterion's ACTION SHAPE — its evidence `kinds`, its
-# `httpMethod`, and a mutating-verb match on its `action`/`title` text. An
-# agent can never mark a mutating criterion "read-only" to dodge the
-# act-phase workaround lint + fingerprint gate: this script does not accept,
-# read, or trust any agent-supplied `mutates`/`readOnly` field at all.
+# THE FLAG IS DERIVED FROM THE CRITERION'S PLAN ROW, NEVER FROM ANYTHING THE
+# RUN'S AGENT WRITES DURING VERIFICATION. Whether a criterion mutates state
+# (and therefore must bracket + gate its act phase) is decided from the
+# checklist row's STRUCTURED fields first and its prose only as a fallback
+# (0.9.0, after two real runs lost six read-only criteria to incidental words
+# — "compare rows as a set", "Do NOT submit", "the change marker", a quoted
+# "Edit my registration" label):
+#   - structured WRITE signals always win and can never be overridden:
+#     `kinds` containing "human-action" and a mutating `httpMethod`;
+#   - then an EXPLICIT plan-level declaration decides: `mutates: true|false`,
+#     or the `read-only` tag (the tag the checklist schema already defines as
+#     "no write to backend", which already suppresses `bake`);
+#   - then `humanAction: true` (a row that is not read-only);
+#   - only when the row declares nothing does the mutating-verb match on its
+#     `action`/`title` text decide — with negated clauses ("do not submit",
+#     "without saving") and URL/path tokens ("/hackathons/create") removed,
+#     and the noun-prone `set` matched only as "set <x> to|on|off".
+# The declaration is a property of the human-reviewed, frozen plan row
+# (checklist.json), the same trust boundary the `read-only` tag's bake
+# suppression and every other required-kind rule already sit on; a row that
+# declares itself read-only while carrying a structured mutating signal is
+# still classified mutating (validate-checklist-json.sh rejects the
+# `mutates:false` + `humanAction:true` contradiction outright).
 #
 # The optional `reconcile` capture-hook cross-check (against a saved
 # Playwright MCP session toolstream) is BEST-EFFORT and ABSENT-TOLERANT: the
@@ -24,14 +40,24 @@
 #            (wins even when the action/title text is a read verb.)
 #         2. `httpMethod` (case-insensitive) is one of
 #            POST | PUT | PATCH | DELETE                            -> true
-#         3. `action` or `title` matches a mutating verb, word-
-#            boundary, case-insensitive:
+#         3. `mutates` is a boolean                                 -> its value
+#         4. `tags` contains "read-only"                            -> false
+#         5. `humanAction` is the boolean true                      -> true
+#         6. `action` or `title` — after lowercasing, removing negated
+#            clauses (do not / don't / does not / must not / should not /
+#            never / without ... up to the next , ; : . ! ?) and every
+#            token containing a "/" (URLs, route paths) — matches a
+#            mutating verb, word-boundary:
 #            create|add|new|update|edit|change|delete|remove|submit|
 #            save|assign|transfer|approve|reject|invite|revoke|
-#            upload|toggle|set                                      -> true
-#         4. else                                                   -> false
+#            upload|toggle                                          -> true
+#            or "set <up to two words> to|on|off"                   -> true
+#            or an UPPERCASE POST|PUT|PATCH|DELETE in the raw text  -> true
+#         7. else                                                   -> false
 #            (includes read-only verbs: view|list|show|read|filter|
-#             sort|search|open|see|display — these never match rule 3.)
+#             sort|search|open|see|display — these never match rule 6,
+#             and a bare noun "set" — "compare rows as a set" — no
+#             longer does either.)
 #
 #   mutation-flag.sh reconcile <criterion-json> [<toolstream-path>]
 #       Computes `derive` first. If <toolstream-path> is given AND exists
@@ -69,7 +95,18 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 # NOT match inside a longer word ("settings" does not match "set"; "overview"
 # does not match "view" — and "view" is not in this list anyway, it is a
 # read-only verb).
-VERB_RE='\b(create|add|new|update|edit|change|delete|remove|submit|save|assign|transfer|approve|reject|invite|revoke|upload|toggle|set)\b'
+VERB_RE='\b(create|add|new|update|edit|change|delete|remove|submit|save|assign|transfer|approve|reject|invite|revoke|upload|toggle)\b'
+# `set` is a mutating verb only in its "set <x> to|on|off" shape — as a bare
+# word it is far more often a noun ("compare rows as a set", "the full data
+# set"). Up to two plain words may sit between; parentheses never do.
+SET_RE='\bset[[:space:]]+([a-z0-9_-]+[[:space:]]+){0,2}(to|on|off)\b'
+# The prose normalization (lowercase; drop each negated clause — the negation
+# up to the next , ; : . ! ? — and every token containing a "/") is done
+# INSIDE read_criterion's jq/python3 step, not with tr/sed: the dual-engine
+# suites run this script under a restricted PATH, and the two engines must
+# agree byte-for-byte. NEGATION_RE is the shared pattern (no \b, no
+# lookaround — valid as both an Oniguruma and a Python regex).
+NEGATION_RE="(do not|don't|does not|doesn't|did not|must not|mustn't|should not|shouldn't|never|without)[^,;:.!?]*"
 
 # ---------------------------------------------------------------------------
 # read_criterion <criterion-json>
@@ -86,11 +123,17 @@ read_criterion() {
   if has_jq; then
     jq -e 'type == "object"' >/dev/null 2>&1 <<< "$json" \
       || die "<criterion-json> must be a single JSON object: ${json}"
-    jq -r '
+    jq -r --arg neg "$NEGATION_RE" '
+      def oneline: gsub("[\r\n]+"; " ");
       (if (.kinds | type) == "array" then (.kinds | map(tostring) | join(",")) else "" end),
       ((.httpMethod // "") | tostring),
-      ((.action // "") | tostring),
-      ((.title // "") | tostring)
+      ((.action // "") | tostring | oneline),
+      ((.title // "") | tostring | oneline),
+      (if .humanAction == true then "true" else "" end),
+      (if (.mutates | type) == "boolean" then (.mutates | tostring) else "" end),
+      (if (.tags | type) == "array" then (.tags | map(tostring) | join(",")) else "" end),
+      ( (((.action // "") | tostring | oneline) + " " + ((.title // "") | tostring | oneline))
+        | ascii_downcase | gsub($neg; " ") | gsub("[^ \t]*/[^ \t]*"; " ") )
     ' <<< "$json" || die "jq failed to read fields from <criterion-json>: ${json}"
   elif has_py; then
     local pyout
@@ -104,14 +147,37 @@ except json.JSONDecodeError:
 if not isinstance(obj, dict):
     print("__MUTATION_FLAG_PARSE_ERROR__")
     sys.exit(0)
+import re
+def oneline(v):
+    return re.sub(r"[\r\n]+", " ", v)
+def jstr(v):
+    # mirror jq tostring for the scalar shapes these fields carry
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, separators=(",", ":"))
+    return str(v)
 kinds = obj.get("kinds")
 if not isinstance(kinds, list):
     kinds = []
-print(",".join(str(k) for k in kinds))
-print(str(obj.get("httpMethod") or ""))
-print(str(obj.get("action") or ""))
-print(str(obj.get("title") or ""))
-' "$json" 2>/dev/null)" || die "python3 failed to read fields from <criterion-json>: ${json}"
+tags = obj.get("tags")
+if not isinstance(tags, list):
+    tags = []
+print(",".join(jstr(k) for k in kinds))
+print(jstr(obj.get("httpMethod")))
+print(oneline(jstr(obj.get("action"))))
+print(oneline(jstr(obj.get("title"))))
+print("true" if obj.get("humanAction") is True else "")
+m = obj.get("mutates")
+print(("true" if m else "false") if isinstance(m, bool) else "")
+print(",".join(jstr(t) for t in tags))
+prose = (oneline(jstr(obj.get("action"))) + " " + oneline(jstr(obj.get("title")))).lower()
+prose = re.sub(sys.argv[2], " ", prose)
+prose = re.sub(r"[^ \t]*/[^ \t]*", " ", prose)
+print(prose)
+' "$json" "$NEGATION_RE" 2>/dev/null)" || die "python3 failed to read fields from <criterion-json>: ${json}"
     if [[ "${pyout%%$'\n'*}" == "__MUTATION_FLAG_PARSE_ERROR__" ]]; then
       die "<criterion-json> must be a single JSON object: ${json}"
     fi
@@ -137,6 +203,8 @@ derive() {
   method="${_mf_lines[1]:-}"
   action="${_mf_lines[2]:-}"
   title="${_mf_lines[3]:-}"
+  local human_action="${_mf_lines[4]:-}" declared="${_mf_lines[5]:-}" tags_csv="${_mf_lines[6]:-}"
+  local prose="${_mf_lines[7]:-}"
 
   # Rule 1: kinds contains "human-action" — wins even over a read verb.
   if [[ ",${kinds_csv}," == *,human-action,* ]]; then
@@ -150,14 +218,42 @@ derive() {
     return 0
   fi
 
-  # Rule 3: action/title text matches a mutating verb, word-boundary,
-  # case-insensitive.
-  if grep -Eiq "$VERB_RE" <<< "${action} ${title}"; then
+  # Rule 3: an explicit plan-level `mutates` declaration.
+  if [[ "$declared" == "true" || "$declared" == "false" ]]; then
+    echo "$declared"
+    return 0
+  fi
+
+  # Rule 4: the `read-only` tag ("no write to backend"). It outranks
+  # humanAction:true: a row tagged read-only that only DRIVES a control
+  # (open a switcher, type into a search box) writes nothing, and the gate
+  # never required a human-action trace for it (0.8.1 ignored humanAction).
+  if [[ ",${tags_csv}," == *,read-only,* ]]; then
+    echo false
+    return 0
+  fi
+
+  # Rule 5: the row's structured humanAction:true.
+  if [[ "$human_action" == "true" ]]; then
     echo true
     return 0
   fi
 
-  # Rule 4: no mutating signal found (includes read-only verbs).
+  # Rule 6: prose fallback over the normalized prose read_criterion built
+  # (lowercased; negated clauses and path tokens removed).
+  if grep -Eq "$VERB_RE" <<< "$prose" || grep -Eq "$SET_RE" <<< "$prose"; then
+    echo true
+    return 0
+  fi
+  # An UPPERCASE mutating HTTP verb in the prose ("PATCH /registrations/7")
+  # names a write request even when the row has no structured httpMethod.
+  # Case-sensitive on purpose: lowercase "post"/"put" are ordinary words.
+  if grep -Eq '(^|[^A-Za-z])(POST|PUT|PATCH|DELETE)([^A-Za-z]|$)' <<< "${action} ${title}"; then
+    echo true
+    return 0
+  fi
+
+  # Rule 7: no mutating signal found (includes read-only verbs).
   echo false
 }
 

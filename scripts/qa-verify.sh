@@ -79,7 +79,18 @@
 #          than degrade must configure `personas[].expectedSubject` for
 #          that persona in `.qa/config.json`.
 #      __shared__/empty-persona/non-high-stakes (read-only) passes are
-#      exempt — never checked.
+#      exempt — never checked — on a project with 0/1 personas. On a
+#      MULTI-persona project a persona-less high-stakes pass is a SHARED
+#      criterion run once as its checklist row's role (ADR-0012): when
+#      evidence/<row role>/identity.json exists for the run, that run-level
+#      capture is bound with exactly the rules above (0.9.0); without one the
+#      pass degrades to confidence:low with a reason saying how to record it.
+#
+#   3.4. API-WRITE BACKSTOP (0.9.0, ADR-0027) — a row tagged `api-write`
+#      proves its act with probe evidence; that evidence must be bound by
+#      --source-ref seq:<N> to a captured sanctioned write probe
+#      (write-probe-gate.js) on a config that allows API writes, else
+#      OVERRIDE.
 #
 #   4. WRITE .qa/runs/<run-id>/verification.json — a JSON array, one record
 #      per checked criterion:
@@ -290,6 +301,7 @@ PROVENANCE_SH="$HERE/provenance.sh"
 TOOLSTREAM_SH="$HERE/toolstream.sh"
 STATE_MACHINE_JSON="$HERE/../skills/checkpointing-qa-memory/references/state-machine.json"
 PARSE_SESSION_LOG_JS="$HERE/../skills/driving-browser-qa/scripts/parse-session-log.js"
+WRITE_PROBE_GATE_JS="$HERE/../skills/probing-apis-through-browser/scripts/write-probe-gate.js"
 CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
 KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
 
@@ -445,6 +457,26 @@ if not isinstance(tags, list):
 tags = [str(t) for t in tags]
 sys.exit(0 if ("cross-tenant" in tags or "cross-role-fk-chain" in tags) else 1)
 ' "$row" >/dev/null 2>&1
+  fi
+}
+
+# row_has_tag <checklist-row-json> <tag> — true (exit 0) iff the row's tags
+# array contains <tag> (string compare). Absent/malformed row -> false.
+row_has_tag() {
+  local row="$1" tag="$2"
+  [[ -z "$row" ]] && return 1
+  if has_jq; then
+    jq -e --arg t "$tag" '(.tags // []) | type == "array" and (map(tostring) | index($t)) != null' <<< "$row" >/dev/null 2>&1
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+tags = d.get("tags") if isinstance(d, dict) else None
+sys.exit(0 if isinstance(tags, list) and sys.argv[2] in [str(t) for t in tags] else 1)
+' "$row" "$tag" >/dev/null 2>&1
   fi
 }
 
@@ -1107,6 +1139,101 @@ maybe_redrive() {
 # `.verifierVerdict` back OUT of the printed JSON (see rec_verdict below),
 # never via a side-channel global.
 # ---------------------------------------------------------------------------
+# identity_binding <run-id> <persona> — the persona-identity check of Step
+# 3.5, factored out (0.9.0) so a persona-scoped pass and a persona-less
+# shared pass resolved to its row's role run the SAME logic. Results land in
+# globals (bash cannot return arrays): IB_OVERRIDE (0|1), IB_LOW (0|1) and
+# IB_REASONS (array). See process_criterion's Step 3.5 comment.
+IB_OVERRIDE=0; IB_LOW=0; IB_REASONS=()
+identity_binding() {
+  local run_id="$1" persona="$2"
+  IB_OVERRIDE=0; IB_LOW=0; IB_REASONS=()
+  local identity_rel identity_full
+  identity_rel="evidence/${persona}/identity.json"
+  identity_full="$(run_dir "$run_id")/${identity_rel}"
+
+  if [[ ! -f "$identity_full" ]] || [[ ! -s "$identity_full" ]] || ! json_is_valid "$identity_full"; then
+    IB_LOW=1
+    IB_REASONS+=("persona identity unverified: no ${identity_rel} recorded for this run — persona-identity binding degrades rather than blocks on an unverifiable identity (spec §5.5)")
+  else
+    local id_method id_subject
+    id_method="$(json_field "$identity_full" "method")"
+    id_subject="$(json_field "$identity_full" "capturedSubject")"
+
+    if [[ -z "$id_method" ]] || [[ "$id_method" == "none" ]]; then
+      IB_LOW=1
+      IB_REASONS+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
+    else
+      local expected="" cs_lower expected_lower persona_lower matched=0
+      expected="$(config_expected_subject_for "$persona")"
+      cs_lower="$(to_lower "$id_subject")"
+
+      if [[ -n "$expected" ]]; then
+        # Operator-provided ground truth is configured — this is the ONLY
+        # path allowed to OVERRIDE. Comparing a bare persona id to an
+        # opaque captured subject is never confident enough on its own
+        # (see the header comment's H3 fast-follow note); expectedSubject
+        # removes that ambiguity.
+        expected_lower="$(to_lower "$expected")"
+        if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
+          matched=1
+        fi
+
+        if [[ "$matched" -eq 1 ]]; then
+          : # verified — captured identity matches the operator-configured expectedSubject.
+        else
+          IB_OVERRIDE=1
+          IB_REASONS+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
+        fi
+      else
+        # No ground truth configured — a persona-id-vs-captured-subject
+        # comparison is inherently unreliable (a legitimate numeric id, a
+        # short hash, or a JWT `sub` claim is indistinguishable from a
+        # genuine impersonation by this heuristic alone). Substring match
+        # verifies; anything else DEGRADES — it must NEVER override,
+        # because an override here has no operator-confirmed ground truth
+        # behind it (that was the false-override bug: `admin` vs a
+        # legitimate `42` used to hard-fail every such run).
+        persona_lower="$(to_lower "$persona")"
+        if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
+          matched=1
+        fi
+
+        if [[ "$matched" -eq 1 ]]; then
+          : # verified — best-effort substring match against the persona id.
+        else
+          IB_LOW=1
+          IB_REASONS+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
+        fi
+      fi
+    fi
+  fi
+}
+
+# row_identity_persona <checklist-row-json> -> the persona whose run-level
+# identity capture applies to a persona-less (shared) pass: the row's
+# `persona`, else its `role`, when that is a simple token. Empty otherwise.
+row_identity_persona() {
+  local row="$1" v=""
+  [[ -z "$row" ]] && return 0
+  if has_jq; then
+    v="$(jq -r 'if (.persona | type) == "string" and (.persona | length) > 0 then .persona elif (.role | type) == "string" then .role else "" end' <<< "$row" 2>/dev/null)"
+  else
+    v="$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    d = {}
+p = d.get("persona") if isinstance(d, dict) else None
+r = d.get("role") if isinstance(d, dict) else None
+print(p if isinstance(p, str) and p else (r if isinstance(r, str) else ""))
+' "$row" 2>/dev/null)"
+  fi
+  case "$v" in ""|*/*|*\\*|*..*|-*|__shared__) return 0 ;; esac
+  printf '%s' "$v"
+}
+
 process_criterion() {
   local run_id="$1" crit_id="$2" persona="$3" confidence="$4" nonui_reason="$5" kinds_csv="$6"
   local -a reasons=()
@@ -1119,7 +1246,7 @@ process_criterion() {
   row="$(checklist_row_for "$run_id" "$crit_id")"
   if [[ -n "$row" ]]; then
     local rk_ext_path rk_eng
-    rk_ext_path="${PATH}:${BASH%/*}"
+    rk_ext_path="${PATH}:${BASH%/*}:/usr/bin:/bin"
     rk_eng="python3"; has_jq && rk_eng="jq"
     required_csv="$(QA_ENGINE="$rk_eng" PATH="$rk_ext_path" "$BASH" "$REQUIRED_KINDS_SH" derive "$row")" \
       || die "qa-verify.sh: required-kinds.sh derive failed for criterion '${crit_id}' (row: ${row})."
@@ -1237,6 +1364,36 @@ process_criterion() {
     fi
   done
 
+  # --- Step 3.4: the API-WRITE backstop (0.9.0, ADR-0027). A row tagged
+  # `api-write` proves its act with `probe` evidence instead of a human-action
+  # trace (required-kinds.sh). That swap is only sound if the probe really is
+  # the sanctioned recorded write: so its artifact must name, by
+  # --source-ref seq:<N>, a captured browser_evaluate whose payload is the
+  # sanctioned write probe (write-probe-gate.js, the same recogniser the
+  # block-hook uses), and the run's config must still allow API writes
+  # (allowApiWrites + a disposable marker + environment != production —
+  # never production). Anything else is an OVERRIDE: the api-write tag never
+  # removes the proof of the act, it only changes which evidence carries it.
+  # A pass that ALSO recorded (and passed) human-action evidence proved its
+  # act through the UI — the stronger path — so the backstop does not apply.
+  if [[ -n "$row" ]] && row_has_tag "$row" "api-write" \
+     && [[ ",${required_csv}," == *,probe,* && ",${required_csv}," != *,human-action,* ]] \
+     && [[ ",${kinds_csv}," != *,human-action,* ]]; then
+    local aw_rel aw_full aw_out
+    if [[ -n "$persona" ]]; then aw_rel="evidence/${persona}/${crit_id}/network-response.json"; else aw_rel="evidence/${crit_id}/network-response.json"; fi
+    aw_full="$(run_dir "$run_id")/${aw_rel}"
+    if ! command -v node >/dev/null 2>&1 || [[ ! -f "$WRITE_PROBE_GATE_JS" ]]; then
+      confidence="low"
+      reasons+=("api-write binding unchecked: node or write-probe-gate.js unavailable")
+    elif [[ -f "$aw_full" ]]; then
+      aw_out="$(node "$WRITE_PROBE_GATE_JS" verify-evidence "$aw_full" "$(toolstream_file_for "$run_id")" "$(qa_config_file)" 2>/dev/null)"
+      if [[ $? -ne 0 ]]; then
+        reasons+=("${aw_out:-api-write probe evidence could not be bound to a sanctioned write probe} ('${aw_rel}')")
+        override=1
+      fi
+    fi
+  fi
+
   # --- Step 3.5: persona-identity binding (Plan H3 Task 1, gap #6). See the
   # header comment's numbered walkthrough for the full rationale. Only a
   # PERSONA-SCOPED (non-empty, not the "__shared__" sentinel) HIGH-STAKES
@@ -1257,72 +1414,32 @@ process_criterion() {
   # never having been captured at all; same "ambiguous -> confidence:low"
   # doctrine as every other degrade in this function). ----------------------
   if [[ -n "$persona" ]] && [[ "$persona" != "__shared__" ]] && is_high_stakes "$kinds_csv" "$row"; then
-    local identity_rel identity_full
-    identity_rel="evidence/${persona}/identity.json"
-    identity_full="$(run_dir "$run_id")/${identity_rel}"
-
-    if [[ ! -f "$identity_full" ]] || [[ ! -s "$identity_full" ]] || ! json_is_valid "$identity_full"; then
-      confidence="low"
-      reasons+=("persona identity unverified: no ${identity_rel} recorded for this run — persona-identity binding degrades rather than blocks on an unverifiable identity (spec §5.5)")
-    else
-      local id_method id_subject
-      id_method="$(json_field "$identity_full" "method")"
-      id_subject="$(json_field "$identity_full" "capturedSubject")"
-
-      if [[ -z "$id_method" ]] || [[ "$id_method" == "none" ]]; then
-        confidence="low"
-        reasons+=("persona identity unverified: ${identity_rel} recorded method:none (the app exposes no probeable identity) — degrading confidence, not blocking (spec §5.5)")
-      else
-        local expected="" cs_lower expected_lower persona_lower matched=0
-        expected="$(config_expected_subject_for "$persona")"
-        cs_lower="$(to_lower "$id_subject")"
-
-        if [[ -n "$expected" ]]; then
-          # Operator-provided ground truth is configured — this is the ONLY
-          # path allowed to OVERRIDE. Comparing a bare persona id to an
-          # opaque captured subject is never confident enough on its own
-          # (see the header comment's H3 fast-follow note); expectedSubject
-          # removes that ambiguity.
-          expected_lower="$(to_lower "$expected")"
-          if str_contains "$cs_lower" "$expected_lower" || str_contains "$expected_lower" "$cs_lower"; then
-            matched=1
-          fi
-
-          if [[ "$matched" -eq 1 ]]; then
-            : # verified — captured identity matches the operator-configured expectedSubject.
-          else
-            override=1
-            reasons+=("acting identity '${id_subject}' != expected identity '${expected}' for persona '${persona}' (${identity_rel}, from .qa/config.json's personas[].expectedSubject) — this pass was performed as the wrong user")
-          fi
-        else
-          # No ground truth configured — a persona-id-vs-captured-subject
-          # comparison is inherently unreliable (a legitimate numeric id, a
-          # short hash, or a JWT `sub` claim is indistinguishable from a
-          # genuine impersonation by this heuristic alone). Substring match
-          # verifies; anything else DEGRADES — it must NEVER override,
-          # because an override here has no operator-confirmed ground truth
-          # behind it (that was the false-override bug: `admin` vs a
-          # legitimate `42` used to hard-fail every such run).
-          persona_lower="$(to_lower "$persona")"
-          if str_contains "$cs_lower" "$persona_lower" || str_contains "$persona_lower" "$cs_lower"; then
-            matched=1
-          fi
-
-          if [[ "$matched" -eq 1 ]]; then
-            : # verified — best-effort substring match against the persona id.
-          else
-            confidence="low"
-            reasons+=("persona identity unverified (no expectedSubject configured; captured subject '${id_subject}' could not be confidently matched to persona '${persona}')")
-          fi
-        fi
-      fi
-    fi
+    identity_binding "$run_id" "$persona"
+    [[ "$IB_OVERRIDE" -eq 1 ]] && override=1
+    [[ "$IB_LOW" -eq 1 ]] && confidence="low"
+    reasons+=(${IB_REASONS[@]+"${IB_REASONS[@]}"})
   elif { [[ -z "$persona" ]] || [[ "$persona" == "__shared__" ]]; } && is_high_stakes "$kinds_csv" "$row"; then
-    local persona_count
+    local persona_count row_persona
     persona_count="$(config_persona_count)"
     if [[ "$persona_count" =~ ^[0-9]+$ ]] && [[ "$persona_count" -gt 1 ]]; then
-      confidence="low"
-      reasons+=("persona identity unverified: this run's .qa/config.json declares ${persona_count} personas (role-sensitivity is real for this target), but this high-stakes pass was checkpointed with NO --persona at all — identity-binding was never checked, not exempted (Appendix A tighten)")
+      # 0.9.0 (ADR-0027): a SHARED criterion is run once, as the role its
+      # checklist row names (ADR-0012), and omitting --persona is correct for
+      # it. When that role's identity was captured for this run
+      # (evidence/<role>/identity.json — record-evidence.sh identity
+      # --persona <role>), bind THAT capture exactly as a persona-scoped pass
+      # would be bound (same verify / degrade / override rules). Only when
+      # there is no such capture does the pass degrade, and the reason now
+      # says how to fix it.
+      row_persona="$(row_identity_persona "$row")"
+      if [[ -n "$row_persona" && -s "$(run_dir "$run_id")/evidence/${row_persona}/identity.json" ]]; then
+        identity_binding "$run_id" "$row_persona"
+        [[ "$IB_OVERRIDE" -eq 1 ]] && override=1
+        [[ "$IB_LOW" -eq 1 ]] && confidence="low"
+        reasons+=(${IB_REASONS[@]+"${IB_REASONS[@]}"})
+      else
+        confidence="low"
+        reasons+=("persona identity unverified: this run's .qa/config.json declares ${persona_count} personas (role-sensitivity is real for this target), but this high-stakes pass was checkpointed with NO --persona and no run-level identity capture exists for its row's role${row_persona:+ '${row_persona}'} — record one with \`record-evidence.sh <run> <crit> identity --persona ${row_persona:-<role>} --subject <s> --method whoami\` at that role's login (a shared criterion then needs no --persona), or checkpoint the pass with --persona <id> (Appendix A tighten)")
+      fi
     fi
   fi
 
@@ -1698,15 +1815,19 @@ for line in out:
 # observe_rows <run-id> -> stdout SIX LINES PER ROW, same framing as
 # driver_rows: kind("net"|"console"), method, url, status, text, type("").
 #
-# Channel 1, in-page interception. Reads each toolstream line's
-# `responseBody`; when that string itself parses as a JSON object carrying
-# `network[]` / `console[]` it is an __qaObserve payload, and when it parses
-# as a JSON ARRAY of request records it is a browser_network_requests
-# result. Anything else is ignored — including a responseBody truncated by
-# capture-hook.sh's 4000-byte cap, which simply fails to parse and
-# contributes nothing. That loss is the cap's documented, accepted cost
-# (spec §11.1) and it can only ever HIDE a required finding, never invent
-# one, so it degrades this check rather than breaking it.
+# Channel 1, in-page interception + the driver's request list, read from the
+# toolstream by `toolstream.sh observed-rows`. Each event contributes its
+# capture-time `observed` field (0.9.0: the capture hook unwraps the real
+# MCP content array — an observe round's "### Result" JSON, or
+# browser_network_requests' markdown list — from the FULL tool_response
+# before truncation). Pre-0.9.0 toolstreams have no `observed`, so the
+# reader falls back to the responseBody: the legacy raw shapes (an
+# __qaObserve object, a JSON array of request records) and the MCP-wrapped
+# shapes. A responseBody truncated by capture-hook.sh's 4000-byte cap
+# mid-wrapper still contributes nothing — that loss can only ever HIDE a
+# required finding, never invent one. Before 0.9.0 this reader parsed only
+# the raw shapes, which the real driver never emits, so the channel was
+# "none" on every real run.
 #
 # Only `level == "error"` console entries are emitted. observe.js buffers
 # `error` and `warn`; a warning is not an observed error, and invariant I1
@@ -1716,93 +1837,16 @@ observe_rows() {
   local f
   f="$(toolstream_file_for "$1")"
   [[ -f "$f" ]] || return 0
-  if has_jq; then
-    jq -R -r '
-      def sane: if type == "string" then ((. / "\n") | join(" ")) | ((. / "\r") | join(" ")) else "" end;
-      def istr($v): ($v | type) == "string" and ($v | length) > 0;
-      def inum($v): ($v | type) == "number" and ($v == ($v | floor))
-                    and $v > -1000000000000000 and $v < 1000000000000000;
-      def netrow: "net", (.method | sane), (.url | sane), (.status | floor | tostring), "", "";
-      def conrow: "console", "", "", "", (.text | sane), "";
-      (try fromjson catch null) as $o
-      | if ($o | type) != "object" then empty
-        else
-          ( if ($o.responseBody | type) == "string"
-            then ($o.responseBody | try fromjson catch null)
-            else null end ) as $b
-          | if ($b | type) == "object" then
-              ( ( if ($b.network | type) == "array" then $b.network[] else empty end )
-                | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow ),
-              ( ( if ($b.console | type) == "array" then $b.console[] else empty end )
-                | select((type) == "object") | select(.level == "error") | select(istr(.text)) | conrow )
-            elif ($b | type) == "array" then
-              ( $b[] | select((type) == "object") | select(istr(.url) and inum(.status)) | netrow )
-            else empty end
-        end
-    ' "$f" 2>/dev/null || true
-  else
-    python3 -c '
-import json, sys
-
-def sane(v):
-    if not isinstance(v, str):
-        return ""
-    return v.replace("\n", " ").replace("\r", " ")
-
-def istr(v):
-    return isinstance(v, str) and len(v) > 0
-
-def fnum(v):
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return False
-    return v == int(v) and -1000000000000000 < v < 1000000000000000
-
-out = []
-
-def netrow(e):
-    out.extend(["net", sane(e.get("method")), sane(e.get("url")), str(int(e["status"])), "", ""])
-
-def conrow(e):
-    out.extend(["console", "", "", "", sane(e.get("text")), ""])
-
-with open(sys.argv[1]) as fh:
-    for line in fh:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            o = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(o, dict):
-            continue
-        rb = o.get("responseBody")
-        b = None
-        if isinstance(rb, str):
-            try:
-                b = json.loads(rb)
-            except Exception:
-                b = None
-        if isinstance(b, dict):
-            net = b.get("network")
-            if isinstance(net, list):
-                for e in net:
-                    if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
-                        netrow(e)
-            con = b.get("console")
-            if isinstance(con, list):
-                for e in con:
-                    if isinstance(e, dict) and e.get("level") == "error" and istr(e.get("text")):
-                        conrow(e)
-        elif isinstance(b, list):
-            for e in b:
-                if isinstance(e, dict) and istr(e.get("url")) and fnum(e.get("status")):
-                    netrow(e)
-
-for line in out:
-    print(line)
-' "$f" 2>/dev/null || true
-  fi
+  # 0.9.0 (ADR-0027): one shared reader in toolstream.sh, so the capture
+  # hook's extraction and this channel can never drift. It reads each
+  # event's capture-time `observed` field first, then the legacy raw shapes,
+  # then — for pre-0.9.0 toolstreams — the real MCP content-array
+  # responseBody (an observe round's "### Result" JSON, or
+  # browser_network_requests' "[GET] url => [200]" list). The engine this
+  # script resolved is forced on the reader so both stay on one engine.
+  local eng="python3"
+  has_jq && eng="jq"
+  QA_ENGINE="$eng" bash "$TOOLSTREAM_SH" observed-rows "$f" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------

@@ -638,4 +638,66 @@ else
   echo "SKIP - observe-payload cases: node not present on this host"
 fi
 
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — the capture-time `observed` field, built from the REAL
+# Playwright MCP response (content array + "### Result" markdown), and the
+# live self-checks the hook now reports through PostToolUse
+# additionalContext (stdout JSON; the call is never blocked).
+# ---------------------------------------------------------------------------
+TSFX="$ROOT/tests/toolstream/fixtures"
+MCPP="mcp__plugin_playwright_playwright__"
+hook_evt() { # <tool-name> <tool-input-json> <response-fixture-file> -> stdin JSON for the hook
+  jq -cn --arg t "$1" --argjson i "$2" --slurpfile r "$3" '{tool_name: $t, tool_input: $i, tool_response: $r[0], session_id: "s"}'
+}
+run_hook() { # <engine> <event-json> -> hook stdout (exit code checked separately)
+  ( cd "$WORK" && printf '%s' "$2" | QA_ENGINE="$1" bash "$HOOK" 2>/dev/null )
+}
+for ENG in jq python3; do
+  setup_run
+  OUT="$(run_hook "$ENG" "$(hook_evt "${MCPP}browser_evaluate" '{"function":"() => window.__qaObserve({})"}' "$TSFX/mcp-observe-round.response.json")")"
+  L="$(tail -n1 "$(TF)")"
+  check "[$ENG] observe round: event carries observed.source observe" "$(jq -r '.observed.source' <<< "$L")" "observe"
+  check "[$ENG] observe round: observed keeps the console error the 4KB cap would cut" "$(jq -r '.observed.console[0].level' <<< "$L")" "error"
+  check "[$ENG] observe round: responseBody is still capped" "$(jq -r '.responseBody | length <= 4000' <<< "$L")" "true"
+  check "[$ENG] observe round: a captured channel needs no canary (stdout empty)" "$OUT" ""
+
+  OUT="$(run_hook "$ENG" "$(hook_evt "${MCPP}browser_evaluate" '{"function":"() => window.__qaObserve({}).domDigest.liveText"}' "$TSFX/mcp-observe-projection.response.json")")"
+  check "[$ENG] projection AFTER a captured round: no canary" "$OUT" ""
+
+  setup_run
+  OUT="$(run_hook "$ENG" "$(hook_evt "${MCPP}browser_evaluate" '{"function":"() => window.__qaObserve({}).domDigest.liveText"}' "$TSFX/mcp-observe-projection.response.json")")"
+  check "[$ENG] first observe is a projection: canary is PostToolUse additionalContext" "$(jq -r '.hookSpecificOutput.hookEventName' <<< "$OUT")" "PostToolUse"
+  contains "[$ENG] first observe is a projection: canary says the channel is not captured" "$(jq -r '.hookSpecificOutput.additionalContext' <<< "$OUT")" "findings-channel check FAILED"
+  check "[$ENG] projection event has no observed field" "$(tail -n1 "$(TF)" | jq -r 'has("observed")')" "false"
+
+  setup_run
+  OUT="$(run_hook "$ENG" "$(hook_evt "${MCPP}browser_network_requests" '{"static":false}' "$TSFX/mcp-network-requests.response.json")")"
+  check "[$ENG] network list: event carries observed.source network-requests" "$(tail -n1 "$(TF)" | jq -r '.observed.source')" "network-requests"
+  check "[$ENG] network list: 5 rows" "$(tail -n1 "$(TF)" | jq -r '.observed.network | length')" "5"
+
+  setup_run
+  OUT="$(run_hook "$ENG" "$(hook_evt "${MCPP}browser_navigate" '{"url":"https://app.test/x"}' "$TSFX/mcp-navigate.response.json")")"
+  contains "[$ENG] navigate: load-window reminder in additionalContext" "$(jq -r '.hookSpecificOutput.additionalContext' <<< "$OUT")" "browser_network_requests before any other navigation"
+
+  # save-session probe: once, at the run's 3rd captured browser call
+  setup_run
+  printf '%s' '{"humanInteraction":{"saveSession":true,"sessionLogDir":".playwright-mcp"}}' > "$WORK/.qa/config.json"
+  SNAPEVT="$(hook_evt "${MCPP}browser_snapshot" '{}' "$TSFX/mcp-navigate.response.json")"
+  O1="$(run_hook "$ENG" "$SNAPEVT")"; O2="$(run_hook "$ENG" "$SNAPEVT")"; O3="$(run_hook "$ENG" "$SNAPEVT")"; O4="$(run_hook "$ENG" "$SNAPEVT")"
+  check "[$ENG] save-session probe: silent on calls 1-2" "$O1$O2" ""
+  contains "[$ENG] save-session probe: 3rd call says --save-session is off" "$(jq -r '.hookSpecificOutput.additionalContext' <<< "$O3")" "--save-session"
+  contains "[$ENG] save-session probe: names the opt-out" "$(jq -r '.hookSpecificOutput.additionalContext' <<< "$O3")" "humanInteraction.saveSession:false"
+  check "[$ENG] save-session probe: said once (4th call silent)" "$O4" ""
+  setup_run
+  printf '%s' '{"humanInteraction":{"saveSession":true,"sessionLogDir":".playwright-mcp"}}' > "$WORK/.qa/config.json"
+  mkdir -p "$WORK/.playwright-mcp/session-1"; printf '### Tool call: browser_snapshot\n' > "$WORK/.playwright-mcp/session-1/session.md"
+  run_hook "$ENG" "$SNAPEVT" >/dev/null; run_hook "$ENG" "$SNAPEVT" >/dev/null
+  check "[$ENG] save-session probe: a fresh session log -> silent" "$(run_hook "$ENG" "$SNAPEVT")" ""
+  rm -rf "$WORK/.playwright-mcp"
+  setup_run
+  printf '%s' '{"humanInteraction":{"saveSession":false}}' > "$WORK/.qa/config.json"
+  run_hook "$ENG" "$SNAPEVT" >/dev/null; run_hook "$ENG" "$SNAPEVT" >/dev/null
+  check "[$ENG] save-session probe: saveSession:false acknowledges the degrade -> silent" "$(run_hook "$ENG" "$SNAPEVT")" ""
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

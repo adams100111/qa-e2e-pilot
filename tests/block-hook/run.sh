@@ -242,4 +242,103 @@ OUT="$(printf '%s' "$(evt "$EVAL_TOOL" "$in3")" | CLAUDE_PLUGIN_ROOT="$FAKEROOT"
 check "classifier crash (require throws): fail-open exit 0, not a wrongful deny" "$RC" "0"
 rm -rf "$FAKEROOT" "$HERE/.err4"
 
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — the LOAD-WINDOW gate on browser_navigate. Real runs lost
+# 7 and 4 auxiliary navigations (login / locale switch / logout recovery) to
+# qa-verify's load-window check; the deny now lands on the NEXT navigate,
+# while browser_network_requests can still close the window. Both engines.
+# ---------------------------------------------------------------------------
+LW="$(mktemp -d)"
+NETREQ_TOOL="mcp__plugin_playwright_playwright__browser_network_requests"
+lw_seed() { # <tool...> — a fresh active run whose toolstream holds these tools in order
+  rm -rf "$LW/.qa"; mkdir -p "$LW/.qa/runs/r1"; printf 'r1\n' > "$LW/.qa/runs/latest"
+  local n=0 t
+  for t in "$@"; do n=$((n+1)); printf '{"tool":"%s","args":{},"responseBody":"","seq":%d,"ts":"2026-10-01T00:00:0%dZ"}\n' "$t" "$n" "$((n % 10))" >> "$LW/.qa/runs/r1/toolstream.jsonl"; done
+}
+lw_hook() { # <engine> -> sets OUT/RC for a navigate call made from $LW
+  OUT="$(cd "$LW" && printf '%s' "$(evt "$NAV_TOOL" '{"url":"https://app.test/next"}')" | QA_ENGINE="$1" bash "$HOOK" 2>/dev/null)"; RC=$?
+}
+for ENG in jq python3; do
+  lw_seed "$NAV_TOOL" "mcp__plugin_playwright_playwright__browser_snapshot"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: navigate after an UNCOVERED navigate -> deny (exit 2)" "$RC" "2"
+  check "[$ENG] load-window: deny payload is a valid PreToolUse deny" "$(deny_json_ok "$OUT" && echo yes)" "yes"
+  contains "[$ENG] load-window: the reason says what to call" "$OUT" "Call browser_network_requests now"
+  lw_seed "$NAV_TOOL" "mcp__plugin_playwright_playwright__browser_click" "$NETREQ_TOOL"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: previous navigate covered -> allow" "$RC" "0"
+  lw_seed "mcp__plugin_playwright_playwright__browser_snapshot"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: first navigation of the run -> allow" "$RC" "0"
+  lw_seed "$NAV_TOOL" "$NETREQ_TOOL" "$NAV_TOOL"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: only the LAST navigate matters (second one open) -> deny" "$RC" "2"
+  lw_seed "$NAV_TOOL" "mcp__plugin_playwright_playwright__browser_navigate_back"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: navigate_back neither covers nor opens a window -> still deny" "$RC" "2"
+  lw_seed "$NAV_TOOL"
+  printf '%s' '{"enforcement":{"loadWindowGate":false}}' > "$LW/.qa/config.json"
+  lw_hook "$ENG"
+  check "[$ENG] load-window: enforcement.loadWindowGate:false -> allow" "$RC" "0"
+done
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — THE SANCTIONED RECORDED WRITE PROBE. API-only criteria
+# (authz / server-422 assertions) on a disposable env were blocked outright on
+# a real run. The ONE admitted mutating evaluate: backend-probe.js verbatim +
+# exactly one strict-JSON probe() call, and only when the config allows API
+# writes (never production). Everything else stays denied.
+# ---------------------------------------------------------------------------
+WP="$(mktemp -d)"; mkdir -p "$WP/.qa"
+PROBE_SRC="$(cat "$ROOT/skills/probing-apis-through-browser/scripts/backend-probe.js")"
+wp_payload() { jq -cn --arg f "async () => {
+${PROBE_SRC}
+$1
+}" '{function: $f}'; }
+wp_cfg() { printf '%s' "$1" > "$WP/.qa/config.json"; }
+wp_hook() { OUT="$(cd "$WP" && printf '%s' "$(evt "$EVAL_TOOL" "$1")" | bash "$HOOK" 2>/dev/null)"; RC=$?; }
+OK_CALL='return await probe({"url": "/hackathons/12/registrations/7", "method": "PATCH", "body": {"hackathon_path_id": 3}, "allowWrite": true, "csrf": "laravel-xsrf"});'
+DISPOSABLE='{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"disposable"}'
+wp_cfg "$DISPOSABLE"
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: sanctioned shape + disposable env -> allowed" "$RC" "0"
+wp_hook "$(wp_payload 'return await probe({"url": "/api/x"});')"
+check "write probe: a read-only GET probe is allowed (not a write at all)" "$RC" "0"
+wp_cfg '{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"production"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: environment production -> denied" "$RC" "2"
+contains "write probe: production denial names the reason" "$OUT" "environment is production"
+wp_cfg '{"allowApiWrites":false,"seedableEnvMarker":"ddev-local-qa"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: allowApiWrites false -> denied" "$RC" "2"
+wp_cfg '{"allowApiWrites":true,"seedableEnvMarker":"QA_DISPOSABLE_ENV"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: the bootstrap sentinel marker is not disposable -> denied" "$RC" "2"
+wp_cfg "$DISPOSABLE"
+wp_hook "$(wp_payload "document.title = 'x'; $OK_CALL")"
+check "write probe: extra code beside the call -> denied" "$RC" "2"
+wp_hook "$(wp_payload "return await probe({url: '/api/x', method: 'POST', allowWrite: true});")"
+check "write probe: a JS object literal (not strict JSON) -> denied" "$RC" "2"
+wp_hook "$(wp_payload 'return await probe({"url": "https://evil.example/x", "method": "POST", "allowWrite": true});')"
+check "write probe: an absolute (cross-origin) url -> denied" "$RC" "2"
+wp_hook "$(wp_payload 'return await probe({"url": "/api/x", "method": "POST"});')"
+check "write probe: allowWrite missing -> denied" "$RC" "2"
+wp_hook "$(jq -cn --arg f "async () => { ${PROBE_SRC//fetch(url, init)/fetch(url, Object.assign(init, {method: 'DELETE'}))} $OK_CALL }" '{function: $f}')"
+check "write probe: an edited backend-probe.js -> denied" "$RC" "2"
+wp_hook '{"function":"() => fetch(\"/api/x\", {\"method\": \"POST\"})"}'
+check "classifier: a JSON-quoted method key is now recognised as a write -> denied" "$RC" "2"
+contains "write probe: the generic denial points at the sanctioned path" "$OUT" "sanctioned write probe"
+rm -rf "$WP"
+
+lw_seed "$NAV_TOOL"
+touch -t 202001010000 "$LW/.qa/runs/r1/toolstream.jsonl"
+lw_hook jq
+check "load-window: a finished (stale) run's toolstream does not gate later browsing" "$RC" "0"
+lw_seed "$NAV_TOOL"
+OUT="$(cd "$LW" && printf '%s' "$(evt "mcp__plugin_playwright_playwright__browser_navigate_back" '{}')" | bash "$HOOK" 2>/dev/null)"; RC=$?
+check "load-window: browser_navigate_back itself is never gated" "$RC" "0"
+rm -rf "$LW/.qa/runs/latest"
+lw_hook jq
+check "load-window: no active run -> allow (fail-open)" "$RC" "0"
+rm -rf "$LW"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

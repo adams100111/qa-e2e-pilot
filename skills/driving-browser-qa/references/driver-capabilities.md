@@ -15,6 +15,8 @@ The skills call browser tools **by capability**, never by a hard-coded server na
 | press key | `browser_press_key` | `stagehand_act` ("press …") | `send_keys` |
 | select option | `browser_select_option` | `stagehand_act` | `select_dropdown_option` |
 | hover | `browser_hover` | `stagehand_act` ("hover …") | — |
+| drag one element onto another | `browser_drag` | `stagehand_act` ("drag …") | — |
+| drop external data onto an element | `browser_drop` | — | — |
 | **run JS in page (`evaluate`)** | `browser_evaluate` | ⚠️ usually none | ⚠️ usually none |
 | upload file | `browser_file_upload` | `stagehand_act` | `upload_file` |
 | handle dialog | `browser_handle_dialog` | (auto) | (auto) |

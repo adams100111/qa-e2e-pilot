@@ -194,6 +194,55 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 0.9.0 — structured classification first (ADR-0027). Regression fixtures are
+# the real read-only rows two runs on 2026-10-01 lost to prose false positives
+# (sanitized excerpts), plus a genuine UI write and an API write that must
+# stay mutating. Asserted under jq AND the python3 fallback.
+# ---------------------------------------------------------------------------
+FIX="$HERE/fixtures/real-runs-2026-10-01.jsonl"
+PYBIN=""
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  PYBIN="$WORK/fakebin-no-jq-2"; mkdir -p "$PYBIN"
+  for tool in bash python3 grep cat dirname basename mkdir; do
+    TOOL_PATH="$(type -P "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$PYBIN/$tool"
+  done
+fi
+derive_both() { # <label> <json> <want>
+  check "$1 [jq]" "$(bash "$M" derive "$2")" "$3"
+  if [[ -n "$PYBIN" ]]; then
+    check "$1 [python3]" "$(PATH="$PYBIN" "$(type -P bash)" "$M" derive "$2")" "$3"
+  fi
+}
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  rid="$(jq -r '.row.id' <<< "$line")"; want="$(jq -r '.want' <<< "$line")"
+  derive_both "real-run fixture ${rid} classifies ${want}" "$(jq -c '.row' <<< "$line")" "$want"
+done < "$FIX"
+
+derive_both "rule 3: mutates:false overrides a prose verb" '{"action":"Click Save to create the record","mutates":false}' "false"
+derive_both "rule 3: mutates:true forces true on read prose" '{"action":"View the dashboard","mutates":true}' "true"
+derive_both "rule 1: kinds human-action outranks mutates:false" '{"kinds":["human-action"],"mutates":false}' "true"
+derive_both "rule 2: httpMethod POST outranks the read-only tag" '{"httpMethod":"POST","tags":["read-only"]}' "true"
+derive_both "rule 4: read-only tag suppresses a prose verb" '{"action":"Open the edit form and read it","tags":["read-only"]}' "false"
+# run desk-group-scope DG10/DG11/DG26/DG27/DG31: tagged read-only AND
+# human-action with humanAction:true — they drive a control (a switcher, a
+# search box) and write nothing. 0.8.1 ignored humanAction and passed them on
+# computed evidence; the read-only tag keeps it that way.
+derive_both "rule 4: read-only outranks humanAction:true (drives a control, writes nothing)" '{"action":"Open the switcher and type in its search box","tags":["read-only","human-action"],"humanAction":true}' "false"
+derive_both "rule 5: humanAction:true on a row that is not read-only -> true" '{"action":"view the page","humanAction":true}' "true"
+derive_both "prose: negated clause is ignored" '{"action":"Fill the form but do not submit it"}' "false"
+derive_both "prose: 'without saving' is ignored" '{"action":"Close the dialog without saving changes"}' "false"
+derive_both "prose: the clause after the negation still counts" '{"action":"Do not refresh; submit the form"}' "true"
+derive_both "prose: a verb inside a URL path is ignored" '{"action":"Open /admin/items/create and read the heading"}' "false"
+derive_both "prose: bare noun 'set' is not a verb" '{"action":"Compare the result set with the oracle"}' "false"
+derive_both "prose: 'set X to Y' is still a write" '{"action":"Set the status to closed"}' "true"
+derive_both "prose: 'set the toggle on' is still a write" '{"action":"set the toggle on"}' "true"
+derive_both "prose: uppercase PATCH names a write request" '{"action":"As p1 PATCH the registration"}' "true"
+derive_both "prose: lowercase 'post' is an ordinary word" '{"action":"Read the latest blog post"}' "false"
+derive_both "prose: multi-line action is classified as one text" '{"action":"Read the list\nthen create a row"}' "true"
+
+# ---------------------------------------------------------------------------
 # malformed input -> non-zero exit, no stray output
 # ---------------------------------------------------------------------------
 

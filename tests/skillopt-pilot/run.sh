@@ -33,7 +33,18 @@ SKILLOPT_SLEEP_REPO="$tmp/missing" SKILLOPT_PYTHON="$fake_python" \
 check "missing SkillOpt checkout rejected" "$([[ "$rc" -ne 0 ]] && echo yes || echo no)" "yes"
 check "missing checkout error is explicit" "$(grep -c 'SkillOpt source checkout not found' "$tmp/missing.out" || true)" "1"
 
-export SKILLOPT_SLEEP_REPO="/home/dev/.local/share/skillopt"
+# Hermetic stand-ins for the machine-specific SkillOpt checkout and the default
+# backend's `codex` CLI: the runner only checks that they exist (every python
+# call goes to the fake interpreter above), so the suite no longer depends on
+# one developer's home directory or on codex being installed.
+fake_checkout="$tmp/skillopt"
+mkdir -p "$fake_checkout/scripts" "$tmp/bin"
+: >"$fake_checkout/scripts/train.py"
+: >"$fake_checkout/scripts/eval_only.py"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$tmp/bin/codex"
+chmod +x "$tmp/bin/codex"
+export PATH="$tmp/bin:$PATH"
+export SKILLOPT_SLEEP_REPO="$fake_checkout"
 export SKILLOPT_PYTHON="$fake_python"
 export SKILLOPT_TEST_LOG="$log"
 export SKILLOPT_OUTPUT_ROOT="$tmp/out"
