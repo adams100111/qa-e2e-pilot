@@ -5,6 +5,13 @@
 #   - a MUTATING browser_evaluate (never sanctioned on any phase: arrange
 #     seeds via a gated API write / browser_type; observe is read-only)
 #   - browser_run_code_unsafe (RCE-equivalent; any payload)
+#   - a browser_navigate while the run's PREVIOUS navigation has not yet been
+#     followed by browser_network_requests (0.9.0 load-window gate — the
+#     deny is lifted by making that call; see load_window_gate)
+#   - EXCEPT the sanctioned recorded write probe (0.9.0, ADR-0027): a
+#     mutating browser_evaluate that is exactly backend-probe.js + one
+#     probe(<JSON>) call, admitted only when allowApiWrites + a disposable-env
+#     marker + environment != production (see write-probe-gate.js)
 #
 # Everything else — browser_navigate (legit arrange-entry), a read-only
 # evaluate, human-path act tools, Bash, ... — is NEVER live-blocked here.
@@ -76,6 +83,67 @@ has_jq() {
 has_py() { command -v python3 >/dev/null 2>&1; }
 has_node() { command -v node >/dev/null 2>&1; }
 
+# load_window_gate — deny a browser_navigate when the run's PREVIOUS
+# browser_navigate (per the capture hook's toolstream) has not yet been
+# followed by a browser_network_requests. No active run / no toolstream / no
+# prior navigation / gate disabled / any read error -> allow.
+load_window_gate() {
+  local qa_base=".qa/runs" run_id tsf gate=""
+  [[ -f "${qa_base}/latest" ]] || return 0
+  run_id="$(tr -d '[:space:]' < "${qa_base}/latest" 2>/dev/null || true)"
+  [[ -z "$run_id" ]] && return 0
+  case "$run_id" in */*|*\\*|*..*|-*) return 0 ;; esac
+  tsf="${qa_base}/${run_id}/toolstream.jsonl"
+  [[ -s "$tsf" ]] || return 0
+  # Only a LIVE run is gated: .qa/runs/latest outlives the run, so a
+  # toolstream untouched for QA_LOAD_WINDOW_STALE_MIN minutes (default 120)
+  # belongs to a finished run and must not gate unrelated browsing.
+  local stale_min="${QA_LOAD_WINDOW_STALE_MIN:-120}"
+  [[ "$stale_min" =~ ^[0-9]+$ ]] || stale_min=120
+  [[ -n "$(find "$tsf" -mmin "-${stale_min}" 2>/dev/null)" ]] || return 0
+
+  if [[ -f ".qa/config.json" ]]; then
+    if has_jq; then
+      gate="$(jq -r 'if .enforcement.loadWindowGate == false then "off" else "" end' .qa/config.json 2>/dev/null)"
+    elif has_py; then
+      gate="$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print("off" if (d.get("enforcement") or {}).get("loadWindowGate") is False else "")
+except Exception:
+    print("")' .qa/config.json 2>/dev/null)"
+    fi
+  fi
+  [[ "$gate" == "off" ]] && return 0
+
+  # The ordered tool names; walk back from the end to the last navigate.
+  local tools state="none" t
+  if has_jq; then
+    tools="$(jq -R -r 'try (fromjson | .tool // empty | strings) catch empty' "$tsf" 2>/dev/null)" || return 0
+  elif has_py; then
+    tools="$(python3 -c 'import json,sys
+for line in open(sys.argv[1]):
+    try:
+        t = json.loads(line).get("tool")
+    except Exception:
+        continue
+    if isinstance(t, str):
+        print(t)' "$tsf" 2>/dev/null)" || return 0
+  else
+    return 0
+  fi
+  while IFS= read -r t; do
+    case "$t" in
+      *browser_network_requests) state="covered" ;;
+      *browser_navigate) state="open" ;;
+    esac
+  done <<< "$tools"
+  if [[ "$state" == "open" ]]; then
+    deny "load-window gate: the previous browser_navigate in this run has not been followed by browser_network_requests. Call browser_network_requests now (it reads the load window of the page you are on, where a navigation-time 5xx lives), then retry this navigation. qa-verify fails the run on every uncovered navigation; set enforcement.loadWindowGate:false to turn this live deny off."
+  fi
+  return 0
+}
+
 main() {
   local input
   input="$(cat 2>/dev/null || true)"
@@ -106,6 +174,23 @@ main() {
   # mutation classifier understands).
   if [[ "$tool_name" == *browser_run_code_unsafe ]]; then
     deny "browser_run_code_unsafe is never sanctioned on any phase (RCE-equivalent; arrange via a gated API/type, observe read-only)"
+  fi
+
+  # browser_navigate -- the LOAD-WINDOW gate (0.9.0, ADR-0027). qa-verify
+  # fails a run (__run-checks__) whenever a browser_navigate is not followed
+  # by a browser_network_requests before the next navigation, because a
+  # navigation-time 5xx is the DOCUMENT request and only the driver's request
+  # list can see it. Two real runs lost 7 and 4 auxiliary navigations (login,
+  # locale switch, logout recovery) to that check, discovered only at verify
+  # time, when the gap can no longer be closed. Deny the NEXT navigation
+  # instead, while calling browser_network_requests still fixes it.
+  # browser_navigate_back is exempt (it is exempt from the check too).
+  # Fail-open like every other path here; `enforcement.loadWindowGate:false`
+  # turns the deny off (the capture hook's reminder and qa-verify's check
+  # still apply).
+  if [[ "$tool_name" == *browser_navigate ]]; then
+    load_window_gate
+    return 0
   fi
 
   # Only browser_evaluate is further inspected. Everything else --
