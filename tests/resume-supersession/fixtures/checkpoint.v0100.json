@@ -1,0 +1,131 @@
+{
+ "criteria": [
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T13:56:44Z",
+   "confidence": "high",
+   "criterion_id": "RCL-A1-create-toggle-default-on",
+   "evidence_refs": [],
+   "kinds": [
+    "computed"
+   ],
+   "last_action": "sanitized excerpt of the real run: shared recorded pass",
+   "nonUiActionReason": null,
+   "persona": "",
+   "phase": "verify",
+   "verdict": "pass"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T14:19:26Z",
+   "confidence": "high",
+   "criterion_id": "RCL-B1-decide-later-card-first",
+   "evidence_refs": [],
+   "kinds": [
+    "computed"
+   ],
+   "last_action": "sanitized excerpt of the real run: participant recorded pass",
+   "nonUiActionReason": null,
+   "persona": "participant",
+   "phase": "verify",
+   "verdict": "pass"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T14:31:53Z",
+   "confidence": "high",
+   "criterion_id": "RCL-C3-choose-challenge-with-discipline-ar RCL-D2-choose-in-screening-side-effects",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: shared recorded deferred",
+   "nonUiActionReason": null,
+   "persona": "",
+   "phase": "verify",
+   "verdict": "deferred"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T14:33:32Z",
+   "confidence": "high",
+   "criterion_id": "RCL-C3-choose-challenge-with-discipline-ar",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: shared recorded deferred",
+   "nonUiActionReason": null,
+   "persona": "",
+   "phase": "verify",
+   "verdict": "deferred"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T14:33:33Z",
+   "confidence": "high",
+   "criterion_id": "RCL-D2-choose-in-screening-side-effects",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: shared recorded deferred",
+   "nonUiActionReason": null,
+   "persona": "",
+   "phase": "verify",
+   "verdict": "deferred"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T14:47:06Z",
+   "confidence": "high",
+   "criterion_id": "RCL-C5-requirement-required-when-chosen",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: shared recorded deferred",
+   "nonUiActionReason": null,
+   "persona": "",
+   "phase": "verify",
+   "verdict": "deferred"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T15:07:23Z",
+   "confidence": "high",
+   "criterion_id": "RCL-C3-choose-challenge-with-discipline-ar",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: participant recorded blocked",
+   "nonUiActionReason": null,
+   "persona": "participant",
+   "phase": "verify",
+   "verdict": "blocked"
+  },
+  {
+   "bug_ref": null,
+   "checkpointed_at": "2026-10-01T15:13:30Z",
+   "confidence": "high",
+   "criterion_id": "RCL-D2-choose-in-screening-side-effects",
+   "evidence_refs": [],
+   "kinds": [
+    "bake",
+    "human-action"
+   ],
+   "last_action": "sanitized excerpt of the real run: participant recorded pass",
+   "nonUiActionReason": null,
+   "persona": "participant",
+   "phase": "verify",
+   "verdict": "pass"
+  },
+  {
+   "bug_ref": "rcl-participant-sheet-no-inline-error",
+   "checkpointed_at": "2026-10-01T16:19:19Z",
+   "confidence": "high",
+   "criterion_id": "RCL-C5-requirement-required-when-chosen",
+   "evidence_refs": [],
+   "kinds": [],
+   "last_action": "sanitized excerpt of the real run: participant recorded fail",
+   "nonUiActionReason": null,
+   "persona": "participant",
+   "phase": "verify",
+   "verdict": "fail"
+  }
+ ],
+ "findings": [],
+ "run_id": "rcl-fixture",
+ "updated_at": "2026-10-01T16:19:19Z"
+}
