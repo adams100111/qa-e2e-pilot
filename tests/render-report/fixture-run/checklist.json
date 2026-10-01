@@ -1,0 +1,10 @@
+[
+  {
+    "id": "C3",
+    "title": "Admin totals",
+    "oracle": "sum(rows) = 42",
+    "tags": [
+      "role-sensitive"
+    ]
+  }
+]

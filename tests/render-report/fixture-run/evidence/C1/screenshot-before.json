@@ -1,0 +1,18 @@
+{
+  "criterion_id": "C1",
+  "run_id": "fixture-run",
+  "kind": "screenshot",
+  "recorded_at": "2026-10-01T10:00:03Z",
+  "phase": "before",
+  "image": "screenshot-before.png",
+  "mime": "image/png",
+  "bytes": 519,
+  "sha256": "6529f4881248915301bc7c100840be7527a31efe9265770e335f2a43fb83c86e",
+  "fullPage": false,
+  "sourceFile": ".qa/runs/fixture-run/evidence/C1/screenshot-before.png",
+  "binding": "sha256",
+  "provenance": {
+    "sourceRef": "seq:3",
+    "boundAt": "2026-10-01T10:00:03Z"
+  }
+}

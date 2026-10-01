@@ -1,0 +1,9 @@
+{
+  "criterion_id": "C1",
+  "kind": "bake",
+  "readBack": {
+    "id": 2,
+    "name": "<b>Founder & Co</b>"
+  },
+  "multiplicity": "1"
+}

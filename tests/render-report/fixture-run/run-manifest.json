@@ -1,0 +1,20 @@
+{
+  "run_id": "fixture-run",
+  "target_feature": "Cap table \u2014 founders",
+  "build_id": "abc1234",
+  "base_url": "http://localhost:3000",
+  "started_at": "2026-10-01T10:00:00Z",
+  "ended_at": "2026-10-01T10:05:00Z",
+  "checklist": [
+    {
+      "criterion_id": "C1",
+      "label": "Add a founder persists 1-of-N",
+      "oracle": "count(founders) = baseline + 1"
+    },
+    {
+      "criterion_id": "C2",
+      "label": "Issuance amount at sub-cent price",
+      "oracle": "4,000,000 \u00d7 $0.001 = $4,000.00"
+    }
+  ]
+}
