@@ -1,0 +1,20 @@
+{
+  "criterion_id": "RCL-B2-register-decide-later",
+  "run_id": "rr",
+  "kind": "bake",
+  "recorded_at": "2026-10-01T03:33:46Z",
+  "readBack": {
+    "reg_id": 454,
+    "hackathon_path_id": null,
+    "status": "under_review",
+    "requirement_answers": [],
+    "bio": "QA RCL p7 decide later",
+    "participation_type": "join_path",
+    "unresolved_count_after": 6
+  },
+  "multiplicity": "1",
+  "provenance": {
+    "sourceRef": "tinker:HackathonRegistration::where(hackathon_id,88)->where(user_id,5343)",
+    "boundAt": "2026-10-01T03:33:46Z"
+  }
+}

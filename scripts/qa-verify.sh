@@ -1119,7 +1119,7 @@ process_criterion() {
   row="$(checklist_row_for "$run_id" "$crit_id")"
   if [[ -n "$row" ]]; then
     local rk_ext_path rk_eng
-    rk_ext_path="${PATH}:${BASH%/*}"
+    rk_ext_path="${PATH}:${BASH%/*}:/usr/bin:/bin"
     rk_eng="python3"; has_jq && rk_eng="jq"
     required_csv="$(QA_ENGINE="$rk_eng" PATH="$rk_ext_path" "$BASH" "$REQUIRED_KINDS_SH" derive "$row")" \
       || die "qa-verify.sh: required-kinds.sh derive failed for criterion '${crit_id}' (row: ${row})."

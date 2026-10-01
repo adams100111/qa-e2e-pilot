@@ -564,4 +564,47 @@ else
   echo "SKIP - jq-fallback sub-case: jq or python3 not present on this host, cannot exercise fallback"
 fi
 
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027): the optional `mutates` declaration — a boolean, and never
+# `false` beside a human-action requirement. Both engines.
+# ---------------------------------------------------------------------------
+cat > "$WORK/mutates-false-ok.json" <<'EOF'
+[{"id": "C-1", "surface": "/x", "kind": "business-rule", "tags": ["read-only"], "action": "Read the switch. Do NOT submit.", "mutates": false, "humanAction": false}]
+EOF
+cat > "$WORK/mutates-not-bool.json" <<'EOF'
+[{"id": "C-1", "surface": "/x", "kind": "business-rule", "tags": [], "action": "read", "mutates": "no"}]
+EOF
+cat > "$WORK/mutates-contradiction.json" <<'EOF'
+[{"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "click Save", "mutates": false, "humanAction": true}]
+EOF
+cat > "$WORK/mutates-contradiction-rk.json" <<'EOF'
+[{"id": "C-1", "surface": "/x", "kind": "happy-path", "tags": [], "action": "click Save", "mutates": false, "requiredKinds": ["human-action"]}]
+EOF
+VC_PYBIN=""
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  VC_PYBIN="$WORK/fakebin-no-jq-mutates"; mkdir -p "$VC_PYBIN"
+  for tool in bash python3 cat grep mktemp rm; do
+    TOOL_PATH="$(type -P "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$VC_PYBIN/$tool"
+  done
+fi
+for ENG in jq python3; do
+  if [[ "$ENG" == "python3" ]]; then
+    [[ -n "$VC_PYBIN" ]] || continue
+    runv() { PATH="$VC_PYBIN" "$(type -P bash)" "$V" "$@"; }
+  else
+    runv() { bash "$V" "$@"; }
+  fi
+  runv "$WORK/mutates-false-ok.json" >/dev/null 2>&1; rc=$?
+  check "[$ENG] mutates:false on a read-only row -> exit 0" "$rc" "0"
+  out="$(runv "$WORK/mutates-not-bool.json" 2>&1)"; rc=$?
+  check "[$ENG] mutates non-boolean -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "[$ENG] mutates non-boolean -> names entry[0].mutates" "$out" "entry[0].mutates: must be a boolean"
+  out="$(runv "$WORK/mutates-contradiction.json" 2>&1)"; rc=$?
+  check "[$ENG] mutates:false + humanAction:true -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+  check_contains "[$ENG] contradiction message" "$out" "entry[0].mutates: false contradicts"
+  runv "$WORK/mutates-contradiction-rk.json" >/dev/null 2>&1; rc=$?
+  check "[$ENG] mutates:false + requiredKinds human-action -> non-zero" "$([[ $rc -ne 0 ]] && echo nonzero || echo zero)" "nonzero"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

@@ -163,10 +163,16 @@
 # `seq:<N>` (or a bare integer `<N>`, an accepted shorthand for the same
 # thing), referencing a captured toolstream event's `seq` field. It resolves
 # ("bound") only if a toolstream event with that exact seq was actually
-# captured; anything else (malformed selector, or a seq no capture ever
-# wrote) -> "unbound" (a dangling sourceRef is itself a forgery signal — the
-# agent's claim of "this came from call N" is checked against reality, not
-# taken on faith). sourceRef only asserts the CALL is real, not that its
+# captured; a well-formed pointer naming a seq no capture ever wrote ->
+# "unbound" (a dangling sourceRef is itself a forgery signal — the agent's
+# claim of "this came from call N" is checked against reality, not taken on
+# faith). A value that is NOT a pointer at all (0.9.0: a description such as
+# "tinker:Model::find(1)" or "browser_network_requests") claims no call, so
+# it is ignored and the artifact is bound by CONTAINMENT exactly as if
+# --source-ref had been omitted — never weaker than omission, and no longer a
+# guaranteed AC-1 for an honest annotation. record-evidence.sh now refuses
+# such values at record time; this fallback keeps artifacts recorded by
+# <= 0.8.1 verifiable. sourceRef only asserts the CALL is real, not that its
 # content matches the evidence value — deliberately: this is the agent
 # pointing at ground truth ("that", not "something like that"), and having
 # pointed at a REAL entry is what's being verified.
@@ -298,7 +304,8 @@ check_jq() {
 
     ($art.kind // "") as $kind
     | ( ($art.provenance.sourceRef // null) | if . == null then "" elif type == "string" then . else tostring end ) as $sourceRef
-    | if ($sourceRef | length) > 0 then
+    | ( ($sourceRef | length) > 0 and ($sourceRef | test("^(seq:)?-?[0-9]+$")) ) as $isPointer
+    | if $isPointer then
         if resolve_source_ref($sourceRef; $events) then "bound" else "unbound" end
       elif $kind == "bake" then
         ( ($art.readBack // null) | leaves ) as $cands
@@ -441,7 +448,12 @@ kind = art.get("kind") or ""
 prov = art.get("provenance") or {}
 source_ref = prov.get("sourceRef") if isinstance(prov, dict) else None
 
-if source_ref:
+# Only a well-formed pointer (`seq:<N>` / bare `<N>`) is authoritative. A
+# DESCRIPTIVE value (e.g. "tinker:Model::find(1)") points at nothing, so it is
+# no claim at all: fall through to containment, exactly as if it were absent.
+if source_ref is not None and not isinstance(source_ref, str):
+    source_ref = json.dumps(source_ref) if not isinstance(source_ref, (int, float)) or isinstance(source_ref, bool) else str(source_ref)
+if source_ref and re.match(r'^(seq:)?-?[0-9]+$', str(source_ref)):
     print("bound" if resolve_source_ref(source_ref, events) else "unbound")
     sys.exit(0)
 

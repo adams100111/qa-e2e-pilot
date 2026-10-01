@@ -97,6 +97,40 @@ check "derive: downstream-cascade + mutating verb -> bake,human-action" \
   "$(bash "$R" derive '{"kind":"downstream-cascade","action":"Update the parent record"}')" "bake,human-action"
 
 # ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — the real false positives no longer demand human-action,
+# and an `api-write` row proves its act with `probe` evidence instead. Each
+# case is asserted under jq AND the python3 fallback.
+# ---------------------------------------------------------------------------
+RK_PYBIN=""
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  RK_PYBIN="$WORK/fakebin-no-jq-090"; mkdir -p "$RK_PYBIN"
+  for tool in bash python3 grep cat dirname basename mkdir sort; do
+    TOOL_PATH="$(type -P "$tool" 2>/dev/null || true)"
+    [[ -n "$TOOL_PATH" ]] && ln -sf "$TOOL_PATH" "$RK_PYBIN/$tool"
+  done
+fi
+rk_both() { # <label> <json> <want>
+  check "$1 [jq]" "$(bash "$R" derive "$2")" "$3"
+  [[ -n "$RK_PYBIN" ]] && check "$1 [python3]" "$(PATH="$RK_PYBIN" "$(type -P bash)" "$R" derive "$2")" "$3"
+}
+rk_both "DG18 shape (read-only computed-logic, 'as a set') -> computed only" \
+  '{"kind":"computed-logic","tags":["read-only"],"action":"Compare rows as a set (ties have no fixed order)."}' "computed"
+rk_both "A1 shape (read-only business-rule, 'Do NOT submit') -> computed only" \
+  '{"kind":"business-rule","tags":["read-only"],"action":"Open /admin/hackathons/create and read the switch. Do NOT submit the form."}' "computed"
+rk_both "J2 shape (read-only multiplicity-N, 'change marker') -> nothing (read-only suppresses bake too)" \
+  '{"kind":"multiplicity-N","tags":["read-only"],"action":"Read the change marker"}' ""
+rk_both "api-write row -> probe instead of human-action" \
+  '{"kind":"cross-tenant","tags":["probe-needed","api-write"],"action":"As p1 PATCH another user registration; expect 403"}' "probe"
+rk_both "api-write business-rule -> computed,probe" \
+  '{"kind":"business-rule","tags":["api-write"],"action":"As p9 POST the register endpoint without a challenge"}' "computed,probe"
+rk_both "api-write + structured humanAction:true keeps human-action" \
+  '{"kind":"happy-path","tags":["api-write"],"humanAction":true,"action":"Submit the form"}' "bake,human-action"
+rk_both "api-write + kinds human-action keeps human-action" \
+  '{"kind":"error-state","tags":["api-write"],"kinds":["human-action"],"action":"Submit"}' "human-action"
+rk_both "api-write on a non-mutating row adds nothing" \
+  '{"kind":"error-state","tags":["api-write"],"action":"Read the error banner"}' ""
+
+# ---------------------------------------------------------------------------
 # malformed input -> non-zero exit, no stray output
 # ---------------------------------------------------------------------------
 

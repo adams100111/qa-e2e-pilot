@@ -143,7 +143,7 @@ checkpoint_file() {
 write_latest() {
   local run_id="$1"
   local saved_path="$PATH"
-  PATH="${PATH}:${BASH%/*}"
+  PATH="${PATH}:${BASH%/*}:/usr/bin:/bin"
   mkdir -p "$QA_BASE"
   local dest="${QA_BASE}/latest"
   local tmp="${dest}.tmp.$$"
@@ -1083,7 +1083,7 @@ gate_required_kinds() {
   # re-exposes never causes an engine mismatch with checkpoint.sh's own
   # decision.
   local rk_ext_path rk_eng
-  rk_ext_path="${PATH}:${BASH%/*}"
+  rk_ext_path="${PATH}:${BASH%/*}:/usr/bin:/bin"
   rk_eng="python3"
   has_jq && rk_eng="jq"
 
@@ -1243,7 +1243,7 @@ cmd_upsert() {
   # scoped to this one command (not exported), so checkpoint.sh's OWN
   # has_jq/has_py elsewhere in this file still see the fakebin's restricted
   # PATH untouched.
-  local ext_path="${PATH}:${BASH%/*}"
+  local ext_path="${PATH}:${BASH%/*}:/usr/bin:/bin"
 
   # ${BASH%/*} is almost always /usr/bin, which ALSO holds jq — so the
   # PATH-append above can re-expose a jq the characterization suite's

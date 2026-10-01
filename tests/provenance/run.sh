@@ -39,9 +39,16 @@ SEQ1="$(jq -r '.seq' < "$WORK/.qa/runs/r1/toolstream.jsonl" | sed -n 1p)"
 BAKE_BOUND="$( cd "$WORK" && bash "$REC" r1 C1 bake --read-back '{"name":"Alice Founder","equity":42}' --multiplicity 1 )"
 BAKE_UNBOUND="$( cd "$WORK" && bash "$REC" r1 C2 bake --read-back '{"name":"Ghost Value Not Captured 999"}' --multiplicity 1 )"
 ACTION_BOUND="$( cd "$WORK" && bash "$REC" r1 C4 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click();"}]' )"
-ACTION_UNBOUND="$( cd "$WORK" && bash "$REC" r1 C5 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[]' )"
 BAKE_SOURCEREF_BOUND="$( cd "$WORK" && bash "$REC" r1 C6 bake --read-back '{"anything":"NOT-IN-TOOLSTREAM-XYZ"}' --multiplicity 1 --source-ref "seq:${SEQ1}" )"
-BAKE_SOURCEREF_DANGLING="$( cd "$WORK" && bash "$REC" r1 C7 bake --read-back '{"anything":"NOT-IN-TOOLSTREAM-XYZ"}' --multiplicity 1 --source-ref "seq:9999" )"
+# 0.9.0: record-evidence.sh now REFUSES an explicit empty --session-calls and a
+# dangling --source-ref at record time, so these two forgery-shaped artifacts
+# are written directly (an older writer, or a hand-forged file) — provenance.sh
+# must keep calling both unbound.
+mkdir -p "$WORK/.qa/runs/r1/evidence/C5" "$WORK/.qa/runs/r1/evidence/C7"
+printf '%s' '{"criterion_id":"C5","run_id":"r1","kind":"action-trace","actionUnderTest":"","steps":[{"tool":"browser_click","phase":"act"}],"sessionCalls":[]}' > "$WORK/.qa/runs/r1/evidence/C5/action-trace.json"
+ACTION_UNBOUND="evidence/C5/action-trace.json"
+printf '%s' '{"criterion_id":"C7","run_id":"r1","kind":"bake","readBack":{"anything":"NOT-IN-TOOLSTREAM-XYZ"},"multiplicity":"1","provenance":{"sourceRef":"seq:9999","boundAt":"2026-10-01T00:00:00Z"}}' > "$WORK/.qa/runs/r1/evidence/C7/bake-read-back.json"
+BAKE_SOURCEREF_DANGLING="evidence/C7/bake-read-back.json"
 
 # run r3: evidence recorded, but NO toolstream.jsonl ever written for it.
 BAKE_NOTOOLSTREAM="$( cd "$WORK" && bash "$REC" r3 C1 bake --read-back '{"x":1}' --multiplicity 1 )"
@@ -219,5 +226,99 @@ check "torn line: jq leg warns with skipped count" \
   "$(grep -c 'skipped 1 unparseable' "$WORK/torn-j.err" || true)" "1"
 check "torn line: python leg warns with skipped count" \
   "$(grep -c 'skipped 1 unparseable' "$WORK/torn-p.err" || true)" "1"
+
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — record-time validation + the descriptive-ref fallback.
+# Regression fixture: a sanitized excerpt of a real run (register-choose-
+# later, 2026-10-01) where every bake was recorded with a DESCRIPTIVE
+# --source-ref ("tinker:...") and qa-verify overrode 27 genuine passes as
+# AC-1 forgery. The captured Bash read-back really contains the values.
+# ---------------------------------------------------------------------------
+RR="$HERE/fixtures/real-run-2026-10-01"
+mkdir -p "$WORK/.qa/runs/rr/evidence/RCL-B2-register-decide-later"
+cp "$RR/toolstream.jsonl" "$WORK/.qa/runs/rr/toolstream.jsonl"
+cp "$RR/bake-read-back.descriptive-ref.json" "$WORK/.qa/runs/rr/evidence/RCL-B2-register-decide-later/bake-read-back.json"
+for ENGINE in "" python3; do
+  LABEL="${ENGINE:-jq(default)}"
+  check "[$LABEL] real-run: descriptive sourceRef falls back to containment -> bound" \
+    "$(run_check "$ENGINE" "rr" "evidence/RCL-B2-register-decide-later/bake-read-back.json")" "bound"
+done
+# ...and a descriptive ref on a value captured NOWHERE is still unbound (the
+# fallback is containment, never a free pass).
+mkdir -p "$WORK/.qa/runs/rr/evidence/FORGED"
+printf '%s' '{"criterion_id":"FORGED","kind":"bake","readBack":{"bio":"never-captured-zzz-123"},"multiplicity":"1","provenance":{"sourceRef":"tinker:Model::find(1)","boundAt":"2026-10-01T00:00:00Z"}}' \
+  > "$WORK/.qa/runs/rr/evidence/FORGED/bake-read-back.json"
+for ENGINE in "" python3; do
+  LABEL="${ENGINE:-jq(default)}"
+  check "[$LABEL] descriptive sourceRef on an uncaptured value -> unbound" \
+    "$(run_check "$ENGINE" "rr" "evidence/FORGED/bake-read-back.json")" "unbound"
+done
+
+# record-evidence.sh refuses, at record time, every value that can never verify.
+rec_rc() { ( cd "$WORK" && bash "$REC" "$@" >/dev/null 2>"$WORK/rec.err" ); echo $?; }
+check "record: descriptive --source-ref refused (non-zero)" \
+  "$([[ "$(rec_rc rr X1 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'tinker:HackathonRegistration::find(454)')" -ne 0 ]] && echo refused)" "refused"
+check "record: refusal message says to pass seq:<N> or omit" \
+  "$(grep -c 'pass --source-ref seq:<N>' "$WORK/rec.err")" "1"
+check "record: refused artifact was never written" \
+  "$([[ -e "$WORK/.qa/runs/rr/evidence/X1/bake-read-back.json" ]] && echo written || echo absent)" "absent"
+check "record: 'browser_network_requests' as --source-ref refused" \
+  "$([[ "$(rec_rc rr X2 probe --status 201 --shape '{}' --ok true --source-ref 'browser_network_requests')" -ne 0 ]] && echo refused)" "refused"
+check "record: dangling seq refused when a toolstream exists" \
+  "$([[ "$(rec_rc rr X3 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'seq:99999')" -ne 0 ]] && echo refused)" "refused"
+check "record: dangling-seq message names the toolstream" \
+  "$(grep -c 'names no event in' "$WORK/rec.err")" "1"
+RR_SEQ="$(jq -r 'select(.tool=="Bash") | .seq' "$WORK/.qa/runs/rr/toolstream.jsonl" | head -1)"
+check "record: a real seq:<N> is accepted" "$(rec_rc rr X4 bake --read-back '{"a":1}' --multiplicity 1 --source-ref "seq:${RR_SEQ}")" "0"
+check "record: bare-integer shorthand is accepted and normalized to seq:<N>" \
+  "$( rec_rc rr X5 bake --read-back '{"a":1}' --multiplicity 1 --source-ref "${RR_SEQ}" >/dev/null; jq -r '.provenance.sourceRef' "$WORK/.qa/runs/rr/evidence/X5/bake-read-back.json")" "seq:${RR_SEQ}"
+check "record: seq:<N> with no toolstream yet is accepted (shape-checked only)" \
+  "$(rec_rc nots X6 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'seq:3')" "0"
+check "record: ...but a descriptive ref is refused even with no toolstream" \
+  "$([[ "$(rec_rc nots X7 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'see bash output')" -ne 0 ]] && echo refused)" "refused"
+
+# --session-calls shapes that can never bind are refused (real run 1 recorded
+# plain strings; real run 2 recorded a {tool: count} map and an empty list).
+check "record: plain-string --session-calls refused" \
+  "$([[ "$(rec_rc rr X8 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '["click combobox","click option P"]')" -ne 0 ]] && echo refused)" "refused"
+check "record: plain-string refusal names the expected object shape" \
+  "$(grep -c 'class' "$WORK/rec.err")" "1"
+check "record: {tool: count} map --session-calls refused" \
+  "$([[ "$(rec_rc rr X9 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '{"browser_click":2}')" -ne 0 ]] && echo refused)" "refused"
+check "record: empty-list --session-calls refused" \
+  "$([[ "$(rec_rc rr X10 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[]')" -ne 0 ]] && echo refused)" "refused"
+check "record: non-JSON --session-calls refused" \
+  "$([[ "$(rec_rc rr X11 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls 'click Save')" -ne 0 ]] && echo refused)" "refused"
+check "record: object --session-calls naming a tool is accepted" \
+  "$(rec_rc rr X12 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' --session-calls '[{"tool":"browser_click"}]')" "0"
+# With NEITHER --session-calls nor --session-log, no sessionCalls key is
+# written (0.8.1 wrote an explicit [] — guaranteed unbound), so provenance
+# binds the act-phase steps against the captured interaction tools instead.
+check "record: no --session-calls/--session-log -> recorded" \
+  "$(rec_rc rr X13 action-trace --steps '[{"tool":"browser_click","phase":"act"}]')" "0"
+check "record: no --session-calls/--session-log -> no sessionCalls key" \
+  "$(jq -r 'has("sessionCalls")' "$WORK/.qa/runs/rr/evidence/X13/action-trace.json")" "false"
+for ENGINE in "" python3; do
+  LABEL="${ENGINE:-jq(default)}"
+  check "[$LABEL] steps-only action-trace + captured browser_click -> bound" \
+    "$(run_check "$ENGINE" "rr" "evidence/X13/action-trace.json")" "bound"
+done
+# the python3 writer agrees (jq masked from PATH)
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  RFB="$WORK/fakebin-rec-py"; mkdir -p "$RFB"
+  for tool in date mkdir cat python3 grep; do ln -sf "$(command -v "$tool")" "$RFB/$tool"; done
+  ( cd "$WORK" && PATH="$RFB" "$(command -v bash)" "$REC" rr P1 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'tinker:x' >/dev/null 2>&1 ); rc=$?
+  check "py-fallback record: descriptive --source-ref refused" "$([[ $rc -ne 0 ]] && echo refused)" "refused"
+  ( cd "$WORK" && PATH="$RFB" "$(command -v bash)" "$REC" rr P2 bake --read-back '{"a":1}' --multiplicity 1 --source-ref 'seq:99999' >/dev/null 2>&1 ); rc=$?
+  check "py-fallback record: dangling seq refused" "$([[ $rc -ne 0 ]] && echo refused)" "refused"
+  ( cd "$WORK" && PATH="$RFB" "$(command -v bash)" "$REC" rr P3 bake --read-back '{"a":1}' --multiplicity 1 --source-ref "seq:${RR_SEQ}" >/dev/null 2>&1 ); rc=$?
+  check "py-fallback record: real seq accepted" "$rc" "0"
+  ( cd "$WORK" && PATH="$RFB" "$(command -v bash)" "$REC" rr P4 action-trace --steps '[]' --session-calls '["click"]' >/dev/null 2>&1 ); rc=$?
+  check "py-fallback record: plain-string --session-calls refused" "$([[ $rc -ne 0 ]] && echo refused)" "refused"
+  ( cd "$WORK" && PATH="$RFB" "$(command -v bash)" "$REC" rr P5 action-trace --steps '[{"tool":"browser_click","phase":"act"}]' >/dev/null 2>&1 ); rc=$?
+  check "py-fallback record: steps-only action-trace recorded" "$rc" "0"
+  check "py-fallback record: steps-only action-trace has no sessionCalls key" \
+    "$(jq -r 'has("sessionCalls")' "$WORK/.qa/runs/rr/evidence/P5/action-trace.json")" "false"
+fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

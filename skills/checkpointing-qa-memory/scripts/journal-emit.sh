@@ -202,7 +202,7 @@ append_event() {
 write_latest() {
   local run_id="$1"
   local saved_path="$PATH"
-  PATH="${PATH}:${BASH%/*}"
+  PATH="${PATH}:${BASH%/*}:/usr/bin:/bin"
   mkdir -p "$QA_BASE"
   local dest="${QA_BASE}/latest"
   local tmp="${dest}.tmp.$$"
