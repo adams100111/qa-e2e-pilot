@@ -9,6 +9,11 @@
 #   record-evidence.sh <run-id> <criterion-id> probe    [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false> [--source-ref <selector>]
 #   record-evidence.sh <run-id> <criterion-id> action-trace [--persona <id>] --steps <json-array> [--session-log <session.md> --session-from <N> | --session-calls <json-array>] [--action <desc>] [--source-ref <selector>]
 #   record-evidence.sh <run-id> <criterion-id> identity --persona <id> --subject <captured-subject> --method <whoami|storageState|none>
+#   record-evidence.sh <run-id> <criterion-id> screenshot [--persona <id>] --phase <before|after> [--label <token>] [--file <path>] [--source-ref seq:<N>]
+#     kind 'screenshot' (0.10.0, ADR-0028) — see cmd_screenshot below: copies
+#       the image the driver saved into the criterion's evidence dir, writes a
+#       sidecar binding it to the captured browser_take_screenshot call, and
+#       REFUSES anything that could never bind. Prints the image's path.
 #     --session-log + --session-from  DERIVE sessionCalls from the REAL session.md
 #       (independent ground truth) by running parse-session-log.js and slicing from
 #       N. This OVERRIDES --session-calls and is the tamper-evident path; prefer it.
@@ -312,7 +317,8 @@ artifact_for_kind() {
     probe)    echo "network-response.json" ;;
     action-trace) echo "action-trace.json" ;;
     identity) echo "identity.json" ;;
-    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace | identity" ;;
+    screenshot) echo "screenshot-<phase>.json" ;;
+    *)        die "Unknown kind '$1'. Must be one of: bake | computed | probe | action-trace | identity | screenshot" ;;
   esac
 }
 
@@ -831,11 +837,327 @@ strip_persona() {
 }
 
 # ---------------------------------------------------------------------------
+# cmd_screenshot — 0.10.0, ADR-0028. Records ONE screenshot of a criterion as
+# an image + sidecar pair in its evidence dir, bound at record time to the
+# browser_take_screenshot call the capture hook captured:
+#
+#   record-evidence.sh <run> <crit> screenshot --phase <before|after> [--label <token>]
+#                      [--file <path>] [--source-ref seq:<N>] [--persona <id>]
+#
+# Which captured call: --source-ref seq:<N> when given; otherwise the newest
+# captured browser_take_screenshot that produced --file (same sha256 the hook
+# took of the saved file, or — on a toolstream without that hash — the same
+# file name) and that no other sidecar of this run already claims; with no
+# --file either, simply the newest unclaimed one. Which file: --file when
+# given; otherwise the path the capture hook resolved for that call, else its
+# `filename` (tried as given, against $PWD, $CLAUDE_PROJECT_DIR and
+# $PLAYWRIGHT_MCP_OUTPUT_DIR).
+#
+# REFUSED (exit 1, nothing written) — every one of these can never verify:
+#   - a file that is not a PNG/JPEG/WebP (by magic bytes) or is > 25 MB;
+#   - a --source-ref that is not seq:<N>, names no event, or names a call that
+#     is not browser_take_screenshot;
+#   - a file that is not what that call saved (sha256 differs from the hook's
+#     hash; or, without one, a different file name);
+#   - a captured call another sidecar of this run already claims (one capture
+#     can evidence one screenshot, not every criterion's);
+#   - with a toolstream present: no captured browser_take_screenshot at all.
+# With no toolstream (capture hook off / non-Claude harness) the image is
+# recorded with binding "unchecked" and a NOTE; qa-verify degrades it.
+#
+# Writes evidence/[<persona>/]<crit>/screenshot-<phase>[-<label>].<ext> (a
+# copy, unless the driver already saved it there) and the .json sidecar next
+# to it; prints the IMAGE path relative to the run dir.
+# ---------------------------------------------------------------------------
+# Resolved without `dirname` (pure parameter expansion): this line runs on
+# EVERY invocation, including the restricted-PATH python3-fallback suites.
+_RE_DIR="${BASH_SOURCE[0]%/*}"; [[ "$_RE_DIR" == "${BASH_SOURCE[0]}" ]] && _RE_DIR="."
+SCREENSHOT_SH="${_RE_DIR}/screenshot-evidence.sh"
+
+# shot_event <toolstream> <n> -> 8 lines for the event with seq n (empty when
+# none): tool, screenshot.sha256, screenshot.path, screenshot.file,
+# args.filename, args.fullPage (true|false|""), element/target, seq.
+shot_event() {
+  local tsf="$1" n="$2"
+  if has_jq; then
+    jq -R -r --argjson n "$n" '
+      try (fromjson | select(type == "object" and .seq == $n)
+        | ((.screenshot // {}) | if type == "object" then . else {} end) as $s
+        | ((.args // {}) | if type == "object" then . else {} end) as $a
+        | (.tool // "" | tostring),
+          ($s.sha256 // "" | tostring), ($s.path // "" | tostring), ($s.file // "" | tostring),
+          ($a.filename // "" | tostring),
+          (if $a.fullPage == true then "true" elif $a.fullPage == false then "false" else "" end),
+          ($a.element // $a.target // "" | tostring),
+          (.seq | tostring)) catch empty' "$tsf" 2>/dev/null | head -n 8
+  else
+    python3 - "$tsf" "$n" <<'PYEOF'
+import json, sys
+n = int(sys.argv[2])
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if not isinstance(e, dict) or e.get("seq") != n or isinstance(e.get("seq"), bool):
+        continue
+    s = e.get("screenshot") if isinstance(e.get("screenshot"), dict) else {}
+    a = e.get("args") if isinstance(e.get("args"), dict) else {}
+    fp = a.get("fullPage")
+    for v in (e.get("tool") or "", s.get("sha256") or "", s.get("path") or "", s.get("file") or "",
+              a.get("filename") or "", "true" if fp is True else ("false" if fp is False else ""),
+              a.get("element") or a.get("target") or "", e.get("seq")):
+        print(v if isinstance(v, str) else json.dumps(v))
+    break
+PYEOF
+  fi
+}
+
+# newest_shot_seq <toolstream> <sha-or-""> <basename-or-""> <claimed-seqs-csv>
+# -> the seq of the newest captured browser_take_screenshot not in claimed
+# that matches (hash when the event carries one, else file name); with both
+# sha and basename empty, the newest unclaimed one. Prints nothing if none.
+newest_shot_seq() {
+  local tsf="$1" sha="$2" base="$3" claimed="$4"
+  if has_jq; then
+    jq -R -s -r --arg sha "$sha" --arg base "$base" --arg claimed ",$claimed," '
+      def bn: tostring | split("/") | last;
+      [ split("\n")[] | select(length > 0) | (try fromjson catch null)
+        | select(type == "object" and ((.tool // "") | tostring | endswith("browser_take_screenshot")))
+        | (.seq | tostring) as $sq
+        | select(($claimed | contains("," + $sq + ",")) | not)
+        | ((.screenshot // {}) | if type == "object" then . else {} end) as $s
+        | ((.args // {}) | if type == "object" then . else {} end) as $a
+        | select(
+            if ($sha == "" and $base == "") then true
+            elif (($s.sha256 // "") | length) > 0 then $s.sha256 == $sha
+            else ([$a.filename, $s.file] | map(select(type == "string" and length > 0) | bn) | index($base)) != null
+            end)
+        | .seq ] | last // empty' "$tsf" 2>/dev/null
+  else
+    python3 - "$tsf" "$sha" "$base" ",$claimed," <<'PYEOF'
+import json, sys
+tsf, sha, base, claimed = sys.argv[1:5]
+best = None
+for line in open(tsf):
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if not isinstance(e, dict) or not str(e.get("tool") or "").endswith("browser_take_screenshot"):
+        continue
+    if ("," + json.dumps(e.get("seq")) + ",") in claimed:
+        continue
+    s = e.get("screenshot") if isinstance(e.get("screenshot"), dict) else {}
+    a = e.get("args") if isinstance(e.get("args"), dict) else {}
+    if not (sha == "" and base == ""):
+        if s.get("sha256"):
+            if s.get("sha256") != sha:
+                continue
+        else:
+            names = [str(x).split("/")[-1] for x in (a.get("filename"), s.get("file")) if isinstance(x, str) and x]
+            if base not in names:
+                continue
+    best = e.get("seq")
+if best is not None:
+    print(best)
+PYEOF
+  fi
+}
+
+# claimed_seqs <run-id> [<exclude-sidecar>] -> CSV of the seq numbers every
+# OTHER screenshot sidecar in the run already claims.
+claimed_seqs() {
+  local run_id="$1" exclude="${2:-}" sc ref out=""
+  while IFS= read -r sc; do
+    [[ -n "$sc" && "$sc" != "$exclude" ]] || continue
+    if has_jq; then
+      ref="$(jq -r '.provenance.sourceRef? // empty' "$sc" 2>/dev/null)"
+    else
+      ref="$(python3 -c 'import json,sys
+try:
+    p = json.load(open(sys.argv[1])).get("provenance") or {}
+    print(p.get("sourceRef") or "")
+except Exception:
+    pass' "$sc" 2>/dev/null)"
+    fi
+    ref="${ref#seq:}"
+    [[ "$ref" =~ ^[0-9]+$ ]] && out+="${out:+,}${ref}"
+  done < <(find "$(run_dir "$run_id")/evidence" -type f -name 'screenshot-*.json' 2>/dev/null)
+  printf '%s' "$out"
+}
+
+# resolve_shot_path <candidate> -> first existing file among the candidate as
+# given and joined onto $PWD, $CLAUDE_PROJECT_DIR, $PLAYWRIGHT_MCP_OUTPUT_DIR.
+resolve_shot_path() {
+  local p="$1" base
+  [[ -n "$p" ]] || return 1
+  if [[ "$p" == /* ]]; then [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }; return 1; fi
+  for base in "$PWD" "${CLAUDE_PROJECT_DIR:-}" "${PLAYWRIGHT_MCP_OUTPUT_DIR:-}"; do
+    [[ -n "$base" && -f "${base}/${p#./}" ]] && { printf '%s' "${base}/${p#./}"; return 0; }
+  done
+  return 1
+}
+
+abs_path() { (cd "$(dirname "$1")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$1")"); }
+
+cmd_screenshot() {
+  local run_id="$1" crit_id="$2" persona="$3"
+  shift 3
+  local phase="" label="" file="" source_ref=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --phase)      phase="$2";      shift 2 ;;
+      --label)      label="$2";      shift 2 ;;
+      --file)       file="$2";       shift 2 ;;
+      --source-ref) source_ref="$2"; shift 2 ;;
+      *) die "Unknown option for kind 'screenshot': $1" ;;
+    esac
+  done
+  case "$phase" in
+    before|after) ;;
+    *) die "kind 'screenshot' requires --phase before|after (before = the UI state the act starts from; after = the state the assertion reads)" ;;
+  esac
+  if [[ -n "$label" ]]; then
+    [[ "$label" =~ ^[A-Za-z0-9_-]{1,40}$ ]] || die "--label must be 1-40 characters of [A-Za-z0-9_-] (it becomes part of the file name)"
+  fi
+  [[ -f "$SCREENSHOT_SH" ]] || die "screenshot-evidence.sh not found next to record-evidence.sh"
+
+  local tsf has_ts=0 n="" ev="" ev_tool="" ev_sha="" ev_path="" ev_file="" ev_fname="" ev_full="" ev_elem=""
+  tsf="$(run_dir "$run_id")/toolstream.jsonl"
+  [[ -s "$tsf" ]] && has_ts=1
+
+  if [[ -n "$source_ref" ]]; then
+    if [[ "$source_ref" =~ ^seq:([0-9]+)$ ]]; then n="${BASH_REMATCH[1]}"
+    elif [[ "$source_ref" =~ ^[0-9]+$ ]]; then n="$source_ref"
+    else die "--source-ref '${source_ref}' is not a toolstream pointer — pass seq:<N> of the captured browser_take_screenshot call, or omit it to bind the newest matching capture. Nothing was recorded."
+    fi
+  fi
+
+  load_event() {
+    ev="$(shot_event "$tsf" "$1")"
+    [[ -n "$ev" ]] || return 1
+    ev_tool="$(sed -n 1p <<< "$ev")"; ev_sha="$(sed -n 2p <<< "$ev")"; ev_path="$(sed -n 3p <<< "$ev")"
+    ev_file="$(sed -n 4p <<< "$ev")"; ev_fname="$(sed -n 5p <<< "$ev")"; ev_full="$(sed -n 6p <<< "$ev")"
+    ev_elem="$(sed -n 7p <<< "$ev")"
+  }
+
+  local dest_dir stem
+  dest_dir="$(evidence_dir "$run_id" "$crit_id" "$persona")"
+  stem="screenshot-${phase}${label:+-${label}}"
+  local own_sidecar="${dest_dir}/${stem}.json"
+  local claimed=""
+  [[ "$has_ts" -eq 1 ]] && claimed="$(claimed_seqs "$run_id" "$own_sidecar")"
+
+  if [[ -n "$n" && "$has_ts" -eq 1 ]]; then
+    load_event "$n" || die "--source-ref seq:${n} names no event in ${tsf}. Nothing was recorded."
+    [[ "$ev_tool" == *browser_take_screenshot ]] \
+      || die "--source-ref seq:${n} is a '${ev_tool}' call, not browser_take_screenshot — a screenshot binds only to the capture call that saved it. Nothing was recorded."
+    [[ ",${claimed}," == *",${n},"* ]] \
+      && die "captured call seq:${n} is already claimed by another screenshot of this run — take a fresh browser_take_screenshot for this criterion. Nothing was recorded."
+  elif [[ -z "$file" && "$has_ts" -eq 1 ]]; then
+    n="$(newest_shot_seq "$tsf" "" "" "$claimed")"
+    [[ -n "$n" ]] || die "no unclaimed browser_take_screenshot call is captured in ${tsf} — take the screenshot with browser_take_screenshot (filename: .qa/runs/${run_id}/$(evidence_dir_rel "$crit_id" "$persona")/${stem}.png) first. Nothing was recorded."
+    load_event "$n"
+  fi
+
+  # Resolve the source file.
+  local src=""
+  if [[ -n "$file" ]]; then
+    [[ -f "$file" ]] || die "--file not found: ${file}"
+    src="$file"
+  elif [[ -n "$ev" ]]; then
+    src="$(resolve_shot_path "$ev_path" || resolve_shot_path "$ev_fname" || resolve_shot_path "$ev_file")" \
+      || die "cannot find the file captured call seq:${n} saved ('${ev_fname:-$ev_file}') — pass --file <path> to where the driver wrote it. Nothing was recorded."
+  else
+    die "kind 'screenshot' needs --file <path> when the run has no toolstream (capture hook off)."
+  fi
+
+  local info ext mime bytes sha
+  info="$(bash "$SCREENSHOT_SH" inspect "$src")" || exit 1
+  read -r ext mime bytes sha <<< "$info"
+
+  local binding="unchecked"
+  if [[ "$has_ts" -eq 1 ]]; then
+    if [[ -z "$ev" ]]; then
+      n="$(newest_shot_seq "$tsf" "$sha" "$(basename "$src")" "$claimed")"
+      [[ -n "$n" ]] || die "no captured, unclaimed browser_take_screenshot call produced ${src} (neither its sha256 nor its file name matches one in ${tsf}) — take the screenshot with browser_take_screenshot so the capture hook sees it, then record it. Nothing was recorded."
+      load_event "$n"
+    fi
+    if [[ -n "$ev_sha" ]]; then
+      [[ "$ev_sha" == "$sha" ]] || die "${src} is not the image captured call seq:${n} saved (its sha256 differs from the one the capture hook took) — record the file that call wrote. Nothing was recorded."
+      binding="sha256"
+    else
+      local want=""
+      [[ -n "$ev_fname" ]] && want="${ev_fname##*/}"
+      [[ -z "$want" && -n "$ev_file" ]] && want="${ev_file##*/}"
+      [[ -n "$want" && "$want" == "$(basename "$src")" ]] \
+        || die "${src} is not the file captured call seq:${n} saved ('${want:-<no file name captured>}') — record the file that call wrote. Nothing was recorded."
+      binding="filename"
+    fi
+  else
+    [[ -n "$source_ref" ]] && echo "NOTE: --source-ref seq:${n} recorded unchecked — no toolstream exists yet for run '${run_id}' (capture hook off?); qa-verify degrades to no-toolstream." >&2
+    echo "NOTE: screenshot recorded without a toolstream — it cannot be bound to a captured call; qa-verify degrades confidence for it." >&2
+  fi
+
+  mkdir -p "$dest_dir"
+  local image="${stem}.${ext}" dest
+  dest="${dest_dir}/${image}"
+  local old
+  for old in png jpg webp; do
+    [[ "$old" != "$ext" ]] && rm -f "${dest_dir}/${stem}.${old}"
+  done
+  if [[ "$(abs_path "$src")" != "$(abs_path "$dest")" ]]; then
+    cp "$src" "$dest" || die "failed to copy ${src} into ${dest}"
+  fi
+
+  local source_ref_out=""
+  [[ -n "$n" ]] && source_ref_out="seq:${n}"
+  local now; now="$(ts)"
+  if has_jq; then
+    jq -n --arg criterion_id "$crit_id" --arg run_id "$run_id" --arg recorded_at "$now" \
+      --arg phase "$phase" --arg label "$label" --arg image "$image" --arg mime "$mime" \
+      --argjson bytes "$bytes" --arg sha256 "$sha" --arg full "$ev_full" --arg element "$ev_elem" \
+      --arg sourceFile "$src" --arg binding "$binding" --arg sourceRef "$source_ref_out" \
+      '{criterion_id: $criterion_id, run_id: $run_id, kind: "screenshot", recorded_at: $recorded_at,
+        phase: $phase}
+       + (if $label != "" then {label: $label} else {} end)
+       + {image: $image, mime: $mime, bytes: $bytes, sha256: $sha256,
+          fullPage: (if $full == "true" then true elif $full == "false" then false else null end)}
+       + (if $element != "" then {element: $element} else {} end)
+       + {sourceFile: $sourceFile, binding: $binding}
+       + (if $sourceRef != "" then {provenance: {sourceRef: $sourceRef, boundAt: $recorded_at}} else {} end)' \
+      > "$own_sidecar" || die "failed to write ${own_sidecar}"
+  elif has_py; then
+    python3 - "$own_sidecar" "$crit_id" "$run_id" "$now" "$phase" "$label" "$image" "$mime" "$bytes" "$sha" "$ev_full" "$ev_elem" "$src" "$binding" "$source_ref_out" <<'PYEOF' || die "failed to write ${own_sidecar}"
+import json, sys
+(out, crit, run, now, phase, label, image, mime, nbytes, sha, full, element, src, binding, ref) = sys.argv[1:16]
+d = {"criterion_id": crit, "run_id": run, "kind": "screenshot", "recorded_at": now, "phase": phase}
+if label:
+    d["label"] = label
+d.update({"image": image, "mime": mime, "bytes": int(nbytes), "sha256": sha,
+          "fullPage": True if full == "true" else (False if full == "false" else None)})
+if element:
+    d["element"] = element
+d.update({"sourceFile": src, "binding": binding})
+if ref:
+    d["provenance"] = {"sourceRef": ref, "boundAt": now}
+with open(out, "w") as f:
+    json.dump(d, f, indent=2)
+PYEOF
+  else
+    die "record-evidence.sh needs either 'jq' or 'python3' to write JSON safely; neither was found on PATH."
+  fi
+
+  echo "$(evidence_dir_rel "$crit_id" "$persona")/${image}"
+}
+
+# ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
 
 main() {
-  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace | identity"
+  [[ $# -ge 3 ]] || die "Usage: record-evidence.sh <run-id> <criterion-id> <kind> [--persona <id>] [--key val ...]\n       kind: bake | computed | probe | action-trace | identity | screenshot"
 
   local run_id="$1" crit_id="$2" kind="$3"
   shift 3
@@ -862,6 +1184,7 @@ main() {
     probe)    cmd_probe "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     action-trace) cmd_action_trace "$run_id" "$crit_id" "$PERSONA" "$@" ;;
     identity) cmd_identity "$run_id" "$crit_id" "$PERSONA" "$@" ;;
+    screenshot) cmd_screenshot "$run_id" "$crit_id" "$PERSONA" "$@" ;;
   esac
 }
 

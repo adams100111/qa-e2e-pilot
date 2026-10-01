@@ -293,6 +293,65 @@ emit_context() {
   fi
 }
 
+# screenshot_capture <tool_input> <tool_response> <hook-cwd> — 0.10.0,
+# ADR-0028. Prints {"file":<as requested/reported>[,"path":<resolved>,
+# "sha256":..,"bytes":..]} for a browser_take_screenshot call, or nothing.
+# The file is the call's `filename` argument, else the first markdown link
+# in its result ("- [Screenshot of viewport](./page-1.png)"). The Playwright
+# MCP resolves a relative name against its workspace root, which is normally
+# the project root but need not be, so the candidates are: as given (when
+# absolute), the hook's `cwd`, $CLAUDE_PROJECT_DIR, $PWD and
+# $PLAYWRIGHT_MCP_OUTPUT_DIR — the first regular file wins.
+screenshot_capture() {
+  local tool_input="$1" tool_response="$2" hook_cwd="$3" file=""
+  if has_jq; then
+    file="$(jq -r '.filename // empty | tostring' <<< "$tool_input" 2>/dev/null)"
+  elif has_py; then
+    file="$(python3 -c 'import json,sys
+d = json.loads(sys.stdin.read())
+v = d.get("filename") if isinstance(d, dict) else None
+print(v if isinstance(v, str) else "")' <<< "$tool_input" 2>/dev/null)"
+  fi
+  if [[ -z "$file" ]]; then
+    local re='\]\(([^)"\\]+)\)'
+    [[ "$tool_response" =~ $re ]] && file="${BASH_REMATCH[1]}"
+  fi
+  [[ -n "$file" ]] || return 1
+
+  local path="" base cand
+  if [[ "$file" == /* ]]; then
+    [[ -f "$file" ]] && path="$file"
+  else
+    for base in "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD" "${PLAYWRIGHT_MCP_OUTPUT_DIR:-}"; do
+      [[ -n "$base" ]] || continue
+      cand="${base%/}/${file#./}"
+      if [[ -f "$cand" ]]; then path="$cand"; break; fi
+    done
+  fi
+
+  local sha="" bytes=""
+  if [[ -n "$path" ]]; then
+    sha="$(bash "${ROOT}/skills/checkpointing-qa-memory/scripts/screenshot-evidence.sh" sha256 "$path" 2>/dev/null)" || sha=""
+    bytes="$(wc -c < "$path" 2>/dev/null | tr -d ' ')"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=""
+  fi
+  if has_jq; then
+    jq -cn --arg file "$file" --arg path "$path" --arg sha "$sha" --arg bytes "$bytes" \
+      '{file: $file}
+       + (if $path != "" then {path: $path} else {} end)
+       + (if $sha != "" then {sha256: $sha} else {} end)
+       + (if $bytes != "" then {bytes: ($bytes | tonumber)} else {} end)'
+  elif has_py; then
+    python3 -c 'import json,sys
+f, p, s, b = sys.argv[1:5]
+d = {"file": f}
+if p: d["path"] = p
+if s: d["sha256"] = s
+if b: d["bytes"] = int(b)
+print(json.dumps(d, separators=(",", ":")))' "$file" "$path" "$sha" "$bytes"
+  fi
+}
+
 main() {
   local input
   input="$(cat 2>/dev/null || true)"
@@ -504,6 +563,24 @@ sys.stdout.write(body)
       ;;
   esac
 
+  # --- screenshot (0.10.0, ADR-0028): for browser_take_screenshot, hash the
+  # file the driver just saved, NOW — before the agent can touch it — into a
+  # `screenshot: {file, path, sha256, bytes}` field. record-evidence.sh
+  # refuses an image whose hash differs; provenance.sh binds by it. Best-
+  # effort: unresolvable -> {file} only (binding falls back to the name). ---
+  local screenshot_json=""
+  case "$tool_name" in
+    *browser_take_screenshot)
+      local hook_cwd=""
+      if has_jq; then
+        hook_cwd="$(jq -r '.cwd // empty' <<< "$input" 2>/dev/null)"
+      elif has_py; then
+        hook_cwd="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("cwd") or "")' <<< "$input" 2>/dev/null)"
+      fi
+      screenshot_json="$(screenshot_capture "$tool_input" "$tool_response" "$hook_cwd" 2>/dev/null)" || screenshot_json=""
+      ;;
+  esac
+
   local truncated_response
   truncated_response="$(printf '%s' "$response_for_body" | head -c "$RESPONSE_BODY_CAP")"
 
@@ -551,9 +628,11 @@ sys.stdout.write(body)
       --argjson body "$response_body_json" \
       --arg advisory "$advisory" \
       --arg observed "$observed_json" \
+      --arg screenshot "$screenshot_json" \
       '{tool: $tool, args: $args, resultDigest: {len: $len, sha256: $hash}, responseBody: $body}
        + (if $advisory != "" then {advisory: $advisory} else {} end)
-       + (if $observed != "" then {observed: ($observed | fromjson)} else {} end)' \
+       + (if $observed != "" then {observed: ($observed | fromjson)} else {} end)
+       + (if $screenshot != "" then {screenshot: ($screenshot | fromjson)} else {} end)' \
       2>/dev/null)"
   elif has_py; then
     event_json="$(python3 -c '
@@ -565,13 +644,16 @@ h = sys.argv[4]
 body = json.loads(sys.argv[5])
 advisory = sys.argv[6] if len(sys.argv) > 6 else ""
 observed = sys.argv[7] if len(sys.argv) > 7 else ""
+screenshot = sys.argv[8] if len(sys.argv) > 8 else ""
 d = {"tool": tool, "args": args, "resultDigest": {"len": length, "sha256": h}, "responseBody": body}
 if advisory:
     d["advisory"] = advisory
 if observed:
     d["observed"] = json.loads(observed)
+if screenshot:
+    d["screenshot"] = json.loads(screenshot)
 print(json.dumps(d, separators=(",", ":")))
-' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" "$advisory" "$observed_json" 2>/dev/null)"
+' "$tool_name" "$args_json" "$resp_len" "$resp_hash" "$response_body_json" "$advisory" "$observed_json" "$screenshot_json" 2>/dev/null)"
   fi
   [[ -z "$event_json" ]] && { warn "failed to build event JSON, no-op"; return 0; }
 

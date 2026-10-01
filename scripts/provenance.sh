@@ -132,6 +132,18 @@
 #              "mcp__plugin_playwright_playwright__browser_click" — a
 #              substring match against the short "browser_click" is
 #              intentional, not a bug).
+#   screenshot (0.10.0, ADR-0028) — a screenshot SIDECAR (screenshot-*.json,
+#              written by record-evidence.sh screenshot). Never a containment
+#              check (image bytes are not in any responseBody). Bound iff the
+#              captured event — the one its seq:<N> pointer names, or, with no
+#              pointer, ANY captured event — is a browser_take_screenshot call
+#              that produced THIS image: when the capture hook hashed the saved
+#              file (`screenshot.sha256` on the event), that hash must equal the
+#              sidecar's `sha256`; otherwise (a pre-0.10.0 or non-Claude
+#              toolstream) the saved file name (`args.filename` /
+#              `screenshot.file`) must equal the sidecar's `sourceFile`
+#              basename. A pointer at any other tool is unbound — a screenshot
+#              is never laundered by pointing at a real but unrelated call.
 #
 # FIX HISTORY (forgery paths closed — see tests/provenance/run.sh for the
 # regression coverage):
@@ -302,10 +314,36 @@ check_jq() {
         | if $hasTool then any($toolNames[]; contains($call.tool)) else false end
       end;
 
+    # screenshot (0.10.0, ADR-0028): the captured call must BE a
+    # browser_take_screenshot, and must have produced THIS image — by the
+    # sha256 the capture hook took of the saved file when it has one, else by
+    # the saved file name.
+    def basename_of: tostring | split("/") | last;
+    def shot_matches($ev; $art):
+      ($ev | type) == "object"
+      and (($ev.tool // "") | tostring | endswith("browser_take_screenshot"))
+      and ( (($ev.screenshot? // {}) | if type == "object" then (.sha256 // "") else "" end | tostring) as $cap
+            | if ($cap | length) > 0 then $cap == (($art.sha256 // "") | tostring)
+              else
+                ( [ ($ev.args? // {} | if type == "object" then .filename else null end),
+                    ($ev.screenshot? // {} | if type == "object" then .file else null end) ]
+                  | map(select(type == "string" and length > 0) | basename_of) ) as $names
+                | (($art.sourceFile // "") | tostring | basename_of) as $b
+                | ($names | length) > 0 and ($b | length) > 0 and any($names[]; . == $b)
+              end );
+
     ($art.kind // "") as $kind
     | ( ($art.provenance.sourceRef // null) | if . == null then "" elif type == "string" then . else tostring end ) as $sourceRef
     | ( ($sourceRef | length) > 0 and ($sourceRef | test("^(seq:)?-?[0-9]+$")) ) as $isPointer
-    | if $isPointer then
+    | if $kind == "screenshot" then
+        if $isPointer then
+          ( $sourceRef | if startswith("seq:") then .[4:] else . end | tonumber ) as $n
+          | ( [ $events[] | select(type == "object" and .seq == $n) ] | first // null ) as $ev
+          | if $ev != null and shot_matches($ev; $art) then "bound" else "unbound" end
+        else
+          if any($events[]; shot_matches(.; $art)) then "bound" else "unbound" end
+        end
+      elif $isPointer then
         if resolve_source_ref($sourceRef; $events) then "bound" else "unbound" end
       elif $kind == "bake" then
         ( ($art.readBack // null) | leaves ) as $cands
@@ -453,7 +491,38 @@ source_ref = prov.get("sourceRef") if isinstance(prov, dict) else None
 # no claim at all: fall through to containment, exactly as if it were absent.
 if source_ref is not None and not isinstance(source_ref, str):
     source_ref = json.dumps(source_ref) if not isinstance(source_ref, (int, float)) or isinstance(source_ref, bool) else str(source_ref)
-if source_ref and re.match(r'^(seq:)?-?[0-9]+$', str(source_ref)):
+is_pointer = bool(source_ref) and re.match(r'^(seq:)?-?[0-9]+$', str(source_ref)) is not None
+
+# screenshot (0.10.0, ADR-0028) -- mirrors the jq shot_matches def exactly.
+def basename_of(v):
+    return str(v).split("/")[-1]
+
+def shot_matches(ev, art):
+    if not isinstance(ev, dict):
+        return False
+    if not str(ev.get("tool") or "").endswith("browser_take_screenshot"):
+        return False
+    shot = ev.get("screenshot") if isinstance(ev.get("screenshot"), dict) else {}
+    cap = shot.get("sha256") or ""
+    cap = cap if isinstance(cap, str) else json.dumps(cap)
+    if cap:
+        return cap == str(art.get("sha256") or "")
+    args = ev.get("args") if isinstance(ev.get("args"), dict) else {}
+    names = [basename_of(n) for n in (args.get("filename"), shot.get("file")) if isinstance(n, str) and n]
+    b = basename_of(art.get("sourceFile") or "")
+    return bool(names) and bool(b) and b in names
+
+if kind == "screenshot":
+    if is_pointer:
+        s = str(source_ref)
+        n = int(s[4:] if s.startswith("seq:") else s)
+        ev = next((e for e in events if isinstance(e, dict) and e.get("seq") == n and not isinstance(e.get("seq"), bool)), None)
+        print("bound" if ev is not None and shot_matches(ev, art) else "unbound")
+    else:
+        print("bound" if any(shot_matches(e, art) for e in events) else "unbound")
+    sys.exit(0)
+
+if is_pointer:
     print("bound" if resolve_source_ref(source_ref, events) else "unbound")
     sys.exit(0)
 

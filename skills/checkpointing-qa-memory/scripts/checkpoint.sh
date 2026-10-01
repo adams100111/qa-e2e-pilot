@@ -1106,6 +1106,50 @@ gate_required_kinds() {
 # upsert mode
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# gate_screenshot <run-id> <crit-id> <verdict> [<persona>] — 0.10.0, ADR-0028.
+# A `pass` or `fail` of a browser-driven run must carry at least one recorded
+# screenshot (record-evidence.sh screenshot) whose image still matches its
+# sidecar's sha256. "Browser-driven" = the run's toolstream holds at least one
+# captured browser_* call: then the browser was up, a screenshot was one call
+# away, and it can be bound — so its absence is refused HERE, while it can
+# still be taken (ADR-0027's fail-at-record-time rule), not found by
+# qa-verify after the run. Without a toolstream (capture off, non-Claude
+# harness) the gate only NOTEs it; qa-verify degrades confidence instead.
+# `blocked` is never refused (it can be decided before any page loads) but is
+# reminded. Off: report.requireScreenshots:false or QA_REQUIRE_SCREENSHOTS=false.
+# ---------------------------------------------------------------------------
+gate_screenshot() {
+  local run_id="$1" crit_id="$2" verdict="$3" persona="${4:-}"
+  local script_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
+  local shot_sh="${script_dir}/screenshot-evidence.sh"
+  [[ -f "$shot_sh" ]] || return 0
+  local ext_path="${PATH}:${BASH%/*}:/usr/bin:/bin" eng="python3"
+  has_jq && eng="jq"
+
+  local required
+  required="$(QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$shot_sh" required 2>/dev/null)"
+  [[ "$required" == "false" ]] && return 0
+
+  local status valid
+  status="$(QA_ENGINE="$eng" PATH="$ext_path" "$BASH" "$shot_sh" status "$run_id" "$crit_id" ${persona:+"$persona"} --no-provenance 2>/dev/null)"
+  valid=0
+  [[ "$status" =~ \"valid\":([0-9]+) ]] && valid="${BASH_REMATCH[1]}"
+  [[ "${valid:-0}" -ge 1 ]] && return 0
+
+  local tsf where hint
+  tsf="$(run_dir "$run_id")/toolstream.jsonl"
+  if [[ -n "$persona" ]]; then where="evidence/${persona}/${crit_id}"; else where="evidence/${crit_id}"; fi
+  hint="take browser_take_screenshot (filename: .qa/runs/${run_id}/${where}/screenshot-after.png; fullPage:true when the asserted content is below the fold), then record it: record-evidence.sh ${run_id} ${crit_id} screenshot --phase after${persona:+ --persona ${persona}}"
+  if [[ "$verdict" != "blocked" && -s "$tsf" ]] && PATH="$ext_path" grep -Eq '"tool": ?"[^"]*browser_' "$tsf" 2>/dev/null; then
+    echo "SCREENSHOT GATE: refusing ${verdict} for '${crit_id}'${persona:+ (persona ${persona})} — no recorded screenshot under ${where}/ (a ${verdict} is shown to its reader, not only asserted). Fix: ${hint}. Set report.requireScreenshots:false in .qa/config.json only if this driver cannot take screenshots." >&2
+    return 1
+  fi
+  echo "NOTE: ${verdict} for '${crit_id}' has no recorded screenshot — ${hint}. qa-verify degrades a pass without one to confidence: low." >&2
+  return 0
+}
+
 cmd_upsert() {
   local run_id="$1" crit_id="$2" verdict="$3"
   shift 3
@@ -1201,6 +1245,11 @@ cmd_upsert() {
     else
       gate_pass "$run_id" "$crit_id" "$kinds_csv" "$persona" "$nonui_reason" || exit 1
     fi
+  fi
+
+  # The screenshot gate (0.10.0, ADR-0028): a pass or fail must be SEEN.
+  if [[ "$verdict" == "pass" || "$verdict" == "fail" || "$verdict" == "blocked" ]]; then
+    gate_screenshot "$run_id" "$crit_id" "$verdict" "$persona" || exit 1
   fi
 
   if ! has_jq && ! has_py; then

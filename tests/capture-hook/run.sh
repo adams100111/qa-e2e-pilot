@@ -700,4 +700,43 @@ for ENG in jq python3; do
   check "[$ENG] save-session probe: saveSession:false acknowledges the degrade -> silent" "$(run_hook "$ENG" "$SNAPEVT")" ""
 done
 
+# ---------------------------------------------------------------------------
+# 0.10.0 (ADR-0028): a browser_take_screenshot event carries
+# `screenshot: {file, path, sha256, bytes}` — the hook hashes the file the
+# driver just saved; the name comes from `filename`, else the result's link.
+# ---------------------------------------------------------------------------
+for ENG in jq python3; do
+  setup_run
+  mkdir -p "$WORK/shots"
+  printf '\x89PNG\r\n\x1a\nfake-png-body-%s' "$ENG" > "$WORK/shots/a.png"
+  WANT_SHA="$(shasum -a 256 < "$WORK/shots/a.png" 2>/dev/null | awk '{print $1}')"
+  [[ -n "$WANT_SHA" ]] || WANT_SHA="$(sha256sum < "$WORK/shots/a.png" | awk '{print $1}')"
+  SHOT_EVT='{"tool_name":"mcp__plugin_playwright_playwright__browser_take_screenshot","tool_input":{"filename":"shots/a.png","fullPage":true,"scale":"css"},"tool_response":[{"type":"text","text":"### Result\n- [Screenshot of full page](shots/a.png)"}],"cwd":"'"$WORK"'","session_id":"s"}'
+  ( cd "$WORK" && printf '%s' "$SHOT_EVT" | QA_ENGINE="$ENG" bash "$HOOK" >/dev/null 2>&1 )
+  L="$(tail -n1 "$(TF)")"
+  check "[$ENG] screenshot: file recorded from filename" "$(jq -r '.screenshot.file' <<< "$L")" "shots/a.png"
+  check "[$ENG] screenshot: sha256 of the saved file" "$(jq -r '.screenshot.sha256' <<< "$L")" "$WANT_SHA"
+  check "[$ENG] screenshot: bytes" "$(jq -r '.screenshot.bytes' <<< "$L")" "$(wc -c < "$WORK/shots/a.png" | tr -d ' ')"
+  check "[$ENG] screenshot: resolved path" "$(jq -r '.screenshot.path' <<< "$L")" "$WORK/shots/a.png"
+
+  setup_run
+  NOFN_EVT='{"tool_name":"mcp__plugin_playwright_playwright__browser_take_screenshot","tool_input":{"scale":"css"},"tool_response":[{"type":"text","text":"### Result\n- [Screenshot of viewport](./shots/a.png)"}],"cwd":"'"$WORK"'","session_id":"s"}'
+  ( cd "$WORK" && printf '%s' "$NOFN_EVT" | QA_ENGINE="$ENG" bash "$HOOK" >/dev/null 2>&1 )
+  L="$(tail -n1 "$(TF)")"
+  check "[$ENG] screenshot: name from the result link when no filename" "$(jq -r '.screenshot.file' <<< "$L")" "./shots/a.png"
+  check "[$ENG] screenshot: link-named file hashed too" "$(jq -r '.screenshot.sha256' <<< "$L")" "$WANT_SHA"
+
+  setup_run
+  GONE_EVT='{"tool_name":"mcp__plugin_playwright_playwright__browser_take_screenshot","tool_input":{"filename":"nowhere/x.png","scale":"css"},"tool_response":[],"cwd":"'"$WORK"'","session_id":"s"}'
+  ( cd "$WORK" && printf '%s' "$GONE_EVT" | QA_ENGINE="$ENG" bash "$HOOK" >/dev/null 2>&1 ); rcg=$?
+  L="$(tail -n1 "$(TF)")"
+  check "[$ENG] screenshot: unresolvable file -> hook still exits 0" "$rcg" "0"
+  check "[$ENG] screenshot: unresolvable file -> {file} only, no sha256" "$(jq -c '.screenshot' <<< "$L")" '{"file":"nowhere/x.png"}'
+
+  setup_run
+  CLICK_EVT='{"tool_name":"mcp__plugin_playwright_playwright__browser_click","tool_input":{"element":"Save","ref":"e1"},"tool_response":[],"cwd":"'"$WORK"'","session_id":"s"}'
+  ( cd "$WORK" && printf '%s' "$CLICK_EVT" | QA_ENGINE="$ENG" bash "$HOOK" >/dev/null 2>&1 )
+  check "[$ENG] screenshot: no field on other tools" "$(tail -n1 "$(TF)" | jq -r 'has("screenshot")')" "false"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]
