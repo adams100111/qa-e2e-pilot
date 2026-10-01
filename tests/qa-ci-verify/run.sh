@@ -46,6 +46,10 @@
 # (never shelling out with an absolute run-id path), matching this repo's
 # established test idiom.
 set -uo pipefail
+# Engine 0.10.0 (ADR-0028): these fixtures predate mandatory screenshot
+# evidence and assert behaviour that is orthogonal to it, so the screenshot
+# requirement is switched off for this suite; tests/screenshots covers it.
+export QA_REQUIRE_SCREENSHOTS=false
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 QACI="$ROOT/scripts/qa-ci.sh"

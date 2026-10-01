@@ -1,0 +1,110 @@
+{
+  "run_id": "fixture-run",
+  "criteria": [
+    {
+      "criterion_id": "C1",
+      "persona": "",
+      "verdict": "pass",
+      "confidence": "high",
+      "kinds": [
+        "bake"
+      ],
+      "last_action": "Created founder via the Add dialog; read back /api/founders/2",
+      "bug_ref": null,
+      "evidence_refs": [
+        "evidence/C1/bake-read-back.json",
+        "evidence/C1/screenshot-after.png"
+      ],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C2",
+      "persona": "",
+      "verdict": "fail",
+      "confidence": "high",
+      "kinds": [],
+      "last_action": "Total shows $4.00 instead of $4,000.00",
+      "bug_ref": "BUG-1",
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C3",
+      "persona": "admin",
+      "verdict": "pass",
+      "confidence": "high",
+      "kinds": [
+        "computed"
+      ],
+      "last_action": "Admin table sums match the oracle",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C4",
+      "persona": "",
+      "verdict": "pass",
+      "confidence": "high",
+      "kinds": [],
+      "last_action": "Legacy run: loose screenshot only",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C5",
+      "persona": "",
+      "verdict": "deferred",
+      "confidence": "high",
+      "kinds": [],
+      "last_action": "Round-close math requires a closed round \u2014 not available in this env.",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C6",
+      "persona": "",
+      "verdict": "pass",
+      "confidence": "high",
+      "kinds": [
+        "computed"
+      ],
+      "last_action": "Read-only count matches",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C7",
+      "persona": "",
+      "verdict": "pass",
+      "confidence": "high",
+      "kinds": [],
+      "last_action": "Its image was altered after recording",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    },
+    {
+      "criterion_id": "C8",
+      "persona": "",
+      "verdict": "blocked",
+      "confidence": "high",
+      "kinds": [],
+      "last_action": "Login wall <script>alert(1)</script> blocked the page",
+      "bug_ref": null,
+      "evidence_refs": [],
+      "nonUiActionReason": null,
+      "phase": "verify"
+    }
+  ]
+}

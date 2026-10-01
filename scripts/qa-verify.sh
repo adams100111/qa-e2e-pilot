@@ -86,6 +86,14 @@
 #      capture is bound with exactly the rules above (0.9.0); without one the
 #      pass degrades to confidence:low with a reason saying how to record it.
 #
+#   3.3. SCREENSHOT EVIDENCE (0.10.0, ADR-0028) — screenshot-evidence.sh
+#      status re-hashes every recorded screenshot of the criterion and binds
+#      each sidecar via provenance.sh: altered / missing / malformed /
+#      unbound / reused -> OVERRIDE; no screenshot at all (and
+#      report.requireScreenshots on) -> confidence low, NEVER an override,
+#      which keeps pre-0.10.0 runs verifiable. Fail rows get the same check
+#      in a record-only "__screenshots__" record (no exit-code effect).
+#
 #   3.4. API-WRITE BACKSTOP (0.9.0, ADR-0027) — a row tagged `api-write`
 #      proves its act with probe evidence; that evidence must be bound by
 #      --source-ref seq:<N> to a captured sanctioned write probe
@@ -304,6 +312,7 @@ PARSE_SESSION_LOG_JS="$HERE/../skills/driving-browser-qa/scripts/parse-session-l
 WRITE_PROBE_GATE_JS="$HERE/../skills/probing-apis-through-browser/scripts/write-probe-gate.js"
 CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
 KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
+SCREENSHOT_SH="$HERE/../skills/checkpointing-qa-memory/scripts/screenshot-evidence.sh"
 
 # Script-global (NOT `local` to main) so the EXIT trap registered in main —
 # which fires AFTER main returns, i.e. back at global scope — can still see
@@ -1234,6 +1243,128 @@ print(p if isinstance(p, str) and p else (r if isinstance(r, str) else ""))
   printf '%s' "$v"
 }
 
+# ---------------------------------------------------------------------------
+# screenshot_binding <run-id> <crit-id> <persona> — 0.10.0, ADR-0028. Sets
+# SB_OVERRIDE / SB_LOW / SB_NOTS (0|1) and SB_REASONS (array) from
+# screenshot-evidence.sh status (the one implementation, shared with the
+# live gate and record-evidence.sh):
+#   - a screenshot whose image is missing, no longer matches its recorded
+#     sha256 (altered after recording), whose sidecar is malformed, that binds
+#     to no captured browser_take_screenshot call, or whose captured call
+#     another sidecar also claims -> OVERRIDE. Fabricated or swapped evidence
+#     is the AC-1 forgery signal whatever the requirement setting says.
+#   - no valid screenshot at all, while report.requireScreenshots is on ->
+#     confidence LOW + a reason, NEVER an override: the verdict's truth rests
+#     on its bake/computed/probe/action-trace evidence, which every other step
+#     re-checks; a missing picture makes the pass less reviewable, not wrong.
+#     It is also what keeps runs recorded before 0.10.0 (no screenshot ever
+#     recorded) verifiable: they re-verify with every pass degraded and a
+#     reason saying why, instead of being overridden en masse.
+#   - screenshots present but no toolstream -> SB_NOTS=1 (the caller's
+#     existing no-toolstream degrade).
+# ---------------------------------------------------------------------------
+screenshot_binding() {
+  local run_id="$1" crit_id="$2" persona="$3"
+  SB_OVERRIDE=0; SB_LOW=0; SB_NOTS=0; SB_REASONS=()
+  [[ -f "$SCREENSHOT_SH" ]] || return 0
+  local eng="python3"; has_jq && eng="jq"
+  local status lines
+  status="$(QA_ENGINE="$eng" bash "$SCREENSHOT_SH" status "$run_id" "$crit_id" ${persona:+"$persona"} 2>/dev/null)"
+  if [[ -z "$status" ]]; then
+    SB_LOW=1
+    SB_REASONS+=("screenshot evidence could not be checked (screenshot-evidence.sh status failed)")
+    return 0
+  fi
+  if has_jq; then
+    lines="$(jq -r '"\(.sidecars)\t\(.valid)\t\(.noToolstream)", (.problems[] | "P\t\(.file)\t\(.problem)\t\(.detail)")' <<< "$status" 2>/dev/null)"
+  else
+    lines="$(python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+print("%s\t%s\t%s" % (d["sidecars"], d["valid"], "true" if d["noToolstream"] else "false"))
+for p in d["problems"]:
+    print("P\t%s\t%s\t%s" % (p["file"], p["problem"], p.get("detail", "")))
+' "$status" 2>/dev/null)"
+  fi
+  local head sidecars valid nots
+  head="$(sed -n 1p <<< "$lines")"
+  IFS=$'\t' read -r sidecars valid nots <<< "$head"
+  local line tag file problem detail
+  while IFS= read -r line; do
+    [[ "$line" == P$'\t'* ]] || continue
+    IFS=$'\t' read -r tag file problem detail <<< "$line"
+    SB_OVERRIDE=1
+    case "$problem" in
+      unbound) SB_REASONS+=("screenshot UNBOUND: '${file}' — ${detail} — forgery signal (AC-1)") ;;
+      tampered) SB_REASONS+=("screenshot TAMPERED: '${file}' — ${detail}") ;;
+      duplicate) SB_REASONS+=("screenshot REUSED: '${file}' — ${detail}; one capture evidences one screenshot") ;;
+      *) SB_REASONS+=("screenshot evidence '${file}' is ${problem}: ${detail}") ;;
+    esac
+  done <<< "$lines"
+  if [[ "${valid:-0}" -ge 1 && "$nots" == "true" ]]; then
+    SB_NOTS=1
+  fi
+  if [[ "${valid:-0}" -lt 1 ]] && [[ "$(QA_ENGINE="$eng" bash "$SCREENSHOT_SH" required 2>/dev/null)" != "false" ]]; then
+    SB_LOW=1
+    local where
+    if [[ -n "$persona" ]]; then where="evidence/${persona}/${crit_id}"; else where="evidence/${crit_id}"; fi
+    SB_REASONS+=("no screenshot evidence: no recorded screenshot under ${where}/ (report.requireScreenshots) — the pass is not overridden, but it cannot be reviewed by eye, so confidence is degraded; runs recorded before 0.10.0 carry none. Record one with record-evidence.sh <run> <crit> screenshot --phase after, or set report.requireScreenshots:false")
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# run_screenshot_pass <run-id> — the fail-row half of the screenshot check
+# (0.10.0, ADR-0028). qa-verify re-checks passes only; a `fail` is shown to
+# its reader too, so every `fail` record is run through screenshot_binding
+# and its findings are written as ONE synthetic "__screenshots__" record —
+# confidence low, verifierVerdict "pass", record-only like
+# "__phase-surface__": it NEVER flips the exit code (a fail is already a
+# fail; this says how well it is evidenced). Nothing to say -> no record.
+# ---------------------------------------------------------------------------
+run_screenshot_pass() {
+  local run_id="$1" file rec crit persona
+  file="$(checkpoint_file "$run_id")"
+  local -a all=()
+  local recs
+  if has_jq; then
+    recs="$(jq -r '.criteria[]? | select(.verdict == "fail") | "\(.criterion_id)\t\(.persona // "")"' "$file" 2>/dev/null)"
+  else
+    recs="$(python3 -c '
+import json, sys
+for c in (json.load(open(sys.argv[1])).get("criteria") or []):
+    if c.get("verdict") == "fail":
+        print("%s\t%s" % (c.get("criterion_id", ""), c.get("persona") or ""))
+' "$file" 2>/dev/null)"
+  fi
+  while IFS= read -r rec; do
+    [[ -n "$rec" ]] || continue
+    crit="${rec%%$'\t'*}"; persona="${rec#*$'\t'}"
+    [[ "$persona" == "$rec" ]] && persona=""
+    [[ -n "$crit" ]] || continue
+    screenshot_binding "$run_id" "$crit" "$persona"
+    local r
+    for r in ${SB_REASONS[@]+"${SB_REASONS[@]}"}; do
+      all+=("fail ${crit}${persona:+ (persona ${persona})}: ${r}")
+    done
+  done <<< "$recs"
+  [[ ${#all[@]} -gt 0 ]] || return 0
+  local reasons_json
+  reasons_json="$(json_array_from_args "${all[@]}")"
+  if has_jq; then
+    jq -cn --argjson reasons "$reasons_json" \
+      '{criterionId: "__screenshots__", persona: "", inRunVerdict: "n/a", verifierVerdict: "pass", confidence: "low", reasons: $reasons}'
+  else
+    python3 -c '
+import json, sys
+print(json.dumps({
+    "criterionId": "__screenshots__", "persona": "", "inRunVerdict": "n/a",
+    "verifierVerdict": "pass", "confidence": "low", "reasons": json.loads(sys.argv[1])
+}))
+' "$reasons_json"
+  fi
+}
+
 process_criterion() {
   local run_id="$1" crit_id="$2" persona="$3" confidence="$4" nonui_reason="$5" kinds_csv="$6"
   local -a reasons=()
@@ -1363,6 +1494,15 @@ process_criterion() {
       esac
     fi
   done
+
+  # --- Step 3.3: screenshot evidence (0.10.0, ADR-0028) — see
+  # screenshot_binding's header. A forged/altered/reused screenshot
+  # overrides; no screenshot at all degrades (never overrides). ------------
+  screenshot_binding "$run_id" "$crit_id" "$persona"
+  [[ "$SB_OVERRIDE" -eq 1 ]] && override=1
+  [[ "$SB_LOW" -eq 1 ]] && confidence="low"
+  [[ "$SB_NOTS" -eq 1 ]] && no_toolstream_seen=1
+  reasons+=(${SB_REASONS[@]+"${SB_REASONS[@]}"})
 
   # --- Step 3.4: the API-WRITE backstop (0.9.0, ADR-0027). A row tagged
   # `api-write` proves its act with `probe` evidence instead of a human-action
@@ -2828,6 +2968,13 @@ main() {
   local ps_rec
   ps_rec="$(run_phase_surface_pass "$run_id")"
   [[ -n "$ps_rec" ]] && echo "$ps_rec" >> "$results_tmp"
+
+  # --- Screenshot pass over FAIL records (0.10.0, ADR-0028) — record-only,
+  # like the phase-surface pass: at most one synthetic "__screenshots__"
+  # record, never touches run_failed. ---
+  local ss_rec
+  ss_rec="$(run_screenshot_pass "$run_id")"
+  [[ -n "$ss_rec" ]] && echo "$ss_rec" >> "$results_tmp"
 
   # --- Run-scoped checks pass (Task 8) — a THIRD, independent pass. Adds AT
   # MOST one synthetic "__run-checks__" record and, unlike the phase-surface

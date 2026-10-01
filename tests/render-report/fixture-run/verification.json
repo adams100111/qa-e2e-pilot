@@ -1,0 +1,58 @@
+[
+  {
+    "criterionId": "C1",
+    "persona": "",
+    "inRunVerdict": "pass",
+    "verifierVerdict": "pass",
+    "confidence": "high",
+    "reasons": []
+  },
+  {
+    "criterionId": "C3",
+    "persona": "admin",
+    "inRunVerdict": "pass",
+    "verifierVerdict": "pass",
+    "confidence": "high",
+    "reasons": []
+  },
+  {
+    "criterionId": "C4",
+    "persona": "",
+    "inRunVerdict": "pass",
+    "verifierVerdict": "pass",
+    "confidence": "low",
+    "reasons": [
+      "no screenshot evidence: no recorded screenshot under evidence/C4/ (report.requireScreenshots)"
+    ]
+  },
+  {
+    "criterionId": "C6",
+    "persona": "",
+    "inRunVerdict": "pass",
+    "verifierVerdict": "pass",
+    "confidence": "low",
+    "reasons": [
+      "no screenshot evidence: no recorded screenshot under evidence/C6/ (report.requireScreenshots)"
+    ]
+  },
+  {
+    "criterionId": "C7",
+    "persona": "",
+    "inRunVerdict": "pass",
+    "verifierVerdict": "fail",
+    "confidence": "high",
+    "reasons": [
+      "screenshot TAMPERED: 'evidence/C7/screenshot-after.json' \u2014 evidence/C7/screenshot-after.png no longer matches the sha256 recorded with it"
+    ]
+  },
+  {
+    "criterionId": "__screenshots__",
+    "persona": "",
+    "inRunVerdict": "n/a",
+    "verifierVerdict": "pass",
+    "confidence": "low",
+    "reasons": [
+      "example run-level note"
+    ]
+  }
+]

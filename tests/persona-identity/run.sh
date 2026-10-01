@@ -39,6 +39,10 @@
 # exercised by hiding jq from PATH instead; qa-verify.sh honors QA_ENGINE
 # directly (same contract as tests/qa-verify/run.sh).
 set -uo pipefail
+# Engine 0.10.0 (ADR-0028): these fixtures predate mandatory screenshot
+# evidence and assert behaviour that is orthogonal to it, so the screenshot
+# requirement is switched off for this suite; tests/screenshots covers it.
+export QA_REQUIRE_SCREENSHOTS=false
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REC="$HERE/../../skills/checkpointing-qa-memory/scripts/record-evidence.sh"
 CKPT="$HERE/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"

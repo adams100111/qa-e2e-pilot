@@ -6,6 +6,10 @@
 # Also covers record-evidence.sh (Task 1.2) — the structured evidence writer
 # the Phase 1 gate will content-check against.
 set -uo pipefail
+# Engine 0.10.0 (ADR-0028): these fixtures predate mandatory screenshot
+# evidence and assert behaviour that is orthogonal to it, so the screenshot
+# requirement is switched off for this suite; tests/screenshots covers it.
+export QA_REQUIRE_SCREENSHOTS=false
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"
 RECORD_SCRIPT="$HERE/../../skills/checkpointing-qa-memory/scripts/record-evidence.sh"

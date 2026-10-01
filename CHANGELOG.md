@@ -8,6 +8,46 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.10.0 — 2026-10-01 · "Show it"
+
+Feature release. A real 0.8.1 run produced a 32-criterion report with no picture in it — no
+image under `evidence/`, no `<img>` in `report.html` — because nothing asked for a screenshot and the
+report was filled in by hand. See
+[ADR-0028](./docs/adr/0028-mandatory-bound-screenshots-and-rendered-reports.md).
+
+- **Screenshots are mandatory evidence.** `driving-browser-qa` now has the agent take
+  `browser_take_screenshot` at the assertion moment (`screenshot-after.png`, `fullPage` when the
+  asserted content is below the fold) and right before a UI act (`screenshot-before.png`), on pass,
+  fail and blocked rows alike, and record each with the new
+  `record-evidence.sh <run> <crit> screenshot --phase before|after`.
+- **Screenshots are bound like any other evidence.** The capture hook hashes the file each
+  `browser_take_screenshot` saved, at the moment it is saved, into the toolstream event
+  (`screenshot: {file, path, sha256, bytes}`). `record-evidence.sh screenshot` copies the image into
+  the criterion's evidence dir with a sidecar pointing at that call, and refuses at record time a file
+  whose hash differs, a pointer at another tool, a capture another criterion already claimed, a
+  description instead of `seq:<N>`, or a non-image. `provenance.sh` gains the `screenshot` kind.
+- **`checkpoint.sh` refuses a `pass` or `fail` without a screenshot** when the run's toolstream shows
+  a browser was driven. The message says which call to make. `blocked` rows and runs without a
+  browser capture get a NOTE instead.
+- **qa-verify checks them.** A screenshot altered after recording, reused across criteria or bound to
+  no captured call overrides the pass to `fail`. A pass with no screenshot is **degraded to
+  `confidence: low`, never overridden**; fail rows without one are listed in a record-only
+  `__screenshots__` record that does not change the exit code. So a run recorded before 0.10.0 still
+  re-verifies: its passes come back `low` with a reason, not overridden.
+- **`report.requireScreenshots`** (default `true`; env `QA_REQUIRE_SCREENSHOTS`) turns the requirement
+  off for a driver that cannot take screenshots. The forgery checks stay on.
+- **The report is rendered, not written.** `scripts/render-report.sh <run-dir|run-id> [--embed]`
+  (over the dependency-free `render-report.js`) builds `report.html` and `report.md` from the run's
+  record: verdict summary with the verifier's overrides, verification status, screenshot coverage,
+  one card per criterion with a thumbnail grid, a full-screen viewer (Esc or a click outside closes;
+  arrow keys step through the criterion's screenshots), an "All screenshots" gallery and a verdict
+  filter. Inline CSS and JS only, relative image paths, works offline from `file://`; `--embed` makes
+  one portable file. It re-renders any existing run (older loose images are marked "not
+  provenance-bound"). `python3 scripts/render-report.py` still works and delegates to it.
+- Tests: new `screenshots` (both engines) and `render-report` suites, with a committed fixture run of
+  small PNGs; capture-hook cases for the screenshot hash. Suites whose fixtures predate the
+  requirement run with `QA_REQUIRE_SCREENSHOTS=false`.
+
 ### v0.9.0 — 2026-10-01 · "Fail where it can still be fixed"
 
 Feature release, driven by two real runs against one Laravel app that matched the oracle on

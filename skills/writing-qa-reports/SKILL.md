@@ -1,169 +1,108 @@
 ---
 name: writing-qa-reports
 description: >-
-  Use when phase 4 (Report) of the qa-e2e-pilot pipeline is reached. Produces the structured run report: report.md, single-file report.html with verdict cards and screenshot slots, per-criterion evidence, honest DEFERRED entries with stated reasons, and an optional spec-kit traceability column when constitution/spec/tasks artifacts are present.
+  Use when phase 4 (Report) of the qa-e2e-pilot pipeline is reached, or to re-render the report of any existing run. Renders report.html and report.md deterministically from the run's own record (checkpoint, verification, manifest, bug-log, evidence) with scripts/render-report.sh — verdict summary, per-criterion cards with screenshot thumbnails, a full-screen screenshot viewer, honest DEFERRED entries and the bug appendix. The agent never hand-writes report HTML.
 ---
 
 # Writing QA Reports
 
 ## Overview
 
-Phase 4 of every Run. Consumes the evidence and checkpoints written during Verify (phase 3) and emits:
-- `report.md` — structured markdown with tally, per-criterion sections, deferred entries, and a bug-report appendix.
-- `report.html` — single self-contained file (inline CSS, no external assets) with colored verdict cards and relative-path screenshot slots.
-- `evidence/<criterion-id>/` — screenshots, network body snapshots, and bake read-backs already written by earlier skills; this skill references them, not re-creates them.
+Phase 4 of every Run. The report is **rendered, not written**: `scripts/render-report.sh` builds
+both files from what the run recorded, so a report can never claim more than the record holds, and
+any run — including one recorded before 0.10.0 — can be re-rendered at any time (ADR-0028).
 
-All output lives under `.qa/runs/<run-id>/`. One run dir per invocation (ADR-0002).
+- `report.html` — one self-contained page (inline CSS + JS, no external request; works offline from
+  `file://`). Verdict summary, verification status, screenshot coverage, one card per criterion with
+  a thumbnail grid; click a thumbnail for the full-screen viewer (Esc / click outside closes, ← →
+  step through that criterion's screenshots), plus an **All screenshots** gallery and a verdict filter.
+- `report.md` — the same content as markdown, screenshots as relative image links.
 
-## Run Directory Layout
-
-```
-.qa/runs/<run-id>/
-  run-manifest.json          ← checkpointing skill owns this
-  checkpoint.json            ← checkpointing skill owns this
-  bug-log.json               ← checkpointing skill owns this
-  traceability.json          ← checkpointing skill owns this (when spec-kit present)
-  report.md                  ← this skill writes
-  report.html                ← this skill writes
-  evidence/
-    <criterion-id>/
-      screenshot-before.png
-      screenshot-after.png
-      bake-read-back.json
-      network-response.json
-      recompute.json
-```
-
-Reference evidence files by relative path from the run dir (`evidence/<criterion-id>/screenshot-after.png`). Never embed binary content in the report text.
+Both live in `.qa/runs/<run-id>/` (ADR-0002) and reference evidence by relative path.
 
 ## Process
 
-### 0. Preferred: render via `scripts/render-report.py` (subagent-safe, deterministic)
+### 1. Verify first
 
-When this pipeline runs **as a subagent** (the usual `/qa-run` dispatch), the harness blocks the
-**Write tool** from creating report files ("Subagents should return findings as text, not write
-report files"). The Write-tool template fill in steps 3 & 7 then silently fails and no
-`report.html` is produced. **Prefer the deterministic renderer**, which writes both files through
-the filesystem (Bash), not the Write tool, so it is unaffected by that restriction:
+Run `scripts/qa-verify.sh <run-id>` before rendering. The renderer shows the **verifier's** verdict
+wherever `verification.json` re-checked a criterion (an override is shown as such, with its
+reasons), plus the run-level records (`__run-checks__`, `__phase-surface__`, `__screenshots__`).
+Without `verification.json` the report says "Not independently verified" — never imply a re-check
+that did not happen.
+
+### 2. Render
 
 ```
-python3 "$CLAUDE_PLUGIN_ROOT/scripts/render-report.py" .qa/runs/<run-id>
+bash "$CLAUDE_PLUGIN_ROOT/scripts/render-report.sh" .qa/runs/<run-id>          # relative image links
+bash "$CLAUDE_PLUGIN_ROOT/scripts/render-report.sh" .qa/runs/<run-id> --embed  # one portable file
 ```
 
-It reads `run-manifest.json`, `checkpoint.json`, `bug-log.json`, and `stack-profile.json` and fills
-`templates/report.{md,html}` (tally, per-criterion verdict cards, deferred cards, low-confidence
-callout, bug appendix, evidence links + screenshot slots). Steps 1-8 below document the field
-semantics the script implements and remain the fallback for the main-agent (non-subagent) path
-where the Write tool is available.
+A bare `<run-id>` works from the project root. The script writes through the filesystem (Bash), so it
+works when the pipeline runs as a subagent whose Write tool may not create report files. Re-run it
+after anything in the run changes; output is byte-identical for an unchanged run.
+(`python3 scripts/render-report.py <run-dir>`, the 0.7.1–0.9.0 entry point, still works and delegates.)
 
-### 1. Read run artifacts
+### 3. Check what it printed
 
-Read `run-manifest.json` and `checkpoint.json` to get the full criterion list, their verdicts, confidence flags, evidence refs, and any bug entries. Also read `stack-profile.json` and fill the report's **Detected stack** header (`{{STACK}}`, `{{STACK_TIER}}` = the `playbook`, `{{STACK_SIGNAL}}` = the primary component `signal`); when `mode` is `black-box`/`source-drift` or any component is `signal: weak`, fill `{{STACK_DRIFT_NOTE}}` with an honest one-liner instead of removing it.
+The renderer prints the tally, the number of screenshots and how many pass/fail criteria carry one.
+A pass/fail without a screenshot is called out on its card ("No screenshot recorded") and in the
+summary — go back and take one while the run is live (`driving-browser-qa` § Screenshot Evidence).
 
-### 2. Compute the summary tally
+## What the record must hold (so the render is complete)
 
-Count criteria by verdict: `pass | fail | blocked | deferred | error`. State the total criterion count. This tally goes at the very top of both report files.
-
-### 3. Write report.md
-
-Copy `templates/report.md` into the run dir and fill every placeholder:
-
-- `{{RUN_ID}}` — the run identifier.
-- `{{DATE}}` — ISO-8601 date.
-- `{{FEATURE}}` — feature/target label from the run manifest.
-- `{{BUILD_ID}}` — build/deploy id captured at pre-flight.
-- `{{TALLY_*}}` — per-verdict counts.
-- `{{COST_*}}` (audit-2 W4-3) — fill the `## Cost` block from `run-manifest.json`'s `cost` object
-  (`scripts/cost-summary.sh`'s output; `checkpointing-qa-memory` wrote it, this skill never
-  recomputes it). If `cost` is still `null`, replace the whole section with `_Cost telemetry
-  unavailable for this run._` rather than leaving placeholders unfilled — see the template's own
-  comment for the exact per-field rendering rules (including the `budgetWarn` callout and the
-  optional `tokens` row, rendered only when non-null).
-- One `## Criterion` section per criterion using the verdict-card fields below.
-- A `## Deferred` section for every deferred criterion (never omit).
-- A `## Bugs` appendix with one filled `templates/bug-report.md` block per failing criterion.
-
-### 4. Verdict card fields (per criterion)
-
-Every criterion section contains:
-
-| Field | Content |
+| Shown | Comes from |
 |---|---|
-| **id** | Short stable identifier (e.g. `GOV-01`) |
-| **title** | One-line description of the behavior |
-| **verdict** | `pass` / `fail` / `blocked` / `deferred` / `error` |
-| **confidence** | `high` / `low` — LOW when expected value came only from backend code |
-| **oracle** | The spec/domain rule the result was judged against |
-| **expected** | Value or behavior the oracle says should be true |
-| **actual** | What the UI / API / DB returned |
-| **evidence** | Relative paths to screenshots / network bodies / bake read-backs |
-| **suspected layer** | On `fail`: one of `FE` / `route` / `service` / `migration` / `DB` |
-| **bug-report** | On `fail`: link to the appendix entry (e.g. `[BUG-09](#bug-09)`) |
+| verdict, confidence, result, kinds, bug ref, persona | `checkpoint.json` (checkpointing-qa-memory) |
+| override + reasons, run-level checks | `verification.json` (qa-verify) |
+| title, oracle, tags | `checklist.json` row, else `run-manifest.json` `checklist[]` |
+| feature, build, target, dates, cost | `run-manifest.json` |
+| thumbnails | `evidence/[<persona>/]<crit>/screenshot-*.{png,json}` (record-evidence.sh screenshot); loose images of older runs render marked "not provenance-bound" |
+| other evidence links | the rest of the criterion's evidence dir + `evidence_refs` |
+| bugs | `bug-log.json` (`entries[]`, `bugs[]` or a bare array) |
+| stack line | `stack-profile.json` |
 
-Confidence LOW signals "this can catch precision/propagation bugs but not a wrong formula."
+So the rules below are rules about **what to record**, not what to type into a report:
 
-### 5. DEFERRED — reason convention
-
-A deferred criterion MUST appear in the `## Deferred` section with:
-- The criterion id and title.
-- A plain-English reason (e.g. "round-close math requires a closed round — not available in this env", "concurrency test requires two simultaneous sessions — deferred to load-test suite", "scenario modeling covers future projections — out of scope for this run").
-
-Never silently drop a criterion. Never record `pass` for something not verified. If you chose not to verify it, it is `deferred`.
-
-### 6. Bug reports
-
-For every `fail` criterion, fill `templates/bug-report.md`:
-
-- **Title** — one-line summary.
-- **Environment + Build ID** — captured at pre-flight.
-- **Steps to reproduce** — numbered, starting from a logged-in state.
-- **Expected** — from the oracle (spec/domain rule). Show the recomputed value if computed logic is involved (e.g. `4,000,000 shares × $0.001/share = $4,000.00`).
-- **Actual** — what the UI/API/DB returned (e.g. `$4.00`, truncated by `decimal(10,2)` column).
-- **Severity** — `critical` / `high` / `medium` / `low`.
-- **Suspected layer** — one of `FE` / `route` / `service` / `migration` / `DB`.
-- **Suggested fix** — one concrete action (e.g. "Alter column to `decimal(15,4)` and add a migration test asserting no truncation at amount < $0.01/share").
-- **Evidence refs** — relative paths.
-
-Bug #9 example (cap-table governance, amount precision):
-> Expected: 4,000,000 × $0.001 = $4,000.00 (domain rule: amount = shares × price_per_share).
-> Actual: $4.00 displayed and stored.
-> Suspected layer: migration — `decimal(10,2)` column silently truncates sub-cent unit prices.
-
-Show the recomputed-expected vs actual side-by-side whenever computed logic is involved. Never hide the arithmetic.
-
-### 7. Write report.html
-
-Copy `templates/report.html` into the run dir and replace all `{{…}}` tokens, including `{{COST_SECTION}}` (same source and same-null-handling as report.md's `## Cost` block above — see the template's own comment for the exact HTML to fill in). Embed screenshots as `<img src="evidence/<criterion-id>/screenshot-after.png">` (relative paths). The file must open standalone in a browser with no network requests — all CSS is inline in the template.
-
-Verdict card colors:
-- `pass` → green (`#16a34a` background, white text)
-- `fail` → red (`#dc2626`)
-- `blocked` → amber (`#d97706`)
-- `deferred` → grey (`#6b7280`)
-- `error` → purple (`#7c3aed`)
-
-### 8. Traceability column (optional)
-
-Add only when spec-kit artifacts (`constitution.md`, `spec.md`, `tasks.md`) are present in the run dir or were supplied as `$2` to the `/qa-run` command.
-
-In `report.md`, add a `## Traceability` section: a table mapping `criterion-id | spec-section | tasks-id | verdict`. In `report.html`, add the table after the verdict cards.
-
-If no spec-kit artifacts exist, omit the section entirely — do not fabricate references.
+- **Verdict card fields.** Record `--last-action` with the observed result (expected vs actual for a
+  fail), and the oracle on the checklist row. Confidence is `low` when the expected value could only
+  come from backend code — the card shows it.
+- **DEFERRED — reason.** Checkpoint `deferred` with the plain-English reason in `--last-action`
+  ("Round-close math requires a completed round — not available in this env."). It renders in the
+  `Deferred` section. Never drop a criterion; never record `pass` for something not verified.
+- **Bugs.** One `bug-log.json` entry per failing criterion (`bug-report.md` lists the fields): title,
+  steps, expected (with the recomputed arithmetic, e.g. `4,000,000 × $0.001 = $4,000.00`), actual,
+  severity, suspected layer — exactly one of `FE | route | service | migration | DB` — suggested
+  fix, evidence refs. Checkpoint the fail with `--bug-ref` so the card links to it.
+- **Traceability.** When spec-kit artifacts are present, `traceability.json` (checkpointing-qa-memory
+  Step 5) renders as a table; absent, nothing is fabricated.
 
 ## Mini-Evals
 
-**Eval 1 — Precision bug, amount truncated (Bug #9)**
-Criterion `GOV-09` verifies that creating a Series A issuance at 4,000,000 shares × $0.001/share stores amount = $4,000. Oracle: `amount = shares × price_per_share`. Actual stored: $4.00. The bug report must show `4,000,000 × $0.001 = $4,000.00 (expected) vs $4.00 (actual)` with suspected layer `migration` (one of the CLAUDE.md-canonical `FE|route|service|migration|DB` values — never a slash-joined combo like `DB/migration`). Verdict: `fail`, confidence: `low` (expected derivable only from backend column definition, not a public spec rule). The SKILL must surface this as a named bug appendix entry, never hide it under a vague "calculation error."
+**Eval 1 — Precision bug, amount truncated (Bug #9).** `GOV-09` stores $4.00 for 4,000,000 ×
+$0.001. The fail is checkpointed with `--bug-ref BUG-09`; the bug-log entry carries expected
+`4,000,000 × $0.001 = $4,000.00`, actual `$4.00`, suspected layer `migration` (never `DB/migration`),
+confidence `low`; the after-screenshot shows `$4.00` on screen. Rendered: a red card with the
+thumbnail, a link to `BUG-09`, and the appendix entry with expected beside actual.
 
-**Eval 2 — Honest DEFERRED (round-close math)**
-The criterion `GOV-12` verifies round-close pro-rata math. The env has no closed round. Record as verdict `deferred` with reason: "Round-close math requires a completed round — not available in this env. Verify in staging after round close." The `## Deferred` section must contain this entry. The tally must show 1 deferred. Never record `pass` for this criterion.
+**Eval 2 — Honest DEFERRED (round-close math).** `GOV-12` needs a closed round the env lacks:
+checkpoint `deferred` with that reason. Rendered under `Deferred` with the reason; the tally shows
+1 deferred; no `pass` anywhere for it.
 
-**Eval 3 — Confidence LOW on a passing criterion**
-Criterion `GOV-05` verifies ownership % displayed matches the computed value. The oracle is backend logic (no public spec formula for rounding). Verdict: `pass`, confidence: `low`. The verdict card must show `confidence: low` and a note: "Expected derived from backend rounding rule — can catch propagation bugs, not formula correctness."
+**Eval 3 — Confidence LOW on a pass.** `GOV-05`'s rounding oracle exists only in backend code:
+checkpointed `pass --confidence low`. The card shows `confidence: low` and the summary counts it.
+
+**Eval 4 — Report with no pictures (the 0.8.1 regression).** A run whose evidence holds only JSON
+rendered a report with zero images. Now the summary says "0 of N pass/fail criteria carry a recorded
+screenshot", every such card says so, and qa-verify degrades those passes to `confidence: low`.
+
+**Eval 5 — Override must win.** The agent checkpointed `pass`; qa-verify overrode it to `fail`
+(a screenshot altered after recording). The card is red, says "in-run pass → overridden by
+qa-verify", and lists the reason; the tally counts it as a fail.
 
 ## Templates
 
-Copy these from `skills/writing-qa-reports/templates/` into the run dir at report time:
-- `report.md` → `.qa/runs/<run-id>/report.md`
-- `report.html` → `.qa/runs/<run-id>/report.html`
-- `bug-report.md` is a reusable snippet — append one filled copy per failing criterion into the `## Bugs` appendix of `report.md`.
+- `templates/report.html` — the page shell the renderer fills (CSS, viewer markup, inline script).
+- `templates/report.md` — the markdown skeleton the renderer fills.
+- `templates/bug-report.md` — the field list of one bug-log entry.
+
+Edit the templates to change the look; never hand-fill them.

@@ -47,6 +47,10 @@
 # Every assertion runs under BOTH jq (default) and QA_ENGINE=python3 (qa-verify.sh
 # honors QA_ENGINE the same way toolstream.sh/provenance.sh do).
 set -uo pipefail
+# Engine 0.10.0 (ADR-0028): these fixtures predate mandatory screenshot
+# evidence and assert behaviour that is orthogonal to it, so the screenshot
+# requirement is switched off for this suite; tests/screenshots covers it.
+export QA_REQUIRE_SCREENSHOTS=false
 HERE="$(cd "$(dirname "$0")" && pwd)"
 QAVERIFY="$HERE/../../scripts/qa-verify.sh"
 CKPT="$HERE/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"

@@ -1,0 +1,18 @@
+{
+  "run_id": "fixture-run",
+  "entries": [
+    {
+      "bug_id": "BUG-1",
+      "criterion_id": "C2",
+      "title": "Amount truncated",
+      "severity": "high",
+      "suspected_layer": "migration",
+      "steps": [
+        "Open issuance",
+        "Enter 4,000,000 shares at $0.001"
+      ],
+      "expected": "$4,000.00",
+      "actual": "$4.00"
+    }
+  ]
+}
