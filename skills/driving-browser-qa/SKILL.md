@@ -196,6 +196,36 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
 
 **Pixel fallback stays separate.** `browser_take_screenshot` remains the tool for visual/layout/math checks needing pixel evidence — `domDigest` is a text/structure digest, not a screenshot, and does not replace it. Screenshot calls are not counted against the ~2-calls-per-step budget.
 
+## Screenshot Evidence (mandatory, 0.10.0 — ADR-0028)
+
+Every `pass` and `fail` is shown to the report's reader, not only asserted. Capture it through the
+driver so the capture hook hashes the saved file, then record it so it is bound to that call.
+
+1. **After — at the assertion moment** (step 5 above, once the asserted state is on screen): take
+   `browser_take_screenshot` with `filename: ".qa/runs/<run-id>/evidence/<criterion-id>/screenshot-after.png"`
+   (`evidence/<persona>/<criterion-id>/…` for a persona-scoped run). Viewport by default; pass
+   `fullPage: true` when the asserted content is below the fold. Every pass, fail **and** blocked row
+   gets one when a page is up — a fail's screenshot is the bug's first piece of evidence.
+2. **Before — criteria with a UI act** (anything that clicks/types/drags in its act phase): the same
+   call with `screenshot-before.png` immediately before the act.
+3. **Record each one** right after taking it:
+   `record-evidence.sh <run-id> <criterion-id> screenshot --phase <before|after> [--persona <id>] [--label <token>]`.
+   With no other flag it binds the newest captured, unclaimed `browser_take_screenshot` and copies its
+   file into the evidence dir (a no-op when the driver already saved it there). Pass `--file <path>`
+   when the driver wrote somewhere else — the Playwright MCP resolves a relative `filename` against
+   its **workspace root**, which is not always the project root, and refuses absolute paths outside
+   it; the capture hook records where the file actually landed. Extra shots of one criterion take
+   `--label` (`screenshot-after-table.png`).
+4. **What is refused at record time** (exit 1, nothing written): a file that is not what the captured
+   call saved (its sha256 differs from the hook's), a pointer at any other tool, a capture another
+   criterion already claimed (take a fresh one), a non-image. Take the screenshot again; never edit
+   or reuse one.
+
+`checkpoint.sh` refuses a `pass`/`fail` with no recorded screenshot on a run whose toolstream shows
+a browser (fix: take and record one); `qa-verify` overrides a screenshot that was altered after
+recording, reused or unbound, and degrades a pass that has none to `confidence: low`. Opt-out, only
+for a driver that cannot take screenshots: `.qa/config.json` `report.requireScreenshots: false`.
+
 **No-evidence-regression guard (binding).** The observe-round is a CONSOLIDATION of calls, never a reduction of evidence:
 - Console and network status/method/URL are carried directly in every observe payload — read them every round, even when the DOM digest looks unchanged.
 - A deeper read the old loop could also reach — a network **response body**, a cross-origin request the in-page buffer can't see, or a backend read-back — is still made as a separate, targeted call: `browser_network_request` for a body, or hand off to `verifying-backend-persistence` / `probing-apis-through-browser`. The observe-round removes the *redundant* per-step console/network/snapshot calls the old loop paid for even when nothing changed; it does not remove a diagnostic a step genuinely needs.
@@ -268,6 +298,7 @@ When a fix is expected to be deployed, compare the build ID captured in pre-flig
 | `scripts/click-by-text.js` | Resolve-only (ADR-0015): finds an element by visible text (LTR/RTL-safe), returns its selector/href; act via `browser_click` |
 | `scripts/parse-session-log.js` | Classifies `session.md` (`--save-session`) Playwright code into `{class, mutating, code}` — bridges tool calls to code |
 | `scripts/preflight.sh` | App liveness + driver ping + auth check + build-ID capture |
+| `../checkpointing-qa-memory/scripts/record-evidence.sh … screenshot` | Bind a `browser_take_screenshot` file to its captured call and file it under the criterion's evidence dir (0.10.0) |
 
 ---
 

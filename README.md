@@ -158,7 +158,7 @@ minimal config is:
 
 The agent pre-flights (app live? auth? build id?), then verifies each criterion **sequentially**: drives the UI → **bakes** (reads the founder back, forces multiplicity 0/1/N) → **recomputes** the ownership % independently and reconciles FE vs API vs DB → emits one verdict + confidence → checkpoints.
 
-**4. Read the result:** `.qa/runs/<run-id>/report.html` (+ `report.md` and per-criterion `evidence/`). You'll get a per-verdict tally and, for any `fail`, a bug-report with the **suspected layer** (`FE | route | service | migration | DB`). If the app dies mid-run, just re-run the same target — it reads the last checkpoint and **skips completed criteria**.
+**4. Read the result:** `.qa/runs/<run-id>/report.html` (+ `report.md` and per-criterion `evidence/`). You'll get a per-verdict tally, a card per criterion with its **before/after screenshots** (click one for a full-screen viewer; arrow keys step through them), and, for any `fail`, a bug-report with the **suspected layer** (`FE | route | service | migration | DB`). The report is rendered from the run's record, never hand-written — re-render any run, old or new, with `bash <plugin>/scripts/render-report.sh .qa/runs/<run-id>` (`--embed` for one portable file). If the app dies mid-run, just re-run the same target — it reads the last checkpoint and **skips completed criteria**.
 
 > No checklist yet? `/qa-run "founders flow"` will analyze the UI and **auto-generate** one (v1.1) for you to review first. Have a spec-kit `spec.md`? Point at it and it's ingested with a traceability matrix.
 
