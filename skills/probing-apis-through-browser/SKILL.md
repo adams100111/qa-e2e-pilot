@@ -124,15 +124,38 @@ If either condition is missing:
 - Record the reason: "Write needed but allowApiWrites is off" or "seedableEnvMarker not present (or still the bootstrap sentinel) — refusing to write to an unknown environment."
 - Do NOT seed on a hunch. Do NOT infer the environment is disposable.
 
-When both gates are clear and `allowWrite:true` is passed:
+When both gates are clear, use **the sanctioned recorded write probe** (0.9.0, ADR-0027) — the
+ONLY mutating `browser_evaluate` `scripts/block-hook.sh` admits. The payload must be
+`scripts/backend-probe.js` **verbatim** (the harness's `async () => { ... }` wrapper is fine; any
+edit is not) followed by **exactly one** call whose argument is **strict JSON** (double-quoted
+keys, no expressions) with a **same-origin relative** `url`:
 ```js
-return await probe({
-  url: '/api/governance/seed-template',
-  method: 'POST',
-  body: { name: 'test-fixture' },
-  allowWrite: true,   // explicit — required
-});
+async () => {
+  /* ...scripts/backend-probe.js, verbatim... */
+  return await probe({"url": "/api/governance/seed-template", "method": "POST",
+                      "body": {"name": "test-fixture"}, "allowWrite": true, "csrf": "laravel-xsrf"});
+}
 ```
+- `method` ∈ POST | PUT | PATCH | DELETE, `allowWrite` must be `true`; allowed keys are `url`,
+  `method`, `body`, `allowWrite`, `csrf`. `csrf: "laravel-xsrf"` sends `X-XSRF-TOKEN` from the
+  `XSRF-TOKEN` cookie (Laravel/Sanctum), `csrf: "meta"` sends `X-CSRF-TOKEN` from
+  `<meta name="csrf-token">` — read `auth.csrf` from `stack-profile.json` to choose.
+- The hook checks the environment itself (`skills/probing-apis-through-browser/scripts/write-probe-gate.js`):
+  `allowApiWrites: true`, a non-empty `seedableEnvMarker` that is not `"QA_DISPOSABLE_ENV"`, and
+  `environment != "production"`. **Never production.** If it refuses, the criterion is `blocked`.
+- Anything else — a JS object literal, extra code, an edited `backend-probe.js`, an absolute URL —
+  is denied like any mutating evaluate. Out-of-browser `curl`/`python` is not a substitute: it is
+  unrecorded and may be denied by the host harness.
+
+**API-only criteria (`api-write` tag).** A criterion that asserts a server-side rule with no UI
+affordance by design — "PATCH another user's registration → 403", "POST without a challenge →
+422" — is tagged `api-write` in the checklist. Its act is the one sanctioned write probe (it is
+never a substitute for a UI act a human could perform — ADR-0015 still governs those), and its
+evidence is `probe`, not `human-action`: record the write's status/shape with
+`--source-ref seq:<N>` naming that captured `browser_evaluate` (the last line of
+`.qa/runs/<run>/toolstream.jsonl` right after the call), then bake the persisted outcome as usual.
+qa-verify overrides an `api-write` pass whose probe evidence is not bound to a captured sanctioned
+write probe, or whose config does not allow API writes.
 
 ---
 
@@ -152,8 +175,14 @@ After probing:
 If this criterion's `Kinds` includes `probe` (checkpointing-qa-memory's evidence gate), write the probe evidence artifact before checkpointing a `pass`:
 
 ```
-record-evidence.sh <run-id> <criterion-id> probe [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false>
+record-evidence.sh <run-id> <criterion-id> probe [--persona <id>] --status <code> --shape <json-or-text> --ok <true|false> [--source-ref seq:<N>]
 ```
+
+`--source-ref` is optional and, when given, must be `seq:<N>` — the `seq` of the captured
+toolstream call that produced this evidence (required for an `api-write` criterion). A description
+(`browser_network_requests`, `tinker:Model::find(1)`) or a seq the toolstream does not hold is
+**refused at record time** (exit 1, nothing written): a recorded artifact cannot be corrected
+afterwards, so a pointer that could never verify is never accepted. Omit it to bind by containment.
 
 `--ok` is **your judgment that the probe CONFIRMED the criterion's expectation** — it is NOT the raw HTTP status code. A "must-see" probe that returns the expected resource is `--ok true`; a cross-role/cross-tenant **absence** probe that correctly gets 403/404/empty is *also* `--ok true` (the absence is what was expected). `--ok false` means the probe refuted the expectation (e.g. the absence probe leaked the other tenant's data, or the must-see resource came back missing/wrong). The gate rejects a checkpointed `pass` unless the recorded `probe.ok == true` — get this judgment right, don't default to the raw status range.
 
@@ -165,7 +194,8 @@ record-evidence.sh <run-id> <criterion-id> probe [--persona <id>] --status <code
 |-----------------|---------|
 | Network body confirms feature works as specified | pass |
 | Network body shows a real server error | fail (with body excerpt in trace) |
-| Write needed but allowApiWrites/seedableEnvMarker absent | blocked |
+| Write needed but allowApiWrites/seedableEnvMarker absent (or environment is production) | blocked |
+| `api-write` criterion: sanctioned write probe returned the expected refusal/acceptance, evidence bound by `--source-ref seq:<N>` | pass |
 | Cross-origin — cannot read fresh body; existing traffic insufficient | deferred |
 | probe() throws or evaluate tool unavailable | error |
 

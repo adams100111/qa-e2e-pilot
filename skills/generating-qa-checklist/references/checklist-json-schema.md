@@ -86,7 +86,13 @@ is valid — a Run with no criteria generated yet.
 | `assertedState.entity` | string | required if `assertedState` present | The entity name the fingerprint targets (e.g. `"Founder"`, `"Holding"`) — matches the criterion's Baking assertion `Entity` field in `checklist.md`. |
 | `assertedState.readBackPath` | string | required if `assertedState` present | The key/path into the before/after fingerprint that must be present and (per `expectChange`) checked for a value change. A simple top-level key (e.g. `"count"`) or a dot-path (e.g. `"holdings.length"`) — see `check-action-trace.js`'s documented path grammar. |
 | `assertedState.expectChange` | boolean | required if `assertedState` present | `true` when the oracle expects this target's value to differ before→after (the common case for a create/update/delete). `false` when the oracle expects the target to be present but **unchanged** (e.g. a rejected invalid write, an idempotent repeat action). |
-| `humanAction` | boolean | optional | Mirrors the `human-action` tag — `true` when the Act phase mutates state or drives a control through the UI (Step 7's mechanical rule). Like `requiredKinds`, this is descriptive; the gate's own mutation classification (`mutation-flag.sh derive`, reused inside `required-kinds.sh`) is what actually governs enforcement, not this field. |
+| `humanAction` | boolean | optional | Mirrors the `human-action` tag — `true` when the Act phase mutates state or drives a control through the UI (Step 7's mechanical rule). Since 0.9.0 `humanAction: true` is a structured POSITIVE signal `mutation-flag.sh` honors (it can only add the `human-action` requirement, never remove it); `false` is descriptive. |
+| `mutates` | boolean | optional | 0.9.0 (ADR-0027). The plan's explicit write declaration. `mutation-flag.sh derive` honors it **ahead of** prose verb matching (after the structured positives `kinds`/`httpMethod`/`humanAction: true`, which it can never override), as it does the `read-only` tag. Use `false` on a row that performs no write but whose instruction mentions a mutating word ("open the edit form and read it"). `mutates: false` together with `humanAction: true` or a `human-action` entry in `requiredKinds` is rejected by `validate-checklist-json.sh`. |
+
+`tags` may also carry `api-write` (0.9.0): the act is ONE API write with no UI affordance by
+design, performed through the sanctioned recorded write probe on a disposable env only; its
+required evidence is `probe` instead of `human-action` (`required-kinds.sh`), bound by
+`--source-ref seq:<N>` to the captured write (qa-verify).
 
 ## `kind` enum (exact, 12 values)
 

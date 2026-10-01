@@ -8,6 +8,94 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.9.0 — 2026-10-01 · "Fail where it can still be fixed"
+
+Feature release, driven by two real runs against one Laravel app that matched the oracle on
+nearly every criterion and still verified badly: 27 genuine passes overridden as forgery, 20
+criteria `blocked`, and `__run-checks__` failing in both. Every cause was tooling, and each one
+recurred although the second agent was told to avoid it. See
+[ADR-0027](./docs/adr/0027-fail-fast-record-time-and-real-driver-shapes.md).
+
+- **Evidence that can never verify is refused when it is recorded.** `record-evidence.sh` now
+  accepts `--source-ref` only as `seq:<N>` (or `<N>`), and the seq must exist in the run's
+  toolstream. A description such as `tinker:HackathonRegistration::find(454)` is refused with a
+  message saying what to pass; before, it was recorded, and `qa-verify` then read it as a dangling
+  pointer and called the pass forgery (AC-1). `--session-calls` must be a non-empty array of
+  objects naming a `class` or `tool`; plain strings, a `{tool: count}` map and `[]` are refused.
+  With neither `--session-calls` nor `--session-log`, no `sessionCalls` key is written at all.
+  0.8.1 wrote an explicit `[]` there, which is the forged-trace signal, so every such trace was
+  guaranteed unbound. A recorded artifact still cannot be corrected afterwards (that is
+  tampering); it is simply never accepted in a shape that cannot verify.
+- **A descriptive `sourceRef` is no claim.** `provenance.sh` treats only a well-formed pointer as
+  authoritative. Anything else falls back to containment, exactly as if it had been omitted, so
+  artifacts recorded by 0.8.1 stay verifiable. A well-formed pointer that dangles is still
+  `unbound`.
+- **Read-only criteria are classified from their structure.** `mutation-flag.sh` now decides
+  from the row's structured fields first. `kinds` containing `human-action`, a mutating
+  `httpMethod`, and `humanAction: true` always mean mutating. Next, an explicit
+  `"mutates": true|false` or the `read-only` tag decides. Prose verbs are only a fallback, and
+  that fallback ignores negated clauses ("Do NOT submit"), URL paths (`/hackathons/create`) and
+  the bare noun "set". The six real false positives — "compare rows as a **set**", "**edit**
+  form", "**change** marker", a quoted "**Edit** my registration" button — no longer demand
+  `human-action` evidence. `validate-checklist-json.sh` validates `mutates` and rejects
+  `mutates: false` beside a human-action requirement.
+- **The findings channel works against the real driver.** Its root cause: qa-verify parsed
+  `responseBody` as the raw observe object, but the Playwright MCP wraps every result in a content
+  array with markdown. The 4000-byte cap cuts that wrapper mid-string, so it never parsed, and
+  `browser_network_requests` returns a markdown list, not JSON. A run that injected `observe.js`
+  verbatim still verified `findingsChannel: "none"`. The capture hook now extracts the
+  console/network rows from the **full** response into an `observed` field. qa-verify reads it
+  through one shared reader (`toolstream.sh extract-observed` / `observed-rows`), which also
+  unwraps pre-0.9.0 toolstreams.
+- **Live self-checks.** The capture hook now tells the agent at the call, as PostToolUse
+  `additionalContext` that never blocks:
+  - the first observe round or request list that captured no findings;
+  - after every navigation, that `browser_network_requests` comes next;
+  - once, at the third browser call, that no `--save-session` log is being written.
+- **Load-window gaps are closed during the run.** The block-hook denies the next
+  `browser_navigate` of a live run while the previous navigation has not been followed by
+  `browser_network_requests`. The fix is that one call. `enforcement.loadWindowGate: false` opts
+  out; the verify-time check is unchanged.
+- **Missing `--save-session` is reported up front.** `preflight.sh` prints
+  `save-session: detected` or warns `save-session: absent`, with how to enable it
+  (`PLAYWRIGHT_MCP_SAVE_SESSION=true` + `PLAYWRIGHT_MCP_OUTPUT_DIR`) or accept the degrade
+  (`humanInteraction.saveSession: false`).
+- **Drag and drop.** `browser_drag` and `browser_drop` are in the agent's tool list. The gates
+  already treated them as human-path tools.
+- **API-only criteria have one sanctioned, recorded write.** On a disposable env, the block-hook
+  admits exactly one mutating `browser_evaluate` shape: `backend-probe.js` verbatim plus one
+  `probe(<strict JSON>)` call with a same-origin relative url. It does so only when
+  `allowApiWrites`, a disposable `seedableEnvMarker` and `environment != production` all hold, and
+  never on production. A row tagged `api-write` proves its act with `probe` evidence instead of
+  `human-action`. qa-verify overrides it unless that evidence is bound by `--source-ref seq:<N>`
+  to the captured write and the config still allows writes. `backend-probe.js` gains
+  `csrf: "laravel-xsrf" | "meta"`.
+- **Shared criteria bind to their role's identity capture.** On a multi-persona project, a
+  persona-less high-stakes pass (a shared criterion, ADR-0012) was always downgraded to `low`.
+  It is now bound to `evidence/<row role>/identity.json` with the persona-scoped rules. Without
+  that capture it still degrades, and the reason names the command that records one.
+- **Classifier hardening.** `mutates()` now recognises a quoted method key
+  (`{"method":"POST"}`), which previously slipped past the block-hook and the act-phase lint.
+- **Test portability.** Restricted-PATH fallbacks also include `/usr/bin:/bin`, because on macOS
+  `${BASH%/*}` is Homebrew's bin, which has no coreutils. The `skillopt-pilot` suite no longer
+  depends on a developer's home directory or a `codex` binary; it had kept CI red since
+  2026-09-15. A new `tests/preflight` suite runs `preflight.sh` against a throwaway local app.
+
+#### Behaviour changes
+
+- Now fails fast:
+  - `record-evidence.sh` exits 1 on a descriptive or dangling `--source-ref` and on a malformed
+    or empty `--session-calls`;
+  - the block-hook denies a `browser_navigate` while the previous navigation's load window is
+    unread (live runs only — a toolstream untouched for 120 minutes is not gated).
+- Re-verifying an existing run can now find findings that were invisible before. For example,
+  in-scope 5xx responses sitting in a `browser_network_requests` list that the run never
+  journaled. Such a run fails ledger completeness instead of reading `findingsChannel: "none"`.
+- A read-only row should be tagged `read-only` (or carry `"mutates": false`). Prose alone still
+  classifies as before, minus negations, paths and the noun "set".
+- A JSON-quoted `method` key in an evaluate payload is now a write. Only the sanctioned probe
+  shape is admitted, and only on a disposable env.
+
 ### v0.8.1 — 2026-09-27 · "The observer is not the actor"
 
 Bug-fix release. Two defects found on a real QA run of 0.8.0 against another project.

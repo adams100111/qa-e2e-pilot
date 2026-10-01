@@ -65,7 +65,12 @@ the observe-round, and the UX detectors all depend on it and are never flagged.
 
 **Opt-in — only when the Playwright MCP is run with `--save-session`.** The default managed
 instance does NOT set it; if the driver's Playwright MCP is configured with `--save-session`
-(add it to that server's args), Check 0 becomes available. When active, it writes a SINGLE
+(add it to that server's args, or start the harness with `PLAYWRIGHT_MCP_SAVE_SESSION=true` and
+`PLAYWRIGHT_MCP_OUTPUT_DIR=.playwright-mcp` in its environment — the only route for the plugin's
+own `playwright` server), Check 0 becomes available. `scripts/preflight.sh` reports
+`save-session: detected` or warns `save-session: absent` before the run, and the capture hook
+re-checks for a real log at the run's third browser call — relay an `absent` warning to the
+operator instead of degrading silently. When active, it writes a SINGLE
 per-run `session.md` into a per-session subdir of the MCP output dir — the newest
 **`.playwright-mcp/session-*/session.md`** (find it with
 `ls -dt .playwright-mcp/session-*/ | head -1`); every criterion's calls append to that one file
@@ -167,18 +172,24 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
    a navigation. Treat findings from either source identically (finding, suspected layer, etc.) —
    do not discount a 4xx/5xx or console error just because it came from the driver-backed call
    instead of `console[]`/`network[]`.
+   **This holds for EVERY navigation**, auxiliary ones included — login, persona switch, locale
+   switch, logout recovery. qa-verify fails the run (`__run-checks__`) on each navigate not
+   followed by `browser_network_requests` before the next one, and since 0.9.0 the block-hook
+   **denies the next `browser_navigate`** until you have made that call (`enforcement.loadWindowGate:
+   false` turns the live deny off; the verify-time check stays). If a navigate is denied, call
+   `browser_network_requests` and retry it.
 
 **Per round, for every step inside a criterion:**
 
-1. **Observe.** Call `browser_evaluate` with `return __qaObserve({ digestSelector: 'body', runUx: true })`. This ONE call returns:
+1. **Observe.** Call `browser_evaluate` with `return __qaObserve({ digestSelector: 'body', runUx: true })` — **return the whole object**; a projection such as `__qaObserve(...).domDigest.liveText` drops `console[]`/`network[]` and starves the findings channel. This ONE call returns:
    ```
    { round, console[], network[], domDigest: { liveText, interactive[] }, ux[], axe }
    ```
-   **The key order is load-bearing.** `console` and `network` are serialized **before** the bulky `domDigest` so that `capture-hook.sh`'s 4000-byte `RESPONSE_BODY_CAP` (a recorded decision; it is not raised) truncates the DOM inventory instead of the error evidence. Consumers read by key, so nothing downstream depends on the order — but the *truncation* does.
+   **How the findings are captured (0.9.0).** The Playwright MCP wraps every result in a content array with markdown (`### Result` ...), so the raw `responseBody` the capture hook keeps (capped at 4000 bytes) is never the observe JSON itself — the wrapper is usually cut mid-string. The capture hook therefore extracts `console[]`/`network[]` from the FULL response into a compact `observed` field on the toolstream event (and `browser_network_requests`' `[GET] url => [200]` list likewise), and qa-verify's findings channel reads that. If the hook reports **"findings-channel check FAILED"** after your first observe round, the run is not being captured — fix the call (full object, verbatim `observe.js`) before continuing; otherwise the run verifies `UNVERIFIED`.
    - **A truncated `domDigest` is now the EXPECTED loss — re-observe, do not treat it as evidence loss.** The DOM inventory is reconstructible by calling `__qaObserve` again; the console/network arrays of a round that already happened are not. So a round whose captured response is cut off mid-`domDigest` is the cap working as designed: re-observe to get a fresh digest, and keep the `console[]`/`network[]` you already have. Never record a criterion `blocked`/`error`, and never discount a finding, because a digest came back truncated.
    - `domDigest.interactive` lists visible buttons/links/inputs with `data-testid`/label/href — this is the snapshot substitute for finding what to act on next. It does not carry a Playwright ref, so build a selector from it (prefer `[data-testid="…"]`) and pass that as the act call's `target` — `browser_click`/`browser_evaluate` accept a unique CSS selector, not only a snapshot ref. Fall back to `scripts/click-by-text.js` for RTL/label-only targeting, or a one-off `browser_snapshot` only when no stable selector exists.
    - `console[]` and `network[]` are DRAINED since the previous round — every console error/warning, `window.onerror`, unhandled rejection, and fetch/XHR that happened between rounds is already in this payload.
-2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), or select (`browser_select_option`) using the selector from step 1 — a SEPARATE call from the observe. Per the interaction discipline (ADR-0015, [`references/interaction-discipline.md`](./references/interaction-discipline.md)), the act itself is UI-only; `browser_evaluate` on this path is reserved for the logged `nonUiActionReason` opt-out (§ below), never a routine substitute for typing/clicking.
+2. **Act.** Click (`browser_click`), type (`browser_type`), fill form (`browser_fill_form`), select (`browser_select_option`), or drag (`browser_drag` from one element to another — e.g. a kanban/dnd-kit card onto a column; `browser_drop` for dropping external data onto a target) using the selector from step 1 — a SEPARATE call from the observe. Per the interaction discipline (ADR-0015, [`references/interaction-discipline.md`](./references/interaction-discipline.md)), the act itself is UI-only; `browser_evaluate` on this path is reserved for the logged `nonUiActionReason` opt-out (§ below), never a routine substitute for typing/clicking.
 3. **Wait.** After every mutation, wait for the expected next state before asserting (`browser_wait_for`) — still a separate call. Never assert immediately after an act — React renders are async.
 4. **Re-observe.** Call `__qaObserve` again. Its `console[]`/`network[]` now cover everything since step 1's round, so a JavaScript exception (catches bug class: page crash on load, e.g. `p.map` on a bad envelope) or an unexpected 4xx/5xx on a mutation request (catches bug class: endpoint 400/422/500 on wizard steps, wrong route names) surfaces here exactly as it did under the old separate calls — carried in one payload instead of two extra round-trips. Treat any such entry as a **finding**, not noise, regardless of whether the DOM digest looks clean.
 5. **Assert.** Compare the fresh `domDigest`/`console`/`network` to the oracle (the checklist's expected value/rule), not to what the backend code says.

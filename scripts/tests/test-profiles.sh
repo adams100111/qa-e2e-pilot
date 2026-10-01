@@ -5,7 +5,8 @@ python3 - "$root/harness-profiles.json" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
 caps=d["capabilities"]; hs=d["harnesses"]
-assert len(caps)==20, f"want 20 capabilities, got {len(caps)}"
+assert len(caps)==22, f"want 22 capabilities, got {len(caps)}"
+assert "browser_drag" in caps and "browser_drop" in caps, "drag/drop are human-path act tools (0.9.0)"
 assert caps[0]=="browser_navigate" and caps[-1]=="browser_close"
 # browser_network_requests (list) and browser_network_request (read one body) are DISTINCT — both required, in this order
 assert "browser_network_requests" in caps and "browser_network_request" in caps
