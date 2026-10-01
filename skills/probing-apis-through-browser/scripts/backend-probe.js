@@ -4,10 +4,24 @@
  * Usage (from SKILL.md step 3):
  *   Copy the function definition into the evaluate call, then invoke:
  *     probe({ url: '/api/trpc/governance.templateList' })
- *     probe({ url: '/api/foo', method: 'POST', body: { x: 1 }, allowWrite: true })
+ *
+ *   THE SANCTIONED RECORDED WRITE PROBE (0.9.0, ADR-0027) — the only mutating
+ *   browser_evaluate the block-hook admits, and only when .qa/config.json has
+ *   allowApiWrites:true + a disposable seedableEnvMarker + environment !=
+ *   production. The payload must be THIS FILE, verbatim, followed by exactly
+ *   one call whose argument is strict JSON (double-quoted keys, no
+ *   expressions) and whose url is same-origin relative:
+ *     return await probe({"url": "/api/foo", "method": "<one of POST|PUT|PATCH|DELETE>", "body": {"x": 1}, "allowWrite": true, "csrf": "laravel-xsrf"});
+ *   (Keep this file free of a literal quoted write method: the block-hook's
+ *   classifier must judge this source alone as read-only.)
+ *   The capture hook records it like any other call; qa-verify binds the
+ *   criterion's probe evidence to it by --source-ref seq:<N>.
  *
  * Contract:
  *   - GET by default; any mutating method requires explicit allowWrite: true.
+ *   - csrf: 'laravel-xsrf' sends X-XSRF-TOKEN from the XSRF-TOKEN cookie;
+ *     csrf: 'meta' sends X-CSRF-TOKEN from <meta name="csrf-token">. The
+ *     token is sent, never returned.
  *   - Uses fetch with credentials:'include' so session cookies ride along.
  *   - NEVER echoes Authorization, Cookie, or Set-Cookie header values.
  *   - Returns { ok, status, url, body, durationMs } — nothing else.
@@ -15,7 +29,7 @@
  *   - On network failure returns { ok: false, status: 0, url, body: errorMessage, durationMs }.
  */
 
-async function probe({ url, method = 'GET', body = null, allowWrite = false }) {
+async function probe({ url, method = 'GET', body = null, allowWrite = false, csrf = null }) {
   const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
   const norm = method.toUpperCase();
 
@@ -44,6 +58,14 @@ async function probe({ url, method = 'GET', body = null, allowWrite = false }) {
       init.body = JSON.stringify(body);
     }
 
+    if (!SAFE_METHODS.includes(norm) && csrf === 'laravel-xsrf') {
+      const m = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+      if (m) init.headers['X-XSRF-TOKEN'] = decodeURIComponent(m[1]);
+    } else if (!SAFE_METHODS.includes(norm) && csrf === 'meta') {
+      const el = document.querySelector('meta[name="csrf-token"]');
+      if (el) init.headers['X-CSRF-TOKEN'] = el.getAttribute('content');
+    }
+
     const res = await fetch(url, init);
     const durationMs = Math.round(performance.now() - t0);
 
@@ -64,6 +86,7 @@ async function probe({ url, method = 'GET', body = null, allowWrite = false }) {
     return {
       ok: res.ok,
       status: res.status,
+      method: norm,
       url: res.url,       // actual URL after any redirects
       body: parsed,
       durationMs,

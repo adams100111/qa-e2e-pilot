@@ -290,6 +290,7 @@ PROVENANCE_SH="$HERE/provenance.sh"
 TOOLSTREAM_SH="$HERE/toolstream.sh"
 STATE_MACHINE_JSON="$HERE/../skills/checkpointing-qa-memory/references/state-machine.json"
 PARSE_SESSION_LOG_JS="$HERE/../skills/driving-browser-qa/scripts/parse-session-log.js"
+WRITE_PROBE_GATE_JS="$HERE/../skills/probing-apis-through-browser/scripts/write-probe-gate.js"
 CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
 KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
 
@@ -445,6 +446,26 @@ if not isinstance(tags, list):
 tags = [str(t) for t in tags]
 sys.exit(0 if ("cross-tenant" in tags or "cross-role-fk-chain" in tags) else 1)
 ' "$row" >/dev/null 2>&1
+  fi
+}
+
+# row_has_tag <checklist-row-json> <tag> — true (exit 0) iff the row's tags
+# array contains <tag> (string compare). Absent/malformed row -> false.
+row_has_tag() {
+  local row="$1" tag="$2"
+  [[ -z "$row" ]] && return 1
+  if has_jq; then
+    jq -e --arg t "$tag" '(.tags // []) | type == "array" and (map(tostring) | index($t)) != null' <<< "$row" >/dev/null 2>&1
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+tags = d.get("tags") if isinstance(d, dict) else None
+sys.exit(0 if isinstance(tags, list) and sys.argv[2] in [str(t) for t in tags] else 1)
+' "$row" "$tag" >/dev/null 2>&1
   fi
 }
 
@@ -1236,6 +1257,33 @@ process_criterion() {
       esac
     fi
   done
+
+  # --- Step 3.4: the API-WRITE backstop (0.9.0, ADR-0027). A row tagged
+  # `api-write` proves its act with `probe` evidence instead of a human-action
+  # trace (required-kinds.sh). That swap is only sound if the probe really is
+  # the sanctioned recorded write: so its artifact must name, by
+  # --source-ref seq:<N>, a captured browser_evaluate whose payload is the
+  # sanctioned write probe (write-probe-gate.js, the same recogniser the
+  # block-hook uses), and the run's config must still allow API writes
+  # (allowApiWrites + a disposable marker + environment != production —
+  # never production). Anything else is an OVERRIDE: the api-write tag never
+  # removes the proof of the act, it only changes which evidence carries it.
+  if [[ -n "$row" ]] && row_has_tag "$row" "api-write" \
+     && [[ ",${required_csv}," == *,probe,* && ",${required_csv}," != *,human-action,* ]]; then
+    local aw_rel aw_full aw_out
+    if [[ -n "$persona" ]]; then aw_rel="evidence/${persona}/${crit_id}/network-response.json"; else aw_rel="evidence/${crit_id}/network-response.json"; fi
+    aw_full="$(run_dir "$run_id")/${aw_rel}"
+    if ! command -v node >/dev/null 2>&1 || [[ ! -f "$WRITE_PROBE_GATE_JS" ]]; then
+      confidence="low"
+      reasons+=("api-write binding unchecked: node or write-probe-gate.js unavailable")
+    elif [[ -f "$aw_full" ]]; then
+      aw_out="$(node "$WRITE_PROBE_GATE_JS" verify-evidence "$aw_full" "$(toolstream_file_for "$run_id")" "$(qa_config_file)" 2>/dev/null)"
+      if [[ $? -ne 0 ]]; then
+        reasons+=("${aw_out:-api-write probe evidence could not be bound to a sanctioned write probe} ('${aw_rel}')")
+        override=1
+      fi
+    fi
+  fi
 
   # --- Step 3.5: persona-identity binding (Plan H3 Task 1, gap #6). See the
   # header comment's numbered walkthrough for the full rationale. Only a

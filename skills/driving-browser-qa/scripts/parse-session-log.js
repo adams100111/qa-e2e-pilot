@@ -39,7 +39,10 @@ const MUTATION_RE = new RegExp([
   String.raw`\.submit\(\)`, String.raw`\.requestSubmit\(`, String.raw`\.remove\(\)`,
   String.raw`\[['"` + '`' + String.raw`](value|checked|innerHTML|innerText|textContent)['"` + '`' + String.raw`]\]` + ASSIGN,
   String.raw`document\.\w+` + ASSIGN, String.raw`window\.\w+` + ASSIGN,
-  String.raw`method\s*:\s*['"` + '`' + String.raw`]\s*(POST|PUT|PATCH|DELETE)`,
+  // 0.9.0: the key may itself be quoted ({"method":"POST"} — strict JSON, or
+  // a quoted JS key); before, only a bare `method:` key was recognised, so a
+  // JSON-quoted write request slipped past the classifier entirely.
+  String.raw`['"` + '`' + String.raw`]?method['"` + '`' + String.raw`]?\s*:\s*['"` + '`' + String.raw`]\s*(POST|PUT|PATCH|DELETE)`,
   String.raw`\.open\(\s*['"` + '`' + String.raw`]\s*(POST|PUT|PATCH|DELETE)`,
   String.raw`\.(post|put|patch|delete)\s*\(`, String.raw`sendBeacon\(`, String.raw`\.dispatch\(`,
   String.raw`setState\(`

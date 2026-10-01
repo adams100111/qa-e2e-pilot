@@ -100,10 +100,12 @@ write_checklist genuine '[
 ( cd "$WORK" && bash "$TOOLSTREAM" append forged '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"f1"},"responseBody":"{\"marker\":\"GOOD-MARKER-42\"}"}' >/dev/null )
 ( cd "$WORK" && bash "$TOOLSTREAM" append forged '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"f2"},"responseBody":"{\"marker\":\"DROP-MARKER-77\"}"}' >/dev/null )
 
-# AC-1: forged action-trace — default sessionCalls ([]), fabricated steps,
-# real fingerprints (equal, so Check 3's "changed" branch never even fires) —
-# this passes check-action-trace.js's OWN structural gate (and therefore
-# checkpoint.sh's live gate) fine. No --session-calls given at all.
+# AC-1: forged action-trace — fabricated steps, real fingerprints (equal, so
+# Check 3's "changed" branch never even fires) — this passes
+# check-action-trace.js's OWN structural gate (and therefore checkpoint.sh's
+# live gate) fine. No --session-calls given at all: since 0.9.0 no
+# sessionCalls key is written, so provenance binds the act-phase steps — and
+# this run captured no browser_click for them to bind to.
 F_AC1_REF="$( cd "$WORK" && bash "$REC" forged F_AC1 action-trace \
   --steps '[{"tool":"browser_click","phase":"act"}]' \
   --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
@@ -1150,6 +1152,59 @@ for ENGINE in jq python3; do
     "$(rc_field "$(vf2 observedfld)" '.runChecks.findingsChannel')" "toolstream"
   check "[$ENGINE] observedfld: its unjournaled console error is a ledger miss" \
     "$(rc_field "$(vf2 observedfld)" '[.reasons[] | select(test("console error.*Cannot read properties"))] | length')" "1"
+done
+
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — the API-WRITE backstop. A row tagged `api-write` proves
+# its act with `probe` evidence (no human-action trace). qa-verify accepts
+# that only when the probe artifact is bound by --source-ref seq:<N> to a
+# captured sanctioned write probe AND the config allows API writes.
+#   awok      bound to the sanctioned probe, disposable env  -> pass
+#   awnoref   probe evidence with no --source-ref            -> fail
+#   awwrong   bound to a seq that is a browser_click          -> fail
+#   awprod    awok's evidence, but the config says production -> fail
+# ---------------------------------------------------------------------------
+WORK4="$(mktemp -d)"
+trap 'rm -rf "$WORK" "$WORK2" "$WORK3" "$WORK4"' EXIT
+mkdir -p "$WORK4/.qa"
+AW_SRC="$(cat "$HERE/../../skills/probing-apis-through-browser/scripts/backend-probe.js")"
+AW_ARGS="$(jq -cn --arg f "async () => {
+${AW_SRC}
+return await probe({\"url\": \"/hackathons/12/registrations/7\", \"method\": \"PATCH\", \"body\": {\"hackathon_path_id\": 3}, \"allowWrite\": true});
+}" '{function: $f}')"
+AW_ROW='[{"id":"G1","surface":"/api","kind":"cross-tenant","tags":["probe-needed","api-write","authz"],"action":"As p1 PATCH another participant registration; expect 403 and no change"}]'
+aw_run() { # <run> <source-ref|""> -> records a pass whose probe evidence carries <source-ref>
+  local run="$1" ref="$2"
+  mkdir -p "$WORK4/.qa/runs/$run"; printf '%s' "$AW_ROW" > "$WORK4/.qa/runs/$run/checklist.json"
+  ( cd "$WORK4" && bash "$TOOLSTREAM" append "$run" "{\"tool\":\"${MCP}__browser_click\",\"args\":{\"element\":\"x\"},\"resultDigest\":{\"len\":0,\"sha256\":\"c\"},\"responseBody\":\"\"}" >/dev/null )
+  ( cd "$WORK4" && bash "$TOOLSTREAM" append "$run" "{\"tool\":\"${MCP}__browser_evaluate\",\"args\":${AW_ARGS},\"resultDigest\":{\"len\":0,\"sha256\":\"w\"},\"responseBody\":\"{\\\"ok\\\":false,\\\"status\\\":403,\\\"method\\\":\\\"PATCH\\\",\\\"body\\\":{\\\"message\\\":\\\"This action is unauthorized.\\\"}}\"}" >/dev/null )
+  local refargs=()
+  [[ -n "$ref" ]] && refargs=(--source-ref "$ref")
+  local evref
+  evref="$( cd "$WORK4" && bash "$REC" "$run" G1 probe --status 403 --shape '{"message":"This action is unauthorized."}' --ok true ${refargs[@]+"${refargs[@]}"} )"
+  ( cd "$WORK4" && bash "$CKPT" "$run" G1 pass --kinds probe --evidence-refs "$evref" >/dev/null 2>&1 )
+}
+printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"disposable"}' > "$WORK4/.qa/config.json"
+aw_run awok "seq:2"
+aw_run awnoref ""
+aw_run awwrong "seq:1"
+aw_run awprod "seq:2"
+vf4() { echo "$WORK4/.qa/runs/$1/verification.json"; }
+aw_verdict() { jq -r '.[] | select(.criterionId=="G1") | .verifierVerdict' "$(vf4 "$1")"; }
+aw_reasons() { jq -r '.[] | select(.criterionId=="G1") | .reasons | join(" | ")' "$(vf4 "$1")"; }
+for ENGINE in jq python3; do
+  ( cd "$WORK4" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" awok >/dev/null 2>&1 )
+  check "[$ENGINE] api-write: probe bound to the sanctioned write probe -> pass" "$(aw_verdict awok)" "pass"
+  ( cd "$WORK4" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" awnoref >/dev/null 2>&1 )
+  check "[$ENGINE] api-write: probe evidence without --source-ref -> fail" "$(aw_verdict awnoref)" "fail"
+  check_contains "[$ENGINE] api-write: the reason says to bind it" "$(aw_reasons awnoref)" "--source-ref seq:<N>"
+  ( cd "$WORK4" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" awwrong >/dev/null 2>&1 )
+  check "[$ENGINE] api-write: bound to a browser_click, not the write probe -> fail" "$(aw_verdict awwrong)" "fail"
+  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"production"}' > "$WORK4/.qa/config.json"
+  ( cd "$WORK4" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" awprod >/dev/null 2>&1 )
+  check "[$ENGINE] api-write: never production -> fail" "$(aw_verdict awprod)" "fail"
+  check_contains "[$ENGINE] api-write: the production reason is named" "$(aw_reasons awprod)" "environment is production"
+  printf '%s' '{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"disposable"}' > "$WORK4/.qa/config.json"
 done
 
 # ---------------------------------------------------------------------------

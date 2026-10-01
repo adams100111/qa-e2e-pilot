@@ -61,6 +61,7 @@ set -u
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MUTATES_JS="${ROOT}/skills/driving-browser-qa/scripts/parse-session-log.js"
+WRITE_PROBE_GATE_JS="${ROOT}/skills/probing-apis-through-browser/scripts/write-probe-gate.js"
 
 warn() { echo "block-hook: $*" >&2; }
 
@@ -245,7 +246,22 @@ print(d.get("function") or d.get("code") or d.get("expression") or "")
   rc=$?
 
   if [[ $rc -eq 1 ]]; then
-    deny "mutating browser_evaluate is never sanctioned (arrange via a gated API/type, observe read-only)"
+    # The ONE mutating evaluate that can be admitted: the sanctioned recorded
+    # write probe (backend-probe.js verbatim + one strict-JSON probe() call),
+    # and only on a disposable env that allows API writes (ADR-0027).
+    if [[ -f "$WRITE_PROBE_GATE_JS" ]]; then
+      local gate_out gate_rc reason
+      gate_out="$(printf '%s' "$payload" | node "$WRITE_PROBE_GATE_JS" check ".qa/config.json" 2>/dev/null)"
+      gate_rc=$?
+      if [[ $gate_rc -eq 0 ]]; then
+        warn "sanctioned write probe admitted (allowApiWrites + disposable env); it is recorded by the capture hook — bind the criterion's probe evidence to it with --source-ref seq:<N>"
+        return 0
+      elif [[ $gate_rc -eq 3 ]]; then
+        reason="$(printf '%s' "$gate_out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).reason||""))}catch(e){}})' 2>/dev/null | tr -d '"\\')"
+        deny "sanctioned write probe refused on this environment: ${reason}. API writes need allowApiWrites:true, a disposable seedableEnvMarker and environment != production; otherwise record the criterion blocked"
+      fi
+    fi
+    deny "mutating browser_evaluate is never sanctioned (arrange via a gated API/type, observe read-only). For an API-only criterion on a disposable env, use the sanctioned write probe: backend-probe.js verbatim plus one return await probe({JSON}) call (see probing-apis-through-browser)"
   elif [[ $rc -ne 0 ]]; then
     warn "mutates() classifier errored (rc=${rc}), fail-open (allow)"
     return 0

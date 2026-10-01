@@ -281,6 +281,54 @@ for ENG in jq python3; do
   lw_hook "$ENG"
   check "[$ENG] load-window: enforcement.loadWindowGate:false -> allow" "$RC" "0"
 done
+# ---------------------------------------------------------------------------
+# 0.9.0 (ADR-0027) — THE SANCTIONED RECORDED WRITE PROBE. API-only criteria
+# (authz / server-422 assertions) on a disposable env were blocked outright on
+# a real run. The ONE admitted mutating evaluate: backend-probe.js verbatim +
+# exactly one strict-JSON probe() call, and only when the config allows API
+# writes (never production). Everything else stays denied.
+# ---------------------------------------------------------------------------
+WP="$(mktemp -d)"; mkdir -p "$WP/.qa"
+PROBE_SRC="$(cat "$ROOT/skills/probing-apis-through-browser/scripts/backend-probe.js")"
+wp_payload() { jq -cn --arg f "async () => {
+${PROBE_SRC}
+$1
+}" '{function: $f}'; }
+wp_cfg() { printf '%s' "$1" > "$WP/.qa/config.json"; }
+wp_hook() { OUT="$(cd "$WP" && printf '%s' "$(evt "$EVAL_TOOL" "$1")" | bash "$HOOK" 2>/dev/null)"; RC=$?; }
+OK_CALL='return await probe({"url": "/hackathons/12/registrations/7", "method": "PATCH", "body": {"hackathon_path_id": 3}, "allowWrite": true, "csrf": "laravel-xsrf"});'
+DISPOSABLE='{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"disposable"}'
+wp_cfg "$DISPOSABLE"
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: sanctioned shape + disposable env -> allowed" "$RC" "0"
+wp_hook "$(wp_payload 'return await probe({"url": "/api/x"});')"
+check "write probe: a read-only GET probe is allowed (not a write at all)" "$RC" "0"
+wp_cfg '{"allowApiWrites":true,"seedableEnvMarker":"ddev-local-qa","environment":"production"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: environment production -> denied" "$RC" "2"
+contains "write probe: production denial names the reason" "$OUT" "environment is production"
+wp_cfg '{"allowApiWrites":false,"seedableEnvMarker":"ddev-local-qa"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: allowApiWrites false -> denied" "$RC" "2"
+wp_cfg '{"allowApiWrites":true,"seedableEnvMarker":"QA_DISPOSABLE_ENV"}'
+wp_hook "$(wp_payload "$OK_CALL")"
+check "write probe: the bootstrap sentinel marker is not disposable -> denied" "$RC" "2"
+wp_cfg "$DISPOSABLE"
+wp_hook "$(wp_payload "document.title = 'x'; $OK_CALL")"
+check "write probe: extra code beside the call -> denied" "$RC" "2"
+wp_hook "$(wp_payload "return await probe({url: '/api/x', method: 'POST', allowWrite: true});")"
+check "write probe: a JS object literal (not strict JSON) -> denied" "$RC" "2"
+wp_hook "$(wp_payload 'return await probe({"url": "https://evil.example/x", "method": "POST", "allowWrite": true});')"
+check "write probe: an absolute (cross-origin) url -> denied" "$RC" "2"
+wp_hook "$(wp_payload 'return await probe({"url": "/api/x", "method": "POST"});')"
+check "write probe: allowWrite missing -> denied" "$RC" "2"
+wp_hook "$(jq -cn --arg f "async () => { ${PROBE_SRC//fetch(url, init)/fetch(url, Object.assign(init, {method: 'DELETE'}))} $OK_CALL }" '{function: $f}')"
+check "write probe: an edited backend-probe.js -> denied" "$RC" "2"
+wp_hook '{"function":"() => fetch(\"/api/x\", {\"method\": \"POST\"})"}'
+check "classifier: a JSON-quoted method key is now recognised as a write -> denied" "$RC" "2"
+contains "write probe: the generic denial points at the sanctioned path" "$OUT" "sanctioned write probe"
+rm -rf "$WP"
+
 lw_seed "$NAV_TOOL"
 touch -t 202001010000 "$LW/.qa/runs/r1/toolstream.jsonl"
 lw_hook jq
