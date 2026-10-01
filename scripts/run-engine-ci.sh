@@ -14,7 +14,7 @@ SUITES=(
   action-trace bash32-safety block-hook capture-hook checkpoint classify-finding cost-summary critic-coverage detect-stack
   find-spec-kit findings-ledger fold frontier
   index-routes init-config installers interaction-ux journal journal-emit journal-merge known-defects memory-sync mutation-flag persona-identity
-  portability provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
+  portability preflight provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake
   required-kinds resume-idempotency session-preflight session-to-toolstream skill-gate-consistency
   state-machine toolstream skillopt-pilot
   ux-adjudicate ux-conventions ux-detectors validate-adapters validate-checklist-json vision-binding

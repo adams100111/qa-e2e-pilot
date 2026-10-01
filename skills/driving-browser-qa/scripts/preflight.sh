@@ -221,6 +221,48 @@ if [[ "$IS_PROD" -eq 1 ]]; then
   warn "PRODUCTION target ($BASE_URL): API writes will be forced OFF and black-box crawl stays off unless allowBlackboxCrawl=true. Use a DEDICATED test account/tenant — the run drives a real authenticated session against real data."
 fi
 
+# ── 7c. Independent action log (--save-session) ──────────────────────────────
+# humanInteraction.saveSession (default true) only ENABLES Check 0; the
+# Playwright MCP must actually be launched with --save-session (or
+# PLAYWRIGHT_MCP_SAVE_SESSION) for a session log to exist. Two real runs set
+# the flag, never got a log, and degraded silently. Detect it here, up front.
+# Detection is best-effort and never aborts: the env var wins; otherwise the
+# MCP config files a harness reads are scanned for a Playwright server entry
+# carrying --save-session. (The capture hook re-checks for a real log at the
+# run's 3rd browser call.)
+# (not jq_get: its `// empty` would turn an explicit false into "unset")
+if command -v jq &>/dev/null; then
+  SAVE_SESSION_CFG=$(jq -r 'if .humanInteraction.saveSession == false then "false" else "true" end' "$CONFIG_FILE" 2>/dev/null || echo true)
+elif command -v node &>/dev/null; then
+  SAVE_SESSION_CFG=$(node -e "try { const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8')); process.stdout.write(((c.humanInteraction||{}).saveSession === false) ? 'false' : 'true'); } catch (e) { process.stdout.write('true'); }" 2>/dev/null || echo true)
+else
+  SAVE_SESSION_CFG=true
+  grep -q '"saveSession"[[:space:]]*:[[:space:]]*false' "$CONFIG_FILE" 2>/dev/null && SAVE_SESSION_CFG=false
+fi
+if [[ "$SAVE_SESSION_CFG" != "false" ]]; then
+  SS_STATE="absent"
+  case "$(printf '%s' "${PLAYWRIGHT_MCP_SAVE_SESSION:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) SS_STATE="detected (PLAYWRIGHT_MCP_SAVE_SESSION)" ;;
+  esac
+  if [[ "$SS_STATE" == "absent" ]]; then
+    SS_CANDIDATES=(".mcp.json" "$HOME/.claude.json" "$HOME/.codex/config.toml" "opencode.json" "$HOME/.config/opencode/opencode.json")
+    if [[ -n "${QA_PLAYWRIGHT_MCP_CONFIG:-}" ]]; then SS_CANDIDATES+=("$QA_PLAYWRIGHT_MCP_CONFIG"); fi
+    while IFS= read -r f; do [[ -n "$f" ]] && SS_CANDIDATES+=("$f"); done < <(find "$HOME/.claude/plugins" -maxdepth 6 -name '.mcp.json' -path '*playwright*' 2>/dev/null | head -20)
+    for f in "${SS_CANDIDATES[@]}"; do
+      [[ -f "$f" ]] || continue
+      if grep -q 'playwright' "$f" 2>/dev/null && grep -q -- '--save-session' "$f" 2>/dev/null; then
+        SS_STATE="detected ($f)"
+        break
+      fi
+    done
+  fi
+  if [[ "$SS_STATE" == absent ]]; then
+    warn "save-session: absent — humanInteraction.saveSession is on, but the Playwright MCP does not appear to be launched with --save-session, so Check 0 (independent reconciliation of each human-action act) will be UNAVAILABLE and every human-action pass keeps only the act lint + fingerprints. Enable it: start the harness with PLAYWRIGHT_MCP_SAVE_SESSION=true PLAYWRIGHT_MCP_OUTPUT_DIR=.playwright-mcp in its environment, or add \"--save-session\", \"--output-dir\", \".playwright-mcp\" to the args of a Playwright MCP server you control. To accept the degrade, set humanInteraction.saveSession:false."
+  else
+    info "save-session: ${SS_STATE}"
+  fi
+fi
+
 # ── 8. Final verdict ─────────────────────────────────────────────────────────
 info "Pre-flight complete — app is live, drivers enumerated. Proceed with the run."
 exit 0

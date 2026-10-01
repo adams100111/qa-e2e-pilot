@@ -271,7 +271,7 @@ live_nudges() {
             recent="$(find "$log_dir" -name '*.md' -mmin -10 2>/dev/null | head -1)"
           fi
           if [[ -z "$recent" ]]; then
-            out="${out}Independent action log unavailable: no Playwright MCP session log under ${log_dir}/ was written during this run, so the Playwright MCP is not running with --save-session and Check 0 (independent reconciliation of every human-action act) will be unavailable — human-action passes keep only the act lint + fingerprints. To enable it, add \"--save-session\" and \"--output-dir\", \"${log_dir}\" to the Playwright MCP server args and restart the session; to accept the degrade, set humanInteraction.saveSession:false in .qa/config.json. "
+            out="${out}Independent action log unavailable: no Playwright MCP session log under ${log_dir}/ was written during this run, so the Playwright MCP is not running with --save-session and Check 0 (independent reconciliation of every human-action act) will be unavailable — human-action passes keep only the act lint + fingerprints. To enable it, restart the harness with PLAYWRIGHT_MCP_SAVE_SESSION=true PLAYWRIGHT_MCP_OUTPUT_DIR=${log_dir} in its environment (or add \"--save-session\", \"--output-dir\", \"${log_dir}\" to a Playwright MCP server you configure); to accept the degrade, set humanInteraction.saveSession:false in .qa/config.json. "
           fi
         fi
       fi
