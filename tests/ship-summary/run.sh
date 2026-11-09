@@ -294,20 +294,17 @@ PY
 rr adjv
 has "readj_counts_verifier_confidence" "$(md adjv)" "| Re-adjudication | did not run — 1 low-confidence passes unreviewed |"
 
-# non-ship run (no coverage/journeys/profile): byte-identical to the pre-ship renderer (commit 8a207a2)
-git -C "$ROOT" show 8a207a2:scripts/render-report.js > "$W/old-render.js" 2>/dev/null
-if [ -s "$W/old-render.js" ]; then
-  mkdir -p "$W/g-new" "$W/g-old"
-  cp -R "$ROOT/tests/render-report/fixture-run/." "$W/g-new/"; cp -R "$ROOT/tests/render-report/fixture-run/." "$W/g-old/"
-  T="$ROOT/skills/writing-qa-reports/templates"
-  node "$RR" "$W/g-new" --templates "$T" --quiet >/dev/null 2>&1
-  node "$W/old-render.js" "$W/g-old" --templates "$T" --quiet >/dev/null 2>&1
-  check "non_ship_run_golden_unchanged html" "$(cmp -s "$W/g-new/report.html" "$W/g-old/report.html" && echo same)" "same"
-  check "non_ship_run_golden_unchanged md" "$(cmp -s "$W/g-new/report.md" "$W/g-old/report.md" && echo same)" "same"
-  lacks "non_ship_run has no ship section" "$(cat "$W/g-new/report.md")" "Ship readiness"
-else
-  fail=$((fail+1)); echo "FAIL: could not read 8a207a2 render-report.js for golden compare"
-fi
+# non-ship run (no coverage/journeys/profile): byte-identical to the pre-ship renderer's output
+# (golden captured once from commit 8a207a2's render-report.js into tests/ship-summary/golden-non-ship/,
+# so CI shallow clones don't need that commit)
+G="$ROOT/tests/ship-summary/golden-non-ship"
+mkdir -p "$W/g-new"
+cp -R "$ROOT/tests/render-report/fixture-run/." "$W/g-new/"
+T="$ROOT/skills/writing-qa-reports/templates"
+node "$RR" "$W/g-new" --templates "$T" --quiet >/dev/null 2>&1
+check "non_ship_run_golden_unchanged html" "$(cmp -s "$W/g-new/report.html" "$G/report.html" && echo same)" "same"
+check "non_ship_run_golden_unchanged md" "$(cmp -s "$W/g-new/report.md" "$G/report.md" && echo same)" "same"
+lacks "non_ship_run has no ship section" "$(cat "$W/g-new/report.md")" "Ship readiness"
 
 # journey verdict equals journeys.sh status on the same fixtures; superseded verdict used
 FX="$ROOT/tests/journeys/fixtures"
