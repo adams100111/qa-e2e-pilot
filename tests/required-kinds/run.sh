@@ -131,6 +131,27 @@ rk_both "api-write on a non-mutating row adds nothing" \
   '{"kind":"error-state","tags":["api-write"],"action":"Read the error banner"}' ""
 
 # ---------------------------------------------------------------------------
+# Ship-QA kinds (ADR-0030/0031): load-clean and deny are read-only and add
+# nothing on their own; input-validation always requires bake (the rejected
+# input must leave persisted state unchanged), even when tagged read-only.
+# Rows shaped like generate-ship-criteria.sh output.
+# ---------------------------------------------------------------------------
+rk_both "load-clean read-only sweep row -> nothing" \
+  '{"kind":"load-clean","tags":["independent","read-only"],"humanAction":false,"mutates":false,"action":"As admin, open /admin/hackathons/create and let it settle"}' ""
+rk_both "load-clean ux-revisit row -> nothing" \
+  '{"kind":"load-clean","priority":"P1","tags":["independent","read-only","ux-revisit"],"action":"Revisit /h/{slug} at mobile, ar, dark"}' ""
+rk_both "deny read-only navigation row -> nothing" \
+  '{"kind":"deny","tags":["independent","read-only"],"mutates":false,"action":"As judge, navigate directly to /admin/hackathons/create (read-only)"}' ""
+rk_both "deny api-write row keeps the api-write probe swap" \
+  '{"kind":"deny","tags":["api-write"],"mutates":true,"action":"As participant, send POST /admin/hackathons through the recorded write probe"}' "probe"
+rk_both "input-validation human-action row -> bake,human-action" \
+  '{"kind":"input-validation","tags":["human-action"],"humanAction":true,"action":"Submit form /h/{slug}#page with field بحث set to the long-5000 case"}' "bake,human-action"
+rk_both "input-validation still requires bake when tagged read-only" \
+  '{"kind":"input-validation","tags":["read-only"],"action":"Leave the required title empty and read the message"}' "bake"
+rk_both "input-validation kind match is case-insensitive" \
+  '{"kind":"Input-Validation","action":"Read the validation message"}' "bake"
+
+# ---------------------------------------------------------------------------
 # malformed input -> non-zero exit, no stray output
 # ---------------------------------------------------------------------------
 
