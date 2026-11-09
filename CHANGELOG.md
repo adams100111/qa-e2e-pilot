@@ -51,7 +51,8 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
 - **Re-adjudication.** New skill `re-adjudicating-verdicts` (19 skills) with `adjudication.sh
   select|bundle|apply|capability`. After Verify, every low-confidence pass and every UX-promoted fail
   goes to one fresh-context verifier per evidence bundle (an allow-list of persisted evidence; never
-  the journal, toolstream or agent prose). A disputed pass becomes `blocked` with
+  the journal, toolstream or agent prose; `action-trace.json` is a redacted copy in which values typed into
+  password/passwd/secret/token/otp/pin-labelled or `type: password` fields read `[redacted]`). A disputed pass becomes `blocked` with
   `verifier-disagrees: <reason>`, a disputed fail drops to `confidence: low`, kinds and evidence refs
   are kept, and any upgrade is refused (`ADJUDICATION: upgrades are not allowed`). Capability is the
   new boolean `subagentDispatch` in `harness-profiles.json` (claude only); other harnesses print
@@ -64,8 +65,10 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
   inputs render byte for byte as before.
   A P1 criterion the re-adjudicator disputed (`verifier-disagrees:`) blocks on its own, journey step or not; a
   **Re-adjudication** line reports re-judged / disputed counts, the unavailable banner or `did not run`, and a P1
-  low-confidence pass nobody re-judged blocks. A **Needs re-check** row counts `bugs/needs-recheck.json` when the
-  run has a bug export (informational, never blocking).
+  low-confidence pass nobody re-judged blocks. A decision counts as re-judged only when `adjudication/apply.txt` shows it
+  applied or a no-op; one `apply` rejected or `checkpoint.sh` refused stays unreviewed and the line says `N not applied`. A **Needs re-check** row counts `bugs/needs-recheck.json` when the
+  run has a bug export (informational, never blocking); a `needs-recheck.json` older than the run's
+  `verification.json` is a previous export's and is ignored.
 - **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and from verifier overrides that show a contradiction (`match:false`, `readBack:null`, `ok:false`, or an acting identity that differs from the expected one). Overrides that only show missing or ungrounded evidence (oracle-ungrounded, no-state-evidence, unbound, no toolstream, identity unverified, missing artifacts) are not bugs: they go to `needs-recheck.json` (always written, `[]` when empty) and the summary line carries `needsRecheck`. A re-export removes only the stale `<id>.md` files the previous `bugs.json` listed; unknown files and symlinks stay. A bug without evidence falls back to the latest record's evidence refs, then to the criterion's `evidence/` folder, and a missing journey id comes from `journeys.json`. Bugs are deduplicated against outstanding known defects, secrets are redacted and both engines are byte-identical.
 - **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase runs
   `qa-verify` → re-adjudication (selection uses the verification-adjusted confidence) → `qa-verify` again → render →
@@ -561,8 +564,9 @@ release tags).
   symlinks resolved and contained; outside git, the checklist dir only); `sources` counts `spec`.
   Only `human` and `spec` can ground a high-confidence pass under the engine's ORACLE GATE.
 - **Plan drift check.** `/qa-verify` runs `verify-plan.sh --drift <run-checklist> <frozen-checklist>`, which compares by id the
-  trust-bearing fields (`kind`, `tags`, `mutates`, `humanAction`, `fixture.expect.{oracleSource,citation,value}`) and fails on any
-  drift, row added in-run or frozen row missing. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
+  trust-bearing fields (`kind`, `tags`, `mutates`, `humanAction`, `priority`, `journey`, `fixture.expect.{oracleSource,citation,value}`)
+  and the run's `journeys.json` against the spec's (`priority`, ordered `steps`, journey ids), and fails on any drift, row or
+  journey added in-run or frozen row or journey missing. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
   constitution marks `gates.oracle` informational.
 - **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
   unavailable banner or did not run); the `verification.md` template gains that section.

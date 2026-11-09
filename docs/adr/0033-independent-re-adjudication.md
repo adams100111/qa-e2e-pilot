@@ -28,8 +28,10 @@ Re-reading the run in the same context does not help: that judge has already see
   `bake|computed|probe`), one `<criterionId>\t<persona>\t<why>` line each.
 - `bundle <run-dir> <crit> <out> [--persona p]` copies only persisted evidence, by allow-list: the
   checklist row (`criterion.json`), the claim without prose (`claim.json`: verdict, confidence,
-  kinds), `bake-read-back.json`, `recompute.json`, `network-response.json`, `action-trace.json`,
-  `identity.json`, screenshots and `findings/`. Never `journal.ndjson`, `toolstream.jsonl`,
+  kinds), `bake-read-back.json`, `recompute.json`, `network-response.json`, `action-trace.json`
+  (a redacted copy: values typed into password/passwd/secret/token/otp/pin-labelled or `type: password`
+  fields — the label rule of `checkpoint.sh`'s data-policy gate — become `[redacted]`; a trace that does not
+  parse is left out), `identity.json`, screenshots and `findings/`. Never `journal.ndjson`, `toolstream.jsonl`,
   `last_action`, `nonUiActionReason`, notes, symlinks or unknown files.
 - The skill dispatches one **new** subagent per bundle (never a fork, never a resumed agent), with a
   fixed rubric: judge from persisted state and network evidence, screenshots support but never
@@ -54,7 +56,8 @@ dispatches the agent as a subagent that cannot start agents of its own; it then 
 records and leaves `adjudication/` absent, and the `/qa-run` session runs the skill after the agent
 returns, then re-runs `qa-verify.sh`, the renderer and the bug export; `/qa-resume` does the same when the agent could not.
 The report's **Re-adjudication** line and the P1 ship conditions (not run, unavailable, not re-judged, decision refused) read
-`adjudication/`. qa-kit's `/qa-verify`
+`adjudication/`. A decision counts as re-judged only when `apply.txt` shows it applied or a no-op; an entry `apply`
+rejected (malformed, not selected) or `checkpoint.sh` refused leaves its record unreviewed (`N not applied`). qa-kit's `/qa-verify`
 restates the outcome and never applies decisions itself.
 
 **D. Capability is declared, not guessed.** `harness-profiles.json` carries a boolean
