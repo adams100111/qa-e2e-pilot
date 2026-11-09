@@ -160,7 +160,16 @@ run_engine() {
   check "$E nextjs surface shape" "$(q "$T/nx.json" "s('GET /users/{id}')")" '{"confidence":"static","kind":"endpoint","method":"GET","pattern":"/users/{id}","permissionHints":[],"source":"adapter","surfaceId":"GET /users/{id}"}'
   check "$E nextjs route.js without handler warns" "$(q "$T/nx.json" "c['warnings']")" '["no exported HTTP handler found in app/api/ping/route.js: assumed GET"]'
   stack nextjs "$E" "$T/nx0.json" --repo "$FX/generic/repo"; rc=$?
-  check "$E nextjs without app/pages dirs: ok with warning" "$rc:$(q "$T/nx0.json" "[c['ok'], len(c['surfaces']), len(c['warnings'])]")" "0:[true,0,1]"
+  check "$E nextjs without app/pages dirs: ok:false exit 3" "$rc:$(q "$T/nx0.json" "c['ok']")" "3:False"
+  cp -R "$NX" "$T/nx-locked"; chmod 000 "$T/nx-locked/app/users"
+  stack nextjs "$E" "$T/nxl.json" --repo "$T/nx-locked"; rc=$?
+  chmod 755 "$T/nx-locked/app/users"
+  check "$E nextjs_unreadable_dir_warns exit 0" "$rc" "0"
+  check "$E nextjs_unreadable_dir_warns warning + rest scanned" "$(q "$T/nxl.json" "[any(w.startswith('could not scan ') and 'users' in w for w in c['warnings']), s('GET /about') is not None, s('GET /users/{id}') is None]")" "[true,true,true]"
+  mkdir -p "$T/nx-dead/app"; chmod 000 "$T/nx-dead/app"
+  stack nextjs "$E" "$T/nxd.json" --repo "$T/nx-dead"; rc=$?
+  chmod 755 "$T/nx-dead/app"
+  check "$E nextjs nothing scannable exit 3 ok:false" "$rc:$(q "$T/nxd.json" "[c['ok'], 'nothing could be scanned' in c['error']]")" "3:[false,true]"
   QA_ENGINE=$E bash "$CENSUS" build --adapter "$T/nx.json" --crawl "$LFX/crawl" --out "$T/nx-census.json"; rc=$?
   check "$E nextjs output feeds census.sh" "$rc:$(q "$T/nx-census.json" "c['adapterOk']")" "0:True"
 
@@ -192,6 +201,15 @@ run_engine() {
     '["GET /","GET /admin/","GET /api/users/{pk}/","GET /blog/","GET /blog/{slug}/","GET /legacy/{year}/"]'
   check "$E django_without_show_urls_falls_back_static confidence static" "$(q "$T/djs.json" "sorted(set(x['confidence'] for x in c['surfaces']))")" '["static"]'
   check "$E django_without_show_urls_falls_back_static warns fallback + unresolved include" "$(q "$T/djs.json" "[any(w.startswith('show_urls unavailable') for w in c['warnings']), any('unresolved include' in w and 'thirdparty.urls' in w for w in c['warnings'])]")" "[true,true]"
+  mkdir -p "$T/dj-ml"
+  printf 'from django.urls import include, path\nurlpatterns = [\n    path(\n        "a/",\n        views.a,\n    ),\n    path(\n        "b/",\n        include("dj_ml_b.urls"),\n    ),\n    path("", views.home),\n    path(\n        views.dynamic_route,\n        views.x,\n    ),\n]\n' > "$T/dj-ml/urls.py"
+  mkdir -p "$T/dj-ml/dj_ml_b"; printf 'urlpatterns = [path("c/", v)]\n' > "$T/dj-ml/dj_ml_b/urls.py"
+  stack django "$E" "$T/djml.json" --repo "$T/dj-ml"; rc=$?
+  check "$E django_multiline_path_no_phantom_root" "$rc:$(q "$T/djml.json" "[x['surfaceId'] for x in c['surfaces']]")" '0:["GET /","GET /a/","GET /b/c/"]'
+  check "$E django_multiline_path warns unparsable route" "$(q "$T/djml.json" "any(w.startswith('multi-line path() not fully scanned') for w in c['warnings'])")" "True"
+  mkdir -p "$T/dj-ml2"; printf 'urlpatterns = [\n    path(\n        "only/",\n        v,\n    ),\n]\n' > "$T/dj-ml2/urls.py"
+  stack django "$E" "$T/djml2.json" --repo "$T/dj-ml2"
+  check "$E django_multiline_path_no_phantom_root only declared route" "$(q "$T/djml2.json" "[x['surfaceId'] for x in c['surfaces']]")" '["GET /only/"]'
   stack django "$E" "$T/djn.json" --repo "$FX/generic/repo"; rc=$?
   check "$E django no manage.py and no urls.py exit 3" "$rc:$(q "$T/djn.json" "c['ok']")" "3:False"
 
@@ -202,6 +220,15 @@ run_engine() {
   check "$E express surface ids" "$(q "$T/ex.json" "[x['surfaceId'] for x in c['surfaces']]")" \
     '["DELETE /users/{id}","GET /","GET /users","GET /users/{id}","PATCH /users/{id}/avatar","POST /login","PUT /users/{id}"]'
   check "$E express static + mount warning" "$(q "$T/ex.json" "[sorted(set(x['confidence'] for x in c['surfaces'])), c['warnings']]")" '[["static"],["app.use mount prefixes are not applied; router paths are as declared"]]'
+  cp -R "$EX" "$T/ex-locked"; chmod 000 "$T/ex-locked/routes/users.js"
+  stack express "$E" "$T/exl.json" --repo "$T/ex-locked"; rc=$?
+  chmod 644 "$T/ex-locked/routes/users.js"
+  check "$E express_unreadable_file_warns exit 0" "$rc" "0"
+  check "$E express_unreadable_file_warns warning + rest scanned" "$(q "$T/exl.json" "[any(w.startswith('could not scan ') and 'users.js' in w for w in c['warnings']), s('GET /') is not None, s('GET /users') is None]")" "[true,true,true]"
+  mkdir -p "$T/ex-dead"; echo "app.get('/x', h)" > "$T/ex-dead/a.js"; chmod 000 "$T/ex-dead/a.js"
+  stack express "$E" "$T/exd.json" --repo "$T/ex-dead"; rc=$?
+  chmod 644 "$T/ex-dead/a.js"
+  check "$E express nothing scannable exit 3 ok:false" "$rc:$(q "$T/exd.json" "c['ok']")" "3:False"
   stack express "$E" "$T/ex0.json" --repo "$FX/generic/repo"; rc=$?
   check "$E express no routes found: ok with warning" "$rc:$(q "$T/ex0.json" "[c['ok'], len(c['surfaces']), len(c['warnings'])]")" "0:[true,0,1]"
 

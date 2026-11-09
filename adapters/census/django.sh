@@ -54,27 +54,35 @@ else
   ( cd "$REPO" && find . \( -name venv -o -name .venv -o -name node_modules -o -name site-packages -o -name .git \) -prune -o -type f -name urls.py -print | sed -e 's#^\./##' | sort ) > "$W/urlfiles.txt"
   [ -s "$W/urlfiles.txt" ] || fail "show_urls unavailable and no urls.py found under $REPO"
 
-  # entries <file> — "kind<TAB>route<TAB>include-module" per path()/re_path()/url() line.
+  # entries <file> — "route<SOH>include-module" per path()/re_path()/url() line.
   entries() {
     awk -v Q="'" '
-      function q(s,   m, re) { # first quoted string in s -> its value, "" when none
+      function q(s,   m, re) { # first quoted string in s -> its value; "\001" when there is none
         re = "r?[\"" Q "][^\"" Q "]*[\"" Q "]"
         if (match(s, re)) { m = substr(s, RSTART, RLENGTH); sub("^r?[\"" Q "]", "", m); sub("[\"" Q "]$", "", m); return m }
-        return ""
+        return "\001"
       }
+      function depth(s,   t, o, c) { t = s; o = gsub(/\(/, "", t); t = s; c = gsub(/\)/, "", t); return 1 + o - c }
       /(^|[^A-Za-z0-9_.])(re_)?path[ \t]*\(|(^|[^A-Za-z0-9_.])url[ \t]*\(/ {
         line = $0
         sub(/^.*((re_)?path|url)[ \t]*\(/, "", line)
+        n = 0
+        # a call split over lines is joined (up to 4 continuation lines) until its parens close
+        while (depth(line) > 0 && n < 4 && (getline nxt) > 0) { line = line " " nxt; n++ }
         route = q(line)
         inc = ""
-        if (match(line, /include[ \t]*\([ \t]*\(?[ \t]*/)) inc = q(substr(line, RSTART + RLENGTH - 1))
-        print route "\t" inc
+        if (match(line, /include[ \t]*\([ \t]*\(?[ \t]*/)) { inc = q(substr(line, RSTART + RLENGTH - 1)); if (inc == "\001") inc = "" }
+        if (route == "\001") route = "!"
+        print route "\001" inc
       }' "$REPO/$1"
   }
   # scan <file> <prefix> <depth> — emit surfaces for one urls.py under a route prefix.
   scan() {
     local file="$1" prefix="$2" depth="$3" route inc target
-    while IFS="$(printf '\t')" read -r route inc; do
+    while IFS="$(printf '\001')" read -r route inc; do
+      if [ "$route" = "!" ]; then
+        echo "multi-line path() not fully scanned in $file" >> "$W/warnings.txt"; continue
+      fi
       route="$(django_route "$route")"
       if [ -n "$inc" ]; then
         target="${inc//./\/}.py"
@@ -93,7 +101,7 @@ else
   # roots = urls.py files no other urls.py includes.
   : > "$W/included.txt"
   while IFS= read -r f; do
-    entries "$f" | awk -F'\t' '$2 != "" { print $2 }' >> "$W/included.txt"
+    entries "$f" | awk -F"$(printf '\001')" '$2 != "" { print $2 }' >> "$W/included.txt"
   done < "$W/urlfiles.txt"
   while IFS= read -r f; do
     mod="${f%.py}"; mod="${mod//\//.}"
