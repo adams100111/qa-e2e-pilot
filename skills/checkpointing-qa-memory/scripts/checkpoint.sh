@@ -54,6 +54,8 @@
 #                 human|spec when the row carries an oracleSource, or when the
 #                 effective profile is `ship` and kind is
 #                 computed-logic|business-rule. `--confidence low` is allowed.
+#   STATE GATE    a pass on a mutating row (mutation-flag.sh) needs `bake` or
+#                 `probe` in --kinds; --nonui-reason does not bypass it.
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
@@ -1263,6 +1265,47 @@ gate_oracle() {
   return 1
 }
 
+# row_is_mutating <row-json> — print `true`/`false` from mutation-flag.sh
+# derive on the plan row (the same agent-untrusted classifier
+# required-kinds.sh uses), with gate_required_kinds' ext_path/QA_ENGINE
+# discipline so a restricted PATH still finds bash/grep/sort and the engine
+# matches checkpoint.sh's own. A derive failure prints `false` (no refusal
+# can be grounded on a classifier that did not run).
+row_is_mutating() {
+  local row="$1" mf_dir mf_eng
+  mf_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$mf_dir" == "${BASH_SOURCE[0]}" ]] && mf_dir="."
+  mf_eng="python3"
+  has_jq && mf_eng="jq"
+  local out
+  out="$(QA_ENGINE="$mf_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "${mf_dir}/mutation-flag.sh" derive "$row" 2>/dev/null)" || out="false"
+  [[ "$out" == "true" ]] && echo true || echo false
+}
+
+# gate_state <crit-id> <kinds-csv> <row-json> — STATE GATE (D3). A pass on a
+# mutating row must carry persisted-state evidence: `bake` (read-back) or
+# `probe` (captured response) in --kinds. Read-only rows may pass on DOM
+# evidence; no row -> 0.11.0 behaviour. --nonui-reason does not bypass it.
+gate_state() {
+  local crit_id="$1" kinds_csv="$2" checklist_row="$3"
+  [[ -z "$checklist_row" ]] && return 0
+  [[ "$(row_is_mutating "$checklist_row")" == "true" ]] || return 0
+
+  local -a kinds_arr shown=()
+  local k
+  IFS=',' read -ra kinds_arr <<< "$kinds_csv"
+  for k in "${kinds_arr[@]}"; do
+    k="$(trim "$k")"
+    [[ -z "$k" ]] && continue
+    [[ "$k" == "bake" || "$k" == "probe" ]] && return 0
+    shown+=("$k")
+  done
+  local got
+  got="$(IFS=,; echo "${shown[*]}")"
+  echo "STATE GATE: ${crit_id} is mutating; a pass needs bake or probe evidence (got: ${got:-none})" >&2
+  return 1
+}
+
 cmd_upsert() {
   local run_id="$1" crit_id="$2" verdict="$3"
   shift 3
@@ -1379,6 +1422,7 @@ cmd_upsert() {
     local pass_row
     pass_row="$(checklist_row_for "$run_id" "$crit_id" 2>/dev/null)"
     gate_oracle "$run_id" "$crit_id" "$confidence" "$pass_row" || exit 1
+    gate_state "$crit_id" "$kinds_csv" "$pass_row" || exit 1
 
     if [[ -z "$kinds_csv" ]]; then
       echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
