@@ -1,0 +1,8 @@
+{"personaId":"admin","visits":[
+ {"url":"https://app.example.sa/admin/hackathons/12/paths/7?tab=teams#top","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"https://app.example.sa/admin/hackathons/12","routeMatch":"page:Admin/Hackathons/Show","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"/admin/hackathons/create/","kind":"page","status":200,"findings":[],"forms":[
+   {"formId":"hackathon-create","action":"/admin/hackathons","method":"POST","fields":[{"name":"title_ar","type":"text","required":true,"maxLength":120,"min":null,"max":null,"pattern":null}]},
+   {"formId":"hackathon-create","action":"/admin/hackathons","method":"POST","fields":[]}]},
+ {"url":"/legacy/old","kind":"page","status":200,"findings":[],"forms":[]}
+],"unexplored":[{"url":"/admin/hackathons/12/delete","reason":"unsafe: delete"}]}
