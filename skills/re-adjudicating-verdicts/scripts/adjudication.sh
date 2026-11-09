@@ -7,7 +7,12 @@
 # USAGE:
 #   adjudication.sh select <run-dir>
 #       One line per record to re-judge: <criterionId>\t<persona>\t<why>
-#       why = low-confidence-pass  (verdict pass, confidence low)
+#       why = low-confidence-pass  (verdict pass, confidence low — both as the
+#                                   report shows them: when verification.json
+#                                   re-checked the record (its inRunVerdict
+#                                   equals the record's verdict) its
+#                                   verifierVerdict and confidence are used,
+#                                   exactly like render-report.js)
 #           | ux-promoted-fail     (verdict fail whose recorded kinds hold none
 #                                   of bake|computed|probe, on a UX criterion:
 #                                   checklist row tag/kind/stepType visual-ux |
@@ -42,8 +47,10 @@
 #                                           last-action (kinds/bug-ref/refs and a
 #                                           logged nonUiActionReason kept)
 #         agree:false on blocked|deferred|error -> no change (already not a pass)
-#       An entry that is malformed or names a criterion/persona with no record
-#       is REJECTED: skipped, reported on stderr, the other entries still apply,
+#       An entry that is malformed, names a criterion/persona with no record,
+#       or names a record `select` does not list (and that no earlier apply
+#       already disputed — re-applying the same decisions stays a no-op) is
+#       REJECTED: skipped, reported on stderr, the other entries still apply,
 #       exit 1. An entry that would RAISE a verdict or a confidence (an optional
 #       `verdict` key of pass on a non-pass record or anything but fail on a
 #       fail record, or `confidence: high` on a low record) refuses the WHOLE
@@ -185,6 +192,33 @@ PY
   fi
 }
 
+# verif <run-dir> — one line per verification.json record (run-level "__" ids
+# skipped): crit persona inRunVerdict verifierVerdict confidence. Nothing when
+# the file is absent or not an array.
+verif() {
+  local f="$1/verification.json"
+  [ -f "$f" ] || return 0
+  if has_jq; then
+    jq -r --arg us "$US" '
+      def clean: tostring | gsub("[\t\r\n\u001f]"; " ");
+      def s(k): if (.[k] | type) == "string" then (.[k] | clean) else "" end;
+      (if type == "array" then .[] else empty end) | select(type == "object")
+      | select((s("criterionId") | startswith("__")) | not)
+      | [ s("criterionId"), s("persona"), s("inRunVerdict"), s("verifierVerdict"), s("confidence") ] | join($us)' "$f" 2>/dev/null || return 0
+  else
+    PYTHONIOENCODING=utf-8 python3 - "$f" "$US" <<'PY' 2>/dev/null || return 0
+import json, re, sys
+d = json.load(open(sys.argv[1], encoding="utf-8")); us = sys.argv[2]
+def s(o, k):
+    v = o.get(k)
+    return re.sub("[\t\r\n\x1f]", " ", v) if isinstance(v, str) else ""
+for r in (d if isinstance(d, list) else []):
+    if not isinstance(r, dict) or s(r, "criterionId").startswith("__"): continue
+    print(us.join([s(r, "criterionId"), s(r, "persona"), s(r, "inRunVerdict"), s(r, "verifierVerdict"), s(r, "confidence")]))
+PY
+  fi
+}
+
 # is_ux_row <kind> <stepType> <tags-csv>
 is_ux_row() {
   local k="$1" st="$2" tags=",$3,"
@@ -206,12 +240,25 @@ cmd_select() {
   local tmp; tmp="$(mktemp)"
   rows "$rd" > "$tmp" || { rm -f "$tmp"; die "cannot read $rd/checklist.json"; }
   local recs; recs="$(records "$rd")" || { rm -f "$tmp"; die "cannot read $rd/checkpoint.json"; }
+  local vlines; vlines="$(verif "$rd")"
   local cid persona verdict conf kinds bug refs la nu
   while IFS="$US" read -r cid persona verdict conf kinds bug refs la nu; do
     [ -n "$cid" ] || continue
-    if [ "$verdict" = "pass" ] && [ "$conf" = "low" ]; then
+    # The verdict/confidence the report shows (render-report.js): the
+    # verifier's when verification.json re-checked this exact in-run verdict.
+    local av="$verdict" ac="$conf" vc vp vi vv vcf
+    while IFS="$US" read -r vc vp vi vv vcf; do
+      if [ -n "$vc" ] && [ "$vc" = "$cid" ] && [ "$vp" = "$persona" ] && [ "$vi" = "$verdict" ]; then
+        case "$vv" in pass|fail|blocked|deferred|error) av="$vv" ;; esac
+        [ -z "$vcf" ] || ac="$vcf"
+        break
+      fi
+    done <<VEOF
+$vlines
+VEOF
+    if [ "$av" = "pass" ] && [ "$ac" = "low" ]; then
       printf '%s\t%s\t%s\n' "$cid" "$persona" "low-confidence-pass"
-    elif [ "$verdict" = "fail" ] && ! has_state_kind "$kinds"; then
+    elif [ "$verdict" = "fail" ] && [ "$av" = "fail" ] && ! has_state_kind "$kinds"; then
       local rid rk rst rrole rtags
       while IFS="$US" read -r rid rk rst rrole rtags; do
         if [ "$rid" = "$cid" ] && is_ux_row "$rk" "$rst" "$rtags"; then
@@ -414,9 +461,12 @@ cmd_apply() {
   project="$(dirname "$qa_dir")"
   [ -f "$CHECKPOINT_SH" ] || die "checkpoint.sh not found at $CHECKPOINT_SH"
 
-  local recs lines
+  local recs lines sel_keys
   recs="$(records "$rd")" || die "cannot read $rd/checkpoint.json"
   lines="$(decisions "$df")" || die "cannot parse decisions: $df (must be a JSON array)"
+  # The records select lists, as "\n<crit>\t<persona>\n" keys (M3).
+  sel_keys=$'\n'"$(cmd_select "$rd" | cut -f1,2)"$'\n'
+  local TAB=$'\t' NL=$'\n'
 
   # Pass 1: classify every entry; nothing is written until the whole batch is
   # known to hold no upgrade.
@@ -457,6 +507,15 @@ EOF
       upgrade="entry ${i} ($(label "$cid" "$persona")): verdict fail -> ${vv} lifts a fail"
     fi
     [ -z "$upgrade" ] || break
+    case "$sel_keys" in
+      *"${NL}${cid}${TAB}${persona}${NL}"*) ;;
+      *) case "$cur_la" in
+           verifier-disagrees:*) ;;
+           *) echo "ADJUDICATION: rejected entry ${i} ($(label "$cid" "$persona")): not selected for re-adjudication (select lists only low-confidence passes and UX-promoted fails)" >&2
+              rejected=$((rejected+1))
+              continue ;;
+         esac ;;
+    esac
     local act="noop"
     if [ "$agree" = "false" ]; then
       case "$cur_v" in
