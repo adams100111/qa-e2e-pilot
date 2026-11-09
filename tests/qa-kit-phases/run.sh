@@ -127,5 +127,24 @@ for cmd in qa-sanitize qa-assure qa-perf qa-security qa-uiux; do
   grep -q "/$cmd" "$ROOT/qa-kit/templates/constitution-template.md"; check "constitution template drops fictional /$cmd" "$?" "1"
 done
 
+# --- ship-profile wiring (increment 1, task 11): command/template text assertions ---
+QC="$ROOT/qa-kit/commands/qa-constitution.md"; QS="$ROOT/qa-kit/commands/qa-spec.md"
+QSC="$ROOT/qa-kit/commands/qa-scenarios.md"; QA="$ROOT/qa-kit/commands/qa-analyze.md"
+CT="$ROOT/qa-kit/templates/constitution-template.md"; JT="$ROOT/qa-kit/templates/journeys-template.json"
+# constitution_has_profile_rows
+grep -q '| profile |' "$CT"; check "constitution_has_profile_rows: template profile row" "$?" "0"
+grep -q 'detection.ux' "$CT"; check "constitution_has_profile_rows: uiux -> detection.ux" "$?" "0"
+grep -q 'deny' "$CT" && grep -q 'profile.sh' "$QC"; check "constitution_has_profile_rows: security row + profile.sh in command" "$?" "0"
+grep -q 'surface-access.sh" derive' "$QC" && grep -q 'confirm-table' "$QC" && grep -q 'apply' "$QC" && grep -q 'taking-surface-census' "$QC"; check "constitution_has_profile_rows: surface-access confirmation round" "$?" "0"
+grep -q 'assumption' "$QC" && grep -q 'autonomousSetup' "$QC"; check "constitution_has_profile_rows: autonomousSetup assumption" "$?" "0"
+# spec_mentions_journeys_validate
+grep -q 'journeys.json' "$QS" && grep -q 'journeys.sh validate' "$QS" && grep -q 'journeys-template.json' "$QS" && grep -q 'P1' "$QS"; check "spec_mentions_journeys_validate" "$?" "0"
+python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert isinstance(d,list)' "$JT" 2>/dev/null; check "journeys template is valid JSON array" "$?" "0"
+# scenarios_runs_generator
+grep -q 'generate-ship-criteria.sh' "$QSC" && grep -q 'taking-surface-census' "$QSC" && grep -q 'coverage.sh' "$QSC"; check "scenarios_runs_generator" "$?" "0"
+# analyze_blocks_on_uncovered_under_ship
+grep -q 'coverage.sh' "$QA" && grep -q 'BLOCKED' "$QA" && grep -q -- '--mode' "$QA"; check "analyze_blocks_on_uncovered_under_ship: command" "$?" "0"
+grep -q 'BLOCKED' "$ROOT/qa-kit/templates/qa-analyze-template.md" && grep -q '## Coverage' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_blocks_on_uncovered_under_ship: template" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

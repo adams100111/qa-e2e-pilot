@@ -1,0 +1,8 @@
+[
+  {
+    "id": "J1",
+    "priority": "P1",
+    "roles": ["<persona id>"],
+    "steps": ["<criterion id>", "<criterion id>"]
+  }
+]
