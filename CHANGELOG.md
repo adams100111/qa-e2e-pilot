@@ -57,7 +57,7 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
   are kept, and any upgrade is refused (`ADJUDICATION: upgrades are not allowed`). Capability is the
   new boolean `subagentDispatch` in `harness-profiles.json` (claude only); other harnesses print
   `re-adjudication unavailable on <harness>; <n> low-confidence passes unreviewed`. On Claude, `/qa-run`
-  runs it after the dispatched agent returns and re-renders.
+  runs it after the dispatched agent returns, then re-runs `qa-verify`, the bug export and the renderer.
 - **Ship readiness.** `render-report.js` opens the report with `SHIP-READY` / `NOT SHIP-READY` and
   every failing condition (uncovered census pairs, P1 journeys not passing, coding-layer fails on P1,
   verifier overrides on P1), plus low-confidence, flaky and regression lines. It fails closed on
@@ -71,8 +71,8 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
   `verification.json` is a previous export's and is ignored.
 - **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and from verifier overrides that show a contradiction (`match:false`, `readBack:null`, `ok:false`, or an acting identity that differs from the expected one). Overrides that only show missing or ungrounded evidence (oracle-ungrounded, no-state-evidence, unbound, no toolstream, identity unverified, missing artifacts) are not bugs: they go to `needs-recheck.json` (always written, `[]` when empty) and the summary line carries `needsRecheck`. A re-export removes only the stale `<id>.md` files the previous `bugs.json` listed; unknown files and symlinks stay. A bug without evidence falls back to the latest record's evidence refs, then to the criterion's `evidence/` folder, and a missing journey id comes from `journeys.json`. Bugs are deduplicated against outstanding known defects, secrets are redacted and both engines are byte-identical.
 - **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase runs
-  `qa-verify` → re-adjudication (selection uses the verification-adjusted confidence) → `qa-verify` again → render →
-  bug export. `/qa-resume` re-adjudicates too when the agent could not. `gates.oracle` is informational: enforcement
+  `qa-verify` → re-adjudication (selection uses the verification-adjusted confidence) → `qa-verify` again → bug export →
+  render (so the **Needs re-check** row reflects this run). `/qa-resume` re-adjudicates too when the agent could not. `gates.oracle` is informational: enforcement
   keys on `oracleSource` and the `ship` profile.
 - **Suites.** `gate-oracle`, `gate-state`, `gate-data-policy`, `verify-ship-gates`, `ship-summary`,
   `bug-export`, `adjudication` enrolled (65 engine suites); `missing_required_kinds` is bash 3.2 safe.

@@ -48,13 +48,14 @@ decision that would raise a verdict or a confidence makes the whole batch exit 1
 `ADJUDICATION: upgrades are not allowed` and nothing written. Unknown criteria or personas and
 malformed entries are rejected and reported; the rest still apply (exit 1).
 
-**C. Where it runs.** The end-of-run order is fixed: `qa-verify.sh` → re-adjudication → `qa-verify.sh` again → render report →
-bug export. The first `qa-verify` gives `adjudication.sh select` the verification-adjusted confidence (a pass `qa-verify`
+**C. Where it runs.** The end-of-run order is fixed: `qa-verify.sh` → re-adjudication → `qa-verify.sh` again → bug export →
+render report (the export runs first so the report's **Needs re-check** row counts this run's `needs-recheck.json`; the
+renderer ignores one older than `verification.json`). The first `qa-verify` gives `adjudication.sh select` the verification-adjusted confidence (a pass `qa-verify`
 lowered to `low` is selected; `apply` rejects a decision for a record `select` did not list); the second makes
 `verification.json` and the ship summary see the final verdicts. On Claude Code, `/qa-run`
 dispatches the agent as a subagent that cannot start agents of its own; it then lists the pending
 records and leaves `adjudication/` absent, and the `/qa-run` session runs the skill after the agent
-returns, then re-runs `qa-verify.sh`, the renderer and the bug export; `/qa-resume` does the same when the agent could not.
+returns, then re-runs `qa-verify.sh`, the bug export and the renderer; `/qa-resume` does the same when the agent could not.
 The report's **Re-adjudication** line and the P1 ship conditions (not run, unavailable, not re-judged, decision refused) read
 `adjudication/`. A decision counts as re-judged only when `apply.txt` shows it applied or a no-op; an entry `apply`
 rejected (malformed, not selected) or `checkpoint.sh` refused leaves its record unreviewed (`N not applied`). qa-kit's `/qa-verify`
