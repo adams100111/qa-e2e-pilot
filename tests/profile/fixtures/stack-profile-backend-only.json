@@ -1,0 +1,8 @@
+{
+  "mode": "local-matched",
+  "components": [
+    { "role": "backend", "i18n": { "present": true, "locales": ["ar", "en", "fr"] } },
+    { "role": "frontend", "i18n": { "present": false, "locales": [] } }
+  ],
+  "primary": { "backend": 0, "frontend": 1 }
+}

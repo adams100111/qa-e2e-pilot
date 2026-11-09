@@ -1,0 +1,7 @@
+{
+  "mode": "black-box",
+  "components": [
+    { "role": "frontend", "i18n": { "present": false, "locales": [] } }
+  ],
+  "primary": { "backend": null, "frontend": 0 }
+}

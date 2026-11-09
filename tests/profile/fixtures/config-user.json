@@ -1,0 +1,8 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "profile": "ship",
+  "colorSchemes": ["dark"],
+  "maxParallel": 1,
+  "detection": { "ux": { "objective": false, "advisoryAesthetics": true } },
+  "gates": { "coverage": "advise" }
+}
