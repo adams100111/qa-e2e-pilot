@@ -2,5 +2,6 @@
   {"surfaceId":"GET /admin/hackathons","personaId":"*","reason":"لوحة الإدارة خارج نطاق هذا الإصدار"},
   {"surfaceId":"GET /h/{slug}","personaId":"*","reason":"checked by the smoke profile"},
   {"surfaceId":"GET /الأخبار","personaId":"*","reason":"checked by the smoke profile"},
-  {"surfaceId":"page:Admin/Hackathons/Show","personaId":"*","reason":"checked by the smoke profile"}
+  {"surfaceId":"page:Admin/Hackathons/Show","personaId":"*","reason":"checked by the smoke profile"},
+  {"surfaceId":"GET /admin/reports","personaId":"*","reason":"تقارير الإدارة خارج نطاق هذا الإصدار"}
 ]
