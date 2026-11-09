@@ -12,8 +12,15 @@
 # coverage gate can count it for a role-specific pair; `surfaceId` unless noted; kind from the D1 enum):
 #   load-clean:<surfaceId>:<persona>   one per census surface x persona in its crawl `reachedBy`;
 #                                      tags independent + read-only; expects no in-scope fatal finding.
-#   deny:<surfaceId>:<persona>         one per persona (personas.json) x surface whose `allowed` (access
-#                                      entry, else census `allowed`; no entry = no rows) excludes it.
+#   deny:<surfaceId>:<persona>         one per persona (personas.json) x surface whose `allowed` excludes
+#                                      it, ONLY where the access entry carries positive permission
+#                                      evidence: confirmed:true by a human, or permission hints that
+#                                      matched at least one persona (`hintMatched` non-empty; for an entry
+#                                      without that field: non-empty hints, source "adapter", non-empty
+#                                      allowed). A surface with no hints, only guard hints (auth, guest,
+#                                      verified, web, api), or no access entry gets NO deny rows until a
+#                                      human confirms it: "the crawl did not reach it" is never evidence
+#                                      of denial. stderr counts the surfaces skipped this way.
 #                                      GET/HEAD/page -> tags independent + read-only. Any other method ->
 #                                      tag deny-write-deferred, or api-write when config allowApiWrites is
 #                                      true AND seedableEnvMarker is non-empty (D6; such rows carry
@@ -101,6 +108,10 @@ def methodOf($sid): if ($sid | startswith("page:")) then "GET" else ($sid | spli
 def one: if length == 1 then .[0] else . end;
 def textLike: . as $t | ["text","textarea","search","tel","url","email","password"] | index([$t]) != null;
 def minNum: if type == "number" then . elif type == "string" then (try tonumber catch null) else null end;
+def hasEvidence:
+  if .confirmed == true then true
+  elif has("hintMatched") then ((.hintMatched | strs | length) > 0)
+  else ((.hints | strs | length) > 0) and (.source == "adapter") and ((.allowed | strs | length) > 0) end;
 def genericForm: . == "page" or test("^form\\[[0-9]+\\]$");
 def params: [ str0 | match("\\{([^}]*)\\}"; "g") | .captures[0].string | rtrimstr("?") | ascii_downcase ];
 def cases:
@@ -149,9 +160,8 @@ def cases:
     | ($e | if type == "object" then . else {} end) as $eo
     | ((($eo.hints | strs | length) > 0) and ($eo.confirmed != true)) as $unconfHinted
     | ($eo.reachedWithoutEvidence | strs) as $rwe
-    | (if ($e | type) == "object" and (($e.allowed // null) | type) == "array" then ($e.allowed | strs)
-       elif (($s.allowed // null) | type) == "array" then ($s.allowed | strs) else null end) as $allowed
-    | select($allowed != null)
+    | select($eo | hasEvidence)
+    | ($eo.allowed | strs) as $allowed
     | $pids[] as $pp | select($allowed | index([$pp]) == null)
     | (if $unconfHinted and ($rwe | index([$pp]) != null) then ["needs-confirmation"] else [] end) as $nc
     | {id: ("deny:" + $s.surfaceId + ":" + $pp), kind: "deny", surface: ($s.pattern | str0), surfaceId: $s.surfaceId,
@@ -228,6 +238,10 @@ def cases:
        action: ("As " + $pr.p + ", revisit " + $pat + " at viewport " + $v + ", locale " + $l + ", " + $sc + " scheme (read-only): screenshot and run the UX detectors"),
        expected: "Renders with no 5xx, no crash and no objective UX finding at this variant"} ] as $ux
 
+| ([ $S[] | (($acc.surfaces[.surfaceId] // null) | if type == "object" then . else {} end) as $eo
+     | select(($eo | hasEvidence) | not)
+     | (if (($eo.allowed // null) | type) == "array" then ($eo.allowed | strs) elif ((.allowed // null) | type) == "array" then (.allowed | strs) else [] end) as $al
+     | select(any($pids[]; . as $x | $al | index([$x]) == null)) ] | length) as $skippedNoEvidence
 | ($existing | map(.id)) as $exIds
 | def keep: unique_by(.id) | map(select(.id as $i | $exIds | index([$i]) == null));
   ($loadClean | keep) as $LC | ($deny | keep) as $DN | ($iso | keep) as $IS | ($input | keep) as $IN | ($ux | keep) as $UX
@@ -242,6 +256,7 @@ def cases:
      + [ $IS[] | select(has("surfaceId") | not)
          | "generate-ship-criteria: warning: " + .id + " has no readable census surface with a {" + .entity + "} route parameter; emitted without surfaceId" ]
      + ["generate-ship-criteria: \($total) rows (load-clean \($LC | length), deny \($DN | length), iso \($IS | length), input \($IN | length), ux \($UX | length)); \($generated - $total) skipped as already in the checklist"]
+     + (if $skippedNoEvidence > 0 then ["generate-ship-criteria: deny: \($skippedNoEvidence) surfaces skipped — no permission evidence; confirm in surface-access to include"] else [] end)
      + ([ $DN[].surfaceId ] | unique | map(select((($acc.surfaces[.] // null) | if type == "object" then .confirmed else null end) != true))
         | if length > 0 then ["generate-ship-criteria: deny rows use \(length) unconfirmed surface-access entries (\([ $DN[] | select(.tags | index(["needs-confirmation"]) != null) ] | length) rows tagged needs-confirmation)"] else [] end)
      + (if ($cfg.criteriaBudget | type) == "number" and $total > $cfg.criteriaBudget
@@ -349,14 +364,21 @@ for s in S:
             "action": "As " + pp + ", open " + pat + " and let it settle",
             "expected": "The surface loads with no 5xx, no crash and no in-scope console error (no in-scope fatal finding)"})
 
+def has_evidence(eo):
+    if eo.get("confirmed") is True: return True
+    if "hintMatched" in eo: return len(strs(eo.get("hintMatched"))) > 0
+    return len(strs(eo.get("hints"))) > 0 and eo.get("source") == "adapter" and len(strs(eo.get("allowed"))) > 0
 deny = []
+skipped_no_evidence = 0
 for s in S:
     e = acc["surfaces"].get(s["surfaceId"])
-    if isinstance(e, dict) and isinstance(e.get("allowed"), list): allowed = strs(e["allowed"])
-    elif isinstance(s.get("allowed"), list): allowed = strs(s["allowed"])
-    else: continue
-    pat = str0(s.get("pattern"))
     eo = e if isinstance(e, dict) else {}
+    if not has_evidence(eo):
+        al = strs(eo["allowed"]) if isinstance(eo.get("allowed"), list) else strs(s.get("allowed")) if isinstance(s.get("allowed"), list) else []
+        if any(x not in al for x in pids): skipped_no_evidence += 1
+        continue
+    allowed = strs(eo.get("allowed"))
+    pat = str0(s.get("pattern"))
     unconf_hinted = len(strs(eo.get("hints"))) > 0 and eo.get("confirmed") is not True
     rwe = strs(eo.get("reachedWithoutEvidence"))
     for pp in pids:
@@ -487,6 +509,8 @@ notes.append("generate-ship-criteria: %d rows (load-clean %d, deny %d, iso %d, i
 def confirmed_of(sid):
     v = acc["surfaces"].get(sid)
     return v.get("confirmed") if isinstance(v, dict) else None
+if skipped_no_evidence > 0:
+    notes.append("generate-ship-criteria: deny: %d surfaces skipped — no permission evidence; confirm in surface-access to include" % skipped_no_evidence)
 unconf = [sid for sid in sorted(set(r["surfaceId"] for r in DN)) if confirmed_of(sid) is not True]
 if unconf:
     notes.append("generate-ship-criteria: deny rows use %d unconfirmed surface-access entries (%d rows tagged needs-confirmation)"

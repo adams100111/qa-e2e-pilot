@@ -130,6 +130,35 @@ run_engine() {
   gen "$E" "$T/nomarker.json" > "$T/nm.json" 2>/dev/null
   check "$E allowApiWrites without marker stays deferred" "$(q "$T/nm.json" "r('deny:POST /admin/hackathons:participant')['tags']")" '["deny-write-deferred"]'
 
+  # deny rows only from positive evidence (fix round 2)
+  cat > "$T/c2.json" <<'J'
+{"version":1,"adapter":"laravel","adapterOk":true,"surfaces":[
+ {"surfaceId":"GET /account","kind":"endpoint","pattern":"/account","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+ {"surfaceId":"GET /news","kind":"page","pattern":"/news","sources":["crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+ {"surfaceId":"GET /board","kind":"page","pattern":"/board","sources":["crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+ {"surfaceId":"GET /admin/x","kind":"endpoint","pattern":"/admin/x","sources":["adapter","crawl"],"reachedBy":["admin","participant"],"allowed":null,"forms":[]},
+ {"surfaceId":"GET /unknown","kind":"endpoint","pattern":"/unknown","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}],
+ "jobs":[],"mails":[],"notifications":[],"diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},"warnings":[]}
+J
+  cat > "$T/a2.json" <<'J'
+{"version":1,"surfaces":{
+ "GET /account":{"allowed":[],"source":"adapter","confirmed":false,"hints":["auth","verified"],"hintMatched":[],"reachedWithoutEvidence":["participant"]},
+ "GET /news":{"allowed":["participant"],"source":"crawl","confirmed":false,"hints":[],"hintMatched":[],"reachedWithoutEvidence":["participant"]},
+ "GET /board":{"allowed":["participant"],"source":"human","confirmed":true,"hints":[],"hintMatched":[],"reachedWithoutEvidence":[]},
+ "GET /admin/x":{"allowed":["admin"],"source":"adapter","confirmed":false,"hints":["can:x.view"],"hintMatched":["admin"],"reachedWithoutEvidence":["participant"]}}}
+J
+  printf '%s' '[]' > "$T/m2.json"; printf '%s' '{}' > "$T/cfg2.json"
+  QA_ENGINE=$E bash "$SH" --census "$T/c2.json" --access "$T/a2.json" --matrix "$T/m2.json" --personas "$FX/personas.json" --config "$T/cfg2.json" > "$T/e.json" 2> "$T/e.err"; rc=$?
+  check "$E evidence fixture exit 0" "$rc" "0"
+  check "$E auth_only_surface_no_deny_rows" "$(q "$T/e.json" "ids('deny:GET /account')")" '[]'
+  check "$E no_hint_surface_no_deny_rows" "$(q "$T/e.json" "ids('deny:GET /news')+ids('deny:GET /unknown')")" '[]'
+  check "$E confirmed_no_hint_surface_gets_deny_rows" "$(q "$T/e.json" "ids('deny:GET /board')")" '["deny:GET /board:admin","deny:GET /board:judge"]'
+  check "$E hinted_surface_still_denies_unmatched" "$(q "$T/e.json" "[[i,r(i)['tags']] for i in ids('deny:GET /admin/x')]")" \
+    '[["deny:GET /admin/x:judge",["independent","read-only"]],["deny:GET /admin/x:participant",["independent","needs-confirmation","read-only"]]]'
+  check "$E skipped surfaces reported on stderr" "$(grep -c 'deny: 3 surfaces skipped — no permission evidence; confirm in surface-access to include' "$T/e.err")" "1"
+  check "$E main fixture skips the two surfaces without access evidence" "$(grep -c 'deny: 2 surfaces skipped' "$T/o.err")" "1"
+  bash "$VALIDATOR" "$T/e.json" >/dev/null 2>&1; check "$E evidence output validates" "$?" "0"
+
   # argument errors
   QA_ENGINE=$E bash "$SH" --census "$FX/census.json" >/dev/null 2>&1; check "$E missing required args dies" "$?" "1"
   printf 'not json' > "$T/bad.json"

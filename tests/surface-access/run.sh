@@ -34,6 +34,7 @@ run_engine() {
   check "$E derive exit 0" "$rc" "0"
   check "$E derive version" "$(q "$T/a.json" "a['version']")" "1"
   check "$E derive_from_hints_and_crawl can: hint via permissions only (crawl reach is not permission)" "$(q "$T/a.json" "e('$PATHS')['allowed']")" '["admin"]'
+  check "$E derive records hint evidence" "$(q "$T/a.json" "[e('$PATHS')['hintMatched'],e('GET /account')['hintMatched'],e('GET /h/{slug}')['hintMatched']]")" '[["admin"],[],[]]'
   # crawl_reached_without_hint_not_allowed
   check "$E crawl_reached_without_hint_not_allowed" "$(q "$T/a.json" "[e('$PATHS')['allowed'],e('$PATHS')['reachedWithoutEvidence']]")" '[["admin"],["participant"]]'
   check "$E reached persona of a matching hint is not listed" "$(q "$T/a.json" "e('GET /organizer/dashboard')['reachedWithoutEvidence']")" '[]'

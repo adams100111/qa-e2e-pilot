@@ -9,7 +9,9 @@
 # USAGE:
 #   surface-access.sh derive <census.json> <personas.json> [--adapter <adapter.json>]
 #       Prints D3 JSON: {version:1, surfaces:{<surfaceId>:{allowed:[personaId], source, confirmed:false,
-#       hints:[...], reachedWithoutEvidence:[personaId]}}}, one entry per census surface.
+#       hints:[...], hintMatched:[personaId], reachedWithoutEvidence:[personaId]}}}, one entry per census
+#       surface. `hintMatched` records the positive evidence: the personas a hint matched (the generator
+#       emits deny rows only for surfaces with such evidence or a human confirmation).
 #         hints   = the census surface's own `permissionHints` when present, else the adapter's
 #                   `permissionHints` for the same surfaceId (census.sh does not carry them), else [].
 #         With hints:    allowed = the personas a hint matches ONLY; source "adapter";
@@ -105,7 +107,7 @@ jq_derive() { # census personas adapter-or-empty
          | .[$s.surfaceId] = (if ($hints | length) > 0
              then {allowed: $matched, source: "adapter", reachedWithoutEvidence: ($reached - $matched)}
              else {allowed: $reached, source: "crawl", reachedWithoutEvidence: $reached} end)
-             + {confirmed: false, hints: $hints}))}
+             + {confirmed: false, hints: $hints, hintMatched: $matched}))}
   ' "$1"
 }
 
@@ -231,7 +233,7 @@ for s in c["surfaces"]:
     reached = sorted(set(strs(s.get("reachedBy"))))
     if hints: e = {"allowed": matched, "source": "adapter", "reachedWithoutEvidence": [x for x in reached if x not in matched]}
     else: e = {"allowed": reached, "source": "crawl", "reachedWithoutEvidence": reached}
-    e.update({"confirmed": False, "hints": hints})
+    e.update({"confirmed": False, "hints": hints, "hintMatched": matched})
     surfaces[s["surfaceId"]] = e
 dump({"version": 1, "surfaces": surfaces})
 ' "$1" "$2" "$3"
