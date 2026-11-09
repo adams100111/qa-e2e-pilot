@@ -241,10 +241,14 @@ fresh-context verifier that sees only the persisted evidence (never the journal 
 notes); a disagreement turns a pass into `blocked` with `verifier-disagrees: <reason>`, and nothing is
 ever upgraded. It needs fresh-subagent dispatch (Claude Code today); other harnesses print a banner
 saying the passes were not re-judged. The report then opens with **Ship readiness** — `SHIP-READY`
-only with no uncovered census pair, every P1 journey passing, no coding-layer fail on a P1 criterion
-and no verifier override on one, else `NOT SHIP-READY` with each reason — and `scripts/bug-export.sh`
-writes `bugs.json` plus one plain-language markdown file per new bug, deduplicated against
-`.qa/known-defects.json`. See [ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and
+only with no uncovered census pair, every P1 journey passing, no coding-layer fail on a P1 criterion,
+no verifier override or re-adjudication dispute on one and no P1 low-confidence pass left unreviewed, else
+`NOT SHIP-READY` with each reason; a **Re-adjudication** line says what the second judge did, and a **Needs re-check**
+row counts evidence gaps (informational). The end-of-run order is `qa-verify` → re-adjudication → `qa-verify` →
+report → bug export, and `/qa-resume` follows it too. `scripts/bug-export.sh` writes `bugs.json` plus one
+plain-language markdown file per new bug for real contradictions only (evidence gaps go to `needs-recheck.json`),
+deduplicated against `.qa/known-defects.json`; qa-kit's `/qa-verify` also fails on trust-field drift between the run
+and frozen checklists (`verify-plan.sh --drift`). `gates.oracle` is informational. See [ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and
 [ADR-0033](./docs/adr/0033-independent-re-adjudication.md).
 
 ### Configuration (`.qa/config.json`)
