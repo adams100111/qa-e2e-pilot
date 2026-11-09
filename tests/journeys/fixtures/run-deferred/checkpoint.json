@@ -1,0 +1,26 @@
+{
+  "run_id": "r1",
+  "criteria": [
+    {
+      "criterion_id": "J1-S1",
+      "verdict": "pass",
+      "persona": "participant",
+      "checkpointed_at": "2026-11-09T10:00:00Z",
+      "confidence": "high"
+    },
+    {
+      "criterion_id": "J1-S2",
+      "verdict": "deferred",
+      "persona": "participant",
+      "checkpointed_at": "2026-11-09T10:00:00Z",
+      "confidence": "high"
+    },
+    {
+      "criterion_id": "J1-S3",
+      "verdict": "pass",
+      "persona": "participant",
+      "checkpointed_at": "2026-11-09T10:00:00Z",
+      "confidence": "high"
+    }
+  ]
+}
