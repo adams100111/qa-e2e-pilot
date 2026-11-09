@@ -129,6 +129,26 @@ run_engine() {
   check "$E unknown source refused rc" "$RC" "1"
   check "$E unknown source msg" "$(has_line "$ERR" "ORACLE GATE: C7 oracleSource=guessed cannot ground a high-confidence pass (allowed: human, spec)")" "yes"
   record "$E" "unknown=$RC"
+
+  # false_source_refused_parity — a present non-string oracleSource is not
+  # grounded (jq used to read `false` as absent and let it through).
+  setup "$W" r8 C8 '[{"id":"C8","surface":"/budget","kind":"display","tags":["read-only"],"action":"See the remaining budget total","requiredKinds":[],"assertedState":null,"humanAction":false,"fixture":{"expect":{"value":"1250.00 SAR","oracleSource":false}}}]' -
+  cp_run "$E" "$W" r8 C8 pass --kinds computed
+  check "$E false_source_refused rc" "$RC" "1"
+  check "$E false_source_refused msg" "$(has_line "$ERR" "ORACLE GATE: C8 oracleSource=false cannot ground a high-confidence pass (allowed: human, spec)")" "yes"
+  record "$E" "false=$RC"
+
+  # malformed_row_refused — a control character in oracleSource or kind
+  # refuses at any confidence (it used to split the kind/source lines).
+  setup "$W" r9 C9 '[{"id":"C9","surface":"/budget","kind":"display","tags":["read-only"],"action":"See the remaining budget total","requiredKinds":[],"assertedState":null,"humanAction":false,"fixture":{"expect":{"oracleSource":"llm-suggested\nhuman"}}}]' -
+  cp_run "$E" "$W" r9 C9 pass --kinds computed --confidence low
+  check "$E malformed_source_refused rc" "$RC" "1"
+  check "$E malformed_source_refused msg" "$(has_line "$ERR" "ORACLE GATE: C9 malformed checklist row (control character in kind or oracleSource) cannot ground a pass")" "yes"
+  setup "$W" r10 C10 '[{"id":"C10","surface":"/budget","kind":"display\tcomputed-logic","tags":["read-only"],"action":"See the remaining budget total","requiredKinds":[],"assertedState":null,"humanAction":false}]' -
+  cp_run "$E" "$W" r10 C10 pass --kinds computed
+  check "$E malformed_kind_refused rc" "$RC" "1"
+  check "$E malformed_kind_refused msg" "$(has_line "$ERR" "ORACLE GATE: C10 malformed checklist row (control character in kind or oracleSource) cannot ground a pass")" "yes"
+  record "$E" "malformed=$RC"
 }
 
 engines=()
