@@ -363,7 +363,9 @@ JSON files, then call the writer script:
   `[]`; without the flag an empty matrix is always rejected (exit 4,
   negative control). `--allow-empty` never relaxes `confirmed-personas.json`'s
   own non-empty requirement. The writer also merges forward any operator-set
-  `personas[].expectedSubject`/`expectedSubjects` per persona id — regenerated fields
+  `personas[].expectedSubject`/`expectedSubjects` and the optional `permissions` string
+  array (what qa-kit's `surface-access.sh` matches `can:X`/`permission:X` hints against;
+  `*` and `prefix.*` wildcards allowed) per persona id — regenerated fields
   (`role`/`plane`/`auth`) always come from `confirmed-personas.json`, but an
   operator's identity ground truth for a persona that still exists survives
   the wholesale regeneration; a dropped persona id disappears from the config.
