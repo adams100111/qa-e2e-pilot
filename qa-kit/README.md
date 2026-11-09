@@ -44,7 +44,7 @@ end-to-end run per non-Claude harness is the **manual accuracy run**.
 | 5 | `/qa-e2e-pilot:qa-run "<target>" .qa/specs/<target>/checklist.json` | `.qa/runs/<id>/…` | The engine's existing run — ingests the frozen `checklist.json` (it already accepts a checklist/spec path), freezes it (`plan_frozen`, ADR-0020), drives/bakes/verifies/reports. |
 | 6 | `/qa-verify <target> [<run-id>]` | `.qa/specs/<target>/verification.md` | Post-run verification: the out-of-plan-act check (`verify-plan.sh` — the one enforcement seam below) plus a qa-kit-flow-native restatement of the engine's deterministic overrides (`verification.json`). Reports; the script results are the gate. |
 
-`/qa-status [<target>]` shows where you are + any constitution drift.
+`/qa-status [<target>]` shows where you are + any constitution drift. For run-level detail (progress, ETA, verdicts, bugs, ship readiness, trends) use the engine's `/qa-dashboard`.
 
 ## The one enforcement seam (qa-verify unmodified)
 

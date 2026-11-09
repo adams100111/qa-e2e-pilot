@@ -20,6 +20,10 @@
     {
       "name": "qa-resume",
       "path": "commands/qa-resume.md"
+    },
+    {
+      "name": "qa-dashboard",
+      "path": "commands/qa-dashboard.md"
     }
   ],
   "skills": [

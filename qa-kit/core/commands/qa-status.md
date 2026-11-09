@@ -44,3 +44,12 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    one line per spec — `<target>: spec ✓ / scenarios ✓ / analyze ✗ / runs 0 · next: /qa-analyze
    [· drift: stale]`. End with the single **next step** for the requested scope. Never invent an
    artifact you did not find; report only what is present on disk.
+
+## Going further: the dashboard
+
+`/qa-status` answers "which step is next". For run-level detail — each run's progress, rate and ETA,
+verdict counts, bugs by severity, ship readiness, the live cursor of a running run, a stalled
+warning, trends across runs and the known-defect registry — point the user at the engine's
+**`/qa-dashboard`** (`/qa-e2e-pilot:qa-dashboard`; `scripts/qa-dashboard.sh html|tui|json` in the
+qa-e2e-pilot plugin). It is read-only too. Mention it in one line at the end of the summary; do not
+run it from here.

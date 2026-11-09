@@ -40,6 +40,7 @@ diff -q agents/qa-e2e-pilot.md dist/claude/agent/qa-e2e-pilot.md >/dev/null || f
 diff -q commands/qa-run.md     dist/claude/commands/qa-run.md     >/dev/null || fail "claude qa-run oracle"
 diff -q commands/qa-roles.md   dist/claude/commands/qa-roles.md   >/dev/null || fail "claude qa-roles oracle"
 diff -q commands/qa-resume.md  dist/claude/commands/qa-resume.md  >/dev/null || fail "claude qa-resume oracle"
+diff -q commands/qa-dashboard.md dist/claude/commands/qa-dashboard.md >/dev/null || fail "claude qa-dashboard oracle"
 
 # 3) no residual {{...}} tokens in RENDERED output only.
 # NOTE: a blanket `grep -rn '{{' dist/` would false-positive — build-adapter.sh copies
