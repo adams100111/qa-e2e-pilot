@@ -177,12 +177,22 @@ interrupt_case() {
   TMPDIR="$T/tmp" "$BASH_BIN" "$H" &
   pid=$!
   set +m
-  # wait (up to 60s, the box may be loaded) until the stand-in check is running
+  # Ready marker: the stand-in writes "started" only after dp_check_text has
+  # installed its traps and created the temp file. Wait (up to 60s, the box
+  # may be loaded) for it before signalling.
   i=0
   while [ ! -f "$T/started" ] && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i+1)); done
+  check "$label ready marker seen" "$([ -f "$T/started" ] && echo y)" "y"
   check "$label temp file existed while checking" "$(ls "$T/tmp" | grep -c '^qa-dp\.')" "1"
   kill "-$SIG" -- "-$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
+  # On TERM the harness shell dies at once while dp_check_text's subshell is
+  # still reaping its child and running its EXIT trap (which removes the temp
+  # file), so waiting for $pid alone is not enough: wait (up to 60s) until no
+  # process of the signalled group is left, then check.
+  i=0
+  while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i+1)); done
+  check "$label process group exited" "$(kill -0 -- "-$pid" 2>/dev/null && echo alive || echo gone)" "gone"
   check "$label no temp file left" "$(ls -A "$T/tmp" | wc -l | tr -d ' ')" "0"
   check "$label caller EXIT trap kept" "$(cat "$T/outer" 2>/dev/null)" "outer-exit-trap-ran"
 }
