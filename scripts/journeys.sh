@@ -17,10 +17,12 @@
 #       pass -> pass, otherwise (none, blocked, deferred) -> incomplete. Journey: any failed
 #       step -> fail; else every step pass -> pass; else incomplete.
 #   journeys.sh expand-variant <journeys.json> <checklist.json> --journey <id>
-#                  --viewport <WxH> --locale <code> [--color-scheme light|dark]
+#                  (--viewport-id <id> | --viewport <WxH>) --locale <code> [--color-scheme light|dark]
 #       Prints a new checklist (pretty JSON, sorted keys) holding the journey's rows duplicated
 #       with id suffixed "@<viewport>-<locale>[-<scheme>]", `variant` set and `journey.id`
-#       suffixed the same. Unknown journey, missing step row or bad flag -> exit 1.
+#       suffixed the same. <viewport> is the responsiveMatrix entry's id (e.g. "mobile") when
+#       --viewport-id is given -- the same convention as qa-kit's ux:* revisit rows -- else the
+#       legacy WxH. Exactly one of the two. Unknown journey, missing step row or bad flag -> exit 1.
 #
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred; QA_ENGINE=jq|python3
 #   forces one). Both engines produce byte-identical output. No node/perl/grep -P.
@@ -36,7 +38,7 @@ has_jq() {
 }
 has_py() { command -v python3 >/dev/null 2>&1; }
 
-usage="usage: journeys.sh validate <journeys.json> <checklist.json> | status <run-dir> | expand-variant <journeys.json> <checklist.json> --journey <id> --viewport <WxH> --locale <code> [--color-scheme light|dark]"
+usage="usage: journeys.sh validate <journeys.json> <checklist.json> | status <run-dir> | expand-variant <journeys.json> <checklist.json> --journey <id> (--viewport-id <id> | --viewport <WxH>) --locale <code> [--color-scheme light|dark]"
 [ "$#" -ge 1 ] || die "$usage"
 CMD="$1"; shift
 if has_jq; then ENGINE=jq; elif has_py; then ENGINE=py; else die "journeys.sh needs either 'jq' or 'python3'."; fi
@@ -177,22 +179,30 @@ PY
   expand-variant)
     [ "$#" -ge 2 ] || die "$usage"
     J="$1"; C="$2"; shift 2
-    JID=""; VP=""; LOC=""; SCH=""; JSET=0
+    JID=""; VP=""; VPID=""; LOC=""; SCH=""; JSET=0
     while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "$usage"
       case "$1" in
         --journey) JID="$2"; JSET=1 ;;
         --viewport) VP="$2" ;;
+        --viewport-id) VPID="$2" ;;
         --locale) LOC="$2" ;;
         --color-scheme) SCH="$2" ;;
         *) die "$usage" ;;
       esac
       shift 2
     done
-    [ "$JSET" -eq 1 ] && [ -n "$VP" ] && [ -n "$LOC" ] || die "$usage"
+    [ "$JSET" -eq 1 ] && [ -n "$LOC" ] || die "$usage"
+    [ -n "$VP" ] || [ -n "$VPID" ] || die "$usage"
+    [ -z "$VP" ] || [ -z "$VPID" ] || die "journeys: pass --viewport-id or --viewport, not both"
     [ -f "$J" ] || die "journeys: file not found: $J"
     [ -f "$C" ] || die "journeys: file not found: $C"
-    printf '%s' "$VP" | grep -Eq '^[0-9]+x[0-9]+$' || die "journeys: --viewport must look like 390x844"
+    if [ -n "$VPID" ]; then
+      printf '%s' "$VPID" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$' || die "journeys: --viewport-id must be a simple token like mobile"
+      VP="$VPID"
+    else
+      printf '%s' "$VP" | grep -Eq '^[0-9]+x[0-9]+$' || die "journeys: --viewport must look like 390x844"
+    fi
     case "$SCH" in ''|light|dark) ;; *) die "journeys: --color-scheme must be light or dark" ;; esac
     SUF="@${VP}-${LOC}"; [ -z "$SCH" ] || SUF="${SUF}-${SCH}"
     if [ "$ENGINE" = jq ]; then
