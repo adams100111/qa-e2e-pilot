@@ -117,7 +117,7 @@ sed -e "s/${ESC}\[[0-9;]*[A-Za-z]//g" "$W/schedule.txt" | awk '
 : > "$W/pages.txt"; : > "$W/mails.txt"; : > "$W/notifications.txt"; : > "$W/locales.txt"; : > "$W/warnings.txt"
 
 # list_pages <dir> <prefix> — page component names under one page dir. A failing find is a warning,
-# never silently fewer pages. The prefix goes to awk as a variable, never into a program text.
+# never silently fewer pages. The prefix reaches awk through ENVIRON (not -v, which interprets backslash escapes), never a program text.
 list_pages() {
   if ! ( cd "$1" && find . -type f \( -name '*.tsx' -o -name '*.jsx' -o -name '*.vue' -o -name '*.svelte' \) ) > "$W/found-pages.txt" 2> "$W/find.err"; then
     echo "pages: could not scan $1: $(sed -e '/^[[:space:]]*$/d' "$W/find.err" | head -n 1)" >> "$W/warnings.txt"
@@ -127,7 +127,7 @@ list_pages() {
     | grep -Ev '(^|/)(components|partials|hooks|lib|utils|types|__tests__)/' \
     | grep -Ev '\.(test|spec|stories)\.[^./]+$' \
     | sed -e 's/\.[^./]*$//' \
-    | awk -v p="$2" '{ print p $0 }' >> "$W/pages.txt"
+    | PAGE_PREFIX="$2" awk '{ print ENVIRON["PAGE_PREFIX"] $0 }' >> "$W/pages.txt"
 }
 FOUND_PAGES=0
 for d in "$REPO/resources/js/pages" "$REPO/resources/js/Pages"; do

@@ -120,6 +120,19 @@ PY
   cat "$out"
 }
 
+# scan_find <dir> <outfile> <find args...> — runs find from <dir>; a non-zero exit (unreadable dir or
+# file) adds "could not scan <dir>: <reason>" to warnings and bumps SCAN_FAILED, while whatever find
+# did list is kept. Returns 0 when the whole scan was clean.
+SCAN_FAILED=0
+scan_find() {
+  local dir="$1" out="$2"; shift 2
+  if ! ( cd "$dir" && find . "$@" ) > "$out" 2> "$W/find.err"; then
+    SCAN_FAILED=$((SCAN_FAILED + 1))
+    echo "could not scan $dir: $(sed -e '/^[[:space:]]*$/d' "$W/find.err" | head -n 1 | sed -e 's/^find: //')" >> "$W/warnings.txt"
+    return 1
+  fi
+}
+
 # Path helpers (sed -E programs, shared by the scanners).
 # norm_path: squeeze slashes, ensure one leading slash (empty -> "/").
 norm_path() { [ -n "$1" ] || { echo "/"; return; }; printf '%s' "$1" | sed -E -e 's|/+|/|g' -e 's|^([^/])|/\1|' -e 's|^$|/|'; }

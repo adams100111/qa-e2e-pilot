@@ -9,21 +9,32 @@
 #   string-literal path. ":id" -> "{id}". Surface "confidence":"static".
 # LIMITS (reported in warnings): `app.use('/prefix', router)` mounts are not applied, so router paths
 #   are as declared; regex / computed paths are not seen.
-# EXIT: 0 ok:true; 3 ok:false (missing repo, no engine); 1 usage error.
+# An unreadable dir or file adds a "could not scan <path>: <reason>" warning; when nothing could be
+# scanned at all the result is ok:false.
+# EXIT: 0 ok:true; 3 ok:false (missing repo, nothing scannable, no engine); 1 usage error.
 ADAPTER="express"
 USAGE_TEXT='express.sh --repo <path> [--exec-prefix "<prefix>"]'
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 parse_args "$@"
 prepare
 
-( cd "$REPO" && find . \( -name node_modules -o -name dist -o -name build -o -name coverage -o -name .next -o -name __tests__ -o -name test -o -name tests -o -name .git \) -prune -o \
+scan_find "$REPO" "$W/files.txt" \( -name node_modules -o -name dist -o -name build -o -name coverage -o -name .next -o -name __tests__ -o -name test -o -name tests -o -name .git \) -prune -o \
     -type f \( -name '*.js' -o -name '*.ts' -o -name '*.mjs' -o -name '*.cjs' \) \
-    ! -name '*.test.*' ! -name '*.spec.*' ! -name '*.d.ts' -print | sort ) > "$W/files.txt"
+    ! -name '*.test.*' ! -name '*.spec.*' ! -name '*.d.ts' -print
+sort -o "$W/files.txt" "$W/files.txt"
 
-: > "$W/mounts.txt"
+: > "$W/mounts.txt"; : > "$W/found.tsv"
+NFILES=0
 while IFS= read -r f; do
-  grep -Ehs '\b(app|[A-Za-z0-9_]*[Rr]outer)\.(get|post|put|patch|delete)[[:space:]]*\([[:space:]]*['"'"'"`]/' "$REPO/$f" \
-    | awk '{
+  NFILES=$((NFILES + 1))
+  grep -Eh '\b(app|[A-Za-z0-9_]*[Rr]outer)\.(get|post|put|patch|delete)[[:space:]]*\([[:space:]]*['"'"'"`]/' "$REPO/$f" > "$W/g.out" 2> "$W/g.err"
+  grc=$?
+  if [ "$grc" -ge 2 ]; then
+    SCAN_FAILED=$((SCAN_FAILED + 1))
+    echo "could not scan $f: $(sed -e '/^[[:space:]]*$/d' "$W/g.err" | head -n 1 | sed -e 's/^grep: //')" >> "$W/warnings.txt"
+    continue
+  fi
+  awk '{
         s = $0
         while (match(s, /\.(get|post|put|patch|delete)[ \t]*\([ \t]*['"'"'"`]\/[^'"'"'"`]*['"'"'"`]/)) {
           t = substr(s, RSTART, RLENGTH)
@@ -32,10 +43,12 @@ while IFS= read -r f; do
           print toupper(m) "\t" p
           s = substr(s, RSTART + RLENGTH)
         }
-      }' >> "$W/found.tsv"
-  grep -Eqs '\.use[[:space:]]*\([[:space:]]*['"'"'"`]/' "$REPO/$f" && echo x >> "$W/mounts.txt"
+      }' "$W/g.out" >> "$W/found.tsv"
+  grep -Eq '\.use[[:space:]]*\([[:space:]]*['"'"'"`]/' "$REPO/$f" 2>/dev/null && echo x >> "$W/mounts.txt"
 done < "$W/files.txt"
-[ -f "$W/found.tsv" ] || : > "$W/found.tsv"
+if [ "$SCAN_FAILED" -gt 0 ] && [ ! -s "$W/found.tsv" ] && { [ "$NFILES" -eq 0 ] || [ "$(grep -c '^could not scan' "$W/warnings.txt")" -ge "$NFILES" ]; }; then
+  fail "nothing could be scanned: $(head -n 1 "$W/warnings.txt")"
+fi
 
 while IFS="$(printf '\t')" read -r m p; do
   p="$(printf '%s' "$p" | sed -E -e 's#:([A-Za-z0-9_]+)\??#{\1}#g')"
