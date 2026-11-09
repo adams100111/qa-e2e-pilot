@@ -69,6 +69,24 @@ JSON
   echo "$P"
 }
 
+# add_secret_trace <run-dir> — an action trace on C-LOW that typed a password
+# (step target #password), an api token (fill_form field api_token, camelCase
+# apiKeyToken) and ordinary data that must stay visible to the verifier.
+add_secret_trace() {
+  cat > "$1/evidence/admin/C-LOW/action-trace.json" <<'JSON'
+{"criterion_id":"C-LOW","steps":[
+ {"tool":"browser_type","target":"#email","text":"faisal.alharbi@innovation-lab.co"},
+ {"tool":"browser_type","target":"#password","text":"Riyadh#Pass2026"},
+ {"tool":"browser_fill_form","fields":[
+   {"name":"city","value":"الرياض"},
+   {"field":"api_token","value":"tok-abc123secret"},
+   {"name":"apiKeyToken","value":"tok-camel-777"}]},
+ {"tool":"browser_type","element":"Login code","inputType":"password","value":"tok-otp-31337"},
+ {"tool":"browser_select_option","name":"pin_code","values":["4321-pin-secret"]},
+ "not-a-step"]}
+JSON
+}
+
 run_engine() {
   local E="$1" P R out rc err
   adj(){ QA_ENGINE=$E bash "$SH" "$@"; }
@@ -246,6 +264,22 @@ C-UX${TAB}${TAB}ux-promoted-fail"
   check "$E capability opencode" "$(adj capability opencode)" "re-adjudication unavailable on opencode; 0 low-confidence passes unreviewed"
   check "$E capability no profiles pi" "$(QA_HARNESS_PROFILES="$P/none.json" adj capability pi)" "re-adjudication unavailable on pi; 0 low-confidence passes unreviewed"
 
+  # --- bundle_redacts_secret_typed_values -----------------------------------
+  P="$(make_fx)"; R="$P/.qa/runs/r1"; add_secret_trace "$R"
+  adj bundle "$R" C-LOW "$P/bs" --persona admin >/dev/null 2>&1; rc=$?
+  check "$E bundle_redacts_secret_typed_values rc" "$rc" "0"
+  check "$E bundle_redacts_secret_typed_values trace present" "$([ -s "$P/bs/evidence/admin/C-LOW/action-trace.json" ] && echo y)" "y"
+  check "$E bundle_redacts_secret_typed_values no secret anywhere" \
+    "$(grep -rlE 'Riyadh#Pass2026|tok-abc123secret|tok-camel-777|tok-otp-31337|4321-pin-secret' "$P/bs" | wc -l | tr -d ' ')" "0"
+  check "$E bundle_redacts_secret_typed_values redacted marks" "$(grep -o '\[redacted\]' "$P/bs/evidence/admin/C-LOW/action-trace.json" | wc -l | tr -d ' ')" "5"
+  check "$E bundle_redacts_secret_typed_values ordinary data kept" \
+    "$(grep -c -e 'faisal.alharbi@innovation-lab.co' -e 'الرياض' "$P/bs/evidence/admin/C-LOW/action-trace.json")" "2"
+  check "$E bundle_redacts_secret_typed_values original untouched" "$(grep -c 'Riyadh#Pass2026' "$R/evidence/admin/C-LOW/action-trace.json")" "1"
+  printf 'not json {' > "$R/evidence/admin/C-LOW/action-trace.json"
+  adj bundle "$R" C-LOW "$P/bs2" --persona admin >/dev/null 2>&1; rc=$?
+  check "$E bundle unparseable trace rc" "$rc" "0"
+  check "$E bundle unparseable trace left out" "$([ -e "$P/bs2/evidence/admin/C-LOW/action-trace.json" ] && echo y || echo n)" "n"
+
   echo "$P" > "$PARITY_DIR/$E"
   # keep the select/bundle outputs of the first fixture for the parity check
 }
@@ -263,6 +297,9 @@ if [ "${#engines[@]}" -eq 2 ]; then
   check "parity select" "$(cmp -s "$P/s.jq" "$P/s.py" && echo same)" "same"
   QA_ENGINE=jq bash "$SH" bundle "$R" C-LOW "$P/bj" >/dev/null; QA_ENGINE=python3 bash "$SH" bundle "$R" C-LOW "$P/bp" >/dev/null
   check "parity bundle tree" "$(diff -r "$P/bj" "$P/bp" >/dev/null && echo same)" "same"
+  add_secret_trace "$R"
+  QA_ENGINE=jq bash "$SH" bundle "$R" C-LOW "$P/tj" >/dev/null; QA_ENGINE=python3 bash "$SH" bundle "$R" C-LOW "$P/tp" >/dev/null
+  check "parity redacted trace" "$(diff -r "$P/tj" "$P/tp" >/dev/null && echo same)" "same"
 fi
 
 echo "adjudication: PASS=$pass FAIL=$fail"
