@@ -38,6 +38,12 @@ this skill keeps that split load-bearing:
 
 ## The Process
 
+**Step 0 — Apply the row's `variant` first** (ship profile, ADR-0030): resize to `variant.viewport`
+(`browser_resize`), set `variant.colorScheme` with the emulate-media capability
+(`browser_emulate_media`, `colorScheme: "dark"|"light"`), and switch to `variant.locale` through the
+app's own locale switch (never a URL hack the app does not offer). Record the variant on every
+finding; a driver without emulate-media makes a dark row `blocked`. Detail: `references/variants.md`.
+
 ### Step 1 — Run the objective detectors (read-only, no side effects)
 
 Inject `scripts/ux-detectors.js` via `browser_evaluate` against the current surface (after the

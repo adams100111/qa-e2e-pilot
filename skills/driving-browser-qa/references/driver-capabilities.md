@@ -24,6 +24,7 @@ The skills call browser tools **by capability**, never by a hard-coded server na
 | **read console messages** | `browser_console_messages` | ⚠️ usually none | ⚠️ usually none |
 | **list network requests** | `browser_network_requests` | ⚠️ usually none | ⚠️ limited |
 | **read a network response body** | `browser_network_request` | ⚠️ usually none | ⚠️ usually none |
+| emulate color scheme (`prefers-color-scheme`, ship dark revisits) | `browser_emulate_media` | — | — |
 | screenshot | `browser_take_screenshot` | `screenshot` | `take_screenshot` |
 | separate sessions / tabs | `browser_tabs` (+ contexts) | per-instance | per-instance |
 | close | `browser_close` | `close` | `close` |
