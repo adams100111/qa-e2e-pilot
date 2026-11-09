@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake exec wrapper that logs its argv one bracketed element each, then runs what follows `--`.
+line=""; for a in "$@"; do line="$line[$a]"; done
+printf '%s\n' "$line" >> "$FAKE_EXEC_LOG"
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"

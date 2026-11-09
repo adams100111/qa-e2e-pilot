@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake python: `manage.py show_urls` prints the fixture, or fails like django-extensions is absent.
+[ "$*" = "manage.py show_urls" ] || { echo "fake python: unexpected argv: $*" >&2; exit 64; }
+[ "${FAKE_NO_SHOW_URLS:-}" = "1" ] && { echo "Unknown command: 'show_urls'" >&2; exit 1; }
+cat "$FAKE_SHOW_URLS"

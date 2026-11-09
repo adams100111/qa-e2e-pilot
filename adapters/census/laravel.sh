@@ -33,6 +33,8 @@
 #
 # EXIT: 0 ok:true printed; 3 ok:false printed ({adapter, ok:false, error}) — missing php, non-zero
 #       artisan, malformed route JSON, missing repo, no engine; 1 usage error (stderr only).
+#       A jq/python3 failure while building the output reports "adapter could not build output: <engine
+#       message>"; the exec prefix is split on whitespace only (no shell quoting).
 # DEPENDENCIES: bash (3.2-safe), coreutils, find, awk, sed, EITHER jq OR python3. QA_ENGINE=jq|python3.
 set -uo pipefail
 
@@ -114,13 +116,18 @@ sed -e "s/${ESC}\[[0-9;]*[A-Za-z]//g" "$W/schedule.txt" | awk '
 
 : > "$W/pages.txt"; : > "$W/mails.txt"; : > "$W/notifications.txt"; : > "$W/locales.txt"; : > "$W/warnings.txt"
 
-# list_pages <dir> <prefix> — page component names under one page dir.
+# list_pages <dir> <prefix> — page component names under one page dir. A failing find is a warning,
+# never silently fewer pages. The prefix goes to awk as a variable, never into a program text.
 list_pages() {
-  ( cd "$1" && find . -type f \( -name '*.tsx' -o -name '*.jsx' -o -name '*.vue' -o -name '*.svelte' \) ) \
-    | sed -e 's|^\./||' \
+  if ! ( cd "$1" && find . -type f \( -name '*.tsx' -o -name '*.jsx' -o -name '*.vue' -o -name '*.svelte' \) ) > "$W/found-pages.txt" 2> "$W/find.err"; then
+    echo "pages: could not scan $1: $(sed -e '/^[[:space:]]*$/d' "$W/find.err" | head -n 1)" >> "$W/warnings.txt"
+    return 0
+  fi
+  sed -e 's|^\./||' "$W/found-pages.txt" \
     | grep -Ev '(^|/)(components|partials|hooks|lib|utils|types|__tests__)/' \
     | grep -Ev '\.(test|spec|stories)\.[^./]+$' \
-    | sed -e 's/\.[^./]*$//' -e "s|^|$2|" >> "$W/pages.txt"
+    | sed -e 's/\.[^./]*$//' \
+    | awk -v p="$2" '{ print p $0 }' >> "$W/pages.txt"
 }
 FOUND_PAGES=0
 for d in "$REPO/resources/js/pages" "$REPO/resources/js/Pages"; do
@@ -187,7 +194,7 @@ if has_jq; then
     def mw: if type == "array" then map(select(type == "string"))
             elif type == "string" then split("\n")
             else [] end;
-    if ($routes | length) != 1 or ($routes[0] | type) != "array" then error("routes") else . end
+    if ($routes | length) != 1 or ($routes[0] | type) != "array" then error("route:list --json is not an array of routes") else . end
     | [$routes[0][] | select(type == "object" and (.uri | type) == "string" and (.method | type) == "string")
         | (.uri | sub("^/+"; "")) as $u | {u: $u, v: ($u | vendor), r: .}] as $rs
     | [$rs[] | select(.v == null) | .r
@@ -205,9 +212,9 @@ if has_jq; then
        notifications: [$notifs | lines | unique[] | {id: .}],
        locales: ($locales | lines | unique),
        warnings: (([$rs[] | .v | select(. != null)] | unique | map("skipped vendor route: " + .)) + ($warns | lines))}
-  ' > "$OUT" 2>/dev/null || fail "php artisan route:list --json did not print a JSON array of routes"
+  ' > "$OUT" 2> "$W/engine.err" || fail "adapter could not build output: $(sed -e '/^[[:space:]]*$/d' "$W/engine.err" | head -n 1)"
 else
-  python3 - "$W" "$OUT" <<'PY' || fail "php artisan route:list --json did not print a JSON array of routes"
+  python3 - "$W" "$OUT" <<'PY' 2> "$W/engine.err" || fail "adapter could not build output: $(sed -e '/^[[:space:]]*$/d' "$W/engine.err" | head -n 1)"
 import json, os, re, sys
 w, out = sys.argv[1], sys.argv[2]
 def raw(name):
@@ -216,9 +223,9 @@ def raw(name):
 def lines(s): return [x for x in s.split("\n") if len(x) > 0]
 try:
     routes = json.loads(raw("routes.json"))
-except Exception:
-    sys.exit(1)
-if not isinstance(routes, list): sys.exit(1)
+except Exception as e:
+    sys.exit("route:list --json is not valid JSON: " + str(e))
+if not isinstance(routes, list): sys.exit("route:list --json is not an array of routes")
 VENDOR = ["_ignition", "telescope", "horizon", "sanctum/csrf-cookie"]
 HINT = re.compile(r"^(can|permission|role|license\.feature):")
 AUTHZ = re.compile(r"^Illuminate\\Auth\\Middleware\\Authorize:")
