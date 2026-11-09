@@ -163,7 +163,7 @@ if [ "${#engines[@]}" -eq 2 ]; then check "parity jq vs python3" "$RESULTS_jq" "
 interrupt_case() {
   local SRC="$1" SIG="$2" label="$3" T H pid i
   T="$(mktemp -d)"; TMPDIRS+=("$T"); mkdir -p "$T/tmp"
-  printf 'sleep 30\n' > "$T/hang.sh"
+  printf ': > "%s/started"\nsleep 30\n' "$T" > "$T/hang.sh"
   printf '{}\n' > "$T/cfg.json"
   H="$T/harness.sh"
   {
@@ -177,12 +177,10 @@ interrupt_case() {
   TMPDIR="$T/tmp" "$BASH_BIN" "$H" &
   pid=$!
   set +m
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -n "$(ls -A "$T/tmp" 2>/dev/null)" ] && break
-    sleep 0.2
-  done
+  # wait (up to 60s, the box may be loaded) until the stand-in check is running
+  i=0
+  while [ ! -f "$T/started" ] && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i+1)); done
   check "$label temp file existed while checking" "$(ls "$T/tmp" | grep -c '^qa-dp\.')" "1"
-  sleep 0.3
   kill "-$SIG" -- "-$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
   check "$label no temp file left" "$(ls -A "$T/tmp" | wc -l | tr -d ' ')" "0"
