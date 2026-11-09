@@ -2524,6 +2524,12 @@ observe_rows() {
 # A torn or unparseable line is skipped, exactly as fold.sh skips it; the
 # events AFTER it are still read (a torn write must not hide the findings
 # that follow it).
+#
+# A `source: "ux"` finding (the always-on UX sweep: a detector/axe id, the
+# element selector, never a request) is SKIPPED here. It is advisory UX data,
+# not an observed console/network error: it has no request url or status to
+# re-classify, must not count as findings-channel evidence, and must not
+# reach the known-defect evidence as a url-less (fail-closed fatal) finding.
 # ---------------------------------------------------------------------------
 journal_finding_rows() {
   local f
@@ -2538,7 +2544,7 @@ journal_finding_rows() {
                       then ($v | floor | tostring)
                     else "" end;
       (try fromjson catch null) as $o
-      | if ($o | type) == "object" and ($o.event == "finding_observed") then
+      | if ($o | type) == "object" and ($o.event == "finding_observed") and ($o.source != "ux") then
           (kstr($o.source) | sane),
           (kstr($o.method) | sane),
           (kstr($o.url) | sane),
@@ -2584,7 +2590,7 @@ with open(sys.argv[1]) as fh:
             o = json.loads(line)
         except Exception:
             continue
-        if not isinstance(o, dict) or o.get("event") != "finding_observed":
+        if not isinstance(o, dict) or o.get("event") != "finding_observed" or o.get("source") == "ux":
             continue
         out.extend([
             sane(kstr(o.get("source"))),

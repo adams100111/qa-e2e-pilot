@@ -242,5 +242,16 @@ broken_image_scenario() {
 check "asset: broken <img> DOM walk emits detector id 'broken-image' (not 'asset-broken-image')" \
   "$(broken_image_scenario)" "found"
 
+# UX sweep wiring: injected in a browser context, the file's completion value is still the
+# findings array AND it registers window.__qaUxDetect, which observe.js calls on every round.
+check "browser injection returns findings and registers window.__qaUxDetect" \
+  "$(node -e '
+    const vm = require("vm"); const fs = require("fs");
+    const doc = {querySelectorAll:function(){return [];},querySelector:function(){return null;},getElementById:function(){return null;},documentElement:{getAttribute:function(){return "ar";}}};
+    const ctx = { document: doc, getComputedStyle: function(){return {};} }; ctx.window = ctx;
+    const r = vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+    process.stdout.write((Array.isArray(r) ? "array" : "NOT-ARRAY") + "|" + typeof ctx.__qaUxDetect + "|" + (Array.isArray(ctx.__qaUxDetect()) ? "array" : "NOT-ARRAY"));
+  ' "$MOD" 2>&1)" "array|function|array"
+
 echo; echo "ux-detectors tests: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]
