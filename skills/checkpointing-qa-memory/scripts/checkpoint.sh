@@ -1297,14 +1297,15 @@ gate_state() {
   local -a kinds_arr shown=()
   local k
   IFS=',' read -ra kinds_arr <<< "$kinds_csv"
-  for k in "${kinds_arr[@]}"; do
+  # ${a[@]+...}: an empty array is "unbound" under set -u on bash 3.2.
+  for k in ${kinds_arr[@]+"${kinds_arr[@]}"}; do
     k="$(trim "$k")"
     [[ -z "$k" ]] && continue
     [[ "$k" == "bake" || "$k" == "probe" ]] && return 0
     shown+=("$k")
   done
   local got
-  got="$(IFS=,; echo "${shown[*]}")"
+  got="$(IFS=,; echo "${shown[*]+"${shown[*]}"}")"
   echo "STATE GATE: ${crit_id} is mutating; a pass needs bake or probe evidence (got: ${got:-none})" >&2
   return 1
 }
