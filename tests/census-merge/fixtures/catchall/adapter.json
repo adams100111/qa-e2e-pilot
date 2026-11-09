@@ -1,0 +1,5 @@
+{"adapter":"nextjs","ok":true,"surfaces":[
+ {"surfaceId":"GET /docs/{slug*}","kind":"endpoint","pattern":"/docs/{slug*}","method":"GET","permissionHints":[],"source":"adapter"},
+ {"surfaceId":"GET /docs/intro","kind":"endpoint","pattern":"/docs/intro","method":"GET","permissionHints":[],"source":"adapter"},
+ {"surfaceId":"GET /shop/{cat*?}","kind":"endpoint","pattern":"/shop/{cat*?}","method":"GET","permissionHints":[],"source":"adapter"}],
+ "jobs":[],"mails":[],"notifications":[],"locales":[],"warnings":[]}
