@@ -143,6 +143,102 @@ check "javascript: link not safe" \
 check "disabled element not safe" \
   "$(cls '{"tag":"button","type":"button","text":"Next","disabled":true}' reason)" "disabled"
 
+# --- fix round 1 (security review) --------------------------------------------------
+# C1: Arabic safe terms are anchored at the start of the name (optional leading ال).
+check "C1: 'نقل إلى المرحلة التالية' is not safe" \
+  "$(cls '{"tag":"button","type":"button","text":"نقل إلى المرحلة التالية"}' safe)" "false"
+check "C1: 'فتح التسجيل' is not safe" \
+  "$(cls '{"tag":"button","type":"button","text":"فتح التسجيل"}' safe)" "false"
+check "C1: 'بدء العرض' is not safe" \
+  "$(cls '{"tag":"button","type":"button","text":"بدء العرض"}' safe)" "false"
+check "C1: 'بدء العرض' reason is not-allowlisted" \
+  "$(cls '{"tag":"button","type":"button","text":"بدء العرض"}' reason)" "not-allowlisted"
+check "C1: 'التفاصيل' (leading ال) still safe" \
+  "$(cls '{"tag":"button","type":"button","text":"التفاصيل"}' safe)" "true"
+check "C1: 'التالي' still safe" \
+  "$(cls '{"tag":"button","type":"button","text":"التالي"}' safe)" "true"
+# I1: only an explicit method/formmethod of get is GET; a form with no method is non-GET.
+check "I1: 'Next' type=button inside a form with no method is unsafe" \
+  "$(cls '{"tag":"button","type":"button","text":"Next","formMethod":""}' reason)" "inside-non-get-form"
+check "I1: 'Edit' type=button inside a form with no method is unsafe" \
+  "$(cls '{"tag":"button","type":"button","text":"Edit","formMethod":""}' safe)" "false"
+check "I1: explicit GET still allows a safe-name button" \
+  "$(cls '{"tag":"button","type":"button","text":"Edit","formMethod":"GET"}' safe)" "true"
+# I2: safe-name disqualifiers -> not-allowlisted.
+for name in "Open registration" "Show results" "Next stage" "Open voting" "View winners" "Edit phase"; do
+  check "I2: '$name' button is not-allowlisted" \
+    "$(cls "{\"tag\":\"button\",\"type\":\"button\",\"text\":\"$name\"}" reason)" "not-allowlisted"
+done
+check "I2: 'Open voting' role=menuitem is not-allowlisted" \
+  "$(cls '{"tag":"div","role":"menuitem","text":"Open voting"}' reason)" "not-allowlisted"
+check "I2: arabic 'عرض النتائج' is not-allowlisted" \
+  "$(cls '{"tag":"button","type":"button","text":"عرض النتائج"}' reason)" "not-allowlisted"
+check "I2: arabic 'فتح المرحلة' is not-allowlisted" \
+  "$(cls '{"tag":"button","type":"button","text":"فتح المرحلة"}' reason)" "not-allowlisted"
+check "I2: plain 'Open' still safe" \
+  "$(cls '{"tag":"button","type":"button","text":"Open"}' safe)" "true"
+# I3: unsafe verbs in the href path.
+for h in "/invitations/abc/accept" "/notifications/5/mark-read" "/notifications/5/markread" "/teams/9/leave" "/teams/9/join" "/users/4/impersonate" "/email/verify/abc" "/ideas/3/approve" "/settings/toggle-dark" "/newsletter/unsubscribe" "/log-out" "/signout"; do
+  check "I3: link to $h is unsafe-href" \
+    "$(cls "{\"tag\":\"a\",\"href\":\"$h\",\"text\":\"Item\"}" reason)" "unsafe-href"
+done
+# M3: spaced log out / sign out in names.
+check "M3: 'Log out' link is unsafe" \
+  "$(cls '{"tag":"a","href":"/account","text":"Log out"}' safe)" "false"
+check "M3: 'Sign - out' button is unsafe-name" \
+  "$(cls '{"tag":"button","type":"button","text":"Sign - out"}' reason)" "unsafe-name"
+# M4: ى→ي and ة→ه folded on both sides.
+check "M4: 'موافقه' (ه written for ة) is still unsafe-name" \
+  "$(cls '{"tag":"button","type":"button","text":"موافقه"}' reason)" "unsafe-name"
+check "M4: normalizeText folds ى->ي and ة->ه" \
+  "$(node -e 'const m=require(process.argv[1]);process.stdout.write(m.normalizeText("مستوى القائمة"))' "$SAFETY" 2>&1)" "مستوي القائمه"
+check "M4: 'القائمه' (ه for ة) still matches the safe term" \
+  "$(cls '{"tag":"button","type":"button","text":"القائمه"}' safe)" "true"
+# Status-tab exception: tabs and links only, whole-name past-tense status with optional count.
+check "status: 'Accepted (3)' tab is safe" \
+  "$(cls '{"tag":"button","type":"button","role":"tab","text":"Accepted (3)"}' safe)" "true"
+check "status: 'Archived' link is safe" \
+  "$(cls '{"tag":"a","href":"/ideas?status=archived","text":"Archived"}' safe)" "true"
+check "status: arabic 'المقبولة' tab is safe" \
+  "$(cls '{"tag":"button","type":"button","role":"tab","text":"المقبولة"}' safe)" "true"
+check "status: arabic 'مرفوض 4' tab is safe" \
+  "$(cls '{"tag":"button","type":"button","role":"tab","text":"مرفوض 4"}' safe)" "true"
+check "status: 'Accepted' button is NOT exempt" \
+  "$(cls '{"tag":"button","type":"button","text":"Accepted"}' safe)" "false"
+check "status: 'Accept all' tab is NOT exempt (not a whole status word)" \
+  "$(cls '{"tag":"button","type":"button","role":"tab","text":"Accept all"}' safe)" "false"
+check "status: 'Edit and resubmit' button is unsafe" \
+  "$(cls '{"tag":"button","type":"button","text":"Edit and resubmit"}' safe)" "false"
+check "status: 'Advanced' disclosure stays unsafe" \
+  "$(cls '{"tag":"button","type":"button","ariaExpanded":"false","text":"Advanced"}' safe)" "false"
+check "status: exempt tab with a destructive title is still unsafe" \
+  "$(cls '{"tag":"button","type":"button","role":"tab","text":"Archived","title":"Delete all"}' safe)" "false"
+# I5: selector must be unique on the page, else ambiguous-selector.
+dup_smoke() {
+  node -e '
+    const path=process.argv[1];
+    const m=require(path);
+    function el(tag, attrs, text){
+      return {tagName:tag.toUpperCase(), nodeType:1, textContent:text||"", innerText:text||"",
+        getAttribute:function(n){return Object.prototype.hasOwnProperty.call(attrs,n)?attrs[n]:null;},
+        hasAttribute:function(n){return Object.prototype.hasOwnProperty.call(attrs,n);},
+        closest:function(){return null;}, form:null,
+        getBoundingClientRect:function(){return {width:40,height:20};},
+        parentNode:null, children:[], id:attrs.id||""};
+    }
+    const els=[el("a",{href:"/a",id:"dup"},"Ideas"), el("a",{href:"/b",id:"dup"},"Teams"), el("a",{href:"/c",id:"one"},"Events")];
+    global.window={location:{origin:"https://app.example.sa"}};
+    global.getComputedStyle=function(){return {display:"block",visibility:"visible",opacity:"1"};};
+    global.document={querySelectorAll:function(sel){
+        if(sel.charAt(0)==="#"){return els.filter(function(e){return "#"+e.id===sel;});}
+        return els;},getElementById:function(){return null;},documentElement:{}};
+    const r=m.SCAN({});
+    process.stdout.write(r.map(function(x){return "["+x.selector+"]:"+x.safe+":"+x.reason;}).join(","));
+  ' "$SAFETY" 2>&1
+}
+check "I5: duplicate selectors are ambiguous-selector with no selector; unique one stays safe" \
+  "$(dup_smoke)" "[]:false:ambiguous-selector,[]:false:ambiguous-selector,[#one]:true:same-origin-link"
+
 # --- stub-DOM smoke: the in-page walk returns the documented shape ---------------
 scan_smoke() {
   node -e '
@@ -161,7 +257,9 @@ scan_smoke() {
                el("button",{type:"button",id:"b2"},"View",post)];
     global.window={location:{origin:"https://app.example.sa",href:"https://app.example.sa/h"},getComputedStyle:function(){return {display:"block",visibility:"visible",opacity:"1"};}};
     global.getComputedStyle=global.window.getComputedStyle;
-    global.document={querySelectorAll:function(){return els;},getElementById:function(){return null;},documentElement:{}};
+    global.document={querySelectorAll:function(sel){
+        if(sel.charAt(0)==="#"){return els.filter(function(e){return "#"+e.id===sel;});}
+        return els;},getElementById:function(){return null;},documentElement:{}};
     const r=m.SCAN({});
     process.stdout.write(r.map(function(x){return x.selector+":"+x.safe+":"+x.reason;}).join(","));
   ' "$SAFETY" 2>&1

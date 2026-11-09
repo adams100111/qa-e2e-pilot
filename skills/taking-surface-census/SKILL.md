@@ -123,12 +123,26 @@ For each dequeued entry, while `visits.length < census.maxVisits`:
 7. **Expand** (only when `depth < 4`):
    - Every `safe` entry with reason `same-origin-link`: resolve its `href`, enqueue at
      `depth + 1` unless already visited or queued.
-   - Every `safe` entry with reason `tab`, `disclosure`, `popup-opener` or `safe-name`: click it
-     (`browser_click`, by its selector), wait, re-observe. If the URL changed → enqueue the new
-     URL as a page and navigate back. If a tab panel, dialog (`[role=dialog]`, `aria-modal`) or
-     sheet appeared → record a `tab`/`dialog`/`sheet` visit (counts against the budget) with its
-     own findings and `form-inventory.js` forms, then **close it** (Step 4). Do not click
-     further controls inside an opened dialog.
+   - Links are followed by `browser_navigate` to the resolved URL, never by clicking.
+   - Every `safe` entry with reason `tab`, `disclosure`, `popup-opener` or `safe-name`:
+     a. **Re-verify right before the click.** Re-inject `scripts/crawl-safety.js` and click only
+        if an entry with the **same selector** is still `safe: true` with the **same label**. A
+        re-render may have moved the selector onto another element; on any mismatch, skip it
+        and record `{url, reason: "changed-before-click: <label>"}`.
+     b. Click it (`browser_click`, by that selector), wait, re-observe.
+     c. **Mutation watch.** Read the observe round's `network[]`. Any request whose method is not
+        GET/HEAD/OPTIONS and whose origin is `baseUrl`'s (in-scope) means the click changed
+        state (an Inertia `<Link method="post" as="button">` renders as a plain button). Stop
+        clicking for this persona at once: record `{url, reason: "mutation-observed: <METHOD>
+        <path>"}`, finish the persona with links only (navigation, no clicks), and report it.
+     d. If the URL changed → enqueue the new URL as a page and navigate back. If a tab panel,
+        dialog (`[role=dialog]`, `aria-modal`) or sheet appeared → record a `tab`/`dialog`/`sheet`
+        visit (counts against the budget) with its own findings and `form-inventory.js` forms,
+        then **close it** (Step 4). Do not click further controls inside an opened dialog.
+     e. **Menus.** When a `popup-opener` expands a menu, re-scan with `crawl-safety.js` while it
+        is open. Its items are new entries: each goes through this same rule (safe only,
+        re-verified right before its click, mutation watch after it). Close the menu with
+        `Escape` when done.
 8. **Record every `safe: false` entry** in `unexplored` as
    `{url: <page url>, reason: "<reason>: <label> (<selector>)"}`, deduplicated by
    `(url, reason)`. Cross-origin links are recorded too (reason `cross-origin`).
@@ -141,11 +155,12 @@ URLs found at depth 4 that were not followed are recorded as `{url, reason: "dep
 A dialog the crawl opened is **always** closed without its primary action:
 
 1. Press `Escape` (`browser_press_key`). Re-observe. Closed → done.
-2. Still open → click its dismiss control only: an `aria-label`/text of `Close`/`إغلاق`, a
-   `[data-dismiss]`/`[data-bs-dismiss]` control, or a control named exactly `Cancel`/`إلغاء`
-   that is not `type=submit`. This is the one place a `cancel`-named control may be pressed,
-   and only inside a dialog the crawl itself opened.
-3. Still open → navigate to the page URL again (discards the dialog, submits nothing) and record
+2. Still open → click its close control: an `aria-label`/text of `Close`/`إغلاق`, or a
+   `[data-dismiss]`/`[data-bs-dismiss]` control. Re-observe. Closed → done.
+3. Still open → a control named exactly `Cancel`/`إلغاء` that is not `type=submit`. This is the
+   one place a `cancel`-named control may be pressed, and only inside a dialog the crawl itself
+   opened. Apply the mutation watch (Step 3.7c) after it.
+4. Still open → navigate to the page URL again (discards the dialog, submits nothing) and record
    `{url, reason: "dialog-not-dismissable: <label>"}`.
 
 ### Step 5 — Write and hand off
@@ -156,7 +171,11 @@ A dialog the crawl opened is **always** closed without its primary action:
 
 ## Hard Rules
 
-- Click only `safe: true` entries. Never override `crawl-safety.js` because a label "looks
+- **Native dialogs.** A `confirm()`, `alert()`, `prompt()` or `beforeunload` dialog is always
+  answered with `browser_handle_dialog` `accept: false`, then the page is reloaded
+  (`browser_navigate` to its URL). Never accept one: accepting a `confirm()` runs the action
+  it guards. Record `{url, reason: "native-dialog: <message>"}`.
+- Click only `safe: true` entries, re-verified right before the click (Step 3.7a). Never override `crawl-safety.js` because a label "looks
   harmless" — a false `safe` is a destroyed record on someone's environment.
 - Never call `browser_type`, `browser_fill_form`, `browser_select_option` or `browser_file_upload`
   during a crawl. Never submit a form, including GET search forms.
@@ -168,7 +187,7 @@ A dialog the crawl opened is **always** closed without its primary action:
 
 | Script | Purpose |
 |---|---|
-| `scripts/crawl-safety.js` | In-page: classifies every interactive element `[{selector, label, safe, reason}]`. Unsafe (EN+AR destructive names over every name source incl. `aria-label`/`title`, `type=submit`, non-GET form, `data-method`/`data-confirm`, logout/delete hrefs) wins over safe (same-origin link, tab, disclosure, popup opener, view/details-style button names). Default deny. Also sets `window.__qaRouteMatch` (`page:<component>` from Inertia `data-page` or Next.js `__NEXT_DATA__`). Exports `classify(descriptor, opts)` and `pageComponent(dataPageJson, nextDataJson)` for Node tests |
+| `scripts/crawl-safety.js` | In-page: classifies every interactive element `[{selector, label, safe, reason}]`. Unsafe (EN+AR destructive names over every name source incl. `aria-label`/`title`, `type=submit`, form without an explicit GET method, `data-method`/`data-confirm`, unsafe verbs in the href path) wins over safe (same-origin link, tab, disclosure, popup opener, view/details-style button names minus state-change disqualifiers). Narrow status-word exception for tabs/links only. Non-unique selectors → `ambiguous-selector`. Default deny. Also sets `window.__qaRouteMatch` (`page:<component>` from Inertia `data-page` or Next.js `__NEXT_DATA__`). Exports `classify(descriptor, opts)` and `pageComponent(dataPageJson, nextDataJson)` for Node tests |
 | `scripts/form-inventory.js` | In-page: `[{formId, action, method, fields:[{name, type, required, maxLength, min, max, pattern}]}]`; controls outside any `<form>` grouped as `formId: "page"`. Exports `inventoryForm(descriptor)` |
 | `../driving-browser-qa/scripts/observe.js` | The observe round (console + network since last round) |
 | `../../scripts/classify-finding.sh` | `originClass` / `statusClass` for one observed error |
