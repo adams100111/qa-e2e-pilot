@@ -51,7 +51,12 @@ run_engine() {
     "[\"deny:$CREATE:judge\",\"deny:$CREATE:participant\",\"deny:$HACK:judge\",\"deny:$HACK:participant\",\"deny:GET /ideas/{idea}:admin\",\"deny:$SHOW:judge\",\"deny:$SHOW:participant\"]"
   check "$E deny GET row tags + kind" "$(q "$T/o.json" "[r('deny:$CREATE:judge')['kind'],r('deny:$CREATE:judge')['tags']]")" '["deny",["independent","read-only"]]'
   check "$E deny default statuses" "$(q "$T/o.json" "r('deny:$CREATE:judge')['denyStatuses']")" '[401,403,404,302]'
-  check "$E deny non-GET deferred without writes" "$(q "$T/o.json" "[r('deny:POST /admin/hackathons:participant')['tags'],r('deny:POST /admin/hackathons:judge')['tags']]")" '[["deny-write-deferred"],["deny-write-deferred"]]'
+  check "$E deny non-GET deferred without writes" "$(q "$T/o.json" "[r('deny:POST /admin/hackathons:participant')['tags'],r('deny:POST /admin/hackathons:judge')['tags']]")" '[["deny-write-deferred"],["deny-write-deferred","needs-confirmation"]]'
+  # generator_emits_deny_for_unconfirmed_overreach
+  check "$E generator_emits_deny_for_unconfirmed_overreach" "$(q "$T/o.json" "r('deny:$HACK:participant')['tags']")" '["independent","needs-confirmation","read-only"]'
+  check "$E unconfirmed but not reached-without-evidence: no tag" "$(q "$T/o.json" "r('deny:$HACK:judge')['tags']")" '["independent","read-only"]'
+  check "$E confirmed surface: no tag" "$(q "$T/o.json" "[x['id'] for x in rows if 'needs-confirmation' in x['tags']]")" "[\"deny:$HACK:participant\",\"deny:POST /admin/hackathons:judge\"]"
+  check "$E unconfirmed entries counted on stderr" "$(grep -c 'deny rows use 2 unconfirmed surface-access entries (2 rows tagged needs-confirmation)' "$T/o.err")" "1"
   check "$E deny none where every persona allowed" "$(q "$T/o.json" "ids('deny:GET /h/')")" '[]'
   check "$E deny none without an access entry" "$(q "$T/o.json" "ids('deny:GET /admin/reports')")" '[]'
 
@@ -112,7 +117,8 @@ run_engine() {
   # deny_write_tagged_api_write_when_allowed
   gen "$E" "$FX/config-writes.json" > "$T/w.json" 2> "$T/w.err"; rc=$?
   check "$E writes config exit 0" "$rc" "0"
-  check "$E deny_write_tagged_api_write_when_allowed" "$(q "$T/w.json" "r('deny:POST /admin/hackathons:judge')['tags']")" '["api-write"]'
+  check "$E deny_write_tagged_api_write_when_allowed" "$(q "$T/w.json" "[r('deny:POST /admin/hackathons:participant')['tags'],r('deny:POST /admin/hackathons:judge')['tags']]")" '[["api-write"],["api-write","needs-confirmation"]]'
+  check "$E api-write deny rows declare mutates true" "$(q "$T/w.json" "[r('deny:POST /admin/hackathons:participant')['mutates'],r('deny:POST /admin/hackathons:judge')['mutates']]")" '[true,true]'
   check "$E writes config deny statuses from ship.denyStatuses" "$(q "$T/w.json" "r('deny:$CREATE:judge')['denyStatuses']")" '[403,404]'
   check "$E single variant -> no ux revisits" "$(q "$T/w.json" "len(ids('ux:'))")" "0"
   check "$E without --checklist nothing is skipped" "$(q "$T/w.json" "r('load-clean:$HACK:admin')['kind']")" "load-clean"
@@ -122,7 +128,7 @@ run_engine() {
   # writes allowed but no disposable marker -> still deferred
   python3 -c 'import json,sys;c=json.load(open(sys.argv[1]));c["seedableEnvMarker"]="";json.dump(c,open(sys.argv[2],"w"))' "$FX/config-writes.json" "$T/nomarker.json"
   gen "$E" "$T/nomarker.json" > "$T/nm.json" 2>/dev/null
-  check "$E allowApiWrites without marker stays deferred" "$(q "$T/nm.json" "r('deny:POST /admin/hackathons:judge')['tags']")" '["deny-write-deferred"]'
+  check "$E allowApiWrites without marker stays deferred" "$(q "$T/nm.json" "r('deny:POST /admin/hackathons:participant')['tags']")" '["deny-write-deferred"]'
 
   # argument errors
   QA_ENGINE=$E bash "$SH" --census "$FX/census.json" >/dev/null 2>&1; check "$E missing required args dies" "$?" "1"

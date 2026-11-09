@@ -1,7 +1,7 @@
 {"version":1,"surfaces":{
- "GET /admin/hackathons/{hackathon}":{"allowed":["admin"],"source":"human","confirmed":true},
+ "GET /admin/hackathons/{hackathon}":{"allowed":["admin"],"source":"adapter","confirmed":false,"hints":["can:hackathons.view"],"reachedWithoutEvidence":["participant"]},
  "GET /admin/hackathons/create":{"allowed":["admin"],"source":"human","confirmed":true},
  "GET /h/{slug}":{"allowed":["admin","judge","participant"],"source":"human","confirmed":true},
- "POST /admin/hackathons":{"allowed":["admin"],"source":"adapter","confirmed":true},
+ "POST /admin/hackathons":{"allowed":["admin"],"source":"adapter","confirmed":false,"hints":["can:hackathons.create"],"reachedWithoutEvidence":["judge"]},
  "page:Admin/Hackathons/Show":{"allowed":["admin"],"source":"human","confirmed":true},
  "GET /ideas/{idea}":{"allowed":["judge","participant"],"source":"human","confirmed":true}}}
