@@ -16,10 +16,14 @@
 # was `pass` but the independent verifier did not agree, when no bug entry already covers
 # that criterion (and persona).
 #
-# VERIFIER OVERRIDES: only an override whose reasons show a CONTRADICTION is a bug - an
-# evidence artifact that shows match:false (the independent recompute diverged), readBack:null
-# with non-zero multiplicity (nothing persisted), ok:false (a probe did not confirm), or an
-# acting identity != the expected identity. Its title is the checklist row's `title`, else its
+# VERIFIER OVERRIDES: only an override whose reasons show a CONTRADICTION is a bug. Reasons
+# are matched on the exact prefixes qa-verify.sh emits, never on loose substrings:
+#   "evidence artifact '<p>' shows match:false — "                        (recompute diverged)
+#   "evidence artifact '<p>' shows readBack:null with non-zero multiplicity — " (nothing persisted)
+#   "evidence artifact '<p>' shows ok:false or missing — "  ONLY when <run-dir>/<p> (under
+#        evidence/, no "..") parses and holds "ok": false — a probe artifact with no `ok`, a
+#        non-boolean `ok`, or an unreadable file is an evidence gap, not a contradiction
+#   "acting identity '<s>' != expected identity '"                          (wrong user) Its title is the checklist row's `title`, else its
 # `action`; its text is plain language (no gate names). Every other override is an EVIDENCE GAP
 # (oracle-ungrounded, no-state-evidence, unbound, no-toolstream, invalid-confidence,
 # data-policy-violation, effectiveConfigMissing, identity unverified, missing artifacts, ...):
@@ -115,6 +119,38 @@ soft "$RUN/checkpoint.json" "$TMP/ck.json"
 soft "$RUN/checklist.json" "$TMP/cl.json"
 soft "$RUN/journeys.json" "$TMP/jn.json"
 soft "$OUT/bugs.json" "$TMP/prev.json"
+# Probe artifacts a "shows ok:false or missing" reason names that really hold "ok": false
+# (relative to the run, one per line). qa-verify emits that one reason for both a false and
+# a missing `ok`; only the former is a contradiction.
+: > "$TMP/okfalse.txt"
+PROBE_RX="^evidence artifact '([^']*)' shows ok:false or missing — "
+if [ "$ENGINE" = jq ]; then
+  probe_paths() { jq -r --arg rx "$PROBE_RX" 'if type == "array" then .[] else empty end | objects
+    | (.reasons // []) | if type == "array" then .[] else empty end | strings
+    | match($rx) | .captures[0].string' "$TMP/ver.json" 2>/dev/null; }
+  ok_is_false() { jq -e 'type == "object" and has("ok") and .ok == false' "$1" >/dev/null 2>&1; }
+else
+  probe_paths() { python3 -I -c '
+import json, re, sys
+rx = re.compile(sys.argv[2])
+try: d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception: sys.exit(0)
+for r in (d if isinstance(d, list) else []):
+    rs = r.get("reasons") if isinstance(r, dict) else None
+    for x in (rs if isinstance(rs, list) else []):
+        m = rx.match(x) if isinstance(x, str) else None
+        if m: print(m.group(1))
+' "$TMP/ver.json" "$PROBE_RX" 2>/dev/null; }
+  ok_is_false() { python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+sys.exit(0 if isinstance(d, dict) and d.get("ok") is False else 1)' "$1" >/dev/null 2>&1; }
+fi
+probe_paths | LC_ALL=C sort -u | while IFS= read -r pp; do
+  case "$pp" in evidence/*) ;; *) continue ;; esac
+  case "/$pp/" in */../*) continue ;; esac
+  [ -f "$RUN/$pp" ] && ok_is_false "$RUN/$pp" && printf '%s\n' "$pp"
+done > "$TMP/okfalse.txt"
 # Evidence directories (relative to the run, trailing slash), one per line, for the fallback.
 : > "$TMP/dirs.txt"
 if [ -d "$RUN/evidence" ]; then
@@ -141,6 +177,8 @@ except ValueError as e:
     sys.stderr.write("ERROR: unparseable input: %s\n" % e); sys.exit(2)
 with open(os.path.join(tmp, "dirs.txt"), encoding="utf-8") as f:
     dirl = [x for x in f.read().split("\n") if x != ""]
+with open(os.path.join(tmp, "okfalse.txt"), encoding="utf-8") as f:
+    okfalse = set(x for x in f.read().split("\n") if x != "")
 
 CTRL = re.compile("[\x01-\x08\x0b-\x1f\x7f]")
 SENS_KEY = re.compile("password|passwd|secret|token|api[_-]?key|authorization|cookie|credential", re.I)
@@ -232,15 +270,18 @@ def ev_fb(c, p):
     if c == "": return []
     d = ("evidence/%s/%s/" % (p, c)) if p != "" else ("evidence/%s/" % c)
     return [d] if d in dirl else []
-CONTRA = [("shows match:false", "The value on screen did not match the value worked out independently from the business rules."),
-          ("shows readBack:null", "The change did not stick: reading the saved data back afterwards found nothing."),
-          ("shows ok:false", "A direct check against the server did not confirm the expected result."),
-          ("\\Aacting identity .* != expected identity", "The step ran as a different user than the one it was meant for.")]
+CONTRA = [("\\Aevidence artifact '[^']*' shows match:false — ", "The value on screen did not match the value worked out independently from the business rules."),
+          ("\\Aevidence artifact '[^']*' shows readBack:null with non-zero multiplicity — ", "The change did not stick: reading the saved data back afterwards found nothing."),
+          ("\\Aevidence artifact '(?P<p>[^']*)' shows ok:false or missing — ", "A direct check against the server did not confirm the expected result."),
+          ("\\Aacting identity '.*' != expected identity '", "The step ran as a different user than the one it was meant for.")]
 def contra(rs):
     out = []
     for x in rs:
         for rx, msg in CONTRA:
-            if re.search(rx, x) and msg not in out: out.append(msg)
+            m = re.search(rx, x)
+            if not m: continue
+            if "p" in m.groupdict() and m.group("p") not in okfalse: continue
+            if msg not in out: out.append(msg)
     return out
 
 if isinstance(bl, list): raw = bl
@@ -398,6 +439,7 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
 | ($cl[0] | if type == "array" then map(select(type == "object")) else [] end) as $clrows
 | ($jn[0] | if type == "array" then map(select(type == "object")) else [] end) as $jrows
 | ($dirs | split("\n") | map(select(. != ""))) as $dirl
+| ($okfraw | split("\n") | map(select(. != ""))) as $okf
 | def row_of($c): [$clrows[] | select(.id == $c)] | .[0];
   def journey_of($c; $own):
     if $own != null and ($own | text) != "" then ($own | text)
@@ -419,11 +461,13 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
       end;
   def contra:
     . as $rs
-    | [ {rx: "shows match:false", msg: "The value on screen did not match the value worked out independently from the business rules."},
-        {rx: "shows readBack:null", msg: "The change did not stick: reading the saved data back afterwards found nothing."},
-        {rx: "shows ok:false", msg: "A direct check against the server did not confirm the expected result."},
-        {rx: "\\Aacting identity .* != expected identity", msg: "The step ran as a different user than the one it was meant for."} ] as $cs
-    | reduce ($rs[] as $x | $cs[] | select(. as $c | $x | test($c.rx)) | .msg) as $m ([]; if any(.[]; . == $m) then . else . + [$m] end);
+    | [ {rx: "\\Aevidence artifact '[^']*' shows match:false — ", msg: "The value on screen did not match the value worked out independently from the business rules."},
+        {rx: "\\Aevidence artifact '[^']*' shows readBack:null with non-zero multiplicity — ", msg: "The change did not stick: reading the saved data back afterwards found nothing."},
+        {rx: "\\Aevidence artifact '(?<p>[^']*)' shows ok:false or missing — ", msg: "A direct check against the server did not confirm the expected result.", probe: true},
+        {rx: "\\Aacting identity '.*' != expected identity '", msg: "The step ran as a different user than the one it was meant for."} ] as $cs
+    | reduce ($rs[] as $x | $cs[] | select(. as $c | $x | test($c.rx))
+              | select((.probe // false | not) or (. as $c | ($x | capture($c.rx).p) as $pp | any($okf[]; . == $pp)))
+              | .msg) as $m ([]; if any(.[]; . == $m) then . else . + [$m] end);
   ($bl[0]) as $b0
 | (if ($b0 | type) == "array" then $b0
    elif ($b0 | type) == "object" and ($b0.entries | type) == "array" then $b0.entries
@@ -497,7 +541,7 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
 JQ
 runjq() { jq -n -c --argjson hm "$1" --slurpfile bl "$TMP/bl.json" --slurpfile ver "$TMP/ver.json" --slurpfile cfg "$TMP/cfg.json" \
   --slurpfile reg "$TMP/reg.json" --slurpfile st "$TMP/st.json" --slurpfile ck "$TMP/ck.json" --slurpfile cl "$TMP/cl.json" \
-  --slurpfile jn "$TMP/jn.json" --rawfile dirs "$TMP/dirs.txt" -f "$TMP/export.jq" > "$TMP/result.json" 2> "$TMP/jq.err" \
+  --slurpfile jn "$TMP/jn.json" --rawfile dirs "$TMP/dirs.txt" --rawfile okfraw "$TMP/okfalse.txt" -f "$TMP/export.jq" > "$TMP/result.json" 2> "$TMP/jq.err" \
   || die "jq engine failed: $(head -c 300 "$TMP/jq.err")"; }
 sha8() { if command -v shasum >/dev/null 2>&1; then shasum -a 1; else sha1sum; fi | cut -c1-8; }
 # Pass 1 learns which original ids are non-ASCII; they are hashed here (jq has no sha1) and pass 2 uses them.

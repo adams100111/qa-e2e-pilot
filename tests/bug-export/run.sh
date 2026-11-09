@@ -117,6 +117,29 @@ run evfb "$R"
 check "evidence_fallback: checkpoint refs, persona dir, shared dir, own wins" "$(python3 -c 'import json,sys;print([b["evidence"] for b in json.load(open(sys.argv[1]))])' "$OUTD/bugs.json")" "[['evidence/admin/C-20/computed.json'], ['evidence/admin/C-21/'], ['evidence/C-22/'], ['own.png']]"
 check "journey_fallback: journeys.json, own wins" "$(python3 -c 'import json,sys;print([b.get("journeyId") for b in json.load(open(sys.argv[1]))])' "$OUTD/bugs.json")" "[None, 'J-A', None, 'J-OWN']"
 
+# --- probe_missing_ok_is_gap: qa-verify emits ONE reason ("shows ok:false or missing") for a probe
+# artifact whose `ok` is false AND for one with no `ok` at all. Only a real "ok": false is a
+# contradiction; a missing/non-boolean ok, an absent file or a path outside evidence/ is a gap.
+# Loose substrings ("... says it shows ok:false ...", a mid-string match) never match.
+R="$(mkrun probe)"
+mkdir -p "$R/evidence/admin/C-30" "$R/evidence/admin/C-31" "$R/evidence/admin/C-32"
+echo '{"url":"/api/orders/7","status":200}' > "$R/evidence/admin/C-30/probe.json"
+echo '{"url":"/api/orders/8","status":409,"ok":false}' > "$R/evidence/admin/C-31/probe.json"
+echo '{"url":"/api/orders/9","ok":"false"}' > "$R/evidence/admin/C-32/probe.json"
+echo '{"ok":false}' > "$R/outside.json"
+cat > "$R/verification.json" <<'EOF2'
+[{"criterionId":"C-30","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["evidence artifact 'evidence/admin/C-30/probe.json' shows ok:false or missing — the probe did not confirm its expectation"]},
+ {"criterionId":"C-31","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["evidence artifact 'evidence/admin/C-31/probe.json' shows ok:false or missing — the probe did not confirm its expectation"]},
+ {"criterionId":"C-32","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["evidence artifact 'evidence/admin/C-32/probe.json' shows ok:false or missing — the probe did not confirm its expectation"]},
+ {"criterionId":"C-33","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["evidence artifact 'evidence/admin/C-33/probe.json' shows ok:false or missing — the probe did not confirm its expectation"]},
+ {"criterionId":"C-34","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["evidence artifact 'outside.json' shows ok:false or missing — the probe did not confirm its expectation"]},
+ {"criterionId":"C-35","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["note: the toast shows ok:false in its markup; shows match:false too; acting identity was fine"]}]
+EOF2
+run probe "$R"
+check "probe_missing_ok_is_gap: summary" "$SUM" '{"exported":1,"duplicates":0,"skipped":0,"needsRecheck":5}'
+check "probe_missing_ok_is_gap: only the real ok:false is a bug" "$(python3 -c 'import json,sys;print([b["criterionId"] for b in json.load(open(sys.argv[1]))])' "$OUTD/bugs.json")" "['C-31']"
+check "probe_missing_ok_is_gap: gaps parked" "$(python3 -c 'import json,sys;print([n["criterionId"] for n in json.load(open(sys.argv[1]))])' "$OUTD/needs-recheck.json")" "['C-30', 'C-32', 'C-33', 'C-34', 'C-35']"
+
 # --- stale files (I4): only .md files the previous bugs.json listed are pruned
 R="$(mkrun prune)"
 for e in $ENGINES; do
