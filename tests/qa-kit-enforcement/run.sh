@@ -87,6 +87,54 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
 fi
 
 # ===========================================================================
+# verify-plan.sh --drift — the engine's gates trust the RUN copy of checklist.json, which the
+# acting agent can edit. Every trust-bearing field must equal the frozen spec plan, by id.
+# ===========================================================================
+FROZEN_PLAN='[{"id":"C1","surface":"/orders","kind":"computed-logic","tags":[],"action":"Read the order total","fixture":{"expect":{"path":"total","value":"115.00","oracleSource":"spec","citation":"docs/pricing.md:12"}}},
+{"id":"C2","surface":"/orders/new","kind":"happy-path","tags":["human-action","independent"],"action":"Create an order","humanAction":true,"mutates":true}]'
+drift_case() { # <engine> <name> <run-json> <want-rc> <want "id:field,...|added|missing">
+  local E="$1" name="$2" T out rc got
+  T="$(mktemp -d)"; TMPDIRS+=("$T")
+  printf '%s' "$FROZEN_PLAN" > "$T/frozen.json"; printf '%s' "$3" > "$T/run.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$T/run.json" "$T/frozen.json")"; rc=$?
+  check "$E drift $name exit" "$rc" "$4"
+  got="$(printf '%s' "$out" | python3 -c 'import json,sys;o=json.load(sys.stdin);print(",".join(d["id"]+":"+d["field"] for d in o["drift"])+"|"+",".join(o["addedInRun"])+"|"+",".join(o["missingInRun"]))')"
+  check "$E drift $name findings" "$got" "$5"
+}
+run_drift_engine() {
+  local E="$1"
+  # identical (tags reordered, absent == null) -> ok
+  drift_case "$E" identical '[{"id":"C2","kind":"happy-path","tags":["independent","human-action"],"humanAction":true,"mutates":true,"action":"Create an order (edited prose)"},
+{"id":"C1","kind":"computed-logic","tags":[],"humanAction":null,"fixture":{"expect":{"path":"total","value":"115.00","oracleSource":"spec","citation":"docs/pricing.md:12"}}}]' 0 "||"
+  # a flipped oracleSource relaxes the ORACLE GATE
+  drift_case "$E" oracleSource '[{"id":"C1","kind":"computed-logic","tags":[],"fixture":{"expect":{"path":"total","value":"115.00","oracleSource":"human","citation":"docs/pricing.md:12"}}},
+{"id":"C2","kind":"happy-path","tags":["human-action","independent"],"humanAction":true,"mutates":true}]' 1 "C1:fixture.expect.oracleSource||"
+  # a removed human-action tag (and humanAction/mutates flipped) relaxes the action + STATE gates
+  drift_case "$E" human-action '[{"id":"C1","kind":"computed-logic","tags":[],"fixture":{"expect":{"path":"total","value":"115.00","oracleSource":"spec","citation":"docs/pricing.md:12"}}},
+{"id":"C2","kind":"happy-path","tags":["independent"],"humanAction":false}]' 1 "C2:tags,C2:mutates,C2:humanAction||"
+  # kind, citation and expected value edits; a row added in-run; a frozen row dropped
+  drift_case "$E" kind-citation-value-added-missing '[{"id":"C1","kind":"happy-path","tags":[],"fixture":{"expect":{"path":"total","value":"99.00","oracleSource":"spec","citation":"docs/pricing.md:40"}}},
+{"id":"C9","kind":"happy-path","tags":[]}]' 1 "C1:kind,C1:fixture.expect.citation,C1:fixture.expect.value|C9|C2"
+  # malformed run copy -> error, non-zero
+  local T; T="$(mktemp -d)"; TMPDIRS+=("$T")
+  printf '%s' "$FROZEN_PLAN" > "$T/frozen.json"; printf '%s' '{"id":"C1"}' > "$T/run.json"
+  QA_ENGINE=$E bash "$SH" --drift "$T/run.json" "$T/frozen.json" >/dev/null 2>&1
+  check "$E drift malformed run copy dies" "$?" "1"
+  QA_ENGINE=$E bash "$SH" --drift "$T/run.json" >/dev/null 2>&1
+  check "$E drift usage error" "$?" "1"
+}
+command -v jq >/dev/null 2>&1 && run_drift_engine jq
+command -v python3 >/dev/null 2>&1 && run_drift_engine python3
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  X="$(mktemp -d)"; TMPDIRS+=("$X")
+  printf '%s' "$FROZEN_PLAN" > "$X/frozen.json"
+  printf '%s' '[{"id":"C1","kind":"computed-logic","tags":[],"fixture":{"expect":{"value":{"amount":"115.00","currency":"ريال"},"oracleSource":"agent"}}},{"id":"C7","kind":"x","tags":[]}]' > "$X/run.json"
+  vj="$(QA_ENGINE=jq bash "$SH" --drift "$X/run.json" "$X/frozen.json"; true)"
+  vp="$(QA_ENGINE=python3 bash "$SH" --drift "$X/run.json" "$X/frozen.json"; true)"
+  check "drift cross-engine report identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+fi
+
+# ===========================================================================
 # Task 11 — qa-kit/scripts/migrate-inverted-criterion.sh
 #
 # The migration path OUT of the originating incident: a criterion that pins

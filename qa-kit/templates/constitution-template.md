@@ -42,7 +42,7 @@ into each run's effective config, not separate commands.
 |---------|-------|-------|
 | profile | full | default run profile: `ship` (census, deny and UX criteria, blocking coverage), `smoke` (ship, desktop only, advisory coverage) or `full` (today's behaviour) |
 | coverage | advise | `gates.coverage`: `block` fails analyze until every surface x role pair is covered |
-| oracle | off | `gates.oracle` |
+| oracle | off | `gates.oracle` — informational only: no gate reads it. The ORACLE GATE enforces on every row carrying `fixture.expect.oracleSource`, and under profile `ship` on every `computed-logic`/`business-rule` row, whatever this says |
 | dataPolicy | off | `gates.dataPolicy` |
 | uiux | off | `detection.ux` (objective, advisoryAesthetics, critic, axe) |
 | security | off | deny and isolation criteria generation (on under `ship`) |

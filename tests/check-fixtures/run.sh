@@ -49,8 +49,12 @@ spec_engine() {
   check "$E sources_counts_spec" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["spec"])')" "1"
   mk ''
   QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_missing_citation_missing" "$?" "1"
+  check "$E spec_missing_citation_reason" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing"][0]["reason"])')" \
+    "computed criterion has oracleSource spec but no citation (<file>:<line>)"
   mk ',"citation":"spec.md:4"'
   QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_bad_line_missing" "$?" "1"
+  check "$E bad_citation_named_in_reason" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing"][0]["reason"])')" \
+    "computed criterion cites spec.md:4, which does not resolve to an existing line of a file inside the repo"
   mk ',"citation":"nofile.md:1"'
   QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_missing_file" "$?" "1"
   mk ',"citation":"spec.md"'
@@ -96,5 +100,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":""}}}]' > "$X/e.json"
   vj="$(QA_ENGINE=jq bash "$SH" "$X/e.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/e.json" 2>/dev/null; true)"
   check "cross-engine empty citation parity" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  printf '[{"id":"S2","surface":"/x","kind":"business-rule","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"مواصفات.md:9"}}}]' > "$X/u.json"
+  vj="$(QA_ENGINE=jq bash "$SH" "$X/u.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/u.json" 2>/dev/null; true)"
+  check "cross-engine non-ASCII bad citation parity" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
 fi
 echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

@@ -6,6 +6,13 @@
 {{ one of: "None — every acted criterion was in the frozen plan." | a bullet list of offending
 criterion ids, each: "`<id>` — acted but absent from checklist.json (process violation)." }}
 
+## Plan drift (run copy vs the frozen spec plan)
+{{ one of: "None — the run's checklist.json matches the frozen plan on every trust-bearing field." |
+"NOT CHECKED — no frozen spec plan resolved for this run." | a bullet list, each:
+"`<id>`.`<field>`: `<frozen>` → `<run>` — the gates ran against a weaker plan than the one approved."
+plus "`<id>` — added in-run, absent from the frozen plan." and "`<id>` — in the frozen plan, missing
+from the run copy." }}
+
 ## Deterministic re-verification (authoritative source: the engine's report.md)
 {{ one of:
   - "VERIFIED — the engine's qa-verify.sh re-checked every recorded pass; no `verifierVerdict`
@@ -33,6 +40,6 @@ criterion ids, each: "`<id>` — acted but absent from checklist.json (process v
      before relying on them." }}
 
 ## Verdict
-{{ "clean — no out-of-plan acts, no overrides, no verifier overrides." | "attention — <n> out-of-plan act(s), <m> override(s), <k> verifier override(s); see above." }}
+{{ "clean — no out-of-plan acts, no plan drift, no overrides, no verifier overrides." | "attention — <n> out-of-plan act(s), <d> plan-drift finding(s), <m> override(s), <k> verifier override(s); see above." }}
 
 Next: `/qa-status "{{target}}"`.

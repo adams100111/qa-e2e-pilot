@@ -97,19 +97,26 @@ if has_jq; then
     if type != "array" then error("checklist must be a JSON array") else . end
     | ($valid | split("\n") | map(select(length > 0))) as $validCits
     | def computes: (.kind // "" | ascii_downcase) as $k | ($k=="computed-logic" or $k=="business-rule");
-      def wellFormed:
+      def baseOk:
         (.fixture.expect) as $e
         | ($e != null)
           and (($e.path|type)=="string") and (($e.path|length)>0)
           and ($e|has("value")) and (($e.value|type)=="string" or ($e.value|type)=="number")
           and (($e.tolerance|type)=="number")
-          and ([$e.oracleSource] - ["human","llm-suggested","spec"] | length == 0)
-          and (if $e.oracleSource == "spec"
-               then (($e.citation|type)=="string") and ($validCits | index($e.citation) != null)
-               else true end);
+          and ([$e.oracleSource] - ["human","llm-suggested","spec"] | length == 0);
+      def citeOk:
+        (.fixture.expect) as $e
+        | if $e.oracleSource == "spec"
+          then (($e.citation|type)=="string") and ($validCits | index($e.citation) != null)
+          else true end;
+      def wellFormed: baseOk and citeOk;
+      def reason:
+        if (baseOk | not) then "computed criterion missing a well-formed pinned expect"
+        elif (.fixture.expect.citation | type) != "string" then "computed criterion has oracleSource spec but no citation (<file>:<line>)"
+        else "computed criterion cites " + .fixture.expect.citation + ", which does not resolve to an existing line of a file inside the repo" end;
       ([ .[] | select(computes) ]) as $comp
     | { ok: ([ $comp[] | select(wellFormed|not) ] | length == 0),
-        missing: ([ $comp[] | select(wellFormed|not) | {id, reason: "computed criterion missing a well-formed pinned expect"} ] | sort_by(.id)),
+        missing: ([ $comp[] | select(wellFormed|not) | {id, reason: reason} ] | sort_by(.id)),
         sources: { human: ([ $comp[] | select(.fixture.expect.oracleSource=="human") ] | length),
                    llmSuggested: ([ $comp[] | select(.fixture.expect.oracleSource=="llm-suggested") ] | length),
                    spec: ([ $comp[] | select(.fixture.expect.oracleSource=="spec" and wellFormed) ] | length) } }
@@ -126,18 +133,27 @@ except Exception:
     sys.exit("check-fixtures: invalid JSON")
 if not isinstance(data, list): sys.exit("check-fixtures: checklist must be a JSON array")
 def computes(r): return str(r.get("kind","")).lower() in ("computed-logic","business-rule")
-def well_formed(r):
+def base_ok(r):
     e = (r.get("fixture") or {}).get("expect")
     if not isinstance(e, dict): return False
     if not isinstance(e.get("path"), str) or len(e["path"]) == 0: return False
     if "value" not in e or not isinstance(e["value"], (str, int, float)) or isinstance(e["value"], bool): return False
     if not isinstance(e.get("tolerance"), (int, float)) or isinstance(e.get("tolerance"), bool): return False
     if e.get("oracleSource") not in ("human","llm-suggested","spec"): return False
+    return True
+def well_formed(r):
+    if not base_ok(r): return False
+    e = r["fixture"]["expect"]
     if e.get("oracleSource") == "spec":
         if not isinstance(e.get("citation"), str) or e["citation"] not in valid: return False
     return True
+def reason(r):
+    if not base_ok(r): return "computed criterion missing a well-formed pinned expect"
+    c = r["fixture"]["expect"].get("citation")
+    if not isinstance(c, str): return "computed criterion has oracleSource spec but no citation (<file>:<line>)"
+    return "computed criterion cites " + c + ", which does not resolve to an existing line of a file inside the repo"
 comp = [r for r in data if isinstance(r, dict) and computes(r)]
-missing = sorted(({"id": r.get("id"), "reason": "computed criterion missing a well-formed pinned expect"}
+missing = sorted(({"id": r.get("id"), "reason": reason(r)}
                   for r in comp if not well_formed(r)),
                  # match jq sort_by(.id): null sorts BEFORE every string (jq type ordering).
                  key=lambda m: (m["id"] is not None, m["id"]))
@@ -146,7 +162,7 @@ obj = {"ok": len(missing) == 0, "missing": missing,
        "sources": {"human": sum(1 for r in comp if src(r)=="human"),
                    "llmSuggested": sum(1 for r in comp if src(r)=="llm-suggested"),
                    "spec": sum(1 for r in comp if src(r)=="spec" and well_formed(r))}}
-print(json.dumps(obj, sort_keys=True, separators=(",", ":")))
+print(json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
 sys.exit(0 if obj["ok"] else 1)
 ' "$CHECKLIST"
 else

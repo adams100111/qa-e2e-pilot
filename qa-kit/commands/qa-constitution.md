@@ -60,7 +60,9 @@ Forwarded as-is to the role flow: `--refresh`, `--global`, `--from-global`. Full
    `locales` (empty means the app default, one pass) and the gate leaves it resolved. Record them in the constitution's "Enabled optional gates" table: the `profile` row (the
    project's default profile), `coverage`/`oracle`/`dataPolicy` from `gates.*`, `uiux` from
    `detection.ux` (objective, advisoryAesthetics, critic, axe), and `security` = whether deny / isolation
-   criteria are generated (on under `ship`). Never invent a value `profile.sh` did not print. The
+   criteria are generated (on under `ship`). The `oracle` row is informational: the ORACLE GATE keys on
+   `fixture.expect.oracleSource` and on profile `ship`, never on `gates.oracle`. Never invent a value
+   `profile.sh` did not print. The
    constitution is re-rendered from the template, so tell the operator to re-apply any hand edits to those
    rows after a re-run.
 
