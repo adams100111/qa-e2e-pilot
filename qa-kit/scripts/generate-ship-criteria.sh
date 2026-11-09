@@ -40,7 +40,8 @@
 #                                      not a confirmation. stderr counts the surfaces skipped this way.
 #                                      Every deny row is tagged probe-needed + sweep.
 #                                      GET/HEAD/page -> tags independent + read-only. Any other method ->
-#                                      tag deny-write-deferred, or api-write when config allowApiWrites is
+#                                      tag deny-write-deferred (mutates:true, action "attempt ... and expect
+#                                      refusal"; the run records it deferred), or api-write when config allowApiWrites is
 #                                      true AND seedableEnvMarker is non-empty (D6; such rows carry
 #                                      mutates:true). `denyStatuses` from config ship.denyStatuses,
 #                                      default [401,403,404,302]. A persona listed in the access entry's
@@ -53,7 +54,8 @@
 #                                      cross-tenant + independent + ownership-isolation + read-only).
 #                                      surfaceId = the GET/page surfaces (not tab/dialog/sheet) with a
 #                                      route parameter named {entity}, {entity_id} or {entityid} (ASCII
-#                                      case-insensitive); none found -> no surfaceId and stderr warns.
+#                                      case-insensitive; an optional "?" or catch-all "*" suffix such as
+#                                      {entity*} or {entity*?} is ignored); none found -> no surfaceId and stderr warns.
 #   input:<formId>:<field>:<case>      one per census form field x edge case (kind input-validation,
 #                                      tag human-action). A form whose method is GET (search / filter)
 #                                      gets no rows; stderr counts them. A generic form id ("page",
@@ -147,7 +149,7 @@ def hasEvidence:
   elif has("hintMatched") then ((.hintMatched | strs | length) > 0)
   else ((.hints | strs | length) > 0) and (.source == "adapter") and ((.allowed | strs | length) > 0) end;
 def genericForm: . == "page" or test("^form\\[[0-9]+\\]$");
-def params: [ str0 | match("\\{([^}]*)\\}"; "g") | .captures[0].string | rtrimstr("?") | ascii_downcase ];
+def params: [ str0 | match("\\{([^}]*)\\}"; "g") | .captures[0].string | sub("[*?]+$"; "") | ascii_downcase ];
 def slug: explode
   | map(if (. >= 97 and . <= 122) or (. >= 48 and . <= 57) or . == 46 or . == 95 or . == 45 then .
         elif (. >= 65 and . <= 90) then . + 32 else 45 end)
@@ -232,8 +234,8 @@ def cases:
             action: ("As " + $pp + ", send " + methodOf($s.surfaceId) + " " + ($s.pattern | str0) + " through the recorded write probe"),
             expected: ("Refused with one of HTTP " + $dsText + "; nothing is persisted")}
          else
-           {tags: (["deny-write-deferred", "probe-needed", "sweep"] + $nc | tagset),
-            action: ("As " + $pp + ", send " + methodOf($s.surfaceId) + " " + ($s.pattern | str0) + " without permission"),
+           {tags: (["deny-write-deferred", "probe-needed", "sweep"] + $nc | tagset), mutates: true,
+            action: ("As " + $pp + ", attempt " + methodOf($s.surfaceId) + " " + ($s.pattern | str0) + " without permission and expect refusal"),
             expected: ("Refused with one of HTTP " + $dsText + "; nothing is persisted. Writes are not allowed on this environment, so the run records this row as deferred")}
          end) ] as $deny
 
@@ -427,7 +429,7 @@ def min_num(v):
         except Exception: return None
     return None
 def generic_form(f): return f == "page" or re.match(r"^form\[[0-9]+\]$", f) is not None
-def params(p): return [alower(x[:-1] if x.endswith("?") else x) for x in re.findall(r"\{([^}]*)\}", str0(p))]
+def params(p): return [alower(re.sub(r"[*?]+$", "", x)) for x in re.findall(r"\{([^}]*)\}", str0(p))]
 def ftype(fd):
     t = fd.get("type") if fd.get("type") is not None else "text"
     return t if isinstance(t, str) else "text"
@@ -552,8 +554,8 @@ for s in S:
                 "action": "As " + pp + ", send " + method_of(s["surfaceId"]) + " " + pat + " through the recorded write probe",
                 "expected": "Refused with one of HTTP " + ds_text + "; nothing is persisted"})
         else:
-            row.update({"tags": sorted(set(["deny-write-deferred", "probe-needed", "sweep"] + nc)),
-                "action": "As " + pp + ", send " + method_of(s["surfaceId"]) + " " + pat + " without permission",
+            row.update({"tags": sorted(set(["deny-write-deferred", "probe-needed", "sweep"] + nc)), "mutates": True,
+                "action": "As " + pp + ", attempt " + method_of(s["surfaceId"]) + " " + pat + " without permission and expect refusal",
                 "expected": "Refused with one of HTTP " + ds_text + "; nothing is persisted. Writes are not allowed on this environment, so the run records this row as deferred"})
         deny.append(row)
 

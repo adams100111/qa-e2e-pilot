@@ -54,6 +54,7 @@ run_engine() {
   check "$E deny GET row tags + kind" "$(q "$T/o.json" "[r('deny:$CREATE:judge')['kind'],r('deny:$CREATE:judge')['tags']]")" '["deny",["independent","probe-needed","read-only","sweep"]]'
   check "$E deny default statuses" "$(q "$T/o.json" "r('deny:$CREATE:judge')['denyStatuses']")" '[401,403,404,302]'
   check "$E deny non-GET deferred without writes" "$(q "$T/o.json" "[r('deny:POST /admin/hackathons:participant')['tags'],r('deny:POST /admin/hackathons:judge')['tags']]")" '[["deny-write-deferred","probe-needed","sweep"],["deny-write-deferred","needs-confirmation","probe-needed","sweep"]]'
+  check "$E deny-write-deferred is an explicit mutating attempt" "$(q "$T/o.json" "[r('deny:POST /admin/hackathons:participant')['mutates'], r('deny:POST /admin/hackathons:participant')['action']]")" '[true,"As participant, attempt POST /admin/hackathons without permission and expect refusal"]'
   # generator_emits_deny_for_unconfirmed_overreach
   check "$E generator_emits_deny_for_unconfirmed_overreach" "$(q "$T/o.json" "r('deny:$HACK:participant')['tags']")" '["independent","needs-confirmation","probe-needed","read-only","sweep"]'
   check "$E unconfirmed but not reached-without-evidence: no tag" "$(q "$T/o.json" "r('deny:$HACK:judge')['tags']")" '["independent","probe-needed","read-only","sweep"]'
@@ -199,7 +200,8 @@ print(json.dumps(bad))' "$T/o.json")" '[]'
  {"surfaceId":"page:Admin/Hackathons/Show#tab:الفرق","kind":"tab","pattern":"Admin/Hackathons/Show","sources":["crawl"],"reachedBy":["admin"],"allowed":null,"sampleUrls":{"admin":"/admin/hackathons/42"},"forms":[]},
  {"surfaceId":"GET /ideas/{idea}","kind":"endpoint","pattern":"/ideas/{idea}","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"sampleUrls":{"participant":"/ideas/7?tab=summary"},"forms":[]},
  {"surfaceId":"GET /ideas/{idea}#dialog:delete","kind":"dialog","pattern":"/ideas/{idea}","sources":["crawl"],"reachedBy":["participant"],"allowed":null,"sampleUrls":{"participant":"/ideas/7?tab=summary"},"forms":[]},
- {"surfaceId":"GET /reports/{report}","kind":"endpoint","pattern":"/reports/{report}","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}],
+ {"surfaceId":"GET /reports/{report}","kind":"endpoint","pattern":"/reports/{report}","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]},
+ {"surfaceId":"GET /docs/{team*?}","kind":"endpoint","pattern":"/docs/{team*?}","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}],
  "jobs":[],"mails":[],"notifications":[],"diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},"warnings":[]}
 J
   cat > "$T/a3.json" <<'J'
@@ -209,7 +211,7 @@ J
  "GET /reports/{report}":{"allowed":["admin"],"source":"adapter","confirmed":false,"hints":["role:admin"],"hintMatched":["admin"],"reachedWithoutEvidence":[]},
  "GET /ideas/{idea}":{"allowed":["participant"],"source":"crawl","confirmed":false,"assumption":true,"hints":[],"hintMatched":[],"reachedWithoutEvidence":["participant"]}}}
 J
-  printf '%s' '[{"entity":"idea","owningChain":["user_id"],"roleScope":{"participant":"owns"}}]' > "$T/m3.json"
+  printf '%s' '[{"entity":"idea","owningChain":["user_id"],"roleScope":{"participant":"owns"}},{"entity":"team","owningChain":["hackathon_id"],"roleScope":{"participant":"owns"}}]' > "$T/m3.json"
   printf '%s' '[{"id":"S1","surfaceId":"GET /ideas/{idea}","role":"participant","kind":"happy-path","tags":["read-only"],"action":"Open the idea"},{"id":"S2","surfaceId":"page:Admin/Hackathons/Show","persona":"admin","kind":"happy-path","tags":["read-only"],"action":"Open the hackathon"}]' > "$T/k3.json"
   printf '%s' '[{"id":"J1","title":"تقديم فكرة","priority":"P1","roles":["admin","participant"],"steps":["S1"]},{"id":"J2","title":"متابعة","roles":["admin"],"steps":["S2"]}]' > "$T/j3.json"
   printf '%s' '{"profile":"ship","responsiveMatrix":[{"id":"desktop","width":1440,"height":900},{"id":"mobile","width":390,"height":844}],"locales":[],"colorSchemes":["light","dark"]}' > "$T/cfg3.json"
@@ -228,6 +230,7 @@ J
     'As participant, open /ideas/7?tab=summary, then open the dialog "delete" and let it settle'
   check "$E tab surface id token-safe" "$(q "$T/s.json" "r('load-clean:page:Admin/Hackathons/Show#tab:الفرق:admin')['id'][:-9]")" "load-clean-page-admin-hackathons-show-tab-admin"
   check "$E iso ignores tab/dialog subsurfaces" "$(q "$T/s.json" "r('iso:idea:participant')['surfaceId']")" "GET /ideas/{idea}"
+  check "$E iso matches a catch-all {x*?} parameter" "$(q "$T/s.json" "r('iso:team:participant')['surfaceId']")" "GET /docs/{team*?}"
   check "$E assumed_entry_gives_no_deny" "$(q "$T/s.json" "ids('deny:GET /ideas/')")" '[]'
   check "$E assumed entries reported" "$(grep -c '1 surface-access entries are assumptions (autonomousSetup), not human confirmations' "$T/s.err")" "1"
   # input_skips_get_forms + accept_or_reject_oracle (I7)
@@ -287,7 +290,8 @@ CKP="$DIR/../../skills/checkpointing-qa-memory/scripts/checkpoint.sh"
 REC="$DIR/../../skills/checkpointing-qa-memory/scripts/record-evidence.sh"
 Y="$(mktemp -d)"; TMPDIRS+=("$Y")
 gen python3 "$FX/config.json" --journeys "$FX/journeys.json" --checklist "$FX/checklist.json" > "$Y/all.json" 2>/dev/null
-python3 -c 'import json,sys;[print(x["id"]+"\t"+x["persona"]) for x in json.load(open(sys.argv[1],encoding="utf-8"))]' "$Y/all.json" > "$Y/ids.tsv"
+python3 -c 'import json,sys;[print(x["id"]+"\t"+x["persona"]) for f in sys.argv[1:] for x in json.load(open(f,encoding="utf-8"))]' "$Y/all.json" "$SHARED/s-python3.json" > "$Y/ids.tsv"
+check "token test includes tab/dialog surfaces" "$(python3 -c 'import json,sys;print(sum(1 for x in json.load(open(sys.argv[1],encoding="utf-8")) if "#" in x.get("surfaceId","")))' "$SHARED/s-python3.json" | awk '{print ($1>0)?"yes":"no"}')" "yes"
 bad_ck=0; bad_rec=0; n=0
 while IFS="$(printf '\t')" read -r cid per; do
   n=$((n+1))
@@ -305,6 +309,8 @@ for t in 'deny:GET /admin/hackathons/create:judge' 'deny:POST /admin/hackathons:
   row="$(python3 -c 'import json,sys;print(json.dumps(next(x for x in json.load(open(sys.argv[1],encoding="utf-8")) if x["title"]==sys.argv[2])))' "$Y/all.json" "$t")"
   check "required_kinds derive probe: $t" "$(bash "$RK" derive "$row" | tr ',' '\n' | grep -cx probe)" "1"
 done
+row="$(python3 -c 'import json,sys;print(json.dumps(next(x for x in json.load(open(sys.argv[1],encoding="utf-8")) if x["title"]==sys.argv[2])))' "$Y/all.json" 'deny:POST /admin/hackathons:participant')"
+check "required_kinds deny-write-deferred derives human-action,probe" "$(bash "$RK" derive "$row")" "human-action,probe"
 
 # sha1 fallbacks (jq path without python hashing) give the same ids
 if command -v jq >/dev/null 2>&1; then
