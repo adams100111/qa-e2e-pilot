@@ -330,25 +330,33 @@ function journeyStatus(journeys, checkpointRows, adjust) {
 }
 
 // readAdjudication(runDir) -> what re-adjudication left in adjudication/ (ADR-0033):
-// {state: "ran"|"unavailable"|"not-run", decisions, banner, refused:[label]}.
+// {state: "ran"|"unavailable"|"not-run", decisions, banner, refused:[label],
+//  reviewed:Set(label)}. A decision counts as reviewed only when apply.txt
+// shows it applied ("applied: <label> …") or a no-op ("noop: <label> …"); an
+// entry apply rejected ("ADJUDICATION: rejected entry …"), one checkpoint.sh
+// refused, or a batch refused as an upgrade leaves it unreviewed. <label> is
+// <criterionId>[@<persona>], as adjudication.sh prints it.
 function readAdjudication(runDir) {
   const dir = path.join(runDir, "adjudication");
   const refused = [];
+  const reviewed = new Set();
   try {
     for (const line of fs.readFileSync(path.join(dir, "apply.txt"), "utf8").split("\n")) {
       const m = /^ADJUDICATION: checkpoint\.sh refused (\S+?):/.exec(line);
       if (m) refused.push(m[1]);
+      const ok = /^(?:applied|noop): (\S+) /.exec(line);
+      if (ok) reviewed.add(ok[1]);
     }
-  } catch (_) { /* no apply.txt */ }
+  } catch (_) { /* no apply.txt: nothing was applied */ }
   const raw = readJSON(path.join(dir, "decisions.json"), undefined);
   if (raw !== undefined) {
     const decisions = (Array.isArray(raw) ? raw : []).filter((d) => d && typeof d === "object" && typeof d.criterionId === "string");
-    return { state: "ran", decisions, banner: "", refused, malformed: !Array.isArray(raw) };
+    return { state: "ran", decisions, banner: "", refused, reviewed, malformed: !Array.isArray(raw) };
   }
   let banner = null;
   try { banner = fs.readFileSync(path.join(dir, "unavailable.txt"), "utf8").split("\n").find((l) => l.trim()) || ""; } catch (_) { banner = null; }
-  if (banner !== null) return { state: "unavailable", decisions: [], banner: banner.trim(), refused };
-  return { state: "not-run", decisions: [], banner: "", refused };
+  if (banner !== null) return { state: "unavailable", decisions: [], banner: banner.trim(), refused, reviewed };
+  return { state: "not-run", decisions: [], banner: "", refused, reviewed };
 }
 
 function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
@@ -435,20 +443,24 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
   for (const id of disputedP1) conditions.push("verifier disputed P1 " + id);
 
   // Re-adjudication (I2). Unreviewed = a low-confidence pass (as shown, i.e.
-  // after verification.json) with no decision in adjudication/decisions.json —
-  // the same selection adjudication.sh select makes. Only P1 ones block.
+  // after verification.json) with no decision that apply.txt shows applied or
+  // a no-op — the same selection adjudication.sh select makes. A decision apply
+  // rejected or checkpoint.sh refused is not a review. Only P1 ones block.
   const adj = readAdjudication(runDir);
   const lowPasses = criteria.filter((c) => c.verdict === "pass" && c.confidence === "low");
-  const judged = new Set(adj.decisions.map((d) => key(d.criterionId, d.persona)));
+  const adjLabel = (id, persona) => String(id) + (persona ? "@" + String(persona) : "");
+  const applied = adj.decisions.filter((d) => adj.reviewed.has(adjLabel(d.criterionId, typeof d.persona === "string" ? d.persona : "")));
+  const notApplied = adj.decisions.length - applied.length;
+  const judged = new Set(applied.map((d) => key(d.criterionId, typeof d.persona === "string" ? d.persona : "")));
   const unreviewed = lowPasses.filter((c) => !judged.has(key(c.id, c.persona)));
   const unreviewedP1 = [...new Set(unreviewed.filter(isP1).map((c) => c.id))];
   let adjText;
   if (adj.state === "ran") {
-    const disputed = adj.decisions.filter((d) => d.agree === false);
-    adjText = "re-judged " + adj.decisions.length + " · disputed " + disputed.length
+    const disputed = applied.filter((d) => d.agree === false);
+    adjText = "re-judged " + applied.length + " · disputed " + disputed.length
       + (disputed.length ? " (" + [...new Set(disputed.map((d) => d.criterionId))].join(", ") + ")" : "")
       + (unreviewed.length ? " · " + unreviewed.length + " low-confidence passes not re-judged" : "")
-      + (adj.refused.length ? " · " + adj.refused.length + " decision(s) not applied (see adjudication/apply.txt)" : "");
+      + (notApplied > 0 ? " · " + notApplied + " not applied (see adjudication/apply.txt)" : "");
     if (unreviewedP1.length) conditions.push(unreviewedP1.length + " P1 low-confidence pass(es) not re-judged: " + unreviewedP1.join(", "));
     if (adj.malformed) conditions.push("adjudication/decisions.json is not a JSON array");
   } else if (adj.state === "unavailable") {
@@ -464,8 +476,13 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
 
   lines.push(["Low-confidence passes", String(lowPasses.length)]);
   // Informational only: rows the bug export parked in <run>/bugs/needs-recheck.json.
+  // A file older than the run's verification.json is a previous export's
+  // (stale) and is ignored: no row.
   try {
-    const nr = JSON.parse(fs.readFileSync(path.join(runDir, "bugs", "needs-recheck.json"), "utf8"));
+    const nrPath = path.join(runDir, "bugs", "needs-recheck.json");
+    let stale = false;
+    try { stale = fs.statSync(nrPath).mtimeMs < fs.statSync(path.join(runDir, "verification.json")).mtimeMs; } catch (_) { stale = false; }
+    const nr = stale ? null : JSON.parse(fs.readFileSync(nrPath, "utf8"));
     if (Array.isArray(nr)) lines.push(["Needs re-check", String(nr.length)]);
   } catch (e) { /* no export, or unreadable: no row */ }
   lines.push(["Flaky", criteria.some((c) => c.flaky !== null) ? String(criteria.filter((c) => c.flaky === true).length) : "not tracked"]);

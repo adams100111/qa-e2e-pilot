@@ -73,7 +73,7 @@ harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sou
 | 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui`, `taking-surface-census` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep). Under the `ship`/`smoke` profile, also build the coverage census `.qa/census.json` (stack adapter + read-only per-role crawl) |
 | 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle; state-mutating criteria are tagged `human-action` |
 | 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `detecting-interaction-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects (incl. overlay/modal interaction sequences that dead-end or destroy their parent) → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
-| 4 Report | `re-adjudicating-verdicts`, `writing-qa-reports` | a fresh-context verifier re-judges low-confidence passes and UX-promoted fails (downgrade only) → `qa-verify.sh` → `report.md` + single-file `report.html` (opening with **Ship readiness** on ship runs) + per-criterion evidence; honest DEFERRED; `bug-export.sh` writes tracker-neutral bugs |
+| 4 Report | `re-adjudicating-verdicts`, `writing-qa-reports` | a fresh-context verifier re-judges low-confidence passes and UX-promoted fails (downgrade only) → `qa-verify.sh` → `bug-export.sh` writes tracker-neutral bugs → `report.md` + single-file `report.html` (opening with **Ship readiness** on ship runs) + per-criterion evidence; honest DEFERRED |
 | 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/`; the evidence gate rejects an unevidenced/contradicted `pass` |
 
 Every skill carries ≥3 mini-evals drawn from the real session bugs.
@@ -245,7 +245,7 @@ only with no uncovered census pair, every P1 journey passing, no coding-layer fa
 no verifier override or re-adjudication dispute on one and no P1 low-confidence pass left unreviewed, else
 `NOT SHIP-READY` with each reason; a **Re-adjudication** line says what the second judge did, and a **Needs re-check**
 row counts evidence gaps (informational). The end-of-run order is `qa-verify` → re-adjudication → `qa-verify` →
-report → bug export, and `/qa-resume` follows it too. `scripts/bug-export.sh` writes `bugs.json` plus one
+bug export → report (so the **Needs re-check** row counts this run's export), and `/qa-resume` follows it too. `scripts/bug-export.sh` writes `bugs.json` plus one
 plain-language markdown file per new bug for real contradictions only (evidence gaps go to `needs-recheck.json`),
 deduplicated against `.qa/known-defects.json`; qa-kit's `/qa-verify` also fails on trust-field drift between the run
 and frozen checklists (`verify-plan.sh --drift`). `gates.oracle` is informational. See [ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and

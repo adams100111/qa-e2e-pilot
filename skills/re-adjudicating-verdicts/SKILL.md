@@ -78,6 +78,8 @@ bash "<skill-dir>/scripts/adjudication.sh" bundle .qa/runs/<run-id> <criterionId
 Pass `--persona` whenever the selected line has one. The bundle holds `criterion.json` (the plan
 row), `claim.json` (verdict, confidence, kinds — no prose), and `evidence/` holding only what
 `record-evidence.sh` writes (bake, recompute, probe, action-trace, screenshots, identity, `findings/`).
+The action trace is a redacted copy: anything typed into a password, secret, token, OTP or PIN field
+reads `[redacted]`.
 Any other file in the evidence folder is left out, so it never holds `journal.ndjson`,
 `toolstream.jsonl`, notes, or `last_action`. Do not add anything to it.
 
@@ -137,7 +139,8 @@ Tell the report phase how many records were re-judged, how many the verifier dis
 A `verifier-disagrees:` record on any P1 criterion (a P1 journey step or a row with priority P1)
 blocks `SHIP-READY` (D6). The report's **Re-adjudication** line reads `adjudication/` itself:
 re-judged and disputed counts, the unavailable banner, or `did not run — <n> low-confidence passes
-unreviewed`; an unreviewed P1 low-confidence pass blocks `SHIP-READY`.
+unreviewed`; an unreviewed P1 low-confidence pass blocks `SHIP-READY`. Only a decision `apply.txt`
+shows as `applied:` or `noop:` counts as re-judged; a rejected or refused one does not.
 
 ## Hard Rules
 

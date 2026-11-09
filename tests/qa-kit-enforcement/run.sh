@@ -115,6 +115,88 @@ run_drift_engine() {
   # kind, citation and expected value edits; a row added in-run; a frozen row dropped
   drift_case "$E" kind-citation-value-added-missing '[{"id":"C1","kind":"happy-path","tags":[],"fixture":{"expect":{"path":"total","value":"99.00","oracleSource":"spec","citation":"docs/pricing.md:40"}}},
 {"id":"C9","kind":"happy-path","tags":[]}]' 1 "C1:kind,C1:fixture.expect.citation,C1:fixture.expect.value|C9|C2"
+  # priority_downgrade_is_drift: a P1 row downgraded to P2 (and moved off its journey)
+  # in the run copy drops it out of the ship verdict's P1 conditions
+  local PP='[{"id":"P1","kind":"happy-path","tags":[],"priority":"P1","journey":{"id":"J-PAY","step":1}},{"id":"P2","kind":"happy-path","tags":[],"priority":"P1"}]'
+  local TP; TP="$(mktemp -d)"; TMPDIRS+=("$TP")
+  printf '%s' "$PP" > "$TP/frozen.json"
+  printf '%s' '[{"id":"P1","kind":"happy-path","tags":[],"priority":"P2","journey":{"step":1,"id":"J-PAY"}},{"id":"P2","kind":"happy-path","tags":[]}]' > "$TP/run.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TP/run.json" "$TP/frozen.json")"; rc=$?
+  check "$E priority_downgrade_is_drift exit" "$rc" "1"
+  check "$E priority_downgrade_is_drift findings" "$(printf '%s' "$out" | python3 -c 'import json,sys;o=json.load(sys.stdin);print(",".join(d["id"]+":"+d["field"]+"="+json.dumps(d["run"]) for d in o["drift"]))')" 'P1:priority="P2",P2:priority=null'
+  printf '%s' '[{"id":"P1","kind":"happy-path","tags":[],"priority":"P1","journey":{"id":"J-OTHER","step":1}},{"id":"P2","kind":"happy-path","tags":[],"priority":"P1"}]' > "$TP/run.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TP/run.json" "$TP/frozen.json")"; rc=$?
+  check "$E journey field on a row is drift" "$rc:$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(d["id"]+":"+d["field"] for d in json.load(sys.stdin)["drift"]))')" "1:P1:journey"
+  # journey_edit_is_drift: the run's journeys.json vs the spec's (priority, ordered steps, ids)
+  local TJ; TJ="$(mktemp -d)"; TMPDIRS+=("$TJ"); mkdir -p "$TJ/spec" "$TJ/run"
+  printf '%s' "$PP" > "$TJ/spec/checklist.json"; printf '%s' "$PP" > "$TJ/run/checklist.json"
+  local FJ='[{"id":"J-PAY","title":"دفع فاتورة المياه","priority":"P1","roles":["citizen"],"steps":["P1","P2"]},{"id":"J-VIEW","priority":"P2","steps":["P2"]}]'
+  printf '%s' "$FJ" > "$TJ/spec/journeys.json"; printf '%s' "$FJ" > "$TJ/run/journeys.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json")"; rc=$?
+  check "$E journeys identical (siblings) ok" "$rc" "0"
+  printf '%s' '[{"id":"J-PAY","title":"edited title","priority":"P2","roles":["citizen"],"steps":["P1"]},{"id":"J-NEW","priority":"P1","steps":["P2"]}]' > "$TJ/run/journeys.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json")"; rc=$?
+  check "$E journey_edit_is_drift exit" "$rc" "1"
+  check "$E journey_edit_is_drift findings" "$(printf '%s' "$out" | python3 -c 'import json,sys;o=json.load(sys.stdin);print(",".join(d["id"]+":"+d["field"] for d in o["journeyDrift"])+"|"+",".join(o["journeysAddedInRun"])+"|"+",".join(o["journeysMissingInRun"])+"|"+str(o["drift"]))')" "J-PAY:priority,J-PAY:steps|J-NEW|J-VIEW|[]"
+  printf '%s' '[{"id":"J-PAY","priority":"P1","steps":["P2","P1"]},{"id":"J-VIEW","priority":"P2","steps":["P2"]}]' > "$TJ/run/journeys.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json")"; rc=$?
+  check "$E journey step order is drift" "$rc:$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(d["id"]+":"+d["field"] for d in json.load(sys.stdin)["journeyDrift"]))')" "1:J-PAY:steps"
+  rm -f "$TJ/run/journeys.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json")"; rc=$?
+  check "$E run journeys.json deleted is drift" "$rc:$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(json.load(sys.stdin)["journeysMissingInRun"]))')" "1:J-PAY,J-VIEW"
+  printf '%s' "$FJ" > "$TJ/other.json"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json" "$TJ/other.json" "$TJ/spec/journeys.json")"; rc=$?
+  check "$E explicit journeys paths ok" "$rc" "0"
+  printf '%s' '{"id":"J-PAY"}' > "$TJ/run/journeys.json"
+  QA_ENGINE=$E bash "$SH" --drift "$TJ/run/checklist.json" "$TJ/spec/checklist.json" >/dev/null 2>&1
+  check "$E malformed run journeys dies" "$?" "1"
+  # variant_expansion_not_drift: the ship persona appends journeys.sh expand-variant rows and
+  # the suffixed journey to the RUN copies; built here with the real expand-variant.
+  local TV; TV="$(mktemp -d)"; TMPDIRS+=("$TV"); mkdir -p "$TV/spec" "$TV/run"
+  local VP='[{"id":"V1","surface":"/bills","kind":"happy-path","tags":["human-action","independent"],"humanAction":true,"mutates":true,"priority":"P1","action":"ادفع فاتورة المياه","journey":{"id":"J-PAY","step":1}},
+{"id":"V2","surface":"/bills/receipt","kind":"computed-logic","tags":[],"priority":"P1","journey":{"id":"J-PAY","step":2},"fixture":{"expect":{"path":"total","value":"115.00","oracleSource":"spec","citation":"docs/pricing.md:12"}}},
+{"id":"V3","surface":"/help","kind":"happy-path","tags":[],"priority":"P3"}]'
+  local VJ='[{"id":"J-PAY","title":"دفع فاتورة","priority":"P1","roles":["citizen"],"steps":["V1","V2"]}]'
+  printf '%s' "$VP" > "$TV/spec/checklist.json"; printf '%s' "$VJ" > "$TV/spec/journeys.json"
+  QA_ENGINE=$E bash "$DIR/../../scripts/journeys.sh" expand-variant "$TV/spec/journeys.json" "$TV/spec/checklist.json" \
+    --journey J-PAY --viewport-id mobile --locale ar > "$TV/rows.json"
+  vplan() { # <rows-edit-python> -> writes run checklist + journeys (spec + variant rows/journey)
+    python3 - "$TV" "$1" <<'PY'
+import json, sys
+d, edit = sys.argv[1], sys.argv[2]
+spec = json.load(open(d + "/spec/checklist.json")); rows = json.load(open(d + "/rows.json"))
+js = json.load(open(d + "/spec/journeys.json"))
+vj = dict(js[0]); vj["id"] = "J-PAY@mobile-ar"; vj["steps"] = [s + "@mobile-ar" for s in js[0]["steps"]]
+exec(edit)
+json.dump(spec + rows, open(d + "/run/checklist.json", "w"), ensure_ascii=False)
+json.dump(js + [vj], open(d + "/run/journeys.json", "w"), ensure_ascii=False)
+PY
+  }
+  vfind() { python3 -c 'import json,sys;o=json.load(sys.stdin);print(",".join(d["id"]+":"+d["field"] for d in o["drift"]+o["journeyDrift"])+"|"+",".join(o["addedInRun"])+"|"+",".join(o["journeysAddedInRun"])+"|"+",".join(o["variantsInRun"])+"|"+",".join(o["variantJourneysInRun"]))'; }
+  vplan "pass"
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TV/run/checklist.json" "$TV/spec/checklist.json")"; rc=$?
+  check "$E variant_expansion_not_drift exit" "$rc" "0"
+  check "$E variant_expansion_not_drift lists variants" "$(printf '%s' "$out" | vfind)" "|||V1@mobile-ar,V2@mobile-ar|J-PAY@mobile-ar"
+  # variant_with_changed_kind_is_drift (and each other forbidden edit): the row is no longer a copy
+  vplan 'rows[1]["kind"] = "happy-path"'
+  out="$(QA_ENGINE=$E bash "$SH" --drift "$TV/run/checklist.json" "$TV/spec/checklist.json")"; rc=$?
+  check "$E variant_with_changed_kind_is_drift exit" "$rc" "1"
+  check "$E variant_with_changed_kind_is_drift findings" "$(printf '%s' "$out" | vfind)" "|V2@mobile-ar||V1@mobile-ar|J-PAY@mobile-ar"
+  local edit want
+  for edit in 'rows[0]["tags"] = ["independent"]' 'rows[0]["mutates"] = False' 'rows[1]["fixture"]["expect"]["oracleSource"] = "human"' \
+              'rows[1]["fixture"]["expect"]["value"] = "99.00"' 'rows[1]["priority"] = "P2"' 'rows[1]["action"] = "x"' \
+              'rows[0]["journey"]["id"] = "J-OTHER@mobile-ar"' 'rows[0]["journey"]["step"] = 9' 'del rows[0]["variant"]' \
+              'rows[0]["id"] = "V1@mobile ar"' 'rows[0]["id"] = "V9@mobile-ar"'; do
+    vplan "$edit"
+    QA_ENGINE=$E bash "$SH" --drift "$TV/run/checklist.json" "$TV/spec/checklist.json" >/dev/null 2>&1
+    check "$E variant row edit is drift: $edit" "$?" "1"
+  done
+  check "$E variant tags reordered still a copy" "$(vplan 'rows[0]["tags"] = ["independent","human-action"]'; QA_ENGINE=$E bash "$SH" --drift "$TV/run/checklist.json" "$TV/spec/checklist.json" >/dev/null 2>&1; echo $?)" "0"
+  for edit in 'vj["priority"] = "P2"' 'vj["steps"] = ["V1@mobile-ar"]' 'vj["steps"] = ["V2@mobile-ar","V1@mobile-ar"]' 'vj["steps"] = ["V1@mobile-ar","V2@tablet-ar"]' 'vj["roles"] = ["admin"]' 'vj["id"] = "J-NEW@mobile-ar"'; do
+    vplan "$edit"
+    QA_ENGINE=$E bash "$SH" --drift "$TV/run/checklist.json" "$TV/spec/checklist.json" >/dev/null 2>&1
+    check "$E variant journey edit is drift: $edit" "$?" "1"
+  done
   # malformed run copy -> error, non-zero
   local T; T="$(mktemp -d)"; TMPDIRS+=("$T")
   printf '%s' "$FROZEN_PLAN" > "$T/frozen.json"; printf '%s' '{"id":"C1"}' > "$T/run.json"
@@ -132,6 +214,11 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   vj="$(QA_ENGINE=jq bash "$SH" --drift "$X/run.json" "$X/frozen.json"; true)"
   vp="$(QA_ENGINE=python3 bash "$SH" --drift "$X/run.json" "$X/frozen.json"; true)"
   check "drift cross-engine report identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  printf '%s' '[{"id":"J-PAY","priority":"P1","steps":["C1","C2"]}]' > "$X/fj.json"
+  printf '%s' '[{"id":"J-PAY","priority":"P2","steps":["C1"]},{"id":"J-رحلة","priority":"P1","steps":[]}]' > "$X/rj.json"
+  vj="$(QA_ENGINE=jq bash "$SH" --drift "$X/run.json" "$X/frozen.json" "$X/rj.json" "$X/fj.json"; true)"
+  vp="$(QA_ENGINE=python3 bash "$SH" --drift "$X/run.json" "$X/frozen.json" "$X/rj.json" "$X/fj.json"; true)"
+  check "journey drift cross-engine report identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
 fi
 
 # ===========================================================================

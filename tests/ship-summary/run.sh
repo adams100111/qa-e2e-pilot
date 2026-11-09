@@ -232,13 +232,15 @@ has "readj_not_run_non_p1 ready" "$M" "**SHIP-READY**"
 lacks "readj_not_run_non_p1 not blocked" "$M" "NOT SHIP-READY"
 # ran, the verifier agreed
 mk adja 0 pass ""; setrec "$W/adja" C9 '{"confidence": "low"}'; mkdir -p "$W/adja/adjudication"
-printf '[{"criterionId":"C9","persona":"","agree":true,"reason":"bake row present"}]' > "$W/adja/adjudication/decisions.json"; rr adja
+printf '[{"criterionId":"C9","persona":"","agree":true,"reason":"bake row present"}]' > "$W/adja/adjudication/decisions.json"
+printf 'noop: C9 pass/low\nadjudication: applied=0 noop=1 rejected=0 failed=0\n' > "$W/adja/adjudication/apply.txt"; rr adja
 M="$(md adja)"
 has "readj_ran_agree line" "$M" "| Re-adjudication | re-judged 1 · disputed 0 |"
 lacks "readj_ran_agree ready" "$M" "NOT SHIP-READY"
 # ran, the verifier disputed (the record is now blocked)
 mk adjd 0 pass ""; setrec "$W/adjd" C9 "$DISPUTE"; mkdir -p "$W/adjd/adjudication"
-printf '[{"criterionId":"C9","persona":"","agree":false,"reason":"bake shows no new row"}]' > "$W/adjd/adjudication/decisions.json"; rr adjd
+printf '[{"criterionId":"C9","persona":"","agree":false,"reason":"bake shows no new row"}]' > "$W/adjd/adjudication/decisions.json"
+printf 'applied: C9 pass/low -> blocked/low (verifier-disagrees: bake shows no new row)\nadjudication: applied=1 noop=0 rejected=0 failed=0\n' > "$W/adjd/adjudication/apply.txt"; rr adjd
 M="$(md adjd)"
 has "readj_ran_disputed line" "$M" "| Re-adjudication | re-judged 1 · disputed 1 (C9) |"
 has "readj_ran_disputed blocks" "$M" "- verifier disputed P1 C9"
@@ -253,8 +255,30 @@ mk adjr 0 fail FE; mkdir -p "$W/adjr/adjudication"
 printf '[{"criterionId":"C9","persona":"","agree":false,"reason":"screenshot shows the card moved"}]' > "$W/adjr/adjudication/decisions.json"
 printf 'ADJUDICATION: checkpoint.sh refused C9: SCREENSHOT GATE: no screenshot\nadjudication: applied=0 noop=0 rejected=0 failed=1\n' > "$W/adjr/adjudication/apply.txt"; rr adjr
 M="$(md adjr)"
-has "readj_refused line" "$M" "| Re-adjudication | re-judged 1 · disputed 1 (C9) · 1 decision(s) not applied (see adjudication/apply.txt) |"
+has "readj_refused line" "$M" "| Re-adjudication | re-judged 0 · disputed 0 · 1 not applied (see adjudication/apply.txt) |"
 has "readj_refused blocks" "$M" "- re-adjudication decision on P1 C9 was not applied"
+# decisions.json without apply.txt: nothing was applied, nothing was reviewed
+mk adjn 0 pass ""; setrec "$W/adjn" C9 '{"confidence": "low"}'; mkdir -p "$W/adjn/adjudication"
+printf '[{"criterionId":"C9","persona":"","agree":true,"reason":"bake row present"}]' > "$W/adjn/adjudication/decisions.json"; rr adjn
+M="$(md adjn)"
+has "readj_no_apply_txt line" "$M" "| Re-adjudication | re-judged 0 · disputed 0 · 1 low-confidence passes not re-judged · 1 not applied (see adjudication/apply.txt) |"
+has "readj_no_apply_txt blocks" "$M" "- 1 P1 low-confidence pass(es) not re-judged: C9"
+# rejected_decision_not_counted: apply rejected the entry (not selected) -> C9 stays unreviewed
+mk adjx 0 pass ""; setrec "$W/adjx" C9 '{"confidence": "low"}'; mkdir -p "$W/adjx/adjudication"
+printf '[{"criterionId":"C9","persona":"","agree":true,"reason":"bake row present"},{"criterionId":"J1-S1","persona":"","agree":true,"reason":"ok"}]' > "$W/adjx/adjudication/decisions.json"
+printf 'ADJUDICATION: rejected entry 0 (C9): not selected for re-adjudication (select lists only low-confidence passes and UX-promoted fails)\nnoop: J1-S1 pass/high\nadjudication: applied=0 noop=1 rejected=1 failed=0\n' > "$W/adjx/adjudication/apply.txt"; rr adjx
+M="$(md adjx)"
+has "rejected_decision_not_counted line" "$M" "| Re-adjudication | re-judged 1 · disputed 0 · 1 low-confidence passes not re-judged · 1 not applied (see adjudication/apply.txt) |"
+has "rejected_decision_not_counted blocks" "$M" "- 1 P1 low-confidence pass(es) not re-judged: C9"
+has "rejected_decision_not_counted verdict" "$M" "**NOT SHIP-READY**"
+# malformed_decision_keeps_blocker: agree missing -> apply rejects it; the P1 low pass still blocks
+mk adjm 0 pass ""; setrec "$W/adjm" C9 '{"confidence": "low"}'; mkdir -p "$W/adjm/adjudication"
+printf '[{"criterionId":"C9","persona":"","reason":"looks fine"}]' > "$W/adjm/adjudication/decisions.json"
+printf 'ADJUDICATION: rejected entry 0 (C9): agree missing or not a boolean\nadjudication: applied=0 noop=0 rejected=1 failed=0\n' > "$W/adjm/adjudication/apply.txt"; rr adjm
+M="$(md adjm)"
+has "malformed_decision_keeps_blocker line" "$M" "| Re-adjudication | re-judged 0 · disputed 0 · 1 low-confidence passes not re-judged · 1 not applied (see adjudication/apply.txt) |"
+has "malformed_decision_keeps_blocker blocks" "$M" "- 1 P1 low-confidence pass(es) not re-judged: C9"
+has "malformed_decision_keeps_blocker verdict" "$M" "**NOT SHIP-READY**"
 # unavailable harness: the banner is shown, P1 low-confidence passes block
 mk adju 0 pass ""; setrec "$W/adju" C9 '{"confidence": "low"}'; mkdir -p "$W/adju/adjudication"
 printf 're-adjudication unavailable on codex; 1 low-confidence passes unreviewed\n' > "$W/adju/adjudication/unavailable.txt"; rr adju
@@ -311,6 +335,13 @@ printf '[]' > "$W/nrc/bugs/needs-recheck.json"; node "$RR" "$W/nrc" --quiet >/de
 has "needs_recheck zero" "$(md nrc)" "| Needs re-check | 0 |"
 printf 'junk' > "$W/nrc/bugs/needs-recheck.json"; node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
 lacks "needs_recheck unreadable no row" "$(md nrc)" "Needs re-check"
+# stale_needs_recheck_ignored: an export older than the run's verification.json is a previous run's
+printf '[{"criterionId":"C9"}]' > "$W/nrc/bugs/needs-recheck.json"
+touch -t 202601010000 "$W/nrc/bugs/needs-recheck.json"; touch "$W/nrc/verification.json"
+node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
+lacks "stale_needs_recheck_ignored no row" "$(md nrc)" "Needs re-check"
+touch "$W/nrc/bugs/needs-recheck.json"; node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
+has "fresh_needs_recheck counted" "$(md nrc)" "| Needs re-check | 1 |"
 
 echo "ship-summary: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

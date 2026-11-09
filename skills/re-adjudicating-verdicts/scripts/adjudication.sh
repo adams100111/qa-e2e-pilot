@@ -25,7 +25,10 @@
 #         claim.json       {criterionId, claims:[{persona,verdict,confidence,kinds}]}
 #         evidence/...     from evidence/[<persona>/]<criterionId>/ ONLY the
 #                          record-evidence outputs (ALLOW-list): bake-read-back.json,
-#                          recompute.json, network-response.json, action-trace.json,
+#                          recompute.json, network-response.json, action-trace.json
+#                          (a REDACTED copy: values typed into password/passwd/
+#                          secret/token/otp/pin-labelled or type=password fields
+#                          become "[redacted]"; an unparseable trace is left out),
 #                          identity.json, screenshot-*.{png,jpg,jpeg,webp,json} and
 #                          findings/** — plus the persona's identity.json (for a
 #                          shared criterion: the checklist row role's)
@@ -309,8 +312,72 @@ allowed_file() {
   return 1
 }
 
+# redact_trace <src action-trace.json> <dst> — write a REDACTED copy of an
+# action trace; the original is never copied. A step (or fill_form field)
+# whose target/field/selector/element/name names a password, passwd, secret,
+# token, otp or pin field, or whose type/inputType is `password` (the label
+# rule of checkpoint.sh typed_values_text), has its text/value/values (and,
+# for a secret step, every fields[].value) replaced by "[redacted]". A trace
+# that is not a JSON object is left out of the bundle (rc 1, nothing written).
+redact_trace() {
+  local src="$1" dst="$2" tmp
+  tmp="${dst}.tmp.$$"
+  if has_jq; then
+    jq -S '
+      def secretname: if type == "string" then
+          [ gsub("(?<a>[a-z0-9])(?<b>[A-Z])"; "\(.a) \(.b)") | ascii_downcase
+            | splits("[^a-z0-9]+") | select(. != "")
+            | select(IN("otp", "pin") or test("password|passwd|secret|token")) ] | length > 0
+        else false end;
+      def secret: ([ .target?, .field?, .selector?, .element?, .name? | secretname ] | any)
+          or ([ .type?, .inputType? | strings | ascii_downcase == "password" ] | any);
+      def red: reduce ("text", "value", "values") as $k (.; if has($k) then .[$k] = "[redacted]" else . end);
+      def redfields(all): if (.fields | type) == "array"
+          then .fields |= map(if type == "object" and has("value") and (all or secret) then .value = "[redacted]" else . end)
+          else . end;
+      if type != "object" then error("not an object") else . end
+      | if (.steps | type) == "array" then
+          .steps |= map(if type != "object" then .
+                        elif secret then (red | redfields(true))
+                        else redfields(false) end)
+        else . end' "$src" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  else
+    PYTHONIOENCODING=utf-8 python3 - "$src" > "$tmp" 2>/dev/null <<'PY' || { rm -f "$tmp"; return 1; }
+import json, re, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(d, dict): sys.exit(1)
+def low(s): return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+def secretname(v):
+    if not isinstance(v, str): return False
+    toks = [t for t in re.split(r"[^a-z0-9]+", low(re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", v))) if t]
+    return any(t in ("otp", "pin") or re.search(r"password|passwd|secret|token", t) for t in toks)
+def secret(o):
+    if any(secretname(o.get(k)) for k in ("target", "field", "selector", "element", "name")): return True
+    return any(isinstance(o.get(k), str) and low(o.get(k)) == "password" for k in ("type", "inputType"))
+def redfields(st, all_):
+    fl = st.get("fields")
+    if isinstance(fl, list):
+        for f in fl:
+            if isinstance(f, dict) and "value" in f and (all_ or secret(f)): f["value"] = "[redacted]"
+steps = d.get("steps")
+if isinstance(steps, list):
+    for st in steps:
+        if not isinstance(st, dict): continue
+        if secret(st):
+            for k in ("text", "value", "values"):
+                if k in st: st[k] = "[redacted]"
+            redfields(st, True)
+        else:
+            redfields(st, False)
+print(json.dumps(d, indent=2, sort_keys=True, ensure_ascii=False))
+PY
+  fi
+  mv "$tmp" "$dst"
+}
+
 # copy_dir <src> <dst> — copy ONLY allow-listed regular files (never symlinks)
-# from <src>, preserving the findings/ subtree.
+# from <src>, preserving the findings/ subtree. action-trace.json is written
+# as a redacted copy (redact_trace), never verbatim.
 copy_dir() {
   local src="$1" dst="$2" f rel
   [ -d "$src" ] || return 0
@@ -321,7 +388,10 @@ copy_dir() {
     rel="${f#"$src"/}"
     allowed_file "$rel" || continue
     mkdir -p "$dst/$(dirname "$rel")"
-    cp "$f" "$dst/$rel"
+    case "$rel" in
+      action-trace.json|*/action-trace.json) redact_trace "$f" "$dst/$rel" || true ;;
+      *) cp "$f" "$dst/$rel" ;;
+    esac
   done <<EOF
 $(find "$src" -type f ! -type l | LC_ALL=C sort)
 EOF

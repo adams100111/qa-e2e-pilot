@@ -35,12 +35,22 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
      `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" --drift .qa/runs/<id>/checklist.json .qa/specs/<target>/checklist.json`.
      The engine's gates read the run copy, so an edit there relaxes them silently. The script
      compares, by id, every trust-bearing field — `kind`, `tags`, `mutates`, `humanAction`,
-     `fixture.expect.oracleSource`, `fixture.expect.citation`, `fixture.expect.value` — and the id
-     sets, printing `{ok, drift:[{id, field, frozen, run}], addedInRun, missingInRun}`, exit
-     non-zero on any of them. Every entry is a **plan-drift finding**: list each as
-     `<id>.<field>: <frozen> → <run>` (a flipped `oracleSource` or a dropped `human-action` tag
-     means that row's verdict was gated against a weaker plan than the one approved), plus the
-     ids added in-run and the frozen ids missing from the run copy; never silently accepted.
+     `priority`, `journey`, `fixture.expect.oracleSource`, `fixture.expect.citation`,
+     `fixture.expect.value` — and the id sets; it also compares the run's `journeys.json` with
+     the spec's (the file beside each checklist; a missing file is "no journeys") journey by
+     journey on `priority` and `steps` (ordered), printing `{ok, drift:[{id, field, frozen, run}],
+     addedInRun, missingInRun, journeyDrift:[{id, field, frozen, run}], journeysAddedInRun,
+     journeysMissingInRun, variantsInRun, variantJourneysInRun}`, exit non-zero on any of them.
+     The one sanctioned addition is a `journeys.sh expand-variant` copy, listed in
+     `variantsInRun`/`variantJourneysInRun` and not drift: a row `<spec id>@<suffix>` equal to its
+     spec row except `id`, `variant` and `journey.id` (that id + the same suffix), and a journey
+     `<spec journey id>@<suffix>` equal to its spec journey except `id` and `steps`, whose steps are
+     the spec steps + the suffix, 1:1. Report the variants as information; any other added row or
+     journey is drift. Every entry is a **plan-drift
+     finding**: list each as `<id>.<field>: <frozen> → <run>` (a flipped `oracleSource`, a
+     dropped `human-action` tag, or a P1 row or journey downgraded or trimmed means that verdict
+     was gated against a weaker plan than the one approved), plus the ids added in-run and the
+     frozen ids missing from the run copy; never silently accepted.
    - **No spec plan resolvable** (engine-solo run, ladder tier 4): run
      `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/runs/<id>/checklist.json`
      — the run-local copy, and the report MUST carry the banner: `⚠ out-of-plan check ran against
