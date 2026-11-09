@@ -40,7 +40,13 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
      the spec's (the file beside each checklist; a missing file is "no journeys") journey by
      journey on `priority` and `steps` (ordered), printing `{ok, drift:[{id, field, frozen, run}],
      addedInRun, missingInRun, journeyDrift:[{id, field, frozen, run}], journeysAddedInRun,
-     journeysMissingInRun}`, exit non-zero on any of them. Every entry is a **plan-drift
+     journeysMissingInRun, variantsInRun, variantJourneysInRun}`, exit non-zero on any of them.
+     The one sanctioned addition is a `journeys.sh expand-variant` copy, listed in
+     `variantsInRun`/`variantJourneysInRun` and not drift: a row `<spec id>@<suffix>` equal to its
+     spec row except `id`, `variant` and `journey.id` (that id + the same suffix), and a journey
+     `<spec journey id>@<suffix>` equal to its spec journey except `id` and `steps`, whose steps are
+     the spec steps + the suffix, 1:1. Report the variants as information; any other added row or
+     journey is drift. Every entry is a **plan-drift
      finding**: list each as `<id>.<field>: <frozen> → <run>` (a flipped `oracleSource`, a
      dropped `human-action` tag, or a P1 row or journey downgraded or trimmed means that verdict
      was gated against a weaker plan than the one approved), plus the ids added in-run and the

@@ -566,7 +566,9 @@ release tags).
 - **Plan drift check.** `/qa-verify` runs `verify-plan.sh --drift <run-checklist> <frozen-checklist>`, which compares by id the
   trust-bearing fields (`kind`, `tags`, `mutates`, `humanAction`, `priority`, `journey`, `fixture.expect.{oracleSource,citation,value}`)
   and the run's `journeys.json` against the spec's (`priority`, ordered `steps`, journey ids), and fails on any drift, row or
-  journey added in-run or frozen row or journey missing. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
+  journey added in-run or frozen row or journey missing. The one sanctioned addition is an exact `journeys.sh expand-variant`
+  copy (`<spec id>@<suffix>` rows differing only in `id`, `variant` and `journey.id`, and the suffixed journey whose steps map
+  1:1), reported as `variantsInRun` / `variantJourneysInRun`. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
   constitution marks `gates.oracle` informational.
 - **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
   unavailable banner or did not run); the `verification.md` template gains that section.

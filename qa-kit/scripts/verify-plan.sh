@@ -29,8 +29,14 @@
 #       journeys"), journey by journey (matched by id) on priority and steps (ordered).
 #       Prints {ok, drift:[{id, field, frozen, run}], addedInRun:[ids], missingInRun:[ids],
 #       journeyDrift:[{id, field, frozen, run}], journeysAddedInRun:[ids],
-#       journeysMissingInRun:[ids]}; exit 0 iff nothing drifted and every id set is equal,
-#       else exit 1. A flipped oracleSource, a dropped human-action tag, a P1 row or journey
+#       journeysMissingInRun:[ids], variantsInRun:[ids], variantJourneysInRun:[ids]}; exit 0
+#       iff nothing drifted and every id set is equal, else exit 1. The one sanctioned
+#       addition is a journeys.sh expand-variant copy (listed in variantsInRun /
+#       variantJourneysInRun, not as drift): a run row "<spec id>@<suffix>" (suffix
+#       [A-Za-z0-9][A-Za-z0-9_-]*) whose every field but id, variant and journey.id equals the
+#       spec row's (tags as a set), with an object `variant` and journey.id = the spec row's
+#       journey.id + the same suffix; and a run journey "<spec journey id>@<suffix>" equal to
+#       the spec journey except id and steps, whose steps are the spec steps + the suffix, 1:1. A flipped oracleSource, a dropped human-action tag, a P1 row or journey
 #       downgraded to P2, or a journey step removed is exactly what this catches: each one
 #       relaxes a gate or the ship verdict.
 #
@@ -76,22 +82,44 @@ if [ "${1:-}" = "--drift" ]; then
         ["kind", "tags", "mutates", "humanAction", "priority", "journey", "fixture.expect.oracleSource", "fixture.expect.citation", "fixture.expect.value"] as $fields
       | byid($run) as $R | byid($fro) as $F
       | byid($rjs // []) as $RJ | byid($fjs // []) as $FJ
-      | ([$R | keys[] | . as $k | select($F | has($k) | not)] | sort) as $added
+      | def tagset: if type == "object" and (.tags | type) == "array" then .tags |= (map(tojson) | unique) else . end;
+        def base_of($M; $id): ([$M | keys[] | select(. as $b | $id | startswith($b + "@"))] | max_by(length)) as $b
+          | if $b != null and ($id[($b | length):] | test("\\A@[A-Za-z0-9][A-Za-z0-9_-]*\\z")) then $b else null end;
+        def variant_row_ok($r; $F): base_of($F; $r.id) as $b
+          | if $b == null then false else ($r.id[($b | length):]) as $s | $F[$b] as $B
+            | (($r.variant | type) == "object")
+              and (($r.journey | type) == "object") and (($r.journey.id | type) == "string") and ($r.journey.id | endswith($s))
+              and (if ($B.journey | type) == "object" and ($B.journey.id | type) == "string" then $r.journey.id == $B.journey.id + $s else true end)
+              and (($r.journey | del(.id)) == (if ($B.journey | type) == "object" then $B.journey | del(.id) else {} end))
+              and (($r | del(.id, .variant, .journey) | tagset) == ($B | del(.id, .variant, .journey) | tagset))
+            end;
+        def variant_journey_ok($j; $FJ): base_of($FJ; $j.id) as $b
+          | if $b == null then false else ($j.id[($b | length):]) as $s | $FJ[$b] as $B
+            | (($B.steps | type) == "array") and all($B.steps[]; type == "string")
+              and (($j.steps | type) == "array") and ($j.steps == ($B.steps | map(. + $s)))
+              and (($j | del(.id, .steps)) == ($B | del(.id, .steps)))
+            end;
+        ([$R | keys[] | . as $k | select($F | has($k) | not)] | sort) as $added0
+      | [ $added0[] | select(variant_row_ok($R[.]; $F)) ] as $variants
+      | [ $added0[] | select(variant_row_ok($R[.]; $F) | not) ] as $added
       | ([$F | keys[] | . as $k | select($R | has($k) | not)] | sort) as $missing
-      | ([$RJ | keys[] | . as $k | select($FJ | has($k) | not)] | sort) as $jadded
+      | ([$RJ | keys[] | . as $k | select($FJ | has($k) | not)] | sort) as $jadded0
+      | [ $jadded0[] | select(variant_journey_ok($RJ[.]; $FJ)) ] as $jvariants
+      | [ $jadded0[] | select(variant_journey_ok($RJ[.]; $FJ) | not) ] as $jadded
       | ([$FJ | keys[] | . as $k | select($RJ | has($k) | not)] | sort) as $jmissing
       | cmp($R; $F; $fields) as $drift
       | cmp($RJ; $FJ; ["priority", "steps"]) as $jdrift
       | {ok: (($drift | length) == 0 and ($added | length) == 0 and ($missing | length) == 0
              and ($jdrift | length) == 0 and ($jadded | length) == 0 and ($jmissing | length) == 0),
          drift: $drift, addedInRun: $added, missingInRun: $missing,
-         journeyDrift: $jdrift, journeysAddedInRun: $jadded, journeysMissingInRun: $jmissing}
+         journeyDrift: $jdrift, journeysAddedInRun: $jadded, journeysMissingInRun: $jmissing,
+         variantsInRun: $variants, variantJourneysInRun: $jvariants}
     ')" || die "verify-plan: jq failed (malformed input)."
     printf '%s\n' "$out"
     [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ] && exit 0 || exit 1
   elif has_py; then
     python3 -I -c '
-import json, sys
+import json, re, sys
 run = json.load(open(sys.argv[1], encoding="utf-8")); fro = json.load(open(sys.argv[2], encoding="utf-8"))
 def load_opt(p):
     if p == "/dev/null": return None
@@ -133,10 +161,42 @@ R, F = byid(run), byid(fro)
 RJ, FJ = byid(rjs), byid(fjs)
 added = sorted(k for k in R if k not in F); missing = sorted(k for k in F if k not in R)
 jadded = sorted(k for k in RJ if k not in FJ); jmissing = sorted(k for k in FJ if k not in RJ)
+VSUF = re.compile(r"@[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+def same(a, b): return json.dumps(canon(a), sort_keys=True, ensure_ascii=False) == json.dumps(canon(b), sort_keys=True, ensure_ascii=False)
+def tagset(o):
+    o = dict(o)
+    if isinstance(o.get("tags"), list): o["tags"] = sorted(set(json.dumps(canon(x), sort_keys=True, ensure_ascii=False) for x in o["tags"]))
+    return o
+def without(o, *ks): return {k: v for k, v in o.items() if k not in ks}
+def base_of(M, i):
+    bs = [b for b in M if i.startswith(b + "@")]
+    if not bs: return None
+    b = max(bs, key=len)
+    return b if VSUF.match(i[len(b):]) else None
+def variant_row_ok(r, F):
+    b = base_of(F, r["id"])
+    if b is None: return False
+    sfx = r["id"][len(b):]; B = F[b]
+    j = r.get("journey"); bj = B.get("journey")
+    if not isinstance(r.get("variant"), dict) or not isinstance(j, dict) or not isinstance(j.get("id"), str) or not j["id"].endswith(sfx): return False
+    if isinstance(bj, dict) and isinstance(bj.get("id"), str) and j["id"] != bj["id"] + sfx: return False
+    if not same(without(j, "id"), without(bj, "id") if isinstance(bj, dict) else {}): return False
+    return same(tagset(without(r, "id", "variant", "journey")), tagset(without(B, "id", "variant", "journey")))
+def variant_journey_ok(jn, FJ):
+    b = base_of(FJ, jn["id"])
+    if b is None: return False
+    sfx = jn["id"][len(b):]; B = FJ[b]
+    bs = B.get("steps")
+    if not isinstance(bs, list) or not all(isinstance(x, str) for x in bs): return False
+    if not isinstance(jn.get("steps"), list) or not same(jn["steps"], [x + sfx for x in bs]): return False
+    return same(without(jn, "id", "steps"), without(B, "id", "steps"))
+variants = [k for k in added if variant_row_ok(R[k], F)]; added = [k for k in added if k not in variants]
+jvariants = [k for k in jadded if variant_journey_ok(RJ[k], FJ)]; jadded = [k for k in jadded if k not in jvariants]
 drift = cmp(R, F, FIELDS); jdrift = cmp(RJ, FJ, ["priority", "steps"])
 obj = {"ok": not drift and not added and not missing and not jdrift and not jadded and not jmissing,
        "drift": drift, "addedInRun": added, "missingInRun": missing,
-       "journeyDrift": jdrift, "journeysAddedInRun": jadded, "journeysMissingInRun": jmissing}
+       "journeyDrift": jdrift, "journeysAddedInRun": jadded, "journeysMissingInRun": jmissing,
+       "variantsInRun": variants, "variantJourneysInRun": jvariants}
 print(json.dumps(obj, indent=2, ensure_ascii=False))
 sys.exit(0 if obj["ok"] else 1)
 ' "$RUNPLAN" "$FROZEN" "$RUNJ_IN" "$FROZENJ_IN"
