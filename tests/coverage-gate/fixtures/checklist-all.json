@@ -1,0 +1,8 @@
+[
+  {"id":"C-ADMIN-LIST","surface":"/admin/hackathons","kind":"load-clean","tags":["read-only"],"action":"عرض قائمة الهاكاثونات","surfaceId":"GET /admin/hackathons","persona":"admin"},
+  {"id":"C-HACK-PAGE","surface":"/h/{slug}","kind":"load-clean","tags":["read-only"],"action":"فتح صفحة هاكاثون الرياض للمياه","surfaceId":["GET /h/{slug}","page:Admin/Hackathons/Show"]},
+  {"id":"C-NEWS","surface":"/الأخبار","kind":"load-clean","tags":["read-only"],"action":"عرض صفحة الأخبار","surfaceId":"GET /الأخبار","role":"participant"},
+  {"id":"C-JOB","surface":"","kind":"business-rule","tags":[],"action":"Close registration after the deadline","surfaceId":"job:hackathons:close-registration"},
+  {"id":"C-MAIL","surface":"","kind":"business-rule","tags":[],"action":"Team invite mail is sent","surfaceId":"mail:App\\Mail\\TeamInvite","persona":"admin"},
+  {"id":"C-NO-SURFACE","surface":"/admin","kind":"happy-path","tags":[],"action":"Open the dashboard"}
+]
