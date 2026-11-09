@@ -77,7 +77,7 @@ head -1 "$VMD" | grep -qiE 'criterion|verdict|oracle|bake|persona|C-9' && no "ov
 # --- known defects
 REG="$W/known.json"
 cat > "$REG" <<'EOF'
-[{"id":"KD-1","title":"Profile page blank","ticket":"T-1","expiry":"2026-12-01","severity":"high","observedClass":"non-rendering","surface":"/profile","observedBehaviour":"blank"},
+[{"id":"KD-1","title":"Profile save loses data","ticket":"T-1","expiry":"2026-12-01","severity":"high","observedClass":"wrong-value","surface":"/profile","criterionId":"C-1","observedBehaviour":"old value returns"},
  {"id":"KD-2","title":"Old list bug","ticket":"T-2","expiry":"2026-10-01","severity":"high","observedClass":"non-rendering","surface":"/list","observedBehaviour":"blank"}]
 EOF
 R="$(mkrun kd)"; echo "[$BUG_A,{\"id\":\"BUG-3\",\"criterion_id\":\"C-3\",\"actual\":\"blank\",\"surface\":\"https://app.test/list?x=1\"},{\"id\":\"BUG-4\",\"actual\":\"other\",\"surface\":\"/other\"}]" > "$R/bug-log.json"
@@ -88,9 +88,33 @@ check "known_defect_dedup: duplicateOf set" "$(python3 -c 'import json,sys;print
 [ -e "$OUTD/BUG-3.md" ] && ok "expired_known_defect_not_dedup: expired defect does not dedup" || no "expired defect swallowed a bug"
 # criterion on the defect must match
 R="$(mkrun kdc)"; echo "[$BUG_A]" > "$R/bug-log.json"
-sed 's/"surface":"\/profile"/"surface":"\/profile","criterionId":"C-OTHER"/' "$REG" > "$W/known-c.json"
+sed 's/"criterionId":"C-1"/"criterionId":"C-OTHER"/' "$REG" > "$W/known-c.json"
 run kdc "$R" --known-defects "$W/known-c.json"
-check "known_defect_dedup: differing criterion is not a duplicate" "$SUM" '{"exported":1,"duplicates":0,"skipped":0}'
+check "different_criterion_same_surface_not_dedup" "$SUM" '{"exported":1,"duplicates":0,"skipped":0}'
+
+# no criterion on the defect: dedup only on matching class; "/" never dedups
+cat > "$W/known-cls.json" <<'EOF'
+[{"id":"KD-5","title":"Orders list blank","ticket":"T-5","expiry":"2026-12-01","severity":"high","observedClass":"non-rendering","surface":"/orders","observedBehaviour":"blank"},
+ {"id":"KD-6","title":"Home degraded","ticket":"T-6","expiry":"2026-12-01","severity":"high","observedClass":"non-rendering","surface":"/","observedBehaviour":"blank"}]
+EOF
+R="$(mkrun cls)"
+cat > "$R/bug-log.json" <<'EOF'
+[{"id":"C1","layer":"FE","criterion_id":"C-5","actual":"The orders page stays blank","surface":"/orders"},
+ {"id":"C2","layer":"FE","criterion_id":"C-6","actual":"The total shows the wrong amount","surface":"/orders"},
+ {"id":"C3","layer":"service","criterion_id":"C-7","actual":"The page is slow","surface":"/orders"},
+ {"id":"C4","criterion_id":"C-8","actual":"The orders page stays blank","surface":"/orders"},
+ {"id":"C5","layer":"FE","observedClass":"non-rendering","criterion_id":"C-9","actual":"x","surface":"/orders"},
+ {"id":"C6","layer":"FE","criterion_id":"C-10","actual":"The home page stays blank","surface":"/"}]
+EOF
+run cls "$R" --known-defects "$W/known-cls.json"
+check "class_match_dedups: only a same-class bug on the surface is a duplicate" "$(python3 -c 'import json,sys;print([b.get("duplicateOf") for b in json.load(open(sys.argv[1]))])' "$OUTD/bugs.json")" "['KD-5', None, None, None, 'KD-5', None]"
+check "root_surface_not_dedup: '/' never dedups" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[5].get("duplicateOf"))' "$OUTD/bugs.json")" None
+
+# ids: case-insensitive collisions are bumped until free
+R="$(mkrun ids)"; echo '[{"id":"a","actual":"1"},{"id":"A","actual":"2"},{"id":"a-2","actual":"3"},{"id":"a","actual":"4"}]' > "$R/bug-log.json"
+run ids "$R"
+check "ids: collision-proof, case-insensitive" "$(python3 -c 'import json,sys;print([b["id"] for b in json.load(open(sys.argv[1]))])' "$OUTD/bugs.json")" "['a', 'A-2', 'a-2-2', 'a-3']"
+check "ids: one file per bug" "$(ls "$OUTD" | grep -c '\.md$')" 4
 
 # --- empty_bug_log_exports_zero
 R="$(mkrun empty)"; echo '[]' > "$R/bug-log.json"
@@ -107,15 +131,19 @@ cat > "$R/bug-log.json" <<'EOF'
 EOF
 run ar "$R"
 grep -q 'حفظ رقم الجوال' "$OUTD/bugs.json" && ok "arabic_title_parity: UTF-8 kept in bugs.json (no \\u escapes)" || no "arabic escaped"
-ls "$OUTD" | grep -q '^BUG.md$' && ok "arabic_title_parity: id sanitised to a safe filename" || no "unexpected md name: $(ls "$OUTD")"
-grep -q 'يعود الرقم القديم' "$OUTD"/BUG.md && ok "arabic_title_parity: md carries Arabic body" || no "arabic md body"
+WANT="BUG-$(printf '%s' 'BUG-ع' | python3 -c 'import sys,hashlib;print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest()[:8])')"
+[ -e "$OUTD/$WANT.md" ] && ok "arabic_title_parity: non-ASCII id -> BUG-<sha1 first 8>" || no "unexpected md name: $(ls "$OUTD")"
+grep -q 'يعود الرقم القديم' "$OUTD/$WANT.md" && ok "arabic_title_parity: md carries Arabic body" || no "arabic md body"
 
 # --- secrets never exported
 R="$(mkrun sec)"; mkdir -p "$W/sec/.qa"
 echo '{"enforcement":{"redactedKeys":["hunter2"],"secretPatterns":["token\\s*[=:]\\s*\\S+"]}}' > "$W/sec/.qa/config.json"
-echo '[{"id":"S-1","password":"p@ss","actual":"login with hunter2 sent token=abc123 to server","expected":"ok","steps":["type hunter2"],"api_key":"k"}]' > "$R/bug-log.json"
+JWT='eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl'
+cat > "$R/bug-log.json" <<EOF
+[{"id":"S-1","password":"p@ss","actual":"login with hunter2 sent token=abc123 to server; header Authorization: Bearer $JWT and Authorization: Basic dXNlcjpwYXNz; also Bearer $JWT alone","expected":"ok","steps":["type hunter2","saw eyJzdWIiOiIxMjM0In0.x.y"],"api_key":"k"}]
+EOF
 run sec "$R"
-if grep -rqE 'hunter2|abc123|p@ss' "$OUTD"; then no "secret leaked"; else ok "secrets: keys dropped and values redacted"; fi
+if grep -rqE 'hunter2|abc123|p@ss|eyJ|dXNlcjpwYXNz' "$OUTD"; then no "secret leaked"; else ok "secrets: keys dropped, bearer/basic/JWT values redacted"; fi
 grep -q '<redacted>' "$OUTD/S-1.md" && ok "secrets: placeholder shown" || no "no placeholder"
 
 echo "bug-export: PASS=$pass FAIL=$fail"

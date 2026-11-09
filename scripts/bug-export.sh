@@ -16,13 +16,21 @@
 # that criterion (and persona).
 #
 # DEDUP: a bug whose `surface` (alias url|route) path equals the `surface` of an
-# `outstanding` known defect (scripts/known-defects.sh status, as of --today) - and whose
-# criterion equals the defect's criterionId/criterion when the defect names one - gets
-# duplicateOf=<defect id> and NO .md. Expired / cleared defects never dedup: an overdue
+# `outstanding` known defect (scripts/known-defects.sh status, as of --today) gets
+# duplicateOf=<defect id> and NO .md, but only when ALSO (a) the defect names a criterion
+# (criterionId|criterion) and it equals the bug's, or (b) the defect names none and its
+# observedClass equals the bug's class (explicit observedClass|class on the bug, else:
+# layer FE + a blank/not-loading symptom -> non-rendering; a wrong/lost/stale value ->
+# wrong-value; any other known layer -> degraded; no layer -> undetermined, never dedups).
+# The root path "/" alone never dedups. Expired / cleared defects never dedup: an overdue
 # waiver must not keep silencing a live bug.
 #
 # SEVERITY: the bug-log's own `severity` wins; else layer matching route|service|
 # migration|db -> high, anything else (FE, unknown) -> medium.
+#
+# IDS: sanitised to [A-Za-z0-9._-]; an id with any non-ASCII character becomes
+# BUG-<first 8 hex of sha1(original id)> (stable across runs); a name already used (compared
+# case-insensitively) is bumped with -2, -3, ... until free.
 #
 # SECRETS: input is scrubbed before anything is written. Fields whose KEY is a configured
 # enforcement.redactedKeys entry (or looks like password/secret/token/api key/
@@ -84,7 +92,7 @@ if [ -n "$REG" ]; then
 fi
 if [ "$ENGINE" = python3 ]; then
   python3 -I - "$TMP" "$OUT" <<'PY' || die "python engine failed"
-import json, os, re, sys
+import hashlib, json, os, re, sys
 tmp, out = sys.argv[1], sys.argv[2]
 
 def rd(n):
@@ -100,7 +108,10 @@ SENS_KEY = re.compile("password|passwd|secret|token|api[_-]?key|authorization|co
 DEFAULT_PATTERNS = ["(password|passwd|secret|token|api[_-]?key|apikey|authorization|bearer|access[_-]?key|private[_-]?key|client[_-]?secret)\\s*[=:]\\s*\\S+"]
 enf = cfg.get("enforcement") if isinstance(cfg, dict) and isinstance(cfg.get("enforcement"), dict) else {}
 rk = [k for k in (enf.get("redactedKeys") if isinstance(enf.get("redactedKeys"), list) else []) if isinstance(k, str) and k != ""]
-pats = enf["secretPatterns"] if isinstance(enf.get("secretPatterns"), list) else DEFAULT_PATTERNS
+AUTH_PATTERNS = ["authorization\\s*[=:]\\s*((bearer|basic)\\s+)?\\S+", "bearer\\s+[A-Za-z0-9._~+/=-]+", "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*"]
+cfgp = enf.get("secretPatterns") if isinstance(enf.get("secretPatterns"), list) else None
+pats = cfgp if cfgp is not None else DEFAULT_PATTERNS
+pats = ([] if cfgp == [] else AUTH_PATTERNS) + pats
 pats = [re.sub(r"^\(\?i\)", "", p) for p in pats if isinstance(p, str) and p != ""]
 cpats = []
 for p in pats:
@@ -137,6 +148,20 @@ def sid(s):
     s = re.sub(r"[^A-Za-z0-9._-]+", "-", s)
     s = re.sub(r"^[-.]+|[-.]+$", "", s)
     return s or "BUG"
+def mkid(orig, bump=None):
+    if re.search(r"[^\x00-\x7f]", orig):
+        return "BUG-" + hashlib.sha1(orig.encode("utf-8")).hexdigest()[:8]
+    return sid(orig)
+NONRENDER = re.compile(r"blank|white screen|not render|n.t render|never load|not load|fails to load|empty page|nothing (is )?(shown|displayed|appears)", re.I)
+WRONGVAL = re.compile(r"wrong|incorrect|instead of|rather than|(comes|came) back|not (saved|kept)|lost|loses|stale|mismatch", re.I)
+def bug_class(b, layer, title, actual):
+    for k in ("observedClass", "observed_class", "class"):
+        if b.get(k) in ("non-rendering", "wrong-value", "degraded"): return b[k]
+    if layer == "": return None
+    t = title + " " + actual
+    if re.search(r"(^|[^a-z])(fe|frontend|front-end|ui)([^a-z]|$)", layer, re.I) and NONRENDER.search(t): return "non-rendering"
+    if WRONGVAL.search(t): return "wrong-value"
+    return "degraded"
 def sev_for(layer):
     return "high" if re.search("route|service|migration|db", layer, re.I) else "medium"
 
@@ -162,12 +187,13 @@ for n, b in enumerate(entries, 1):
         if title == "": title = "Problem found while checking the feature"
     sev = b.get("severity")
     sev = sev if isinstance(sev, str) and sev != "" else sev_for(layer)
-    d = {"id": sid(text(first(b.get("bug_id"), b.get("id"), "BUG-%d" % n))), "title": title, "severity": sev, "layer": layer,
+    orig = text(first(b.get("bug_id"), b.get("id"), "BUG-%d" % n))
+    d = {"id": mkid(orig), "title": title, "severity": sev, "layer": layer,
          "criterionId": text(first(b.get("criterion_id"), b.get("criterion"), ""))}
     j = first(b.get("journey_id"), b.get("journeyId"))
     if j is not None and text(j) != "": d["journeyId"] = text(j)
     d.update({"persona": text(first(b.get("persona"), "")), "steps": steps, "expected": expected, "actual": actual, "evidence": ev})
-    items.append((d, nsurf(text(first(b.get("surface"), b.get("url"), b.get("route"), "")))))
+    items.append((d, nsurf(text(first(b.get("surface"), b.get("url"), b.get("route"), ""))), bug_class(b, layer, title, actual)))
 
 if isinstance(ver, list):
     for r in ver:
@@ -175,15 +201,15 @@ if isinstance(ver, list):
         if r.get("inRunVerdict") != "pass" or not isinstance(r.get("verifierVerdict"), str) or r["verifierVerdict"] == "pass": continue
         r = red(r)
         crit = text(first(r.get("criterionId"), "")); per = text(first(r.get("persona"), ""))
-        if any(d["criterionId"] == crit and (d["persona"] == per or d["persona"] == "" or per == "") for d, _ in items):
+        if any(d["criterionId"] == crit and (d["persona"] == per or d["persona"] == "" or per == "") for d, _, _c in items):
             skipped += 1; continue
         rs = [text(x) for x in r["reasons"]] if isinstance(r.get("reasons"), list) else []
-        items.append(({"id": sid("VERIFY-" + crit + ("-" + per if per else "")),
+        items.append(({"id": mkid("VERIFY-" + crit + ("-" + per if per else "")),
                        "title": "A step that looked fine did not hold up when re-checked",
                        "severity": "medium", "layer": "", "criterionId": crit, "persona": per, "steps": [],
                        "expected": "The step should still work when it is checked again from scratch.",
                        "actual": ("An independent re-check could not confirm this step worked. " + "; ".join(rs)).strip(),
-                       "evidence": []}, ""))
+                       "evidence": []}, "", None))
 
 # known-defect dedup
 rows = {}
@@ -193,16 +219,20 @@ outstanding = []
 for e in (reg if isinstance(reg, list) else []):
     if isinstance(e, dict) and rows.get(text(e.get("id"))) == "outstanding":
         c = first(e.get("criterionId"), e.get("criterion"))
-        outstanding.append((text(e.get("id")), nsurf(text(e.get("surface"))), None if c is None else text(c)))
+        c = None if c is None or text(c) == "" else text(c)
+        outstanding.append((text(e.get("id")), nsurf(text(e.get("surface"))), c, e.get("observedClass")))
 
-seen = {}
+used = set()
 bugs = []
-for d, surf in items:
-    base = d["id"]; c = seen.get(base, 0); seen[base] = c + 1
-    if c: d["id"] = "%s-%d" % (base, c + 1)
-    if surf != "":
-        for eid, es, ec in outstanding:
-            if es == surf and (ec is None or ec == d["criterionId"]):
+for d, surf, cls in items:
+    base = d["id"]; cand = base; k = 1
+    while cand.lower() in used:
+        k += 1; cand = "%s-%d" % (base, k)
+    used.add(cand.lower()); d["id"] = cand
+    if surf != "" and surf != "/":
+        for eid, es, ec, eoc in outstanding:
+            if es != surf: continue
+            if (ec is not None and d["criterionId"] != "" and ec == d["criterionId"]) or (ec is None and cls is not None and eoc == cls):
                 d["duplicateOf"] = eid; break
     bugs.append(d)
 
@@ -235,13 +265,25 @@ def sid: gsub("[^A-Za-z0-9._-]+"; "-") | gsub("^[-.]+|[-.]+$"; "") | if . == "" 
 def nsurf: gsub("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*"; "") | gsub("[?#].*$"; "")
   | (if length > 1 then (gsub("/+$"; "") | if . == "" then "/" else . end) else . end)
   | if startswith("/") then . else "" end;
+def mkid($hm): . as $o | if test("[^\u0000-\u007f]") then "BUG-" + ($hm[$o] // "00000000") else sid end;
+def bug_class($b; $layer; $title; $actual):
+  (first_of([$b.observedClass, $b.observed_class, $b.class]) ) as $x
+  | if ($x == "non-rendering" or $x == "wrong-value" or $x == "degraded") then $x
+    elif $layer == "" then null
+    else ($title + " " + $actual) as $t
+      | if ($layer | test("(^|[^a-z])(fe|frontend|front-end|ui)([^a-z]|$)"; "i")) and ($t | test("blank|white screen|not render|n.t render|never load|not load|fails to load|empty page|nothing (is )?(shown|displayed|appears)"; "i")) then "non-rendering"
+        elif ($t | test("wrong|incorrect|instead of|rather than|(comes|came) back|not (saved|kept)|lost|loses|stale|mismatch"; "i")) then "wrong-value"
+        else "degraded" end
+    end;
 def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium" end;
 
 ($cfg[0] | if type == "object" and (.enforcement | type) == "object" then .enforcement else {} end) as $enf
 | ([($enf.redactedKeys | if type == "array" then .[] else empty end) | select(type == "string" and . != "")]) as $rk
 | ($rk | map(ascii_downcase)) as $rkl
-| (if ($enf.secretPatterns | type) == "array" then $enf.secretPatterns
+| (($enf.secretPatterns | type) == "array") as $hasCfg
+| (if $hasCfg then $enf.secretPatterns
    else ["(password|passwd|secret|token|api[_-]?key|apikey|authorization|bearer|access[_-]?key|private[_-]?key|client[_-]?secret)\\s*[=:]\\s*\\S+"] end
+   | (if $hasCfg and ($enf.secretPatterns | length) == 0 then [] else ["authorization\\s*[=:]\\s*((bearer|basic)\\s+)?\\S+", "bearer\\s+[A-Za-z0-9._~+/=-]+", "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*"] end) + .
    | map(select(type == "string" and . != "") | sub("^\\(\\?i\\)"; ""))) as $pats
 | def red: walk(
     if type == "object" then
@@ -266,12 +308,13 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
     | (($b.title | text) | if . != "" then . else
          (if $actual != "" then ($actual | split(".")[0] | split("\n")[0] | .[0:80] | gsub("^\\s+|\\s+$"; "")) else "" end)
          | if . == "" then "Problem found while checking the feature" else . end end) as $title
-    | ({id: (first_of([$b.bug_id, $b.id, "BUG-\($n)"]) | text | sid), title: $title,
+    | ({id: (first_of([$b.bug_id, $b.id, "BUG-\($n)"]) | text | mkid($hm)), title: $title,
         severity: (if ($b.severity | type) == "string" and $b.severity != "" then $b.severity else ($layer | sev_for) end),
         layer: $layer, criterionId: (first_of([$b.criterion_id, $b.criterion, ""]) | text)}
        + (first_of([$b.journey_id, $b.journeyId]) as $j | if $j != null and ($j | text) != "" then {journeyId: ($j | text)} else {} end)
        + {persona: (first_of([$b.persona, ""]) | text), steps: $steps, expected: ($b.expected | text), actual: $actual, evidence: $ev}
-       | {d: ., s: (first_of([$b.surface, $b.url, $b.route, ""]) | text | nsurf)}) ] as $logItems
+       | {d: ., s: (first_of([$b.surface, $b.url, $b.route, ""]) | text | nsurf), c: bug_class($b; $layer; $title; $actual),
+         o: (first_of([$b.bug_id, $b.id, "BUG-\($n)"]) | text)}) ] as $logItems
 | (if ($ver[0] | type) == "array" then $ver[0] else [] end
    | map(select(type == "object" and .inRunVerdict == "pass" and (.verifierVerdict | type) == "string" and .verifierVerdict != "pass"))) as $over
 | (reduce $over[] as $r0 ({items: $logItems, skip: $skip0};
@@ -279,29 +322,47 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
     | (first_of([$r.criterionId, ""]) | text) as $crit
     | (first_of([$r.persona, ""]) | text) as $per
     | if (.items | any(.d.criterionId == $crit and (.d.persona == $per or .d.persona == "" or $per == ""))) then .skip += 1
-      else .items += [{d: {id: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end) | sid),
+      else .items += [{d: {id: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end) | mkid($hm)),
              title: "A step that looked fine did not hold up when re-checked", severity: "medium", layer: "",
              criterionId: $crit, persona: $per, steps: [],
              expected: "The step should still work when it is checked again from scratch.",
              actual: (("An independent re-check could not confirm this step worked. " + ((if ($r.reasons | type) == "array" then $r.reasons | map(text) else [] end) | join("; "))) | gsub("^\\s+|\\s+$"; "")),
-             evidence: []}, s: ""}] end)) as $acc
+             evidence: []}, s: "", c: null,
+             o: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end))}] end)) as $acc
 | (($st[0] | if type == "array" then map(select(type == "object") | {key: (.id | text), value: .state}) | from_entries else {} end)) as $rows
 | ([ ($reg[0] | if type == "array" then .[] else empty end) | select(type == "object")
      | select($rows[(.id | text)] == "outstanding")
-     | {id: (.id | text), s: (.surface | text | nsurf), c: (first_of([.criterionId, .criterion]) | if . == null then null else text end)} ]) as $out
+     | {id: (.id | text), s: (.surface | text | nsurf), oc: .observedClass,
+        c: (first_of([.criterionId, .criterion]) | if . == null then null else text end | if . == "" then null else . end)} ]) as $out
 | ($acc.items) as $its
-| {skipped: $acc.skip,
-   bugs: [ range(0; $its | length) as $i | $its[$i] as $it
-      | ([ $its[0:$i][] | select(.d.id == $it.d.id) ] | length) as $c
-      | ($it.d | if $c > 0 then .id = "\(.id)-\($c + 1)" else . end) as $d
-      | ([ $out[] | select($it.s != "" and .s == $it.s and (.c == null or .c == $d.criterionId)) | .id ] | .[0]) as $dup
-      | if $dup != null then $d + {duplicateOf: $dup} else $d end ]}
+| (reduce range(0; $its | length) as $i ({used: {}, bugs: []};
+      $its[$i] as $it
+      | ($it.d.id) as $base
+      | (def pick($k): ($base + (if $k > 1 then "-\($k)" else "" end)) as $cand
+           | if .used[$cand | ascii_downcase] then pick($k + 1) else $cand end;
+         pick(1)) as $name
+      | .used[$name | ascii_downcase] = true
+      | ($it.d | .id = $name) as $d
+      | ([ $out[] | select($it.s != "" and $it.s != "/" and .s == $it.s
+            and ((.c != null and $d.criterionId != "" and .c == $d.criterionId)
+                 or (.c == null and $it.c != null and .oc == $it.c))) | .id ] | .[0]) as $dup
+      | .bugs += [if $dup != null then $d + {duplicateOf: $dup} else $d end])) as $fin
+| {skipped: $acc.skip, bugs: $fin.bugs, needs: ([$its[] | .o | select(test("[^\u0000-\u007f]"))] | unique)}
 JQ
-jq -n -c --slurpfile bl "$TMP/bl.json" --slurpfile ver "$TMP/ver.json" --slurpfile cfg "$TMP/cfg.json" \
+runjq() { jq -n -c --argjson hm "$1" --slurpfile bl "$TMP/bl.json" --slurpfile ver "$TMP/ver.json" --slurpfile cfg "$TMP/cfg.json" \
   --slurpfile reg "$TMP/reg.json" --slurpfile st "$TMP/st.json" -f "$TMP/export.jq" > "$TMP/result.json" 2> "$TMP/jq.err" \
-  || die "jq engine failed: $(head -c 300 "$TMP/jq.err")"
+  || die "jq engine failed: $(head -c 300 "$TMP/jq.err")"; }
+sha8() { if command -v shasum >/dev/null 2>&1; then shasum -a 1; else sha1sum; fi | cut -c1-8; }
+# Pass 1 learns which original ids are non-ASCII; they are hashed here (jq has no sha1) and pass 2 uses them.
+runjq '{}'
+HM='{}'; NN="$(jq '.needs | length' "$TMP/result.json")"; k=0
+while [ "$k" -lt "$NN" ]; do
+  H="$(jq -j --argjson k "$k" '.needs[$k]' "$TMP/result.json" | sha8)"
+  HM="$(jq -c --argjson k "$k" --arg h "$H" --slurpfile r "$TMP/result.json" '. + {($r[0].needs[$k]): $h}' <<< "$HM")"
+  k=$((k + 1))
+done
+[ "$NN" -eq 0 ] || runjq "$HM"
 jq '.bugs' "$TMP/result.json" > "$OUT/bugs.json" || die "cannot write bugs.json"
-# Dedup collisions above are keyed on the pre-suffix id; ids were made unique per base.
 cat > "$TMP/md.jq" <<'JQ'
 .bugs[$i] as $d
 | (["# " + $d.title, "", "**Severity:** " + $d.severity]
