@@ -88,6 +88,85 @@ PY
 node "$RR" "$W/ovr" --quiet >/dev/null 2>&1
 has "verifier_override_on_p1 blocks" "$(md ovr)" "verifier override on P1 C9"
 
+# fix round 1: fail-closed cases
+mk adp 0 pass ""
+python3 - "$W/adp" <<'PY'
+import json, sys
+d = sys.argv[1]
+c = json.load(open(d + "/coverage.json")); c["adapterOk"] = False; json.dump(c, open(d + "/coverage.json", "w"))
+PY
+node "$RR" "$W/adp" --quiet >/dev/null 2>&1
+has "adapter_failed blocks" "$(md adp)" "**NOT SHIP-READY**"
+has "adapter_failed reason" "$(md adp)" "- census adapter failed"
+
+mk nov 0 pass ""; rm "$W/nov/verification.json"; node "$RR" "$W/nov" --quiet >/dev/null 2>&1
+M="$(md nov)"
+has "missing_verification blocks" "$M" "**NOT SHIP-READY**"
+has "missing_verification reason" "$M" "- not independently verified"
+has "missing_verification row" "$M" "| Verifier overrides on P1 | unknown |"
+
+mk stl 0 pass ""
+python3 - "$W/stl" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump([{"criterionId": "C9", "persona": "", "inRunVerdict": "fail", "verifierVerdict": "fail", "confidence": "high", "reasons": []}], open(d + "/verification.json", "w"))
+PY
+node "$RR" "$W/stl" --quiet >/dev/null 2>&1
+M="$(md stl)"
+has "stale_verification blocks" "$M" "**NOT SHIP-READY**"
+has "stale_verification reason" "$M" "verification out of date on P1 C9"
+
+mk err 0 error service
+has "error_counts_as_fail" "$(md err)" "coding-layer fail on P1 C9 (service)"
+mk unk 0 fail ""
+M="$(md unk)"
+has "unknown_layer blocks" "$M" "**NOT SHIP-READY**"
+has "unknown_layer shown" "$M" "C9 (layer unknown)"
+
+mk emp 0 pass ""
+python3 - "$W/emp" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump({"total": 3, "covered": 0, "excluded": 3, "uncovered": 0, "rows": [], "warnings": [], "adapterOk": True}, open(d + "/coverage.json", "w"))
+PY
+node "$RR" "$W/emp" --quiet >/dev/null 2>&1
+M="$(md emp)"
+has "empty_census row" "$M" "| Census coverage | unknown (empty census) |"
+has "empty_census blocks" "$M" "**NOT SHIP-READY**"
+
+mk pct 3 pass ""
+python3 - "$W/pct" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump({"total": 8, "covered": 5, "excluded": 0, "uncovered": 3, "rows": [], "warnings": [], "adapterOk": True}, open(d + "/coverage.json", "w"))
+PY
+node "$RR" "$W/pct" --quiet >/dev/null 2>&1
+M="$(md pct)"
+has "percent_computed" "$M" "5 of 8 covered (62.5%)"
+lacks "no undefined" "$M" "undefined"
+
+mk nop1 0 pass ""
+python3 - "$W/nop1" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump([{"id": "J-SUBMIT", "title": "t", "priority": "P2", "roles": [], "steps": ["J1-S1"]}], open(d + "/journeys.json", "w"))
+PY
+node "$RR" "$W/nop1" --quiet >/dev/null 2>&1
+M="$(md nop1)"
+has "zero_p1_journeys row" "$M" "| P1 journeys | none declared |"
+has "zero_p1_journeys blocks" "$M" "**NOT SHIP-READY**"
+
+has "flaky not tracked" "$(md green)" "| Flaky | not tracked |"
+mk flk 0 pass ""
+python3 - "$W/flk" <<'PY'
+import json, sys
+d = sys.argv[1]
+c = json.load(open(d + "/checkpoint.json")); c["criteria"][2]["flaky"] = True; json.dump(c, open(d + "/checkpoint.json", "w"))
+PY
+node "$RR" "$W/flk" --quiet >/dev/null 2>&1
+has "flaky counted" "$(md flk)" "| Flaky | 1 |"
+check "md ship body has no trailing separator" "$(printf '%s' "$(md green)" | sed -n '/^## Ship readiness/,/^## Summary/p' | grep -c '^---$')" "1"
+
 # non-ship run (no coverage/journeys/profile): byte-identical to the pre-ship renderer (commit 8a207a2)
 git -C "$ROOT" show 8a207a2:scripts/render-report.js > "$W/old-render.js" 2>/dev/null
 if [ -s "$W/old-render.js" ]; then
