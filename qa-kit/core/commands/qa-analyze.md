@@ -80,6 +80,18 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    failed adapter. Exit 2 is a usage or input error, not a verdict: report it and stop. Also run
    `journeys.sh validate` when `journeys.json` exists and list its errors under Coverage.
 
+4c. **Oracle confirmation (human, only when needed).** When step 4's check-fixtures run or the checklist
+   shows computed rows whose `fixture.expect.oracleSource` is not `human` or `spec` (unconfirmed proposals),
+   and `autonomousSetup` is not on in the effective config: render the confirmation page with
+   `bash "{{PLUGIN_ROOT}}/scripts/oracle-confirm.sh" render .qa/specs/<target>/checklist.json .qa/specs/<target>/oracle-confirm.html`,
+   tell the human the page path, and ask them to open it, accept / edit / leave unknown per check, press
+   "Save decisions", and give you the downloaded `oracle-decisions.json`. When they do, run
+   `bash "{{PLUGIN_ROOT}}/scripts/oracle-confirm.sh" apply .qa/specs/<target>/checklist.json <oracle-decisions.json>`
+   (it keeps a `checklist.json.bak`; accepted and edited rows become `oracleSource: human`), then re-run
+   `check-fixtures.sh` and report its output plus the apply summary (`unmatched` ids need a look). This is
+   the one place this step writes to `checklist.json`, and only through `apply` on the human's decisions.
+   Under `autonomousSetup` skip the page entirely and report only the count of unconfirmed computed rows.
+
 5. **Write `analysis.md`** from `{{PLUGIN_ROOT}}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
    oracle note via `/qa-spec`") the operator may accept or decline. The template ships **six** gap
@@ -118,7 +130,7 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    to decompose.
 
 Guardrails: the coverage gate (step 4b) is the one blocking check besides plan defects, and its verdict comes from
-`coverage.sh`'s exit code; read-only (never edit `scenarios.md`/`checklist.json`/`spec-roles.json`); advisory (never a
+`coverage.sh`'s exit code; read-only (never edit `scenarios.md`/`checklist.json`/`spec-roles.json`; the sole exception is `oracle-confirm.sh apply` on the human's saved decisions, step 4c); advisory (never a
 `fail`/block) — **and that advisory charter is explicitly carved out for `plan-defect`**: this step still
 never blocks the run, but it must not present a plan defect as an optional, declinable suggestion;
 remediation for every other category is the human's to approve, applied by re-running the relevant

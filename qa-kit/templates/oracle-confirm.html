@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" dir="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confirm expected values</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafafa; --fg:#1f2328; --mut:#656d76; --line:#d0d7de; --card:#fff; --acc:#2557a7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171a; --fg:#e6e8ea; --mut:#9aa4ad; --line:#2f353b; --card:#1c2024; --acc:#7aa8ee; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif; }
+  header { position:sticky; top:0; z-index:2; background:var(--card); border-block-end:1px solid var(--line); padding:12px 24px; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; flex:1 1 auto; }
+  main { max-width:1100px; margin:0 auto; padding:16px 24px 64px; }
+  p.lead { color:var(--mut); margin-block:8px 16px; }
+  section.group { background:var(--card); border:1px solid var(--line); border-radius:8px; margin-block-end:16px; }
+  section.group > .ghead { padding:12px 16px; border-block-end:1px solid var(--line); display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+  .ghead .rule { font-weight:600; flex:1 1 320px; }
+  .ghead .count { color:var(--mut); font-size:13px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:start; padding:8px 12px; border-block-end:1px solid var(--line); vertical-align:top; font-size:14px; }
+  th { color:var(--mut); font-weight:500; font-size:12px; }
+  tr:last-child td { border-block-end:0; }
+  code { font:12px ui-monospace,Menlo,Consolas,monospace; word-break:break-word; white-space:pre-wrap; }
+  .val { font-weight:600; }
+  select, input[type=text], button { font:inherit; padding:4px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  input[type=text] { width:12em; }
+  button, a.btn { cursor:pointer; background:var(--acc); color:#fff; border-color:var(--acc); text-decoration:none; padding:6px 14px; border-radius:6px; display:inline-block; font:inherit; }
+  button.secondary { background:transparent; color:var(--acc); }
+  .note { color:var(--mut); font-size:12px; }
+  .err { color:#b42318; font-size:13px; }
+  .empty { padding:48px 0; text-align:center; color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Confirm expected values</h1>
+  <span class="count" id="summary"></span>
+  <button id="save" type="button">Save decisions</button>
+  <a id="dl" class="btn" style="display:none" download="oracle-decisions.json">Download oracle-decisions.json</a>
+</header>
+<main>
+  <p class="lead">Each expected value below was proposed, not confirmed. For every check, accept the value, edit it, or leave it unknown. Then save the decisions file and hand it back.</p>
+  <div id="groups"></div>
+  <p class="err" id="err" role="alert"></p>
+</main>
+<script type="application/json" id="oracle-data">
+__ORACLE_DATA__
+</script>
+<script>
+(function () {
+  var data = JSON.parse(document.getElementById('oracle-data').textContent);
+  var groups = data.groups || [];
+  var root = document.getElementById('groups');
+  var rowCtl = []; // {id, sel, inp, proposed}
+
+  function el(tag, props, kids) {
+    var n = document.createElement(tag);
+    for (var k in (props || {})) { if (k === 'text') n.textContent = props[k]; else n.setAttribute(k, props[k]); }
+    (kids || []).forEach(function (c) { n.appendChild(c); });
+    return n;
+  }
+  function show(v) { return typeof v === 'string' ? v : JSON.stringify(v); }
+  function option(v, t) { return el('option', { value: v, text: t }); }
+  function mkSelect() { return el('select', {}, [option('unknown', 'Unknown'), option('accept', 'Accept'), option('edit', 'Edit')]); }
+  function sync(c) { c.inp.disabled = c.sel.value !== 'edit'; if (c.inp.disabled) c.inp.value = ''; }
+
+  if (!groups.length) { root.appendChild(el('div', { 'class': 'empty', text: 'Nothing to confirm.' })); }
+
+  groups.forEach(function (g) {
+    var ctls = [];
+    var gsel = mkSelect(), ginp = el('input', { type: 'text', 'dir': 'auto', placeholder: 'value for all' });
+    ginp.disabled = true;
+    gsel.addEventListener('change', function () { ginp.disabled = gsel.value !== 'edit'; });
+    var apply = el('button', { type: 'button', 'class': 'secondary', text: 'Apply to whole group' });
+    apply.addEventListener('click', function () {
+      ctls.forEach(function (c) { c.sel.value = gsel.value; sync(c); if (gsel.value === 'edit') c.inp.value = ginp.value; });
+    });
+    var head = el('div', { 'class': 'ghead' }, [
+      el('div', { 'class': 'rule', dir: 'auto', text: g.rule }),
+      el('span', { 'class': 'count', text: g.rows.length + (g.rows.length === 1 ? ' check' : ' checks') }),
+      gsel, ginp, apply
+    ]);
+    var tb = el('tbody');
+    g.rows.forEach(function (r) {
+      var sel = mkSelect(), inp = el('input', { type: 'text', dir: 'auto', 'aria-label': 'Edited value for ' + r.id });
+      var c = { id: r.id, sel: sel, inp: inp, proposed: r.value };
+      sel.addEventListener('change', function () { sync(c); });
+      sync(c); ctls.push(c); rowCtl.push(c);
+      var inputs = r.inputs === undefined || r.inputs === null ? '' : JSON.stringify(r.inputs);
+      var what = [r.surface, r.action].filter(Boolean).join(' - ');
+      var idCell = el('td', {}, [el('div', { text: String(r.id) }), el('div', { 'class': 'note', dir: 'auto', text: what })]);
+      if (r.groundingNote) { idCell.appendChild(el('div', { 'class': 'note', dir: 'auto', text: r.groundingNote })); }
+      var tol = r.tolerance === undefined || r.tolerance === null ? '' : 'tolerance ' + r.tolerance;
+      tb.appendChild(el('tr', {}, [
+        idCell,
+        el('td', {}, [el('code', { dir: 'auto', text: inputs })]),
+        el('td', {}, [el('div', { 'class': 'val', dir: 'auto', text: show(r.value) }), el('div', { 'class': 'note', text: [r.path, tol].filter(Boolean).join(' | ') })]),
+        el('td', {}, [sel]),
+        el('td', {}, [inp])
+      ]));
+    });
+    var thead = el('thead', {}, [el('tr', {}, ['Criterion', 'Inputs', 'Proposed value', 'Decision', 'Edited value'].map(function (t) { return el('th', { text: t }); }))]);
+    root.appendChild(el('section', { 'class': 'group' }, [head, el('table', {}, [thead, tb])]));
+  });
+
+  document.getElementById('summary').textContent = rowCtl.length + ' to confirm';
+
+  document.getElementById('save').addEventListener('click', function () {
+    var err = document.getElementById('err'); err.textContent = '';
+    var out = [];
+    for (var i = 0; i < rowCtl.length; i++) {
+      var c = rowCtl[i], d = { criterionId: c.id, decision: c.sel.value };
+      if (d.decision === 'edit') {
+        var v = c.inp.value.trim();
+        if (!v) { err.textContent = 'Enter a value for ' + c.id + ' or change its decision.'; return; }
+        d.value = (typeof c.proposed === 'number' && isFinite(Number(v))) ? Number(v) : v;
+      }
+      out.push(d);
+    }
+    var blob = new Blob([JSON.stringify(out, null, 2) + '\n'], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.getElementById('dl');
+    a.href = url; a.style.display = 'inline-block';
+    a.click();
+  });
+})();
+</script>
+</body>
+</html>
