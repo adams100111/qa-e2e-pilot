@@ -1,8 +1,10 @@
 # qa-e2e-pilot on opencode
 
-Runs the same 18 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
+Runs the same 19 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
 plugin, adapted for opencode's agent markdown + `mcp` server config + skill-as-tool plugin. v1 is
-**sequential-only** (ADR-0003/Task 10) — nothing here requires or assumes multi-agent dispatch.
+**sequential-only** (ADR-0003/Task 10) — nothing here requires or assumes multi-agent dispatch. The one exception is `re-adjudicating-verdicts` (ADR-0033): it needs fresh-subagent dispatch
+(`subagentDispatch: false` here), so it prints `re-adjudication unavailable on <harness>; <n>
+low-confidence passes unreviewed` and the recorded verdicts stand.
 
 ## Prerequisites
 

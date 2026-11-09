@@ -8,13 +8,72 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
-### Unreleased · "Prove what was covered" (ship QA increment 1)
+### v0.12.0 — 2026-11-09 · "Prove what was covered, then trust what passed"
 
-No version bump yet; increment 2 releases the engine and qa-kit together. See
-[ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md) and
-[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md).
+Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `~0.12.0`). See
+[ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md),
+[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md),
+[ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and
+[ADR-0033](./docs/adr/0033-independent-re-adjudication.md).
 
-- **Surface census.** New skill `taking-surface-census` (18 skills now): a read-only, breadth-first
+**Behaviour changes vs 0.11.0**
+
+- **The state gate applies in every profile.** A `pass` on a mutating row now needs `bake` or `probe`
+  evidence, also on a plain `full` run. A rejected write (an error-state row that "adds a duplicate to
+  trigger a validation error") that used to pass on `human-action` alone is refused at record time
+  and overridden by `qa-verify`; record a bake at multiplicity 0 instead.
+- **Generated rows.** A ship run's checklist now carries generated load-clean, deny,
+  ownership-isolation, input-validation and UX-revisit rows (from qa-kit), with new kinds
+  `load-clean`, `deny`, `input-validation`; `input-validation` always requires `bake`.
+- **Profiles.** `profile` (`ship|smoke|full`) resolves into `effective-config.json` at pre-flight and
+  every later phase reads that file. `full` is the default and adds nothing; `ship` turns on the
+  oracle and data-policy gates, the coverage census, variants and parallel read-only lanes.
+- `"responsiveMatrix": []` is gone from the config example: an explicit empty matrix is a user value
+  and turns a ship run's mobile pass off.
+
+**Increment 2 · trusted verdicts**
+
+- **ORACLE GATE** in `checkpoint.sh`: a `confidence: high` pass on a row with
+  `fixture.expect.oracleSource`, or under `ship` on any `computed-logic`/`business-rule` row, needs
+  `oracleSource` `human` or `spec`; `llm-suggested` or missing is refused, `confidence: low` is always
+  allowed. A row with a control character in its kind or source is refused as malformed.
+- **STATE GATE**: a mutating pass (per `mutation-flag.sh`) needs `bake` or `probe` in `--kinds`;
+  `--nonui-reason` does not bypass it.
+- **DATA POLICY GATE**: under `gates.dataPolicy: enforce`, the typed values in a mutating row's
+  `action-trace.json` must pass `data-policy.sh check` (password-like fields skipped, values passed as
+  a mode-600 `@file` that is removed on exit or interrupt; `input-validation` rows skip date window
+  and email domain).
+- **`qa-verify.sh` mirrors the three gates** (checks 3.6–3.8, reasons `oracle-ungrounded`,
+  `no-state-evidence`, `data-policy-violation`; rule names only, never the typed values). It fails
+  closed on any in-run confidence other than `low` and overrides a confidence outside `high|low`
+  (`invalid-confidence`). New run check `effectiveConfigMissing`: a config or spec run-config naming
+  `ship` or `dataPolicy: enforce` with no `effective-config.json` in the run fails the run.
+- **Re-adjudication.** New skill `re-adjudicating-verdicts` (19 skills) with `adjudication.sh
+  select|bundle|apply|capability`. After Verify, every low-confidence pass and every UX-promoted fail
+  goes to one fresh-context verifier per evidence bundle (an allow-list of persisted evidence; never
+  the journal, toolstream or agent prose). A disputed pass becomes `blocked` with
+  `verifier-disagrees: <reason>`, a disputed fail drops to `confidence: low`, kinds and evidence refs
+  are kept, and any upgrade is refused (`ADJUDICATION: upgrades are not allowed`). Capability is the
+  new boolean `subagentDispatch` in `harness-profiles.json` (claude only); other harnesses print
+  `re-adjudication unavailable on <harness>; <n> low-confidence passes unreviewed`. On Claude, `/qa-run`
+  runs it after the dispatched agent returns and re-renders.
+- **Ship readiness.** `render-report.js` opens the report with `SHIP-READY` / `NOT SHIP-READY` and
+  every failing condition (uncovered census pairs, P1 journeys not passing, coding-layer fails on P1,
+  verifier overrides on P1), plus low-confidence, flaky and regression lines. It fails closed on
+  missing coverage, journeys or verification and on an out-of-date verification; runs without those
+  inputs render byte for byte as before.
+- **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes
+  `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and verifier overrides,
+  deduplicated against outstanding known defects (same surface and criterion, or observed class),
+  with secrets redacted and both engines byte-identical.
+- **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase
+  re-adjudicates, runs `qa-verify`, renders, relays the ship verdict and exports bugs.
+- **Suites.** `gate-oracle`, `gate-state`, `gate-data-policy`, `verify-ship-gates`, `ship-summary`,
+  `bug-export`, `adjudication` enrolled (65 engine suites); `missing_required_kinds` is bash 3.2 safe.
+
+**Increment 1 · prove what was covered**
+
+- **Surface census.** New skill `taking-surface-census`: a read-only, breadth-first
   crawl per confirmed persona (`census.maxVisits`, default 300; depth 4) that writes
   `.qa/census/crawl/crawl-<persona>.json` with each visit's status, findings, forms and an
   `unexplored` list with reasons. `crawl-safety.js` classifies every control before a click: English
@@ -52,8 +111,19 @@ No version bump yet; increment 2 releases the engine and qa-kit together. See
 - **Config example.** New keys `profile`, `exec.prefix`, `census.maxVisits`, `ship.denyStatuses`,
   `dataPolicy`, with `colorSchemes`/`locales` documented in `_profileDoc`. `"responsiveMatrix": []`
   is removed: an explicit empty matrix is a user value and turns a ship run's mobile pass off.
+- **Census details.** Every surface carries `sampleUrls` per persona (the first reached URL, query
+  kept), and the rows open that URL, never a `{param}` pattern. Tabs, dialogs and sheets the crawl
+  opened become `<parent>#<kind>:<subKey>` surfaces. Next.js and Rails catch-all segments read
+  `{x*}` / `{x*?}`. Next/Previous/التالي/السابق buttons are never clicked. Forms are collected only
+  from visits that reached the surface, and `--access` is read with `--slurpfile`.
+- **Smaller fixes.** `profile.sh` resolves undetectable locales to `[]`, never a placeholder;
+  `journeys.sh expand-variant --viewport-id <id>` names variants by matrix id (`@mobile-ar`);
+  `data-policy.sh check --kind input-validation` skips date window and email domain, masks
+  credential-like fields, and rejects a non-array `forbiddenMarkers` (exit 2) in both engines;
+  `write-persona-config.sh` keeps a persona's `permissions`; `isolation.maxOpenContexts` defaults to 3
+  in the config example and caps ship lanes.
 - **Suites.** `census-adapters`, `census-merge`, `profile`, `journeys`, `data-policy`,
-  `checklist-ship-schema`, `crawl-safety` enrolled in `run-engine-ci.sh` (58 engine suites).
+  `checklist-ship-schema`, `crawl-safety` enrolled.
 
 ### v0.11.0 — 2026-10-01 · "Count each criterion once"
 
@@ -468,9 +538,30 @@ The headline release: the engine now tells the truth about its own accuracy.
 
 ## qa-kit (process shell)
 
-### Unreleased · ship QA increment 1
+### v0.3.0 — 2026-11-09 · "Confirm the oracle"
 
-Ships together with the engine's next release (increment 2), pinning it.
+Ships with engine `v0.12.0`, increments 1 and 2. The dependency is now pinned:
+`{ "name": "qa-e2e-pilot", "version": "~0.12.0" }` (it resolves against the `qa-e2e-pilot--v0.12.x`
+release tags).
+
+**Increment 2 · trusted verdicts**
+
+- **Oracle confirmation page.** New `oracle-confirm.sh render|apply` and
+  `templates/oracle-confirm.html`: `/qa-analyze` step 4c renders an offline page (works from
+  `file://`, no network) listing every unconfirmed expected value, grouped by business rule, with
+  accept / edit / unknown per row or per group. Saving downloads `oracle-decisions.json`; `apply`
+  writes accepted and edited values back as `oracleSource: "human"` (backup `checklist.json.bak`),
+  leaves unknown rows alone and lists unmatched ids. Under `autonomousSetup` the page is skipped and
+  the unconfirmed count reported.
+- **`spec` oracle source.** `check-fixtures.sh` accepts `oracleSource: "spec"` with a `citation`
+  `<path>:<line>` that resolves inside the checklist dir or the git root (no absolute paths, no `..`,
+  symlinks resolved and contained; outside git, the checklist dir only); `sources` counts `spec`.
+  Only `human` and `spec` can ground a high-confidence pass under the engine's ORACLE GATE.
+- **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
+  unavailable banner or did not run); the `verification.md` template gains that section.
+- **Suites.** `oracle-confirm` enrolled (15 qa-kit suites).
+
+**Increment 1 · prove what was covered**
 
 - **`surface-access.sh derive|confirm-table|apply`** writes `.qa/surface-access.json` (who SHOULD
   reach each surface) from adapter permission hints and crawl reach. Crawl reach without a matching
@@ -489,8 +580,16 @@ Ships together with the engine's next release (increment 2), pinning it.
   authors `journeys.json` (validated by `journeys.sh`) and a run-config `profile`; `/qa-scenarios`
   builds the census, generates ship rows and fills coverage gaps; `/qa-analyze` runs the coverage gate,
   its one blocking check under `ship`.
-- **Suites.** `surface-access`, `ship-criteria`, `coverage-gate` enrolled in `run-qakit-ci.sh`
-  (14 qa-kit suites).
+- **Ship gate fixes.** Generated ids are token-safe (`<prefix>-<slug>-<h8>`, old id kept as `title`)
+  and accepted by the engine's `checkpoint.sh`. `surface-access.sh apply --assume` replaces the
+  autonomous deny-everything path and never denies; permissions match exactly, `*` or `prefix.*`;
+  `surface-access.sh personas` writes `.qa/specs/<target>/personas-for-generation.json`. `coverage.sh`
+  counts sweep rows apart (`covered-sweep`) and takes `--scope`, `--roles` and exclusion globs.
+  `/qa-analyze` is BLOCKED under ship on a missing census or a failed engine script, and `/qa-status`
+  and the agent refuse to hand off to `/qa-run` while it is. Input rows skip GET forms, accept either a
+  validation message or an escaped, intact value where both are correct, and open the form from a
+  sampled URL.
+- **Suites.** `surface-access`, `ship-criteria`, `coverage-gate` enrolled.
 
 ### v0.2.0 — 2026-09-24 · "A defect is not a verdict"
 

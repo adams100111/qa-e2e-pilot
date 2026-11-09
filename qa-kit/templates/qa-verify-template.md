@@ -19,7 +19,20 @@ criterion ids, each: "`<id>` — acted but absent from checklist.json (process v
 ## Confidence downgrades
 {{ "None." | per-criterion: "`<criterionId>` → confidence low; reason: <reason>." }}
 
+## Independent re-adjudication (authoritative source: the engine's adjudication/ folder)
+{{ one of:
+  - "Re-judged <n> record(s); the second judge agreed with <a>." + when it disagreed, a list of
+     verifier overrides, each: "`<criterionId>`[@`<persona>`] — now <verdict>/<confidence>; reason:
+     <reason after `verifier-disagrees:`>." (a disputed pass is now `blocked`, a disputed fail is now
+     confidence `low`; nothing is ever upgraded) + every `ADJUDICATION:` line from
+     `adjudication/apply.txt`, quoted.
+  - "Nothing to re-judge — no low-confidence passes and no UX-promoted fails."
+  - "UNAVAILABLE — " + the banner from `adjudication/unavailable.txt`, quoted verbatim. Those passes
+     were not re-judged.
+  - "DID NOT RUN — <n> low-confidence passes unreviewed; run `/qa-e2e-pilot:re-adjudicating-verdicts`
+     before relying on them." }}
+
 ## Verdict
-{{ "clean — no out-of-plan acts, no overrides." | "attention — <n> out-of-plan act(s), <m> override(s); see above." }}
+{{ "clean — no out-of-plan acts, no overrides, no verifier overrides." | "attention — <n> out-of-plan act(s), <m> override(s), <k> verifier override(s); see above." }}
 
 Next: `/qa-status "{{target}}"`.
