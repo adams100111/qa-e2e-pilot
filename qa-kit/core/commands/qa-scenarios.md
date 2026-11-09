@@ -118,37 +118,57 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
 
 7b. **Ship criteria from the census (only when the effective profile is `ship` or `smoke`).** Resolve the
    effective config with the engine's `profile.sh resolve .qa/config.json --run-config
-   .qa/specs/<target>/run-config.json` (an engine script: resolve it against the engine's checkout or
-   plugin root, ADR-0022; qa-kit cannot path-reference it). Skip this step under `full`.
+   .qa/specs/<target>/run-config.json --stack-profile <stack-profile.json>` (an engine script: resolve it
+   against the engine's checkout or plugin root, ADR-0022; qa-kit cannot path-reference it). The stack
+   profile is `.qa/stack-profile.cache.json` when present, else the latest run's
+   `.qa/runs/<run-id>/stack-profile.json`, else invoke `{{SKILL_REF:detecting-stack-profile}}` to write one;
+   without it the app's locales are unknown and the Arabic/RTL revisits silently vanish. If the resolved
+   `locales` is empty, fill it from the adapter output's `locales` (`.qa/census/adapter.json`) in the
+   effective-config temp file; still empty means the app default, one pass. If `profile.sh` cannot be
+   resolved or fails, stop and report it — do not generate from a guessed config. Skip this step under
+   `full`.
    - **Census.** If `.qa/census.json` is missing or older than the last role/permission change, invoke
      `{{SKILL_REF:taking-surface-census}}` first (read-only crawl, then the engine's `census.sh build`).
      `.qa/surface-access.json` must exist (the `/qa-constitution` confirmation round).
+   - **Personas.** Use `.qa/specs/<target>/personas-for-generation.json` (written by `/qa-spec`; if it is
+     missing, write it now with `surface-access.sh personas .qa/specs/<target>/spec-roles.json
+     .qa/config.json`). It holds the spec's roles with the constitution's `permissions`, so generated rows
+     use only this spec's roles.
    - **Generate.** Write the effective config to a temp file, then:
      ```
      bash "{{PLUGIN_ROOT}}/scripts/generate-ship-criteria.sh" --census .qa/census.json \
-         --access .qa/surface-access.json --matrix .qa/authz-matrix.json --personas <personas-tmp> \
+         --access .qa/surface-access.json --matrix .qa/authz-matrix.json \
+         --personas .qa/specs/<target>/personas-for-generation.json \
          --config <effective-config.json> --journeys .qa/specs/<target>/journeys.json \
          --checklist .qa/specs/<target>/checklist.json
      ```
-     It prints append-ready rows (`load-clean:<surface>:<persona>`, `deny:<surface>:<persona>`, UX revisits,
-     each carrying `role`). **Append them to `checklist.json`** (merge into the existing top-level array, never
-     a second file), then re-run the alignment check (step 6) and `check-fixtures.sh` (step 7) on the merged
-     plan. A `deny` row tagged `needs-confirmation` rests on an unconfirmed access entry; list those for the
-     operator. Deny rows exist only from positive evidence of who is not allowed; never author one by hand
-     to pad coverage.
+     It prints append-ready rows with token-safe ids (`<prefix>-<slug>-<hash>`, which the engine's
+     checkpoint and evidence scripts accept) and the readable id in `title` (`load-clean:<surface>:<persona>`,
+     `deny:<surface>:<persona>`, `iso:…`, `input:…`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
+     carrying `role`, and `url` when the census sampled a concrete URL. **Append them to `checklist.json`**
+     (merge into the existing top-level array, never a second file), then re-run the alignment check (step 6)
+     and `check-fixtures.sh` (step 7) on the merged plan. Never rename the generated ids. A `deny` row tagged
+     `needs-confirmation` rests on an unconfirmed access entry; list those for the operator, together with
+     the surface-access entries the generator reports as assumptions. Deny rows exist only from positive
+     evidence of who is not allowed; never author one by hand to pad coverage.
    - **Journeys.** Now that step rows exist, run `journeys.sh validate .qa/specs/<target>/journeys.json
      .qa/specs/<target>/checklist.json` (engine script); fix every error (priority, missing step id,
      `journey.id`/`journey.step` on the step row) by editing the journeys or the plan before moving on.
    - **Fill gaps.** Run `bash "{{PLUGIN_ROOT}}/scripts/coverage.sh" .qa/census.json
-     .qa/specs/<target>/checklist.json --mode advise` (add `--exclusions
+     .qa/specs/<target>/checklist.json --mode advise --roles .qa/specs/<target>/spec-roles.json
+     [--scope "<regex from .qa/specs/<target>/coverage-scope.txt>"] --defer-channels` (add `--exclusions
      .qa/specs/<target>/coverage-exclusions.json` if the operator has approved exclusions, each with a
-     reason). For every `uncovered` or `covered-unscoped` row, draft a criterion for that surface x role
-     pair through the engine's checklist writer (`{{SKILL_REF:generating-qa-checklist}}`), with `role` set
-     to the pair's persona and `surfaceId` set. Re-run until `uncovered` is 0 or the operator explicitly
-     excludes the pair (with a reason). This step drafts; the blocking gate is `/qa-analyze`.
+     reason; an exclusion `surfaceId` may use `*`/`?` globs). `--defer-channels` stays on until Increment 4
+     ships the mail/notification/job checks; its reason is "channel checks arrive in increment 4". For every
+     `uncovered`, `covered-unscoped` or `covered-sweep` row, draft a functional criterion for that surface x
+     role pair through the engine's checklist writer (`{{SKILL_REF:generating-qa-checklist}}`), with `role`
+     set to the pair's persona (any spec role for a `"*"` pair) and `surfaceId` set — a generated load /
+     deny / revisit row (tag `sweep`) proves the surface loads or refuses, not that it works, so it never
+     closes a pair under the ship gate. Re-run until `uncovered` is 0 or the operator explicitly excludes
+     the pair (with a reason). This step drafts; the blocking gate is `/qa-analyze`.
 
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
-   check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent, uncovered pairs left, any criterion migrated to
+   check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent (functional vs sweep), uncovered pairs left, any criterion migrated to
    `.qa/known-defects.json` (naming the `ticket`/`expiry` a human still owes — and stating that the
    migration script's exit **2** meant success), and the next step (`/qa-analyze <target>`).
 

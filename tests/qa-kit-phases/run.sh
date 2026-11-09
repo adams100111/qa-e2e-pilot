@@ -146,5 +146,29 @@ grep -q 'generate-ship-criteria.sh' "$QSC" && grep -q 'taking-surface-census' "$
 grep -q 'coverage.sh' "$QA" && grep -q 'BLOCKED' "$QA" && grep -q -- '--mode' "$QA"; check "analyze_blocks_on_uncovered_under_ship: command" "$?" "0"
 grep -q 'BLOCKED' "$ROOT/qa-kit/templates/qa-analyze-template.md" && grep -q '## Coverage' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_blocks_on_uncovered_under_ship: template" "$?" "0"
 
+# --- increment 1 final-review fixes: command text assertions ---
+QST="$ROOT/qa-kit/commands/qa-status.md"; AG="$ROOT/qa-kit/agents/qa-kit.md"
+# C2: autonomous setup assumes, never denies
+grep -q 'apply --assume' "$QC"; check "constitution_autonomous_uses_apply_assume" "$?" "0"
+grep -q 'decide every remaining `reachedWithoutEvidence` pair as `deny`' "$QC"; check "constitution_autonomous_never_denies" "$?" "1"
+# canonical adapter path + stack profile for locales (I8)
+grep -q '.qa/census/adapter.json' "$QC" && grep -q '.qa/census/adapter.json' "$QSC"; check "canonical_adapter_path" "$?" "0"
+grep -q -- '--stack-profile' "$QC" && grep -q -- '--stack-profile' "$QSC" && grep -q -- '--stack-profile' "$QA"; check "profile_resolve_gets_stack_profile" "$?" "0"
+grep -q 'stack-profile.cache.json' "$QSC"; check "scenarios_names_stack_profile_cache" "$?" "0"
+# I1: persona input file
+grep -q 'surface-access.sh" personas' "$QS" && grep -q 'personas-for-generation.json' "$QS"; check "spec_writes_personas_for_generation" "$?" "0"
+grep -q -- '--personas .qa/specs/<target>/personas-for-generation.json' "$QSC"; check "scenarios_passes_personas_for_generation" "$?" "0"
+grep -q 'personas-tmp' "$QSC"; check "scenarios_has_no_undefined_personas_tmp" "$?" "1"
+# I3/I4: scoped gate, fail closed, deferred channels, crawl-only only on human ok
+grep -q -- '--roles .qa/specs/<target>/spec-roles.json' "$QA" && grep -q 'coverage-scope.txt' "$QA" && grep -q 'coverage-scope.txt' "$QS"; check "analyze_gate_scoped_to_spec" "$?" "0"
+grep -q 'no census' "$QA" && grep -q 'engine script unavailable' "$QA"; check "analyze_missing_census_blocks_under_ship" "$?" "0"
+grep -q -- '--defer-channels' "$QA" && grep -q 'channel checks arrive in increment 4' "$QA"; check "analyze_defers_channels_with_reason" "$?" "0"
+grep -q -- '--accept-crawl-only' "$QA" && grep -q 'explicitly said' "$QA"; check "analyze_accept_crawl_only_needs_human" "$?" "0"
+grep -q 'covered-sweep' "$QA" && grep -q 'covered-sweep' "$QSC"; check "sweep_rows_do_not_close_pairs" "$?" "0"
+# I4: no hand-off to /qa-run while BLOCKED
+grep -q 'never `/qa-run` while the analysis is' "$QST"; check "status_refuses_run_while_blocked" "$?" "0"
+grep -q 'Never hand off to `/qa-run` while' "$AG"; check "agent_refuses_run_while_blocked" "$?" "0"
+grep -q 'Engine-only runs have no gate' "$QA"; check "analyze_documents_engine_only_has_no_gate" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
