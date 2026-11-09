@@ -1,0 +1,3 @@
+{"profile":"ship","allowApiWrites":false,"seedableEnvMarker":"",
+ "responsiveMatrix":[{"id":"desktop","width":1440,"height":900},{"id":"mobile","width":390,"height":844}],
+ "locales":["ar","en"],"colorSchemes":["light","dark"],"criteriaBudget":5}

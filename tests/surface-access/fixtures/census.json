@@ -1,0 +1,12 @@
+{"version":1,"adapter":"laravel","adapterOk":true,
+ "surfaces":[
+  {"surfaceId":"GET /admin/hackathons/{hackathon}/paths/{path}","kind":"endpoint","pattern":"/admin/hackathons/{hackathon}/paths/{path}","sources":["adapter","crawl"],"reachedBy":["admin","participant"],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /admin/reports","kind":"endpoint","pattern":"/admin/reports","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[],"permissionHints":["role:admin"]},
+  {"surfaceId":"GET /organizer/dashboard","kind":"endpoint","pattern":"/organizer/dashboard","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /h/{slug}","kind":"endpoint","pattern":"/h/{slug}","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /الأخبار","kind":"page","pattern":"/الأخبار","sources":["crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+  {"surfaceId":"POST /admin/hackathons","kind":"endpoint","pattern":"/admin/hackathons","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]},
+  {"surfaceId":"page:Orphan","kind":"page","pattern":"Orphan","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}
+ ],
+ "jobs":[],"mails":[],"notifications":[],
+ "diffs":{"unreachable":[],"overreach":[],"crawlOnly":["GET /الأخبار"]},"warnings":[]}
