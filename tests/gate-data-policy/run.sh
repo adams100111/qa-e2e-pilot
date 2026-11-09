@@ -154,5 +154,44 @@ for e in "${engines[@]}"; do run_engine "$e"; done
 
 if [ "${#engines[@]}" -eq 2 ]; then check "parity jq vs python3" "$RESULTS_jq" "$RESULTS_python3"; fi
 
+# --- interrupted_check_leaves_no_temp_file ---------------------------------
+# dp_check_text (checkpoint.sh + qa-verify.sh) holds typed values in a mode-600
+# temp file; an interrupted data-policy.sh check must not leave it behind, and
+# the caller's own EXIT trap must survive. The function is lifted verbatim from
+# each script and pointed at a data-policy.sh stand-in that hangs; the whole
+# process group is then signalled, as a Ctrl-C or a supervisor's TERM would.
+interrupt_case() {
+  local SRC="$1" SIG="$2" label="$3" T H pid i
+  T="$(mktemp -d)"; TMPDIRS+=("$T"); mkdir -p "$T/tmp"
+  printf 'sleep 30\n' > "$T/hang.sh"
+  printf '{}\n' > "$T/cfg.json"
+  H="$T/harness.sh"
+  {
+    printf 'set -uo pipefail\n'
+    printf 'has_jq() { command -v jq >/dev/null 2>&1; }\n'
+    sed -n '/^dp_check_text() {/,/^}/p' "$SRC"
+    printf 'trap '\''echo outer-exit-trap-ran > "%s/outer"'\'' EXIT\n' "$T"
+    printf 'out="$(DP_SH_PATH="%s/hang.sh" dp_check_text "%s/cfg.json" "Riyadh smart water metering")"\n' "$T" "$T"
+  } > "$H"
+  set -m
+  TMPDIR="$T/tmp" "$BASH_BIN" "$H" &
+  pid=$!
+  set +m
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -n "$(ls -A "$T/tmp" 2>/dev/null)" ] && break
+    sleep 0.2
+  done
+  check "$label temp file existed while checking" "$(ls "$T/tmp" | grep -c '^qa-dp\.')" "1"
+  sleep 0.3
+  kill "-$SIG" -- "-$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  check "$label no temp file left" "$(ls -A "$T/tmp" | wc -l | tr -d ' ')" "0"
+  check "$label caller EXIT trap kept" "$(cat "$T/outer" 2>/dev/null)" "outer-exit-trap-ran"
+}
+for sig in INT TERM; do
+  interrupt_case "$CP" "$sig" "checkpoint.sh $sig interrupted_check_leaves_no_temp_file"
+  interrupt_case "$DIR/../../scripts/qa-verify.sh" "$sig" "qa-verify.sh $sig interrupted_check_leaves_no_temp_file"
+done
+
 echo "gate-data-policy: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
