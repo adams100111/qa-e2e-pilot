@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="qa-e2e-pilot render-report.js">
+<title>QA report — Cap table — founders</title>
+<!--
+  Page shell for scripts/render-report.js (writing-qa-reports, engine 0.10.0).
+  The renderer fills the two double-brace slots (TITLE, BODY); everything else
+  here is static.
+  Self-contained by contract: inline CSS and JS only, no external request of any
+  kind, so the file works offline from file:// (and, rendered with --embed, as
+  one portable file with every screenshot inlined).
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #18202b; --muted: #5d6878; --line: #e3e7ed;
+    --soft: #f0f2f5; --link: #1f5fbf;
+    --pass: #16794a; --fail: #c62828; --blocked: #b45309; --deferred: #5f6b7a; --error: #6d28d9;
+    --low-bg: #fff6df; --low-ink: #7a4d00; --warn-bg: #fdecec; --warn-ink: #8f1d1d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11151b; --panel: #181e26; --ink: #e5e9ef; --muted: #9aa5b4; --line: #2a333f;
+      --soft: #1f2630; --link: #8ab4f8;
+      --low-bg: #3a2e12; --low-ink: #f3d48a; --warn-bg: #3d1a1a; --warn-ink: #f5b3b3;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  body.lb-on { overflow: hidden; }
+  a { color: var(--link); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.55rem; margin: 0 0 4px; line-height: 1.25; overflow-wrap: anywhere; }
+  h2 { font-size: 1.12rem; margin: 32px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .meta { color: var(--muted); font-size: 0.86rem; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  .summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .panel h3 { margin: 0 0 8px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: baseline; gap: 6px; border-radius: 999px; padding: 3px 11px;
+          font-size: 0.82rem; font-weight: 600; color: #fff; background: var(--deferred); }
+  .chip b { font-size: 1rem; }
+  .v-pass { background: var(--pass); } .v-fail { background: var(--fail); } .v-blocked { background: var(--blocked); }
+  .v-deferred { background: var(--deferred); } .v-error { background: var(--error); }
+  .chip.total { background: var(--ink); color: var(--bg); }
+  .status-line { margin: 0; font-size: 0.9rem; }
+  .status-ok { color: var(--pass); font-weight: 600; } .status-bad { color: var(--fail); font-weight: 600; }
+  .status-warn { color: var(--blocked); font-weight: 600; }
+  details.runlevel { margin-top: 8px; font-size: 0.86rem; }
+  details.runlevel summary { cursor: pointer; color: var(--muted); }
+  details.runlevel ul { margin: 6px 0 0; padding-left: 18px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 14px; }
+  .toolbar span { color: var(--muted); font-size: 0.85rem; margin-right: 4px; }
+  .filter { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px;
+            padding: 4px 12px; font: inherit; font-size: 0.84rem; cursor: pointer; }
+  .filter[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+  .cards { display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--deferred);
+          border-radius: 10px; overflow: hidden; }
+  .card.c-pass { border-left-color: var(--pass); } .card.c-fail { border-left-color: var(--fail); }
+  .card.c-blocked { border-left-color: var(--blocked); } .card.c-error { border-left-color: var(--error); }
+  .card[hidden] { display: none; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px 6px; }
+  .badge { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #fff;
+           border-radius: 4px; padding: 2px 8px; }
+  .cid { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; color: var(--muted); }
+  .ctitle { flex: 1 1 260px; font-weight: 600; overflow-wrap: anywhere; }
+  .tag { font-size: 0.72rem; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--muted); white-space: nowrap; }
+  .tag.low { background: var(--low-bg); color: var(--low-ink); border-color: transparent; }
+  .tag.override { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; }
+  .card-body { padding: 4px 16px 14px; }
+  .fields { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  .fields th { text-align: left; vertical-align: top; color: var(--muted); font-weight: 500; white-space: nowrap;
+               padding: 4px 14px 4px 0; width: 1%; }
+  .fields td { padding: 4px 0; overflow-wrap: anywhere; }
+  .reasons { margin: 8px 0 0; padding: 8px 12px 8px 28px; background: var(--warn-bg); color: var(--warn-ink);
+             border-radius: 8px; font-size: 0.85rem; }
+  .reasons.soft { background: var(--low-bg); color: var(--low-ink); }
+  .noshot { margin: 10px 0 0; font-size: 0.85rem; color: var(--low-ink); background: var(--low-bg);
+            border-radius: 8px; padding: 6px 10px; }
+  .files { margin: 10px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.82rem; }
+
+  .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; margin-top: 12px; }
+  .shot { margin: 0; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .shot a { display: block; aspect-ratio: 16 / 10; background: var(--soft); cursor: zoom-in; }
+  .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block; }
+  .shot a:focus-visible { outline: 3px solid var(--link); outline-offset: -3px; }
+  .shot figcaption { font-size: 0.74rem; color: var(--muted); padding: 5px 8px; display: flex; flex-wrap: wrap; gap: 2px 6px; }
+  .shot figcaption .ph { color: var(--ink); font-weight: 600; }
+  .shot.flagged { border-color: var(--fail); }
+  .shot.flagged figcaption .bind { color: var(--fail); font-weight: 600; }
+
+  .deferred-item { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+  .bug { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--fail); border-radius: 10px;
+         padding: 12px 16px; margin-bottom: 12px; }
+  .bug h3 { margin: 0 0 6px; font-size: 1rem; overflow-wrap: anywhere; }
+  .bug ol { margin: 6px 0; padding-left: 20px; font-size: 0.88rem; }
+  .ea { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin: 8px 0; font-size: 0.86rem; }
+  .ea div { border-radius: 8px; padding: 6px 10px; background: var(--soft); overflow-wrap: anywhere; }
+  table.plain { width: 100%; border-collapse: collapse; font-size: 0.86rem; background: var(--panel); }
+  table.plain th, table.plain td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .table-scroll { overflow-x: auto; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 0.78rem; text-align: center; }
+
+  /* lightbox */
+  .lb { position: fixed; inset: 0; z-index: 1000; background: rgba(8, 10, 14, .92); color: #f1f3f6;
+        display: grid; grid-template-columns: 56px 1fr 56px; grid-template-rows: 48px 1fr auto; }
+  .lb[hidden] { display: none; }
+  .lb-top { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 16px; gap: 12px; }
+  .lb-count { font-size: 0.85rem; opacity: .85; }
+  .lb-tools { display: flex; align-items: center; gap: 10px; }
+  .lb-tools a { color: #cfe0ff; font-size: 0.85rem; }
+  .lb button { background: rgba(255,255,255,.08); color: #fff; border: 0; border-radius: 8px; cursor: pointer;
+               font: inherit; font-size: 1.5rem; line-height: 1; width: 44px; height: 44px; }
+  .lb button:hover:not(:disabled) { background: rgba(255,255,255,.18); }
+  .lb button:disabled { opacity: .25; cursor: default; }
+  .lb button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
+  .lb-nav { align-self: center; justify-self: center; }
+  .lb-stage { grid-row: 2; grid-column: 2; display: flex; align-items: center; justify-content: center; min-height: 0; min-width: 0; padding: 4px; }
+  .lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; box-shadow: 0 6px 30px rgba(0,0,0,.5); cursor: default; }
+  .lb-cap { grid-column: 1 / -1; text-align: center; padding: 10px 16px 14px; font-size: 0.88rem; overflow-wrap: anywhere; }
+  @media (max-width: 640px) {
+    .lb { grid-template-columns: 0 1fr 0; }
+    .lb-nav { position: fixed; bottom: 12px; }
+    .lb-prev { left: 12px; } .lb-next { right: 12px; }
+    .lb-cap { padding-bottom: 68px; }
+  }
+  @media print {
+    .toolbar, .lb, #gallery-section { display: none !important; }
+    .card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header><h1>QA report — Cap table — founders</h1>
+<div class="meta"><span><b>Run</b> <span class="mono">fixture-run</span></span><span><b>Started</b> 2026-10-01T10:00:00Z</span><span><b>Ended</b> 2026-10-01T10:05:00Z</span><span><b>Build</b> abc1234</span><span><b>Target</b> http://localhost:3000</span></div></header>
+<section class="summary" aria-label="Summary">
+<div class="panel"><h3>Verdicts</h3><div class="chips"><span class="chip v-pass"><b>4</b> pass</span><span class="chip v-fail"><b>2</b> fail</span><span class="chip v-blocked"><b>1</b> blocked</span><span class="chip v-deferred"><b>1</b> deferred</span><span class="chip v-error"><b>0</b> error</span><span class="chip total"><b>8</b> total</span></div><p class="status-line" style="margin-top:8px"><span class="tag low">2 with confidence: low</span></p></div>
+<div class="panel"><h3>Verification</h3><p class="status-line status-bad">qa-verify re-checked 5 criterion record(s); 1 overridden.</p><details class="runlevel"><summary>__screenshots__ — pass (confidence low, 1 note(s))</summary><ul><li>example run-level note</li></ul></details></div>
+<div class="panel"><h3>Screenshots</h3><p class="status-line status-warn">4 of 6 pass/fail criteria carry a recorded screenshot · 6 image(s) · <a href="#gallery-section">view all</a></p></div>
+
+</section>
+<h2>Criteria</h2>
+<div class="toolbar" role="group" aria-label="Filter by verdict"><span>Show</span><button type="button" class="filter" data-filter="all" aria-pressed="true">all</button><button type="button" class="filter" data-filter="pass" aria-pressed="false">pass (4)</button><button type="button" class="filter" data-filter="fail" aria-pressed="false">fail (2)</button><button type="button" class="filter" data-filter="blocked" aria-pressed="false">blocked (1)</button></div>
+<div class="cards"><article class="card c-pass" id="c-c1" data-verdict="pass"><div class="card-head"><span class="badge v-pass">pass</span><span class="cid">C1</span><span class="ctitle">Add a founder persists 1-of-N</span><span class="tag">confidence: high</span></div><div class="card-body"><table class="fields"><tr><th>Oracle</th><td>count(founders) = baseline + 1</td></tr><tr><th>Result</th><td>Created founder via the Add dialog; read back /api/founders/2</td></tr><tr><th>Verified via</th><td>bake</td></tr></table><div class="shots"><figure class="shot"><a class="shot-link" href="evidence/C1/screenshot-before.png" data-group="c-c1" data-caption="C1 · before"><img src="evidence/C1/screenshot-before.png" alt="C1 · before" loading="lazy"></a><figcaption><span class="ph">before</span><span class="bind mono">seq:3 · sha256</span></figcaption></figure><figure class="shot"><a class="shot-link" href="evidence/C1/screenshot-after.png" data-group="c-c1" data-caption="C1 · after · full page"><img src="evidence/C1/screenshot-after.png" alt="C1 · after · full page" loading="lazy"></a><figcaption><span class="ph">after</span><span>full page</span><span class="bind mono">seq:7 · sha256</span></figcaption></figure></div><ul class="files"><li><a href="evidence/C1/bake-read-back.json">C1/bake-read-back.json</a></li></ul></div></article><article class="card c-fail" id="c-c2" data-verdict="fail"><div class="card-head"><span class="badge v-fail">fail</span><span class="cid">C2</span><span class="ctitle">Issuance amount at sub-cent price</span><span class="tag">confidence: high</span></div><div class="card-body"><table class="fields"><tr><th>Oracle</th><td>4,000,000 × $0.001 = $4,000.00</td></tr><tr><th>Result</th><td>Total shows $4.00 instead of $4,000.00</td></tr><tr><th>Bug</th><td><a href="#bug-bug-1">BUG-1</a></td></tr></table><div class="shots"><figure class="shot"><a class="shot-link" href="evidence/C2/screenshot-after.png" data-group="c-c2" data-caption="C2 · after"><img src="evidence/C2/screenshot-after.png" alt="C2 · after" loading="lazy"></a><figcaption><span class="ph">after</span><span class="bind mono">seq:11 · sha256</span></figcaption></figure></div></div></article><article class="card c-pass" id="c-c3-admin" data-verdict="pass"><div class="card-head"><span class="badge v-pass">pass</span><span class="cid">C3</span><span class="ctitle">Admin totals</span><span class="tag">admin</span><span class="tag">confidence: high</span></div><div class="card-body"><table class="fields"><tr><th>Oracle</th><td>sum(rows) = 42</td></tr><tr><th>Result</th><td>Admin table sums match the oracle</td></tr><tr><th>Verified via</th><td>computed</td></tr><tr><th>Tags</th><td>role-sensitive</td></tr></table><div class="shots"><figure class="shot"><a class="shot-link" href="evidence/admin/C3/screenshot-after-table.png" data-group="c-c3-admin" data-caption="C3 · admin · after (table)"><img src="evidence/admin/C3/screenshot-after-table.png" alt="C3 · admin · after (table)" loading="lazy"></a><figcaption><span class="ph">after · table</span><span class="bind mono">seq:15 · sha256</span></figcaption></figure></div></div></article><article class="card c-pass" id="c-c4" data-verdict="pass"><div class="card-head"><span class="badge v-pass">pass</span><span class="cid">C4</span><span class="ctitle">C4</span><span class="tag low">confidence: low</span></div><div class="card-body"><table class="fields"><tr><th>Result</th><td>Legacy run: loose screenshot only</td></tr></table><ul class="reasons soft"><li>no screenshot evidence: no recorded screenshot under evidence/C4/ (report.requireScreenshots)</li></ul><div class="shots"><figure class="shot flagged"><a class="shot-link" href="evidence/C4/legacy-after.png" data-group="c-c4" data-caption="C4 · after"><img src="evidence/C4/legacy-after.png" alt="C4 · after" loading="lazy"></a><figcaption><span class="ph">after</span><span class="bind mono">not provenance-bound</span></figcaption></figure></div></div></article><article class="card c-pass" id="c-c6" data-verdict="pass"><div class="card-head"><span class="badge v-pass">pass</span><span class="cid">C6</span><span class="ctitle">C6</span><span class="tag low">confidence: low</span></div><div class="card-body"><table class="fields"><tr><th>Result</th><td>Read-only count matches</td></tr><tr><th>Verified via</th><td>computed</td></tr></table><ul class="reasons soft"><li>no screenshot evidence: no recorded screenshot under evidence/C6/ (report.requireScreenshots)</li></ul><p class="noshot">No screenshot recorded for this criterion.</p></div></article><article class="card c-fail" id="c-c7" data-verdict="fail"><div class="card-head"><span class="badge v-fail">fail</span><span class="cid">C7</span><span class="ctitle">C7</span><span class="tag">confidence: high</span><span class="tag override">in-run pass → overridden by qa-verify</span></div><div class="card-body"><table class="fields"><tr><th>Result</th><td>Its image was altered after recording</td></tr></table><ul class="reasons"><li>screenshot TAMPERED: &#39;evidence/C7/screenshot-after.json&#39; — evidence/C7/screenshot-after.png no longer matches the sha256 recorded with it</li></ul><div class="shots"><figure class="shot flagged"><a class="shot-link" href="evidence/C7/screenshot-after.png" data-group="c-c7" data-caption="C7 · after"><img src="evidence/C7/screenshot-after.png" alt="C7 · after" loading="lazy"></a><figcaption><span class="ph">after</span><span class="bind mono">ALTERED after recording</span></figcaption></figure></div></div></article><article class="card c-blocked" id="c-c8" data-verdict="blocked"><div class="card-head"><span class="badge v-blocked">blocked</span><span class="cid">C8</span><span class="ctitle">C8</span><span class="tag">confidence: high</span></div><div class="card-body"><table class="fields"><tr><th>Result</th><td>Login wall &lt;script&gt;alert(1)&lt;/script&gt; blocked the page</td></tr></table></div></article></div>
+<h2>Deferred</h2><div class="deferred"><div class="deferred-item" id="c-c5"><b>DEFERRED — <span class="mono">C5</span></b><p>Round-close math requires a closed round — not available in this env.</p></div></div>
+<h2>Bugs</h2><div class="bug" id="bug-bug-1"><h3>BUG-1 — Amount truncated</h3><div class="chips"><span class="tag">severity: high</span><span class="tag">suspected layer: migration</span><span class="tag">C2</span></div><ol><li>Open issuance</li><li>Enter 4,000,000 shares at $0.001</li></ol><div class="ea"><div><b>Expected</b><br>$4,000.00</div><div><b>Actual</b><br>$4.00</div></div></div>
+
+
+<section id="gallery-section" hidden><h2>All screenshots</h2><div class="shots" id="gallery"></div></section>
+<footer>Rendered by qa-e2e-pilot render-report.js from the run's own record. Click a screenshot to enlarge; ← → step through, Esc closes.</footer>
+</div>
+
+<div class="lb" id="lb" hidden role="dialog" aria-modal="true" aria-label="Screenshot viewer">
+  <div class="lb-top">
+    <span class="lb-count" id="lb-count"></span>
+    <span class="lb-tools">
+      <a id="lb-open" href="#" target="_blank" rel="noopener">Open original</a>
+      <button type="button" id="lb-close" aria-label="Close (Esc)">&times;</button>
+    </span>
+  </div>
+  <button type="button" class="lb-nav lb-prev" id="lb-prev" aria-label="Previous screenshot (Left arrow)">&#8249;</button>
+  <div class="lb-stage" id="lb-stage"><img id="lb-img" alt=""></div>
+  <button type="button" class="lb-nav lb-next" id="lb-next" aria-label="Next screenshot (Right arrow)">&#8250;</button>
+  <div class="lb-cap" id="lb-cap" aria-live="polite"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var lb = document.getElementById("lb");
+  if (!lb) { return; }
+  var img = document.getElementById("lb-img"), cap = document.getElementById("lb-cap");
+  var count = document.getElementById("lb-count"), open = document.getElementById("lb-open");
+  var prevBtn = document.getElementById("lb-prev"), nextBtn = document.getElementById("lb-next");
+  var closeBtn = document.getElementById("lb-close"), stage = document.getElementById("lb-stage");
+  var top = lb.querySelector(".lb-top");
+  var items = [], idx = 0, lastFocus = null;
+
+  // "All screenshots": one gallery built from the cards' own thumbnails, so an
+  // --embed report never carries an image twice.
+  var gallery = document.getElementById("gallery");
+  if (gallery) {
+    var figs = document.querySelectorAll(".cards .shot, .deferred .shot");
+    for (var g = 0; g < figs.length; g++) {
+      var copy = figs[g].cloneNode(true);
+      var link = copy.querySelector("a.shot-link");
+      if (link) { link.setAttribute("data-group", "all"); }
+      gallery.appendChild(copy);
+    }
+    var gs = document.getElementById("gallery-section");
+    if (gs && figs.length) { gs.hidden = false; }
+  }
+
+  function group(name) {
+    var all = document.querySelectorAll("a.shot-link"), out = [];
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].getAttribute("data-group") === name) { out.push(all[i]); }
+    }
+    return out;
+  }
+  function show(i) {
+    if (!items.length) { return; }
+    idx = (i + items.length) % items.length;
+    var a = items[idx], src = a.getAttribute("href"), text = a.getAttribute("data-caption") || "";
+    img.src = src;
+    img.alt = text;
+    cap.textContent = text;
+    open.href = src;
+    count.textContent = (idx + 1) + " / " + items.length;
+    prevBtn.disabled = nextBtn.disabled = items.length < 2;
+  }
+  function openAt(a) {
+    items = group(a.getAttribute("data-group"));
+    if (!items.length) { items = [a]; }
+    lastFocus = a;
+    lb.hidden = false;
+    document.body.classList.add("lb-on");
+    show(Math.max(0, items.indexOf(a)));
+    closeBtn.focus();
+  }
+  function close() {
+    lb.hidden = true;
+    document.body.classList.remove("lb-on");
+    img.removeAttribute("src");
+    if (lastFocus && lastFocus.focus) { lastFocus.focus(); }
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { return; }
+    var t = e.target;
+    while (t && t !== document && !(t.tagName === "A" && /\bshot-link\b/.test(t.className))) { t = t.parentNode; }
+    if (t && t !== document) { e.preventDefault(); openAt(t); }
+  });
+  lb.addEventListener("click", function (e) {
+    if (e.target === lb || e.target === stage || e.target === cap || e.target === top) { close(); }
+  });
+  closeBtn.addEventListener("click", close);
+  prevBtn.addEventListener("click", function () { show(idx - 1); });
+  nextBtn.addEventListener("click", function () { show(idx + 1); });
+  document.addEventListener("keydown", function (e) {
+    if (lb.hidden) { return; }
+    if (e.key === "Escape" || e.key === "Esc") { e.preventDefault(); close(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); show(idx - 1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); show(idx + 1); }
+    else if (e.key === "Tab") {
+      var f = [open, closeBtn, prevBtn, nextBtn].filter(function (x) { return !x.disabled; });
+      var at = f.indexOf(document.activeElement);
+      e.preventDefault();
+      f[(at + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+    }
+  });
+
+  // Verdict filter.
+  var filters = document.querySelectorAll("button.filter");
+  for (var k = 0; k < filters.length; k++) {
+    filters[k].addEventListener("click", function () {
+      var want = this.getAttribute("data-filter");
+      for (var j = 0; j < filters.length; j++) { filters[j].setAttribute("aria-pressed", String(filters[j] === this)); }
+      var cards = document.querySelectorAll(".cards .card");
+      for (var c = 0; c < cards.length; c++) {
+        cards[c].hidden = !(want === "all" || cards[c].getAttribute("data-verdict") === want);
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>
