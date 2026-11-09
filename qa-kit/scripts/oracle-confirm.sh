@@ -110,13 +110,22 @@ do_apply() {
       | ($d[0] | if type=="array" then . else error("decisions must be a JSON array") end) as $dec
       | def valid: (type=="object") and (.criterionId != null)
           and ((.decision=="accept") or (.decision=="unknown")
-               or (.decision=="edit" and has("value") and ((.value|type)=="string" or (.value|type)=="number")));
-        def rowfor($id): [ $cl[] | select(type=="object" and (.id|tostring) == $id and ((.fixture|type)=="object") and ((.fixture.expect|type)=="object")) ];
+               or (.decision=="edit" and has("value") and ((.value|type)=="string") and (.value|length > 0))
+               or (.decision=="edit" and has("value") and (.value|type)=="number"));
+        def rowok($x): (type=="object") and ((.fixture|type)=="object") and ((.fixture.expect|type)=="object")
+          and ((.id|tostring) == ($x.criterionId|tostring))
+          and ((.fixture.expect.oracleSource // "") | . != "human" and . != "spec")
+          and ($x.decision == "unknown"
+               or ((.fixture.expect.path|type)=="string" and (.fixture.expect.path|length)>0
+                   and ((.fixture.expect.tolerance|type)=="number")
+                   and ($x.decision == "edit" or (.fixture.expect|has("value") and ((.value|type)=="string" or (.value|type)=="number")))));
+        def matched($x): ($x|valid) and ([ $cl[] | select(rowok($x)) ] | length > 0);
         ([ $dec[] | select(type=="object" and .criterionId != null) ]
           | reduce .[] as $x ({}; .[$x.criterionId|tostring] = $x)) as $m
-      | ($m | to_entries | map(select(.value|valid) | select(rowfor(.key)|length > 0))) as $ok
-      | { c: ($cl | map(if type=="object" and ((.fixture|type)=="object") and ((.fixture.expect|type)=="object") and ($m[(.id|tostring)] != null) and ($m[(.id|tostring)]|valid)
-                        then ($m[(.id|tostring)]) as $x
+      | ($m | to_entries | map(select(matched(.value)))) as $ok
+      | { c: ($cl | map(. as $r | if ($r|type)=="object" and ($r.id != null) and ($m[($r.id|tostring)] != null)
+                              and ($m[($r.id|tostring)] as $x | ($x|valid) and ($r|rowok($x)))
+                        then ($m[($r.id|tostring)]) as $x
                         | if $x.decision=="accept" then .fixture.expect.oracleSource = "human"
                           elif $x.decision=="edit" then (.fixture.expect.value = $x.value | .fixture.expect.oracleSource = "human")
                           else . end
@@ -124,7 +133,7 @@ do_apply() {
           s: { accepted: ([ $ok[] | select(.value.decision=="accept") ] | length),
                edited: ([ $ok[] | select(.value.decision=="edit") ] | length),
                unknown: ([ $ok[] | select(.value.decision=="unknown") ] | length),
-               unmatched: ([ $m | to_entries[] | select(((.value|valid) and (rowfor(.key)|length > 0)) | not) | .key ] | sort) } }
+               unmatched: ([ $m | to_entries[] | select(matched(.value)|not) | .key ] | sort) } }
     ' "$1" 2>/dev/null)" || die "oracle-confirm: jq failed (malformed checklist or decisions)."
     printf '%s\n' "$new" | jq --indent 2 '.c' > "$tmp" || die "oracle-confirm: internal error"
     cp "$1" "$1.bak" && mv "$tmp" "$1" || die "oracle-confirm: cannot write $1"
@@ -145,18 +154,30 @@ for x in dec:
 def valid(x):
     d = x.get("decision")
     if d in ("accept", "unknown"): return True
-    return d == "edit" and "value" in x and isinstance(x["value"], (str, int, float)) and not isinstance(x["value"], bool)
+    v = x.get("value")
+    return d == "edit" and isinstance(v, (str, int, float)) and not isinstance(v, bool) and v != ""
 def has_expect(r):
     return isinstance(r, dict) and isinstance(r.get("fixture"), dict) and isinstance(r["fixture"].get("expect"), dict)
-def rid(r): 
+def isnum(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
+def rowok(r, x):
+    if not has_expect(r): return False
+    e = r["fixture"]["expect"]
+    if e.get("oracleSource", "") in ("human", "spec"): return False
+    if x["decision"] == "unknown": return True
+    if not (isinstance(e.get("path"), str) and e["path"]) or not isnum(e.get("tolerance")): return False
+    if x["decision"] == "accept":
+        return "value" in e and (isinstance(e["value"], str) or isnum(e["value"]))
+    return True
+def rid(r):
     i = r.get("id"); return i if isinstance(i, str) else json.dumps(i, ensure_ascii=False)
 rows = {}
 for r in cl:
-    if has_expect(r) and r.get("id") is not None: rows.setdefault(rid(r), []).append(r)
+    if isinstance(r, dict) and r.get("id") is not None: rows.setdefault(rid(r), []).append(r)
 acc = edt = unk = 0; unmatched = []
 for k, x in m.items():
-    if not valid(x) or k not in rows: unmatched.append(k); continue
-    for r in rows[k]:
+    ok = [r for r in rows.get(k, []) if rowok(r, x)] if valid(x) else []
+    if not ok: unmatched.append(k); continue
+    for r in ok:
         e = r["fixture"]["expect"]
         if x["decision"] == "accept": e["oracleSource"] = "human"
         elif x["decision"] == "edit": e["value"] = x["value"]; e["oracleSource"] = "human"

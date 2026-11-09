@@ -55,6 +55,23 @@ spec_engine() {
   QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_missing_file" "$?" "1"
   mk ',"citation":"spec.md"'
   QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_no_line" "$?" "1"
+  mk ',"citation":""'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_empty_citation_rejected" "$?" "1"
+  mk ',"citation":":3"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_colon_only_citation_rejected" "$?" "1"
+  # containment: traversal, absolute path, symlink out
+  mkdir -p "$T/dir"; cp "$T/c.json" "$T/dir/c.json"; printf 'x\ny\n' > "$T/outside.txt"
+  ln -s "$T/outside.txt" "$T/dir/link.md"; ln -s /etc/passwd "$T/dir/pw.md"
+  printf 'a\nb\n' > "$T/dir/in.md"
+  mkd() { printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"%s"}}}]' "$1" > "$T/dir/c.json"; }
+  mkd "in.md:2"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_contained_ok" "$?" "0"
+  mkd "../outside.txt:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_traversal_rejected" "$?" "1"
+  mkd "../../../../../../etc/passwd:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_deep_traversal_rejected" "$?" "1"
+  mkd "/etc/passwd:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_absolute_rejected" "$?" "1"
+  mkd "link.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_out_rejected" "$?" "1"
+  mkd "pw.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_etc_rejected" "$?" "1"
+  # sources.spec counts only valid citations
+  mkd "../outside.txt:1"; check "$E sources_spec_counts_valid_only" "$(QA_ENGINE=$E bash "$SH" "$T/dir/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["spec"])')" "0"
 }
 command -v jq >/dev/null 2>&1 && spec_engine jq
 command -v python3 >/dev/null 2>&1 && spec_engine python3
@@ -69,5 +86,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   printf '[%s,%s]' "$NOID_B" "$NOID_A" > "$X/noid.json"
   vj="$(QA_ENGINE=jq bash "$SH" "$X/noid.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/noid.json" 2>/dev/null; true)"
   check "cross-engine null-id ordering byte-identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":""}}}]' > "$X/e.json"
+  vj="$(QA_ENGINE=jq bash "$SH" "$X/e.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/e.json" 2>/dev/null; true)"
+  check "cross-engine empty citation parity" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
 fi
 echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
