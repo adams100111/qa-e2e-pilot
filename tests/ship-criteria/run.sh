@@ -235,7 +235,7 @@ J
   check "$E assumed entries reported" "$(grep -c '1 surface-access entries are assumptions (autonomousSetup), not human confirmations' "$T/s.err")" "1"
   # input_skips_get_forms + accept_or_reject_oracle (I7)
   check "$E input_skips_get_forms" "$(q "$T/s.json" "ids('input:filters')")" '[]'
-  check "$E get form skip reported" "$(grep -c 'input: 1 forms with method GET skipped (search / filter forms): filters;' "$T/s.err")" "1"
+  check "$E get form skip reported" "$(grep -c 'input: 1 forms with method GET skipped (search / filter forms): filters (only an explicit method get is skipped' "$T/s.err")" "1"
   check "$E input rows of the POST form" "$(q "$T/s.json" "ids('input:rename:')")" '["input:rename:opens_on:invalid","input:rename:opens_on:past","input:rename:title:empty","input:rename:title:long-5000","input:rename:title:special"]'
   check "$E accept_or_reject_oracle special/long-5000/past" "$(q "$T/s.json" "sorted(set(r(i)['expected'] for i in ('input:rename:title:special','input:rename:title:long-5000','input:rename:opens_on:past')))")" \
     '["Either a validation message is visible, or the value is accepted and rendered escaped and intact; never a 5xx, never raw HTML injection"]'

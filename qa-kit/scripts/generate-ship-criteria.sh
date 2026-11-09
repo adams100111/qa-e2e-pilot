@@ -336,7 +336,7 @@ def cases:
      + [ $IS[] | select(has("surfaceId") | not)
          | "generate-ship-criteria: warning: " + .title + " has no readable census surface with a {" + .entity + "} route parameter; emitted without surfaceId" ]
      + (if ($getSkipped | length) > 0
-        then ["generate-ship-criteria: input: \($getSkipped | length) forms with method GET skipped (search / filter forms): \($getSkipped | join(", ")) (only an explicit method="get" is skipped; add input criteria by hand if one of these writes)"] else [] end)
+        then ["generate-ship-criteria: input: \($getSkipped | length) forms with method GET skipped (search / filter forms): \($getSkipped | join(", ")) (only an explicit method get is skipped; add input criteria by hand if one of these writes)"] else [] end)
      + ["generate-ship-criteria: \($total) rows (load-clean \($LC | length), deny \($DN | length), iso \($IS | length), input \($IN | length), ux \($UX | length)); \($generated - $total) skipped as already in the checklist"]
      + (if $skippedNoEvidence > 0 then ["generate-ship-criteria: deny: \($skippedNoEvidence) surfaces skipped — no permission evidence; confirm in surface-access to include"] else [] end)
      + ([ $DN[].surfaceId ] | unique | map(select((($acc.surfaces[.] // null) | if type == "object" then .confirmed else null end) != true))
@@ -683,7 +683,7 @@ for r in IS:
     if "surfaceId" not in r:
         notes.append("generate-ship-criteria: warning: " + r["title"] + " has no readable census surface with a {" + r["entity"] + "} route parameter; emitted without surfaceId")
 if get_skipped:
-    notes.append("generate-ship-criteria: input: %d forms with method GET skipped (search / filter forms): %s (only an explicit method="get" is skipped; add input criteria by hand if one of these writes)"
+    notes.append("generate-ship-criteria: input: %d forms with method GET skipped (search / filter forms): %s (only an explicit method get is skipped; add input criteria by hand if one of these writes)"
                  % (len(get_skipped), ", ".join(get_skipped)))
 notes.append("generate-ship-criteria: %d rows (load-clean %d, deny %d, iso %d, input %d, ux %d); %d skipped as already in the checklist"
              % (total, len(LC), len(DN), len(IS), len(IN), len(UX), generated - total))
