@@ -144,6 +144,20 @@ rk_both "deny read-only navigation row -> nothing" \
   '{"kind":"deny","tags":["independent","read-only"],"mutates":false,"action":"As judge, navigate directly to /admin/hackathons/create (read-only)"}' ""
 rk_both "deny api-write row keeps the api-write probe swap" \
   '{"kind":"deny","tags":["api-write"],"mutates":true,"action":"As participant, send POST /admin/hackathons through the recorded write probe"}' "probe"
+# Contract §4 (final fix wave): iso rows carry tag `cross-tenant`, deny rows carry `probe-needed`
+# (and `sweep`) — both must derive `probe`, so the evidence gate demands a probe for them.
+rk_both "iso row (kind cross-tenant + cross-tenant tag) -> probe" \
+  '{"id":"iso-submission-participant-1a2b3c4d","kind":"cross-tenant","tags":["independent","ownership-isolation","read-only","cross-tenant"],"humanAction":false,"mutates":false,"action":"As participant, open a submission owned by another participant user by direct URL (read-only GET)"}' "probe"
+rk_both "deny read-only row tagged probe-needed + sweep -> probe" \
+  '{"id":"deny-get-admin-hackathons-create-judge-0f1e2d3c","kind":"deny","tags":["independent","read-only","probe-needed","sweep"],"mutates":false,"action":"As judge, navigate directly to /admin/hackathons/create (read-only)"}' "probe"
+rk_both "deny api-write row tagged probe-needed -> probe (once)" \
+  '{"kind":"deny","tags":["api-write","probe-needed","sweep"],"mutates":true,"action":"As participant, send POST /admin/hackathons through the recorded write probe"}' "probe"
+# A write-deferred deny row's action is mutating, so human-action stays derived (it is recorded
+# `deferred`, never `pass`); probe-needed adds probe on top.
+rk_both "deny write-deferred row tagged probe-needed -> human-action,probe" \
+  '{"kind":"deny","tags":["deny-write-deferred","probe-needed","sweep"],"action":"As participant, send DELETE /admin/hackathons/{hackathon} without permission"}' "human-action,probe"
+rk_both "load-clean row tagged sweep -> nothing" \
+  '{"kind":"load-clean","tags":["independent","read-only","sweep"],"mutates":false,"action":"As admin, open /admin/hackathons and let it settle"}' ""
 rk_both "input-validation human-action row -> bake,human-action" \
   '{"kind":"input-validation","tags":["human-action"],"humanAction":true,"action":"Submit form /h/{slug}#page with field بحث set to the long-5000 case"}' "bake,human-action"
 rk_both "input-validation still requires bake when tagged read-only" \
