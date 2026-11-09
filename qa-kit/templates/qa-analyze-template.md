@@ -14,6 +14,8 @@
      with no role) and per `covered-sweep` pair (covered only by generated load / deny / revisit rows) — both
      count as uncovered under block — each with the remediation (add a criterion via /qa-scenarios, or record
      an exclusion with a reason), plus any journeys.sh validate errors and who accepted --accept-crawl-only.
+     Under ship (--require-visual-ux): one line per `uxMissing` surface, "no visual-ux criterion", remediation
+     "add a visual-ux row via /qa-scenarios (step 5c)"; any such surface also makes the Verdict BLOCKED.
      "(none)" if clean. Under ship, "(no census)" or an unavailable engine script makes the Verdict BLOCKED. -->
 
 ## Coverage gaps

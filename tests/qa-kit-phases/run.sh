@@ -170,5 +170,15 @@ grep -q 'never `/qa-run` while the analysis is' "$QST"; check "status_refuses_ru
 grep -q 'Never hand off to `/qa-run` while' "$AG"; check "agent_refuses_run_while_blocked" "$?" "0"
 grep -q 'Engine-only runs have no gate' "$QA"; check "analyze_documents_engine_only_has_no_gate" "$?" "0"
 
+# --- UX wiring (0.12.0): hand-authored plans carry visual-ux rows; analyze blocks a ship plan without them ---
+grep -q 'every surface in scope gets a `visual-ux` criterion' "$QSC" && grep -q 'analyzing-feature-ui' "$QSC"; check "scenarios_hand_authored_visual_ux_per_surface" "$?" "0"
+grep -q 'every locale and viewport in the profile gets a `ux-revisit` row' "$QSC"; check "scenarios_hand_authored_ux_revisit_per_variant" "$?" "0"
+grep -q 'interaction-ux' "$QSC"; check "scenarios_names_interaction_ux" "$?" "0"
+grep -q -- '--require-visual-ux' "$QSC"; check "scenarios_fill_gaps_requires_visual_ux" "$?" "0"
+grep -q -- '--require-visual-ux' "$QA" && grep -q 'uxMissing' "$QA"; check "analyze_flags_surfaces_without_visual_ux" "$?" "0"
+grep -q 'until uncovered = 0 and `uxMissing` is empty' "$QA"; check "analyze_visual_ux_blocking_under_ship" "$?" "0"
+grep -q 'uxMissing' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_template_coverage_lists_ux_missing" "$?" "0"
+grep -q -- '--require-visual-ux' "$ROOT/qa-kit/core/commands/qa-analyze.md" && grep -q 'step 5c' "$ROOT/qa-kit/core/commands/qa-scenarios.md"; check "ux_wiring_in_core_sources" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

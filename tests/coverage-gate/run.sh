@@ -47,6 +47,27 @@ run_engine() {
   check "$E unreached adapter surface is a * pair" "$(q "$T/all.json" '[x["personaId"] for x in c["rows"] if x["surfaceId"]=="GET /admin/reports"]')" '["*"]'
   check "$E * pair covered by a scoped functional row" "$(q "$T/all.json" 'r("GET /admin/reports","*")["criteria"]')" '["C-REPORTS"]'
 
+  # require_visual_ux: every in-scope UI surface needs a visual-ux row (ship plan); channels and
+  # non-GET writes are not UI surfaces; without the flag the output has no uxMissing key.
+  check "$E no uxMissing key without the flag" "$(q "$T/all.json" '"uxMissing" in c')" "False"
+  cov "$C" "$ALL" --mode block --require-visual-ux > "$T/ux0.json" 2> "$T/ux0.err"; rc=$?
+  check "$E require_visual_ux blocks when surfaces lack a visual-ux row" "$rc" "1"
+  check "$E require_visual_ux lists the UI surfaces" "$(q "$T/ux0.json" 'c["uxMissing"]')" '["GET /admin/hackathons","GET /admin/reports","GET /h/{slug}","GET /الأخبار","page:Admin/Hackathons/Show"]'
+  check "$E require_visual_ux message" "$(grep -c '5 surface(s) have no visual-ux criterion' "$T/ux0.err")" "1"
+  check "$E require_visual_ux leaves coverage counts alone" "$(q "$T/ux0.json" "$COUNTS")" '[8,8,0,0]'
+  python3 -c '
+import json,sys
+k=json.load(open(sys.argv[1],encoding="utf-8"))
+k.append({"id":"UX-1","surfaceId":["GET /admin/hackathons","GET /admin/reports","GET /h/{slug}","GET /الأخبار"],"persona":"admin","tags":["visual-ux"]})
+json.dump(k,open(sys.argv[2],"w",encoding="utf-8"),ensure_ascii=False)' "$ALL" "$T/k-ux.json"
+  cov "$C" "$T/k-ux.json" --mode block --require-visual-ux > "$T/ux1.json" 2>/dev/null; rc=$?
+  check "$E require_visual_ux one surface left" "[$rc,$(q "$T/ux1.json" 'c["uxMissing"]')]" '[1,["page:Admin/Hackathons/Show"]]'
+  cov "$C" "$T/k-ux.json" --mode advise --require-visual-ux > "$T/ux2.json" 2>/dev/null; rc=$?
+  check "$E require_visual_ux advise reports without blocking" "[$rc,$(q "$T/ux2.json" 'len(c["uxMissing"])')]" '[0,1]'
+  printf '%s' '[{"surfaceId":"page:Admin/Hackathons/Show","personaId":"*","reason":"legacy page, retired next sprint"}]' > "$T/ux-ex.json"
+  cov "$C" "$T/k-ux.json" --mode block --require-visual-ux --exclusions "$T/ux-ex.json" > "$T/ux3.json" 2>/dev/null; rc=$?
+  check "$E require_visual_ux excluded surface not required" "[$rc,$(q "$T/ux3.json" 'c["uxMissing"]')]" '[0,[]]'
+
   # unscoped_row_does_not_cover_role_pair_in_block
   U="$FX/checklist-unscoped.json"
   cov "$C" "$U" --mode block > "$T/ub.json" 2>/dev/null; rc=$?
@@ -226,6 +247,9 @@ census.json|checklist-unscoped.json|--mode advise
 census-empty.json|checklist-all.json|--mode block
 $SHARED/c2.json|$SHARED/k2.json|--mode block --exclusions $SHARED/gx.json
 $SHARED/c2.json|$SHARED/k2.json|--mode advise --scope Show$ --roles $SHARED/roles.json
+census.json|checklist-all.json|--mode block --require-visual-ux
+census.json|checklist-partial.json|--mode advise --require-visual-ux
+census.json|checklist-partial.json|--mode block --exclusions $FX/exclusions-wildcard.json --require-visual-ux
 EOF
 fi
 echo "coverage-gate: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
