@@ -192,19 +192,27 @@ A run can carry a **profile** (`profile` in `.qa/config.json` or a qa-kit spec's
 `full` (the default, today's behaviour), `ship` or `smoke`. At pre-flight `scripts/profile.sh resolve`
 writes the run's `effective-config.json`; every later phase reads that file. `ship` turns on, for
 keys you did not set yourself: desktop 1440×900 + mobile 390×844, light + dark (via the driver's
-emulate-media capability), every locale the app ships, all UX detectors + axe + the critic, a
-blocking coverage gate, and 3 parallel read-only lanes. `smoke` is desktop, light, first locale, and
+emulate-media capability), every locale the app ships (none detected = `[]`, one pass in the app's
+default locale), all UX detectors + axe + the critic, a blocking coverage gate, and 3 parallel
+read-only lanes (capped by `isolation.maxOpenContexts`). `smoke` is desktop, light, first locale, and
 an advisory coverage gate. Any key you set wins, including an explicit `[]`.
 
 The **coverage census** (`.qa/census.json`, skill `taking-surface-census`) lists every route, page,
-job, mail and notification the app declares (a stack adapter under `adapters/census/`, run through
+job, mail and notification the app declares (a stack adapter under `adapters/census/`, picked by the
+stack profile's `framework` id or `generic`, written to `.qa/census/adapter.json`, run through
 `exec.prefix` when the toolchain lives in a container) and what each role actually reaches (a
 read-only crawl that only follows links, tabs and menu/dialog openers classified safe, on any
-environment). qa-kit turns the census into generated criteria — a load-clean sweep, a deny matrix,
+environment; a Next/Previous button is never clicked). Each surface records a concrete
+`sampleUrls` entry per role, and tabs, dialogs and sheets the crawl opened become their own
+surfaces (`<page>#tab:<name>`). qa-kit turns the census into generated criteria — a load-clean sweep, a deny matrix,
 ownership isolation, form input edge cases, UX revisits per viewport × locale × color scheme — and
 `/qa-analyze` blocks a ship run while any role × surface pair is neither covered nor excluded with a
-reason. **Journeys** (`journeys.json`) chain criteria end to end; under `ship` the P1 journeys run
-sequentially at the primary variant and exactly one is repeated at mobile in the first RTL locale.
+reason. The gate is qa-kit's: an engine-only ship run reports the census diffs but has no coverage
+gate. **Journeys** (`journeys.json`) chain criteria end to end; under `ship` the P1 journeys run
+sequentially at the primary variant and exactly one is repeated at mobile in the first RTL locale
+(`journeys.sh expand-variant --viewport-id mobile`, ids suffixed `@mobile-ar`). Generated data is
+checked with `scripts/data-policy.sh` from an `@file` of the record's own fields only, never
+credentials.
 See [ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md) and
 [ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md).
 

@@ -85,8 +85,14 @@ tagged `deny-write-deferred`.
 records are tracked by id (`record`/`list`) for cleanup. Increment 2 makes it a record-time gate.
 
 **G. qa-kit owns who SHOULD reach what, and the coverage gate.** `surface-access.sh` derives
-`.qa/surface-access.json` from adapter hints and crawl reach; reach without a matching hint is
-never `allowed` until a human confirms it in `/qa-constitution`. `generate-ship-criteria.sh` emits
+`.qa/surface-access.json` from adapter hints and crawl reach. On a surface **with** permission
+hints, a persona reaching it without a matching hint is never `allowed` until a human confirms it in
+`/qa-constitution`. On a surface with **no** hint, `allowed` is the crawl's `reachedBy` (source
+`crawl`) and every such persona is also listed in `reachedWithoutEvidence`: that `allowed` exists only
+so the overreach diff stays quiet; it is not permission evidence, produces no deny rows, and the
+confirm table asks a human about each pair. Hints resolve against persona `role`/`id` (`role:X`) and
+the optional persona `permissions[]` (`can:X`/`permission:X`, `*` and `prefix.*` wildcards); an
+unresolvable hint sends the pair to `reachedWithoutEvidence`, never silently to `allowed`. `generate-ship-criteria.sh` emits
 rows from census × access × authz matrix, with deny rows only where permission evidence exists.
 `coverage.sh` blocks a ship run (`/qa-analyze`) while any role × surface pair is uncovered and not
 excluded with a reason, when the census is empty, or when the adapter failed without
