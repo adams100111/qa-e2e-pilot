@@ -71,6 +71,13 @@ spec_engine() {
   mkd "link.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_out_rejected" "$?" "1"
   mkd "pw.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_etc_rejected" "$?" "1"
   # sources.spec counts only valid citations
+  # non_git_root_is_checklist_dir: outside a git repo the containment root is the checklist's
+  # directory only — a file reachable from cwd (but not the checklist dir) is not a valid citation.
+  mkdir -p "$T/ng/qa"; printf 'l1\n' > "$T/ng/cwd-only.md"; printf 'l1\n' > "$T/ng/qa/local.md"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"cwd-only.md:1"}}}]' > "$T/ng/qa/c.json"
+  (cd "$T/ng" && QA_ENGINE=$E bash "$SH" qa/c.json >/dev/null 2>&1); check "$E non_git_root_is_checklist_dir cwd file rejected" "$?" "1"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"local.md:1"}}}]' > "$T/ng/qa/c.json"
+  (cd "$T/ng" && QA_ENGINE=$E bash "$SH" qa/c.json >/dev/null 2>&1); check "$E non_git_root_is_checklist_dir local file ok" "$?" "0"
   mkd "../outside.txt:1"; check "$E sources_spec_counts_valid_only" "$(QA_ENGINE=$E bash "$SH" "$T/dir/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["spec"])')" "0"
 }
 command -v jq >/dev/null 2>&1 && spec_engine jq

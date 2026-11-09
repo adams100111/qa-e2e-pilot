@@ -18,12 +18,16 @@
 #       Writes an evidence-only bundle into <out-dir> (created; must be empty):
 #         criterion.json   the checklist row (null when the run has no row)
 #         claim.json       {criterionId, claims:[{persona,verdict,confidence,kinds}]}
-#         evidence/...     evidence/[<persona>/]<criterionId>/** (artifacts and
-#                          screenshots) + the persona's identity.json (for a
+#         evidence/...     from evidence/[<persona>/]<criterionId>/ ONLY the
+#                          record-evidence outputs (ALLOW-list): bake-read-back.json,
+#                          recompute.json, network-response.json, action-trace.json,
+#                          identity.json, screenshot-*.{png,jpg,jpeg,webp,json} and
+#                          findings/** — plus the persona's identity.json (for a
 #                          shared criterion: the checklist row role's)
-#       Never copied: journal.ndjson, toolstream.jsonl, any *.ndjson/*.jsonl,
-#       any *.md, and the agent's prose (last_action, nonUiActionReason,
-#       evidence_refs are left out of claim.json). Without --persona every
+#       Everything else is left out: journals, toolstreams, notes, any file
+#       record-evidence does not write, and the agent's prose (last_action,
+#       nonUiActionReason, evidence_refs are left out of claim.json). Symlinks
+#       are never followed into the bundle. Without --persona every
 #       persona's record of the criterion is bundled. Exit 1 on an unknown
 #       criterion (or persona).
 #
@@ -33,9 +37,10 @@
 #         agree:true                     -> no change
 #         agree:false on a pass          -> checkpoint.sh blocked --confidence low
 #                                           --last-action "verifier-disagrees: <reason>"
-#                                           --phase adjudicate
+#                                           --phase adjudicate (kinds + evidence refs kept)
 #         agree:false on a fail          -> stays fail, confidence low, same
-#                                           last-action (kinds/bug-ref/refs kept)
+#                                           last-action (kinds/bug-ref/refs and a
+#                                           logged nonUiActionReason kept)
 #         agree:false on blocked|deferred|error -> no change (already not a pass)
 #       An entry that is malformed or names a criterion/persona with no record
 #       is REJECTED: skipped, reported on stderr, the other entries still apply,
@@ -48,8 +53,9 @@
 #
 #   adjudication.sh capability <harness> [<run-dir>]
 #       Prints "available" when the harness can dispatch a fresh-context
-#       subagent (its harness-profiles.json `dispatch` uses the Agent/Task
-#       tool), else the banner
+#       subagent (its harness-profiles.json boolean `subagentDispatch` is
+#       true; anything else, or a harness missing from the file, is false),
+#       else the banner
 #       "re-adjudication unavailable on <harness>; <n> low-confidence passes unreviewed"
 #       (n counted from <run-dir> when given, else 0). Exit 0 either way.
 #       QA_HARNESS_PROFILES overrides the profiles path; with no profiles
@@ -99,7 +105,7 @@ require_run() {
 }
 
 # records <run-dir> — one US-separated line per checkpoint record:
-#   crit persona verdict confidence kinds(csv) bug_ref evidence_refs(compact json) last_action
+#   crit persona verdict confidence kinds(csv) bug_ref evidence_refs(compact json) last_action nonui_reason
 records() {
   local f="$1/checkpoint.json"
   if has_jq; then
@@ -111,7 +117,7 @@ records() {
         ((.kinds // []) | if type == "array" then map(clean) | join(",") else "" end),
         (.bug_ref // "" | clean),
         ((.evidence_refs // []) | if type == "array" then tojson else "[]" end),
-        (.last_action // "" | clean) ] | join($us)' "$f"
+        (.last_action // "" | clean), (.nonUiActionReason // "" | clean) ] | join($us)' "$f"
   else
     PYTHONIOENCODING=utf-8 python3 - "$f" "$US" <<'PY'
 import json, re, sys
@@ -129,7 +135,7 @@ for r in d.get("criteria") or []:
                    ",".join(clean(k) for k in kinds) if isinstance(kinds, list) else "",
                    clean(r.get("bug_ref")),
                    json.dumps(refs, ensure_ascii=False, separators=(",", ":")) if isinstance(refs, list) else "[]",
-                   clean(r.get("last_action"))]))
+                   clean(r.get("last_action")), clean(r.get("nonUiActionReason"))]))
 PY
   fi
 }
@@ -140,10 +146,11 @@ rows() {
   [ -f "$f" ] || return 0
   if has_jq; then
     jq -r --arg us "$US" '
-      def clean: tostring | gsub("[\t\r\n\u001f,]"; " ");
+      def clean: tostring | gsub("[\t\r\n\u001f]"; " ");
+      def tag: clean | gsub(","; " ");
       (if type == "array" then .[] else empty end) | select(type == "object") |
       [ (.id // "" | clean), (.kind // "" | clean), (.stepType // "" | clean), (.role // "" | clean),
-        ((.tags // []) | if type == "array" then map(clean) | join(",") else "" end) ] | join($us)' "$f"
+        ((.tags // []) | if type == "array" then map(tag) | join(",") else "" end) ] | join($us)' "$f"
   else
     PYTHONIOENCODING=utf-8 python3 - "$f" "$US" <<'PY'
 import json, re, sys
@@ -151,12 +158,13 @@ d = json.load(open(sys.argv[1], encoding="utf-8")); us = sys.argv[2]
 def clean(v):
     if v is None: v = ""
     if not isinstance(v, str): v = str(v)
-    return re.sub("[\t\r\n\x1f,]", " ", v)
+    return re.sub("[\t\r\n\x1f]", " ", v)
+def tag(v): return clean(v).replace(",", " ")
 for r in (d if isinstance(d, list) else []):
     if not isinstance(r, dict): continue
     tags = r.get("tags") or []
     print(us.join([clean(r.get("id")), clean(r.get("kind")), clean(r.get("stepType")), clean(r.get("role")),
-                   ",".join(clean(t) for t in tags) if isinstance(tags, list) else ""]))
+                   ",".join(tag(t) for t in tags) if isinstance(tags, list) else ""]))
 PY
   fi
 }
@@ -198,8 +206,8 @@ cmd_select() {
   local tmp; tmp="$(mktemp)"
   rows "$rd" > "$tmp" || { rm -f "$tmp"; die "cannot read $rd/checklist.json"; }
   local recs; recs="$(records "$rd")" || { rm -f "$tmp"; die "cannot read $rd/checkpoint.json"; }
-  local cid persona verdict conf kinds bug refs la
-  while IFS="$US" read -r cid persona verdict conf kinds bug refs la; do
+  local cid persona verdict conf kinds bug refs la nu
+  while IFS="$US" read -r cid persona verdict conf kinds bug refs la nu; do
     [ -n "$cid" ] || continue
     if [ "$verdict" = "pass" ] && [ "$conf" = "low" ]; then
       printf '%s\t%s\t%s\n' "$cid" "$persona" "low-confidence-pass"
@@ -243,14 +251,33 @@ print(json.dumps({"criterionId": cid, "claims": claims}, indent=2, sort_keys=Tru
   fi
 }
 
-# copy_dir <src> <dst> — recursive copy, then drop journals/toolstreams/prose.
+# allowed_file <relative path> — the record-evidence outputs a verifier may see.
+allowed_file() {
+  case "$1" in
+    findings/*) case "$1" in */../*|*/..) return 1 ;; esac; return 0 ;;
+    */*) return 1 ;;
+    bake-read-back.json|recompute.json|network-response.json|action-trace.json|identity.json) return 0 ;;
+    screenshot-*.png|screenshot-*.jpg|screenshot-*.jpeg|screenshot-*.webp|screenshot-*.json) return 0 ;;
+  esac
+  return 1
+}
+
+# copy_dir <src> <dst> — copy ONLY allow-listed regular files (never symlinks)
+# from <src>, preserving the findings/ subtree.
 copy_dir() {
-  local src="$1" dst="$2"
+  local src="$1" dst="$2" f rel
   [ -d "$src" ] || return 0
+  [ -L "$src" ] && return 0
   mkdir -p "$dst"
-  cp -R "$src/." "$dst/"
-  find "$dst" -type f \( -name 'journal.ndjson' -o -name 'toolstream.jsonl' -o -name '*.ndjson' \
-    -o -name '*.jsonl' -o -name '*.md' \) -exec rm -f {} +
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="${f#"$src"/}"
+    allowed_file "$rel" || continue
+    mkdir -p "$dst/$(dirname "$rel")"
+    cp "$f" "$dst/$rel"
+  done <<EOF
+$(find "$src" -type f ! -type l | LC_ALL=C sort)
+EOF
 }
 
 cmd_bundle() {
@@ -269,8 +296,8 @@ cmd_bundle() {
 
   local recs matched=""
   recs="$(records "$rd")" || die "cannot read $rd/checkpoint.json"
-  local c p v cf k b r la
-  while IFS="$US" read -r c p v cf k b r la; do
+  local c p v cf k b r la nu
+  while IFS="$US" read -r c p v cf k b r la nu; do
     [ "$c" = "$cid" ] || continue
     if [ "$persona_set" -eq 1 ] && [ "$p" != "$want_persona" ]; then continue; fi
     matched="${matched}${c}${US}${p}${US}${v}${US}${cf}${US}${k}"$'\n'
@@ -357,13 +384,13 @@ PY
   fi
 }
 
-# find_record <recs> <crit> <persona> -> "verdict US conf US kinds US bug US refs US last_action", rc 1 if none
+# find_record <recs> <crit> <persona> -> "verdict US conf US kinds US bug US refs US nonui US last_action", rc 1 if none
 find_record() {
   local recs="$1" want_c="$2" want_p="$3"
-  local c p v cf k b r la
-  while IFS="$US" read -r c p v cf k b r la; do
+  local c p v cf k b r la nu
+  while IFS="$US" read -r c p v cf k b r la nu; do
     if [ "$c" = "$want_c" ] && [ "$p" = "$want_p" ]; then
-      printf '%s%s%s%s%s%s%s%s%s%s%s\n' "$v" "$US" "$cf" "$US" "$k" "$US" "$b" "$US" "$r" "$US" "$la"
+      printf '%s%s%s%s%s%s%s%s%s%s%s%s%s\n' "$v" "$US" "$cf" "$US" "$k" "$US" "$b" "$US" "$r" "$US" "$nu" "$US" "$la"
       return 0
     fi
   done <<EOF
@@ -417,8 +444,8 @@ cmd_apply() {
       rejected=$((rejected+1))
       continue
     fi
-    local cur_v cur_c cur_k cur_b cur_r cur_la
-    IFS="$US" read -r cur_v cur_c cur_k cur_b cur_r cur_la <<EOF
+    local cur_v cur_c cur_k cur_b cur_r cur_nu cur_la
+    IFS="$US" read -r cur_v cur_c cur_k cur_b cur_r cur_nu cur_la <<EOF
 $rec
 EOF
     # Upgrade detection.
@@ -437,7 +464,7 @@ EOF
         fail) case "$cur_la" in verifier-disagrees:*) [ "$cur_c" = "low" ] || act="downgrade-fail" ;; *) act="downgrade-fail" ;; esac ;;
       esac
     fi
-    plan="${plan}${act}${US}${cid}${US}${persona}${US}${reason}${US}${cur_v}${US}${cur_c}${US}${cur_k}${US}${cur_b}${US}${cur_r}"$'\n'
+    plan="${plan}${act}${US}${cid}${US}${persona}${US}${reason}${US}${cur_v}${US}${cur_c}${US}${cur_k}${US}${cur_b}${US}${cur_nu}${US}${cur_r}"$'\n'
   done <<EOF
 $lines
 EOF
@@ -449,8 +476,8 @@ EOF
 
   # Pass 2: apply.
   local applied=0 noop=0 failed=0
-  local act c p r cv cc ck cb cr
-  while IFS="$US" read -r act c p r cv cc ck cb cr; do
+  local act c p r cv cc ck cb cn cr
+  while IFS="$US" read -r act c p r cv cc ck cb cn cr; do
     [ -n "$act" ] || continue
     local la="verifier-disagrees: ${r}"
     case "$act" in
@@ -459,7 +486,8 @@ EOF
         noop=$((noop+1)) ;;
       downgrade-pass)
         if (cd "$project" && "$BASH" "$CHECKPOINT_SH" "$run_id" "$c" blocked --confidence low \
-              ${p:+--persona "$p"} --last-action "$la" --phase adjudicate >/dev/null 2>"$project/.qa/runs/$run_id/.adjudication.err"); then
+              ${p:+--persona "$p"} ${ck:+--kinds "$ck"} --evidence-refs "${cr:-[]}" \
+              --last-action "$la" --phase adjudicate >/dev/null 2>"$project/.qa/runs/$run_id/.adjudication.err"); then
           echo "applied: $(label "$c" "$p") pass/${cc} -> blocked/low (${la})"
           applied=$((applied+1))
         else
@@ -468,8 +496,8 @@ EOF
         fi ;;
       downgrade-fail)
         if (cd "$project" && "$BASH" "$CHECKPOINT_SH" "$run_id" "$c" fail --confidence low \
-              ${p:+--persona "$p"} ${ck:+--kinds "$ck"} ${cb:+--bug-ref "$cb"} --evidence-refs "${cr:-[]}" \
-              --last-action "$la" --phase adjudicate >/dev/null 2>"$project/.qa/runs/$run_id/.adjudication.err"); then
+              ${p:+--persona "$p"} ${ck:+--kinds "$ck"} ${cb:+--bug-ref "$cb"} ${cn:+--nonui-reason "$cn"} \
+              --evidence-refs "${cr:-[]}" --last-action "$la" --phase adjudicate >/dev/null 2>"$project/.qa/runs/$run_id/.adjudication.err"); then
           echo "applied: $(label "$c" "$p") fail/${cc} -> fail/low (${la})"
           applied=$((applied+1))
         else
@@ -489,14 +517,18 @@ EOF
 cmd_capability() {
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
   local h="$1" rd="${2:-}" prof="${QA_HARNESS_PROFILES:-$ENGINE_ROOT/harness-profiles.json}"
-  local dispatch="" capable=0
+  local flag="" capable=0
   if [ -f "$prof" ]; then
     if has_jq; then
-      dispatch="$(jq -r --arg h "$h" '.harnesses[$h].dispatch // ""' "$prof")" || die "cannot read $prof"
+      flag="$(jq -r --arg h "$h" '((.harnesses // {})[$h] // {}) | if type == "object" and .subagentDispatch == true then "true" else "false" end' "$prof")" || die "cannot read $prof"
     else
-      dispatch="$(PYTHONIOENCODING=utf-8 python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(((d.get("harnesses") or {}).get(sys.argv[2]) or {}).get("dispatch") or "")' "$prof" "$h")" || die "cannot read $prof"
+      flag="$(PYTHONIOENCODING=utf-8 python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+h = ((d.get("harnesses") if isinstance(d, dict) else None) or {}).get(sys.argv[2])
+print("true" if isinstance(h, dict) and h.get("subagentDispatch") is True else "false")' "$prof" "$h")" || die "cannot read $prof"
     fi
-    case "$dispatch" in *"Agent/Task tool"*) capable=1 ;; esac
+    [ "$flag" = "true" ] && capable=1
   else
     [ "$h" = "claude" ] && capable=1
   fi

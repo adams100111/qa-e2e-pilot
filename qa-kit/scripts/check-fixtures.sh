@@ -15,7 +15,8 @@
 #   A well-formed absolute expect = fixture.expect with: path (non-empty string), value (present,
 #   string or number), tolerance (number), oracleSource ∈ {"human","llm-suggested","spec"}.
 #   oracleSource "spec" additionally requires citation "<file>:<line>" (^[^:]+:[0-9]+$) naming an
-#   existing file (relative to the checklist's directory, then the repo root / cwd) with >= <line> lines.
+#   existing file (relative to the checklist's directory, then the enclosing git repo root —
+#   the checklist's directory alone outside a repo, never cwd) with >= <line> lines.
 #
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred). No node/perl/grep -P.
 set -uo pipefail
@@ -35,8 +36,12 @@ CHECKLIST="$1"
 [ -f "$CHECKLIST" ] || die "check-fixtures: checklist not found: $CHECKLIST"
 
 # Verified spec citations (one per line): resolved here so both engines share one filesystem check.
-ROOT="$(git -C "$(dirname "$CHECKLIST")" rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Containment roots: the checklist's directory, plus the enclosing git repo's top level when the
+# checklist sits inside one. Outside a git repo the root is the checklist directory only — never cwd,
+# which would let a citation reach whatever directory the gate happens to be run from.
 CDIR="$(cd "$(dirname "$CHECKLIST")" && pwd -P)"
+ROOT="$(git -C "$CDIR" rev-parse --show-toplevel 2>/dev/null)" || ROOT=""
+[ -n "$ROOT" ] || ROOT="$CDIR"
 ROOT="$(cd "$ROOT" && pwd -P)"
 # realpath with a portable fallback that also follows symlink chains.
 real_file() {

@@ -76,6 +76,16 @@ run_engine() {
   chk "$P" >/dev/null 2>&1; check "$E usage rc" "$?" "2"
   QA_ENGINE=$E bash "$SH" bogus >/dev/null 2>&1; check "$E bad subcommand rc" "$?" "2"
   chk "$T/missing.json" "x" >/dev/null 2>&1; check "$E missing config rc" "$?" "2"
+  # forbidden_markers_string_rejected: a non-array forbiddenMarkers is a config error
+  # in both engines (never split per character, never silently defaulted).
+  for fm in '"test"' 'false' '{"m":"test"}'; do
+    printf '{"dataPolicy":{"forbiddenMarkers":%s}}' "$fm" > "$T/fm.json"
+    out="$(chk "$T/fm.json" "a test record" 2>&1)"; rc=$?
+    check "$E forbidden_markers_string_rejected $fm rc" "$rc" "2"
+    check "$E forbidden_markers_string_rejected $fm msg" "$out" "ERROR: data-policy: forbiddenMarkers must be an array"
+  done
+  printf '{"dataPolicy":{"forbiddenMarkers":null}}' > "$T/fm.json"
+  chk "$T/fm.json" "a test record" >/dev/null 2>&1; check "$E forbiddenMarkers null uses defaults rc" "$?" "1"
 
   # record_and_list
   QA_ENGINE=$E bash "$SH" record "$T" challenge 41 >/dev/null; rc=$?
@@ -100,6 +110,11 @@ if [ "${#engines[@]}" -eq 2 ]; then
     a="$(QA_ENGINE=jq bash "$SH" $args 2>&1)"; b="$(QA_ENGINE=python3 bash "$SH" $args 2>&1)"
     check "parity: $args" "$a" "$b"
   done
+  PF="$(mktemp -d)"; TMPDIRS+=("$PF")
+  printf '{"dataPolicy":{"forbiddenMarkers":"test"}}' > "$PF/fm.json"
+  a="$(QA_ENGINE=jq bash "$SH" check "$PF/fm.json" "a test record" 2>&1; echo "rc=$?")"
+  b="$(QA_ENGINE=python3 bash "$SH" check "$PF/fm.json" "a test record" 2>&1; echo "rc=$?")"
+  check "parity forbiddenMarkers string" "$a" "$b"
   PT="$(mktemp -d)"; TMPDIRS+=("$PT")
   printf '[{"entity":"idea","id":"é","at":"2026-01-01T00:00:00Z"}]' > "$PT/created-records.json"
   check "parity list" "$(QA_ENGINE=jq bash "$SH" list "$PT")" "$(QA_ENGINE=python3 bash "$SH" list "$PT")"

@@ -1472,21 +1472,33 @@ sys.stdout.write("\n".join(out))
 # DP_SH_PATH) on <text> via a mode-600 temp file holding it as one JSON string
 # (`@file`), never argv, so typed values do not show in the process list.
 # Prints data-policy.sh's stdout and returns its exit code.
+# The body runs in its own subshell whose EXIT trap removes the temp file, and
+# whose INT/TERM/HUP traps turn an interruption into that exit, so the file is
+# gone even when the check is interrupted (kill -9 aside). Traps set in a
+# subshell never touch the caller's: an EXIT trap the calling shell installed
+# (qa-verify's results file) is neither replaced nor run here. bash 3.2-safe.
 dp_check_text() {
-  local cfg="$1" text="$2" tf dp_eng="python3" out rc
-  has_jq && dp_eng="jq"
-  tf="$(umask 077; mktemp "${TMPDIR:-/tmp}/qa-dp.XXXXXX")" || return 2
-  chmod 600 "$tf"
-  if has_jq; then
-    printf '%s' "$text" | jq -Rs . > "$tf"
-  else
-    printf '%s' "$text" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False))' > "$tf"
-  fi
-  out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$DP_SH_PATH" check "$cfg" "@${tf}" 2>/dev/null)"
-  rc=$?
-  rm -f "$tf"
-  printf '%s' "$out"
-  return "$rc"
+  local cfg="$1" text="$2"
+  (
+    tf=""
+    trap 'rm -f "$tf"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    dp_eng="python3"
+    has_jq && dp_eng="jq"
+    tf="$(umask 077; mktemp "${TMPDIR:-/tmp}/qa-dp.XXXXXX")" || exit 2
+    chmod 600 "$tf"
+    if has_jq; then
+      printf '%s' "$text" | jq -Rs . > "$tf"
+    else
+      printf '%s' "$text" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False))' > "$tf"
+    fi
+    rc=0
+    out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$DP_SH_PATH" check "$cfg" "@${tf}" 2>/dev/null)" || rc=$?
+    printf '%s' "$out"
+    exit "$rc"
+  )
 }
 
 # ship_gate_reasons <run-id> <crit-id> <persona> <in-confidence> <kinds-csv>
