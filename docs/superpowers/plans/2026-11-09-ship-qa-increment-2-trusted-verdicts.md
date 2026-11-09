@@ -82,8 +82,8 @@ release files (versions, CHANGELOG, ADRs 0032/0033, CLAUDE.md, README, persona-b
 **Files:** `checkpoint.sh` (`gate_data_policy`). Test `tests/gate-data-policy/run.sh`.
 **Interfaces:** Consumes `scripts/data-policy.sh check <config> @<evidence/.../action-trace.json>` (Increment 1 Task 10), resolved relative to the engine root.
 **Exact values:** message `DATA POLICY GATE: <criterionId> typed data violates dataPolicy: <rule>=<match>`.
-**Behaviour:** per D4; when `data-policy.sh` is absent (older install) → note on stderr, no refusal; violations list only the first 3.
-**Tests:** `forbidden_marker_refused`, `clean_data_allowed`, `gate_off_when_not_enforce`, `missing_script_degrades_with_note`.
+**Behaviour:** per D4; when `data-policy.sh` is absent (older install) → note on stderr, no refusal; violations list only the first 3. For rows of kind `input-validation` (values deliberately invalid), `date-window` and `email-domain` violations are ignored; `forbidden-marker` still applies.
+**Tests:** `forbidden_marker_refused`, `clean_data_allowed`, `gate_off_when_not_enforce`, `missing_script_degrades_with_note`, `input_validation_past_date_allowed`.
 **Task gate:** `bash tests/gate-data-policy/run.sh`
 
 ### Task 4: Mirror gates in qa-verify.sh   (Lane F, risk: high)
