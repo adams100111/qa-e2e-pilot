@@ -5,7 +5,8 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/coverage.sh"
 FX="$DIR/fixtures"
-command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: coverage-gate: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
+# python3 is required even for the jq leg: q() reads the results with it.
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: coverage-gate: python3 not available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
 TMPDIRS=()
 cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
@@ -36,11 +37,35 @@ run_engine() {
   check "$E all_covered counts" "$(q "$T/all.json" "$COUNTS")" '[7,7,0,0]'
   check "$E all_covered percent" "$(q "$T/all.json" 'c["percent"]')" "100"
   check "$E all_covered pair order" "$(q "$T/all.json" '[[x["surfaceId"],x["personaId"]] for x in c["rows"]]')" '[["GET /admin/hackathons","admin"],["GET /h/{slug}","admin"],["GET /h/{slug}","participant"],["GET /الأخبار","participant"],["job:hackathons:close-registration","*"],["mail:App\\Mail\\TeamInvite","*"],["page:Admin/Hackathons/Show","admin"]]'
-  check "$E all_covered persona-less row covers every persona" "$(q "$T/all.json" '[r("GET /h/{slug}","admin")["criteria"],r("GET /h/{slug}","participant")["criteria"]]')" '[["C-HACK-PAGE"],["C-HACK-PAGE"]]'
+  check "$E all_covered each persona by its own row" "$(q "$T/all.json" '[r("GET /h/{slug}","admin")["criteria"],r("GET /h/{slug}","participant")["criteria"],c["unscopedCovered"]]')" '[["C-HACK-PAGE"],["C-HACK-VIEW"],0]'
   check "$E all_covered role field matches persona" "$(q "$T/all.json" 'r("GET /الأخبار","participant")["state"]')" "covered"
   check "$E all_covered channel pair covered by any persona" "$(q "$T/all.json" 'r("mail:App\\Mail\\TeamInvite","*")["criteria"]')" '["C-MAIL"]'
   check "$E all_covered no reason on covered rows" "$(q "$T/all.json" 'any("reason" in x for x in c["rows"])')" "False"
   check "$E reachless surface makes no pair" "$(q "$T/all.json" 'any(x["surfaceId"]=="GET /admin/reports" for x in c["rows"])')" "False"
+
+  # unscoped_row_does_not_cover_role_pair_in_block
+  U="$FX/checklist-unscoped.json"
+  cov "$C" "$U" --mode block > "$T/ub.json" 2>/dev/null; rc=$?
+  check "$E unscoped_row_does_not_cover_role_pair_in_block exit" "$rc" "1"
+  check "$E unscoped block counts" "$(q "$T/ub.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[7,5,0,2,2,71.4]'
+  check "$E unscoped rows labelled" "$(q "$T/ub.json" '[r("GET /h/{slug}","admin")["state"],r("GET /h/{slug}","admin")["criteria"],r("page:Admin/Hackathons/Show","admin")["state"]]')" '["covered-unscoped",["C-HACK-PAGE","C-HACK-ANY"],"covered-unscoped"]'
+  check "$E scoped row wins over unscoped" "$(q "$T/ub.json" '[r("GET /h/{slug}","participant")["state"],r("GET /h/{slug}","participant")["criteria"]]')" '["covered",["C-HACK-VIEW"]]'
+  check "$E channel pair covered by a persona-less row" "$(q "$T/ub.json" 'r("job:hackathons:close-registration","*")["state"]')" "covered"
+  cov "$C" "$U" --mode advise > "$T/ua.json"; rc=$?
+  check "$E unscoped advise exit 0" "$rc" "0"
+  check "$E unscoped advise counts toward covered" "$(q "$T/ua.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[7,7,0,0,2,100]'
+  check "$E unscoped advise still labelled" "$(q "$T/ua.json" 'r("GET /h/{slug}","admin")["state"]')" "covered-unscoped"
+
+  # empty_census_blocks
+  E0="$FX/census-empty.json"
+  cov "$E0" "$ALL" --mode block > "$T/e.json" 2>"$T/e.err"; rc=$?
+  check "$E empty_census_blocks exit" "$rc" "1"
+  check "$E empty_census_blocks message" "$(grep -c '^coverage: nothing to cover — census is empty or uncrawled$' "$T/e.err")" "1"
+  check "$E empty_census_blocks counts" "$(q "$T/e.json" "$COUNTS")" '[0,0,0,0]'
+  cov "$E0" "$ALL" --mode advise > /dev/null 2>&1; rc=$?
+  check "$E empty_census advise exit 0" "$rc" "0"
+  cov "$C" "$FX/checklist-empty.json" --mode block --defer-channels --exclusions "$FX/exclusions-all.json" > /dev/null 2>"$T/ex.err"; rc=$?
+  check "$E everything excluded blocks" "$rc$(grep -c 'nothing to cover' "$T/ex.err")" "11"
 
   # uncovered_blocks
   cov "$C" "$PART" --mode block > "$T/pb.json" 2>"$T/pb.err"; rc=$?
@@ -133,6 +158,9 @@ census.json|checklist-partial.json|--mode advise
 census.json|checklist-partial.json|--mode advise --defer-channels --exclusions $FX/exclusions-ok.json
 census.json|checklist-partial.json|--mode block --exclusions $FX/exclusions-wildcard.json
 census-adapter-failed.json|checklist-all.json|--mode block --accept-crawl-only
+census.json|checklist-unscoped.json|--mode block
+census.json|checklist-unscoped.json|--mode advise
+census-empty.json|checklist-all.json|--mode block
 EOF
 fi
 echo "coverage-gate: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
