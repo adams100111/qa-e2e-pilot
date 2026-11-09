@@ -88,14 +88,35 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
      independent, and a run can carry both a `__run-verified__` and a `__run-checks__` failure at
      once. See `docs/running-in-ci.md`.
 
-4. **Write `verification.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-verify-template.md`: out-of-plan
-   list, override list, confidence downgrades, and the verified/overridden/not-verified state.
+3b. **Independent re-adjudication (engine's second judge — a RESTATEMENT).** The engine's
+   `/qa-e2e-pilot:re-adjudicating-verdicts` skill re-judges every low-confidence pass and every
+   UX-promoted fail with a fresh-context verifier that sees only an evidence bundle, and may only
+   downgrade. Read what it left in `.qa/runs/<id>/`:
+   - **`adjudication/unavailable.txt` present** → quote its banner verbatim (`re-adjudication
+     unavailable on <harness>; <n> low-confidence passes unreviewed`). Those passes were never
+     re-judged; say so, never imply they were.
+   - **`adjudication/decisions.json` present** → report how many records were re-judged, how many
+     the verifier agreed with, and list each **verifier override**: every `checkpoint.json` record
+     with `phase == "adjudicate"` and `last_action` starting `verifier-disagrees:`, as
+     `criterionId[@persona]: <verdict>/<confidence> — <reason>` (a disputed pass is now `blocked`, a
+     disputed fail is now confidence `low`). Quote every `ADJUDICATION:` line in
+     `adjudication/apply.txt` (an upgrade refusal, a rejected entry, a gate refusal) — a rejected
+     entry means that record was **not** re-judged.
+   - **Neither present** → count the `checkpoint.json` records that are `pass` with
+     `confidence: low` and state: "re-adjudication did not run for this run — <n> low-confidence
+     passes unreviewed; run `/qa-e2e-pilot:re-adjudicating-verdicts` before relying on them."
+   Verifier overrides are listed separately from the `verification.json` overrides in step 3; they
+   are different judges. This command never runs `adjudication.sh apply` itself.
 
-5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades — plus the run-scoped
-   checks' state (passed / which of the four failed / did not complete / no record) and whether the
-   run was reported `UNVERIFIED`, and the next step (`/qa-status "<target>"`). Lead with out-of-plan
-   acts, a run-scoped gate failure and overrides when any exist. **Never sum the synthetic run-level
-   records into the override count.**
+4. **Write `verification.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-verify-template.md`: out-of-plan
+   list, override list, confidence downgrades, the re-adjudication outcome (re-judged / verifier
+   overrides / unavailable banner / did not run), and the verified/overridden/not-verified state.
+
+5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades, verifier overrides —
+   plus the run-scoped checks' state (passed / which of the four failed / did not complete / no
+   record), whether the run was reported `UNVERIFIED`, whether re-adjudication ran, and the next
+   step (`/qa-status "<target>"`). Lead with out-of-plan acts, a run-scoped gate failure and
+   overrides when any exist. **Never sum the synthetic run-level records into the override count.**
 
 Guardrails: read-only w.r.t. artifacts (never edits `checkpoint.json`/`checklist.json`/
 `verification.json`/`report.md`). This is an agent-followed command — it has no exit code; it
