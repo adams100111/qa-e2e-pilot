@@ -18,15 +18,21 @@
 #   Prints {ok, outOfPlan:[ids], planned:<n>, acted:<n>}; exit 0 iff every acted
 #   criterion_id appears in the plan, else exit 1 (and outOfPlan lists the offenders).
 #
-#   verify-plan.sh --drift <run-checklist.json> <frozen-checklist.json>
+#   verify-plan.sh --drift <run-checklist.json> <frozen-checklist.json> [<run-journeys.json> <frozen-journeys.json>]
 #       Trust-bearing drift check. The engine's gates (checkpoint.sh, qa-verify.sh) read the
 #       RUN copy .qa/runs/<id>/checklist.json, which the acting agent can edit; this compares
 #       it against the frozen .qa/specs/<target>/checklist.json row by row (matched by id) on
-#       kind, tags (as a set), mutates, humanAction, fixture.expect.oracleSource,
-#       fixture.expect.citation and fixture.expect.value (absent == null). Prints
-#       {ok, drift:[{id, field, frozen, run}], addedInRun:[ids], missingInRun:[ids]}; exit 0
-#       iff nothing drifted and both id sets are equal, else exit 1. A flipped oracleSource or
-#       a dropped human-action tag is exactly what this catches: either one relaxes a gate.
+#       kind, tags (as a set), mutates, humanAction, priority, journey,
+#       fixture.expect.oracleSource, fixture.expect.citation and fixture.expect.value
+#       (absent == null). It also compares the run's journeys.json with the spec's (by
+#       default the journeys.json beside each checklist; a file that does not exist is "no
+#       journeys"), journey by journey (matched by id) on priority and steps (ordered).
+#       Prints {ok, drift:[{id, field, frozen, run}], addedInRun:[ids], missingInRun:[ids],
+#       journeyDrift:[{id, field, frozen, run}], journeysAddedInRun:[ids],
+#       journeysMissingInRun:[ids]}; exit 0 iff nothing drifted and every id set is equal,
+#       else exit 1. A flipped oracleSource, a dropped human-action tag, a P1 row or journey
+#       downgraded to P2, or a journey step removed is exactly what this catches: each one
+#       relaxes a gate or the ship verdict.
 #
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred). No node/perl/grep -P.
 # Deterministic; outOfPlan is sorted + de-duplicated.
@@ -44,28 +50,42 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 
 # --drift <run-checklist.json> <frozen-checklist.json>: the trust-bearing fields of every row.
 if [ "${1:-}" = "--drift" ]; then
-  [ "$#" -eq 3 ] || die "usage: verify-plan.sh --drift <run-checklist.json> <frozen-checklist.json>"
+  { [ "$#" -eq 3 ] || [ "$#" -eq 5 ]; } || die "usage: verify-plan.sh --drift <run-checklist.json> <frozen-checklist.json> [<run-journeys.json> <frozen-journeys.json>]"
   RUNPLAN="$2"; FROZEN="$3"
   [ -f "$RUNPLAN" ] || die "verify-plan: run checklist not found: $RUNPLAN"
   [ -f "$FROZEN" ]  || die "verify-plan: frozen checklist not found: $FROZEN"
+  if [ "$#" -eq 5 ]; then RUNJ="$4"; FROZENJ="$5"
+  else RUNJ="$(dirname "$RUNPLAN")/journeys.json"; FROZENJ="$(dirname "$FROZEN")/journeys.json"; fi
+  # A journeys file that does not exist is read as "no journeys" (null).
+  RUNJ_IN="$RUNJ"; [ -f "$RUNJ" ] || RUNJ_IN=/dev/null
+  FROZENJ_IN="$FROZENJ"; [ -f "$FROZENJ" ] || FROZENJ_IN=/dev/null
   if has_jq; then
-    out="$(jq -n --slurpfile r "$RUNPLAN" --slurpfile f "$FROZEN" '
-      ($r[0]) as $run | ($f[0]) as $fro
+    out="$(jq -n --slurpfile r "$RUNPLAN" --slurpfile f "$FROZEN" --slurpfile rj "$RUNJ_IN" --slurpfile fj "$FROZENJ_IN" '
+      ($r[0]) as $run | ($f[0]) as $fro | ($rj[0]) as $rjs | ($fj[0]) as $fjs
       | if ($run | type) != "array" then error("malformed run checklist: top level must be an array") else . end
       | if ($fro | type) != "array" then error("malformed frozen checklist: top level must be an array") else . end
+      | if ($rjs != null and ($rjs | type) != "array") then error("malformed run journeys: top level must be an array") else . end
+      | if ($fjs != null and ($fjs | type) != "array") then error("malformed frozen journeys: top level must be an array") else . end
       | def byid($a): reduce ($a[] | select(type == "object" and (.id | type) == "string")) as $e ({}; if has($e.id) then . else .[$e.id] = $e end);
         def at($p): reduce $p[] as $k (.; if type == "object" then .[$k] else null end);
         def norm($n): if $n == "tags" and type == "array" then map(tojson) | unique else . end;
-        ["kind", "tags", "mutates", "humanAction", "fixture.expect.oracleSource", "fixture.expect.citation", "fixture.expect.value"] as $fields
-      | byid($run) as $R | byid($fro) as $F
-      | ([$R | keys[] | . as $k | select($F | has($k) | not)] | sort) as $added
-      | ([$F | keys[] | . as $k | select($R | has($k) | not)] | sort) as $missing
-      | [ ($F | keys | sort | .[]) as $id | select($R | has($id)) | $fields[] as $n | ($n | split(".")) as $p
+        def cmp($R; $F; $fields): [ ($F | keys | sort | .[]) as $id | select($R | has($id)) | $fields[] as $n | ($n | split(".")) as $p
           | ($F[$id] | at($p)) as $fv | ($R[$id] | at($p)) as $rv
           | select(($fv | norm($n)) != ($rv | norm($n)))
-          | {id: $id, field: $n, frozen: $fv, run: $rv} ] as $drift
-      | {ok: (($drift | length) == 0 and ($added | length) == 0 and ($missing | length) == 0),
-         drift: $drift, addedInRun: $added, missingInRun: $missing}
+          | {id: $id, field: $n, frozen: $fv, run: $rv} ];
+        ["kind", "tags", "mutates", "humanAction", "priority", "journey", "fixture.expect.oracleSource", "fixture.expect.citation", "fixture.expect.value"] as $fields
+      | byid($run) as $R | byid($fro) as $F
+      | byid($rjs // []) as $RJ | byid($fjs // []) as $FJ
+      | ([$R | keys[] | . as $k | select($F | has($k) | not)] | sort) as $added
+      | ([$F | keys[] | . as $k | select($R | has($k) | not)] | sort) as $missing
+      | ([$RJ | keys[] | . as $k | select($FJ | has($k) | not)] | sort) as $jadded
+      | ([$FJ | keys[] | . as $k | select($RJ | has($k) | not)] | sort) as $jmissing
+      | cmp($R; $F; $fields) as $drift
+      | cmp($RJ; $FJ; ["priority", "steps"]) as $jdrift
+      | {ok: (($drift | length) == 0 and ($added | length) == 0 and ($missing | length) == 0
+             and ($jdrift | length) == 0 and ($jadded | length) == 0 and ($jmissing | length) == 0),
+         drift: $drift, addedInRun: $added, missingInRun: $missing,
+         journeyDrift: $jdrift, journeysAddedInRun: $jadded, journeysMissingInRun: $jmissing}
     ')" || die "verify-plan: jq failed (malformed input)."
     printf '%s\n' "$out"
     [ "$(printf '%s' "$out" | jq -r '.ok')" = "true" ] && exit 0 || exit 1
@@ -73,11 +93,17 @@ if [ "${1:-}" = "--drift" ]; then
     python3 -I -c '
 import json, sys
 run = json.load(open(sys.argv[1], encoding="utf-8")); fro = json.load(open(sys.argv[2], encoding="utf-8"))
+def load_opt(p):
+    if p == "/dev/null": return None
+    return json.load(open(p, encoding="utf-8"))
+rjs = load_opt(sys.argv[3]); fjs = load_opt(sys.argv[4])
 if not isinstance(run, list): sys.exit("malformed run checklist: top level must be an array")
 if not isinstance(fro, list): sys.exit("malformed frozen checklist: top level must be an array")
+if rjs is not None and not isinstance(rjs, list): sys.exit("malformed run journeys: top level must be an array")
+if fjs is not None and not isinstance(fjs, list): sys.exit("malformed frozen journeys: top level must be an array")
 def byid(a):
     m = {}
-    for e in a:
+    for e in a or []:
         if isinstance(e, dict) and isinstance(e.get("id"), str) and e["id"] not in m: m[e["id"]] = e
     return m
 def at(v, p):
@@ -94,19 +120,26 @@ def norm(n, v):
     v = canon(v)
     if n == "tags" and isinstance(v, list): return sorted(set(json.dumps(x, sort_keys=True, ensure_ascii=False) for x in v))
     return json.dumps(v, sort_keys=True, ensure_ascii=False)
-FIELDS = ["kind", "tags", "mutates", "humanAction", "fixture.expect.oracleSource", "fixture.expect.citation", "fixture.expect.value"]
+def cmp(R, F, fields):
+    out = []
+    for i in sorted(F):
+        if i not in R: continue
+        for n in fields:
+            p = n.split("."); fv, rv = at(F[i], p), at(R[i], p)
+            if norm(n, fv) != norm(n, rv): out.append({"id": i, "field": n, "frozen": fv, "run": rv})
+    return out
+FIELDS = ["kind", "tags", "mutates", "humanAction", "priority", "journey", "fixture.expect.oracleSource", "fixture.expect.citation", "fixture.expect.value"]
 R, F = byid(run), byid(fro)
+RJ, FJ = byid(rjs), byid(fjs)
 added = sorted(k for k in R if k not in F); missing = sorted(k for k in F if k not in R)
-drift = []
-for i in sorted(F):
-    if i not in R: continue
-    for n in FIELDS:
-        p = n.split("."); fv, rv = at(F[i], p), at(R[i], p)
-        if norm(n, fv) != norm(n, rv): drift.append({"id": i, "field": n, "frozen": fv, "run": rv})
-obj = {"ok": not drift and not added and not missing, "drift": drift, "addedInRun": added, "missingInRun": missing}
+jadded = sorted(k for k in RJ if k not in FJ); jmissing = sorted(k for k in FJ if k not in RJ)
+drift = cmp(R, F, FIELDS); jdrift = cmp(RJ, FJ, ["priority", "steps"])
+obj = {"ok": not drift and not added and not missing and not jdrift and not jadded and not jmissing,
+       "drift": drift, "addedInRun": added, "missingInRun": missing,
+       "journeyDrift": jdrift, "journeysAddedInRun": jadded, "journeysMissingInRun": jmissing}
 print(json.dumps(obj, indent=2, ensure_ascii=False))
 sys.exit(0 if obj["ok"] else 1)
-' "$RUNPLAN" "$FROZEN"
+' "$RUNPLAN" "$FROZEN" "$RUNJ_IN" "$FROZENJ_IN"
     exit $?
   else
     die "verify-plan.sh needs either 'jq' or 'python3'."
