@@ -8,6 +8,34 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.12.1 — 2026-11-09 · "See the whole project at a glance"
+
+**Added**
+
+- **`/qa-dashboard` and `scripts/qa-dashboard.sh html|tui|json`** — a read-only, project-level view of
+  `.qa/`: constitution version and roles, profile, every spec (criteria, P1/P2 journeys, oracle
+  sources, `/qa-analyze` verdict, coverage, role drift), every run newest first (status
+  `running|stalled|paused|complete`, progress, rate per hour and ETA, verdict counts, low-confidence
+  passes, bugs by severity, verified, ship readiness, link to `report.html`), the active run's phase,
+  criterion, persona, last 10 journal events and latest bugs, per-target trends as inline SVG, and
+  the known-defect registry via `known-defects.sh status`. `html` writes one self-contained page
+  (default `.qa/dashboard.html`, light and dark, `dir="auto"` on user text, works from `file://`,
+  `--refresh <sec>` adds a meta refresh); `tui` prints a terminal view (colour only on a TTY, never
+  under `NO_COLOR`; `--watch <sec>` redraws until Ctrl-C); `json` prints the model. A run is
+  `running` while criteria are left and its journal moved in the last 30 minutes
+  (`--stall-minutes`), `stalled` after that.
+- The dashboard never reads `.qa/auth` and redacts every string with `bug-export.sh`'s rules
+  (`enforcement.redactedKeys` / `secretPatterns`, built-in defaults when absent).
+- qa-kit's `/qa-status` now points at `/qa-dashboard` for run-level detail (text only, no behaviour
+  change).
+
+**Changed**
+
+- `render-report.js` exports `buildModel` (plus `journeyStatus`, `readAdjudication`, `loadBugs`,
+  `readJSON`) when required as a module, so the dashboard's verdicts, supersession and ship readiness
+  are the report's own. `buildModel(runDir, {evidence: false})` skips screenshot hashing. Report
+  output is unchanged.
+
 ### v0.12.0 — 2026-11-09 · "Prove what was covered, then trust what passed"
 
 Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `~0.12.0`). See
@@ -569,6 +597,10 @@ The headline release: the engine now tells the truth about its own accuracy.
 ---
 
 ## qa-kit (process shell)
+
+### v0.3.1 — 2026-11-09 · "Point to the dashboard"
+
+`/qa-status` now points to the engine's `/qa-dashboard` for the project-wide view. Ships with engine `v0.12.1`.
 
 ### v0.3.0 — 2026-11-09 · "Confirm the oracle"
 

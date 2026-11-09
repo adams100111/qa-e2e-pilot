@@ -5,7 +5,7 @@
 #
 # A blanket tests/*/run.sh glob is NOT used: some suites need a live browser/app. Enrolled below =
 # every non-qa-kit suite that passes standalone under `timeout 90`. (The qa-kit suites are gated
-# separately by qa-kit/scripts/run-qakit-ci.sh.) All 65 self-contained engine suites are enrolled —
+# separately by qa-kit/scripts/run-qakit-ci.sh.) All 67 self-contained engine suites are enrolled —
 # rebake + qa-reconcile were RED on main@147e5a9 (their act_intent/act_committed emissions predated
 # the FSM guard's criterion_started requirement) and were fixed in the audit-remediation branch.
 set -euo pipefail
@@ -21,6 +21,7 @@ SUITES=(
   write-persona-config
   census-adapters census-merge profile journeys data-policy checklist-ship-schema crawl-safety
   gate-oracle gate-state gate-data-policy verify-ship-gates ship-summary bug-export adjudication
+  qa-dashboard
 )
 
 # SELF-CHECK on the enrolment surface itself. `scripts/check-suite-coverage.sh` already catches a

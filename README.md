@@ -45,6 +45,7 @@ agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-a
 commands/         qa-run.md    — /qa-run <target> [checklist|spec]
                   qa-roles.md  — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
                   qa-resume.md — /qa-resume [run-id] (resume an interrupted Run at its frozen cursor)
+                  qa-dashboard.md — /qa-dashboard [html|tui|json] (project-level QA state, read-only)
 skills/           19 skills (see below)
 scripts/          install.sh · skills.json · qa-verify.sh · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
                   build-adapter.sh · validate-adapters.sh · run-engine-ci.sh · check-suite-coverage.sh ·
@@ -183,6 +184,27 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
    ```
 3. Read the result: `.qa/runs/<run-id>/report.html` (+ `report.md` + per-criterion `evidence/`). The run is resumable — re-run the same target and it skips completed criteria.
 4. **Interrupted mid-run?** Two ways to continue, both safe: re-run `/qa-run "<target>"` — it detects the in-progress run, reconciles any open (attempted-but-unconfirmed) writes, and skips completed criteria; or run `/qa-resume [run-id]` directly — it resolves the run (defaulting to the most recent), reconciles open acts the same way, then dispatches the agent straight into Verify at the frozen cursor, skipping Pre-flight/Analyze/Generate entirely. Omit `run-id` to resume the latest run.
+
+### Dashboard
+
+`/qa-dashboard` (or `bash scripts/qa-dashboard.sh html|tui|json`) shows the whole project's QA state
+from `.qa/`, read-only: the constitution and profile, each spec's criteria, journeys, oracle sources
+and `/qa-analyze` verdict, every run with its status, progress, rate and ETA, verdict counts, bugs by
+severity, ship readiness and a link to its report, the active run's current criterion and last journal
+events, trends across runs of a target, and the known-defect registry.
+
+```
+bash scripts/qa-dashboard.sh html --refresh 30     # .qa/dashboard.html, self-contained, reloads every 30s
+bash scripts/qa-dashboard.sh tui --watch 10        # terminal view, redraws every 10s, Ctrl-C to quit
+bash scripts/qa-dashboard.sh json                  # the model, for other tools or agents
+```
+
+A run is `running` while criteria are left and its journal moved in the last 30 minutes
+(`--stall-minutes` to change), `stalled` after that, `paused` when its manifest says so, and
+`complete` when every criterion is done or the manifest says complete. Verdicts and ship readiness come
+from the report renderer itself, so the dashboard and `report.html` always agree. It never reads
+`.qa/auth` and redacts strings with the same rules as the bug export. The page needs no network and
+opens from `file://`; the terminal view drops colour under `NO_COLOR` or when piped.
 
 ### Cost telemetry
 

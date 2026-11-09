@@ -185,7 +185,11 @@ function frozenPlanIds(runDir) {
   }
   return frozen ? ids : null;
 }
-function buildModel(runDir) {
+// opts.evidence === false skips the per-criterion evidence scan (no screenshot
+// hashing) for callers that only need verdicts, e.g. qa-dashboard.js; the
+// report itself always passes no opts.
+function buildModel(runDir, opts) {
+  const withEvidence = !(opts && opts.evidence === false);
   const checkpoint = readJSON(path.join(runDir, "checkpoint.json"), null);
   if (!checkpoint || typeof checkpoint !== "object") die("checkpoint.json in " + runDir + " is not valid JSON");
   const manifest = readJSON(path.join(runDir, "run-manifest.json"), {}) || {};
@@ -247,7 +251,7 @@ function buildModel(runDir) {
     const verdict = checked && VERDICTS.includes(v.verifierVerdict) ? v.verifierVerdict : inRun;
     const confidence = checked && v.confidence ? v.confidence : (c.confidence || "high");
     const row = rows[c.criterion_id] || {};
-    const ev = collectEvidence(runDir, c);
+    const ev = withEvidence ? collectEvidence(runDir, c) : { relDir: "", shots: [], files: [] };
     const reasons = checked && Array.isArray(v.reasons) ? v.reasons.map(String) : [];
     for (const s of ev.shots) {
       s.flagged = s.integrity !== "ok" || reasons.some((r) => (s.sidecarRel && r.includes(s.sidecarRel)) || r.includes(s.rel));
@@ -842,4 +846,7 @@ function main() {
   }
 }
 
-main();
+// Run as a script -> render. Required as a module (scripts/qa-dashboard.js) ->
+// expose the model so verdict, supersession and ship logic live in one place.
+if (require.main === module) main();
+else module.exports = { VERDICTS, buildModel, loadBugs, readJSON, journeyStatus, readAdjudication };
