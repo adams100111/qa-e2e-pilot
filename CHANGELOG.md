@@ -93,8 +93,12 @@ English text on an Arabic notifications panel would have gone unflagged.
   `criterionId` `ux-sweep:<surfaceId>`, `source` `ux`, `method` the detector id and `url` the selector,
   so the fold keeps one per surface + detector + selector. A sweep finding is never a verdict: it
   becomes `fail@FE` only through a `visual-ux` criterion for its surface. An objective defect on a
-  surface with no such row goes to the new run artifact `ux-sweep.json`, not into the frozen plan.
-- **qa-verify** skips `source: "ux"` findings in its console/network ledger and known-defect checks.
+  surface with no such row goes to the new run artifact `ux-sweep.json` through
+  `skills/detecting-visual-ux/scripts/ux-sweep.sh add|list` (dedup on surface + detector + selector,
+  atomic rewrite under a lock, dual-engine; new suite `ux-sweep`, 66 engine suites), never into the
+  frozen plan.
+- **qa-verify** skips `source: "ux"` findings in its console/network ledger and known-defect checks;
+  a test proves they never change a verdict, a confidence, a run check or the exit code.
 - **Report.** New **UX findings (advisory)** section with a **UX defects outside the plan** list from
   `ux-sweep.json`, neither counted in the tally. A run with neither renders exactly as before.
 - **Limit.** axe-core is not bundled; `axe` entries appear only when the page ships axe-core.
@@ -598,11 +602,14 @@ release tags).
 
 **UX detector wiring**
 
-- `generate-ship-criteria.sh`: `ux-revisit` rows also carry `visual-ux`, and load-clean and
-  input-validation rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`, so the engine sends
-  them to the UX detectors.
-- `coverage.sh --require-visual-ux` lists in-scope UI surfaces with no `visual-ux` row (`uxMissing`)
-  and blocks under `--mode block`. `/qa-analyze` passes it under `ship` and lists the surfaces in its
+- `generate-ship-criteria.sh` emits one `visual-ux` row per census surface an in-scope persona
+  reached (`ux:<surfaceId>`, kind `happy-path`, tags `visual-ux` + `read-only` + `independent` +
+  `sweep`, plus `interaction-ux` on a `#dialog:`/`#sheet:` surface; role = the first such persona,
+  `url` from `sampleUrls`, primary variant). `ux-revisit` rows also carry `visual-ux`, and load-clean
+  and input-validation rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`. A generated ship
+  plan therefore passes `--require-visual-ux` with no hand-authoring.
+- `coverage.sh --require-visual-ux` lists in-scope UI surfaces that a spec role reached and that have
+  no `visual-ux` row (`uxMissing`), and blocks under `--mode block`. `/qa-analyze` passes it under `ship` and lists the surfaces in its
   Coverage section; `/qa-scenarios` step 5c asks hand-authored plans for a `visual-ux` row per surface
   and `ux-revisit` rows per locale and viewport.
 
