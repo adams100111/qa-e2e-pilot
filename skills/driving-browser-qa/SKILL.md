@@ -295,10 +295,11 @@ The re-observe call after every act+wait cycle already drains buffered console e
    `visual-ux` criterion for that surface runs and detecting-visual-ux adjudicates it. Never
    checkpoint a verdict from the sweep.
 4. **Objective defect on a surface with no `visual-ux` row**: the plan is frozen, so do not add a
-   row (that would be an out-of-plan act). Append it to `.qa/runs/<run-id>/ux-sweep.json`
-   (`{"version":1,"outsidePlan":[{surfaceId, detector, selector, message, axis, variant?, observedIn}]}`,
-   one entry per surface + detector + selector). The report lists these under "UX defects outside
-   the plan", outside the verdict tally. Objective means `axis: "ux-objective"` or a definite-oracle
+   row (that would be an out-of-plan act). Record it with
+   `bash skills/detecting-visual-ux/scripts/ux-sweep.sh add .qa/runs/<run-id> '{"surfaceId":…,"detector":…,"selector":…,"message":…,"axis":…,"variant":{…},"observedIn":"<criterion-id>"}'`
+   (or `@<file>`). It deduplicates on surface + detector + selector and rewrites `ux-sweep.json`
+   atomically; never write that file by hand. `ux-sweep.sh list .qa/runs/<run-id>` prints the
+   entries. The report lists them under "UX defects outside the plan", outside the verdict tally. Objective means `axis: "ux-objective"` or a definite-oracle
    suspicion (`content-*`, `i18n-raw-key`, `i18n-script-mismatch`, `broken-image`, `invisible-text`,
    `modal-behind-backdrop`); a heuristic suspicion (`overlap`, `critic-*`) stays in the ledger only.
 
