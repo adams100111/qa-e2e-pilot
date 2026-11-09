@@ -1,0 +1,1 @@
+{"tenantName":"مختبر الابتكار","dataPolicy":{"market":"SA","forbiddenMarkers":["test","qa","bot","dummy","lorem ipsum","اختبار"],"emailDomain":"innovation-lab.co","dateWindow":{"from":"2026-01-01","to":"2026-12-31"},"cleanup":"list"}}
