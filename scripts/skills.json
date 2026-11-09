@@ -39,6 +39,11 @@
       "category": "plan"
     },
     {
+      "name": "taking-surface-census",
+      "path": "skills/taking-surface-census/SKILL.md",
+      "category": "plan"
+    },
+    {
       "name": "discovering-user-roles",
       "path": "skills/discovering-user-roles/SKILL.md",
       "category": "plan"

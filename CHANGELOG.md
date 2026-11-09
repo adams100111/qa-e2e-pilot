@@ -8,6 +8,53 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### Unreleased · "Prove what was covered" (ship QA increment 1)
+
+No version bump yet; increment 2 releases the engine and qa-kit together. See
+[ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md) and
+[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md).
+
+- **Surface census.** New skill `taking-surface-census` (18 skills now): a read-only, breadth-first
+  crawl per confirmed persona (`census.maxVisits`, default 300; depth 4) that writes
+  `.qa/census/crawl/crawl-<persona>.json` with each visit's status, findings, forms and an
+  `unexplored` list with reasons. `crawl-safety.js` classifies every control before a click: English
+  and Arabic destructive labels (normalised for tashkeel, tatweel and alef/yaa/taa variants) are
+  unsafe in any name source, unsafe always wins, a safe verb must lead the name and name an allowlisted
+  object, and anything else is not clicked. The crawl answers native dialogs `accept:false`, stops
+  clicking after any observed non-GET request, and is skipped on production unless
+  `allowBlackboxCrawl`. `form-inventory.js` records each form's field constraints.
+- **Stack adapters** under `adapters/census/` (laravel, nextjs, rails, django, express, generic) with
+  a README contract. Each prints the app's own surfaces (routes, pages, jobs, mails, notifications,
+  permission hints, locales) or `ok:false` + exit 3. New config key `exec.prefix` wraps adapter
+  commands (`ddev exec`, `docker compose exec -T app`).
+- **`scripts/census.sh build`** merges adapter + crawl into `.qa/census.json`: parameterised routes
+  collapse to one surface, `routeMatch` (Inertia `data-page` / Next `__NEXT_DATA__`) reaches page
+  surfaces, and the diffs list `unreachable`, `overreach` and `crawlOnly`. A failed adapter degrades
+  to crawl-only with an `adapter-failed:` warning and `adapterOk:false`.
+- **Run profiles.** `scripts/profile.sh resolve` turns `ship|smoke|full` (flag > run-config > config >
+  `full`) into the run's `effective-config.json` with `profileSources`. `ship` fills desktop + mobile,
+  light + dark, every app locale, all UX detectors + axe + the critic, blocking coverage/oracle/data
+  gates and `maxParallel` 3, only for keys the user did not set. `full` adds nothing.
+- **Journeys.** `scripts/journeys.sh validate|status|expand-variant`; checklist rows gain optional
+  `surfaceId`, `priority`, `journey {id, step}` and `variant {viewport, locale, colorScheme}`, and the
+  kind enum gains `load-clean`, `deny`, `input-validation` (`validate-checklist-json.sh` now also
+  honours `QA_ENGINE`).
+- **`required-kinds.sh`:** `input-validation` always requires `bake` (a rejected value must leave
+  persisted state unchanged, even on a `read-only` row); `load-clean` and `deny` add nothing on their
+  own, and a `deny` row tagged `api-write` still derives `probe`.
+- **`scripts/data-policy.sh check|record|list`**: forbidden markers (whole-word for ASCII, substring
+  for Arabic), email domain and date window on generated data; created-record ids for cleanup.
+- **Agent.** Phase 0 resolves the profile into `effective-config.json`, which later phases read. Under
+  `ship`: P1 journeys run sequentially at the primary variant; generated read-only rows fan out across
+  up to 3 contexts; exactly one P1 journey is repeated at mobile in the first RTL locale via
+  `journeys.sh expand-variant`; dark mode uses the new `emulate_media` capability (Playwright
+  `browser_emulate_media`, now in `harness-profiles.json` and the agent's tool list).
+- **Config example.** New keys `profile`, `exec.prefix`, `census.maxVisits`, `ship.denyStatuses`,
+  `dataPolicy`, with `colorSchemes`/`locales` documented in `_profileDoc`. `"responsiveMatrix": []`
+  is removed: an explicit empty matrix is a user value and turns a ship run's mobile pass off.
+- **Suites.** `census-adapters`, `census-merge`, `profile`, `journeys`, `data-policy`,
+  `checklist-ship-schema`, `crawl-safety` enrolled in `run-engine-ci.sh` (58 engine suites).
+
 ### v0.11.0 — 2026-10-01 · "Count each criterion once"
 
 Fix-and-feature release from a real 0.10.0 run (`register-choose-later`, 61 criteria, one resume)
@@ -420,6 +467,30 @@ The headline release: the engine now tells the truth about its own accuracy.
 ---
 
 ## qa-kit (process shell)
+
+### Unreleased · ship QA increment 1
+
+Ships together with the engine's next release (increment 2), pinning it.
+
+- **`surface-access.sh derive|confirm-table|apply`** writes `.qa/surface-access.json` (who SHOULD
+  reach each surface) from adapter permission hints and crawl reach. Crawl reach without a matching
+  hint goes to `reachedWithoutEvidence`, never `allowed`, until a human confirms it in the new
+  `/qa-constitution` surface-access round (auto-accepted with `assumption: true` under
+  `autonomousSetup`).
+- **`generate-ship-criteria.sh`** turns census + access + authz matrix into rows: a load-clean sweep per
+  surface × persona, deny rows only where permission evidence exists (mutating ones `api-write` on a
+  disposable env, else `deny-write-deferred`; unconfirmed overreach tagged `needs-confirmation`),
+  same-role ownership isolation, form input edge cases, and P1 UX revisits per viewport × locale ×
+  color scheme. Overflow past `criteriaBudget` is reported, never dropped.
+- **`coverage.sh`** reports role × surface coverage (covered / excluded with a reason / uncovered,
+  plus `covered-unscoped`) and, in `--mode block`, exits 1 on any uncovered pair, an empty census, or a
+  failed adapter without `--accept-crawl-only`.
+- **Commands.** `/qa-constitution` gains profile/gate rows and the surface-access round; `/qa-spec`
+  authors `journeys.json` (validated by `journeys.sh`) and a run-config `profile`; `/qa-scenarios`
+  builds the census, generates ship rows and fills coverage gaps; `/qa-analyze` runs the coverage gate,
+  its one blocking check under `ship`.
+- **Suites.** `surface-access`, `ship-criteria`, `coverage-gate` enrolled in `run-qakit-ci.sh`
+  (14 qa-kit suites).
 
 ### v0.2.0 — 2026-09-24 · "A defect is not a verdict"
 
