@@ -100,6 +100,28 @@
 #      (write-probe-gate.js) on a config that allows API writes, else
 #      OVERRIDE.
 #
+#   3.6-3.8. TRUSTED-VERDICT GATES (0.12.0) — the record-time gates of
+#      checkpoint.sh (gate_oracle, gate_state, gate_data_policy) re-applied
+#      with the SAME conditions, so a pass written by an older checkpoint or
+#      by a bypass is caught here. Each one only ever OVERRIDES to
+#      fail/high; none applies without a checklist.json row.
+#        3.6 oracle (D1/D2): in-run confidence high AND the row carries
+#            fixture.expect.oracleSource, or the effective profile is `ship`
+#            and the row kind is computed-logic|business-rule. Only `human`
+#            and `spec` ground it. Reason prefix `oracle-ungrounded:`.
+#        3.7 state (D3, every profile): the row is mutating per
+#            mutation-flag.sh derive and the recorded kinds hold neither
+#            `bake` nor `probe`. Reason prefix `no-state-evidence:`.
+#        3.8 data policy (D4): effective-config gates.dataPolicy ==
+#            "enforce" and the row is mutating — the TYPED values of the
+#            record's action-trace.json (step text/value/values/
+#            fields[].value, never the record's metadata) must pass
+#            scripts/data-policy.sh check. input-validation rows ignore
+#            date-window/email-domain. Reason prefix
+#            `data-policy-violation:`; it names rules only, never the typed
+#            values. data-policy.sh absent -> NOTE on stderr, no override.
+#      effective-config.json absent -> profile `full`, no data policy gate.
+#
 #   4. WRITE .qa/runs/<run-id>/verification.json — a JSON array, one record
 #      per checked criterion:
 #        {criterionId, persona, inRunVerdict, verifierVerdict, confidence,
@@ -321,6 +343,8 @@ WRITE_PROBE_GATE_JS="$HERE/../skills/probing-apis-through-browser/scripts/write-
 CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
 KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
 SCREENSHOT_SH="$HERE/../skills/checkpointing-qa-memory/scripts/screenshot-evidence.sh"
+MUTATION_FLAG_SH="$HERE/../skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
+DATA_POLICY_SH="$HERE/data-policy.sh"
 
 # Script-global (NOT `local` to main) so the EXIT trap registered in main —
 # which fires AFTER main returns, i.e. back at global scope — can still see
@@ -351,6 +375,7 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 [[ -f "$PARSE_SESSION_LOG_JS" ]] || die "qa-verify.sh: cannot find parse-session-log.js at ${PARSE_SESSION_LOG_JS}."
 [[ -f "$CLASSIFY_FINDING_SH" ]] || die "qa-verify.sh: cannot find classify-finding.sh at ${CLASSIFY_FINDING_SH}."
 [[ -f "$KNOWN_DEFECTS_SH" ]] || die "qa-verify.sh: cannot find known-defects.sh at ${KNOWN_DEFECTS_SH}."
+[[ -f "$MUTATION_FLAG_SH" ]] || die "qa-verify.sh: cannot find mutation-flag.sh at ${MUTATION_FLAG_SH}."
 
 # ---------------------------------------------------------------------------
 # validate_run_id — mirrors provenance.sh/checkpoint.sh's Fix 28 path-
@@ -1251,6 +1276,243 @@ print(",".join(kinds))
 }
 
 # ---------------------------------------------------------------------------
+# TRUSTED-VERDICT GATE MIRRORS (0.12.0, steps 3.6-3.8). Each helper mirrors
+# its checkpoint.sh counterpart (row_kind_and_oracle_source,
+# effective_config_get, effective_profile, row_is_mutating,
+# typed_values_text) — duplicated, not sourced, per the convention above.
+# ---------------------------------------------------------------------------
+
+# row_kind_and_oracle_source <row-json> — two lines: the row's `kind`
+# lowercased ("" when absent / not a string) and fixture.expect.oracleSource
+# ("" when absent, null or empty; a non-string value as compact JSON).
+row_kind_and_oracle_source() {
+  local row="$1"
+  if has_jq; then
+    jq -r '
+      (if (.kind | type) == "string" then (.kind | ascii_downcase) else "" end),
+      (((.fixture? | objects | .expect? | objects | .oracleSource?) // null)
+        | if type == "string" then . elif . == null then "" else tojson end)
+    ' <<< "$row" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+try:
+    r = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+k = r.get("kind") if isinstance(r, dict) else None
+print("".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in k) if isinstance(k, str) else "")
+fx = r.get("fixture") if isinstance(r, dict) else None
+ex = fx.get("expect") if isinstance(fx, dict) else None
+src = ex.get("oracleSource") if isinstance(ex, dict) else None
+if src is None:
+    print("")
+elif isinstance(src, str):
+    print(src)
+else:
+    print(json.dumps(src, separators=(",", ":"), ensure_ascii=False))
+' "$row" 2>/dev/null
+  fi
+}
+
+effective_config_file() { echo "$(run_dir "$1")/effective-config.json"; }
+
+# effective_config_get <run-id> <dotted.key> — the string value at the key in
+# the run's effective-config.json; "" when the file is absent / invalid or the
+# value is missing / not a string.
+effective_config_get() {
+  local key="$2" file
+  file="$(effective_config_file "$1")"
+  [[ -f "$file" ]] || return 0
+  if has_jq; then
+    jq -r --arg k "$key" '
+      (try getpath($k | split(".")) catch null) | if type == "string" then . else "" end
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for part in sys.argv[2].split("."):
+    d = d.get(part) if isinstance(d, dict) else None
+print(d if isinstance(d, str) else "")
+' "$file" "$key" 2>/dev/null || true
+  fi
+}
+
+# effective_profile <run-id> — `full` when the effective config is absent or
+# names no profile.
+effective_profile() {
+  local p
+  p="$(effective_config_get "$1" profile)"
+  printf '%s\n' "${p:-full}"
+}
+
+# row_is_mutating <row-json> — `true`/`false` from mutation-flag.sh derive on
+# the plan row, with the same ext_path/QA_ENGINE discipline as the
+# required-kinds derive in process_criterion. A derive failure prints `false`
+# (no override can rest on a classifier that did not run).
+row_is_mutating() {
+  local row="$1" mf_eng="python3" out
+  has_jq && mf_eng="jq"
+  out="$(QA_ENGINE="$mf_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$MUTATION_FLAG_SH" derive "$row" 2>/dev/null)" || out="false"
+  [[ "$out" == "true" ]] && echo true || echo false
+}
+
+# typed_values_text <action-trace.json> — every value the act TYPED, one per
+# line: each step's `text`, `value`, `values` and `fields[].value`. Never the
+# record's metadata (run_id, recorded_at, selectors, tool names).
+typed_values_text() {
+  local file="$1"
+  if has_jq; then
+    jq -r '
+      [ (.steps // []) | if type == "array" then .[] else empty end | objects
+        | (.text?, .value?, .values?,
+           ((.fields? // []) | if type == "array" then .[] else empty end | objects | .value?)) ]
+      | [ .. | strings ] | join("\n")
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+out = []
+def walk(x):
+    if isinstance(x, str): out.append(x)
+    elif isinstance(x, list):
+        for i in x: walk(i)
+    elif isinstance(x, dict):
+        for i in x.values(): walk(i)
+steps = d.get("steps") if isinstance(d, dict) else None
+for st in (steps if isinstance(steps, list) else []):
+    if not isinstance(st, dict): continue
+    for k in ("text", "value", "values"):
+        if k in st: walk(st[k])
+    fl = st.get("fields")
+    for f in (fl if isinstance(fl, list) else []):
+        if isinstance(f, dict) and "value" in f: walk(f["value"])
+sys.stdout.write("\n".join(out))
+' "$file" 2>/dev/null || true
+  fi
+}
+
+# ship_gate_reasons <run-id> <crit-id> <persona> <in-confidence> <kinds-csv>
+# <row-json> — steps 3.6-3.8. Prints one override reason per line (nothing
+# when every gate holds). Rules only, never typed values or secrets.
+ship_gate_reasons() {
+  local run_id="$1" crit_id="$2" persona="$3" in_conf="$4" kinds_csv="$5" row="$6"
+  [[ -z "$row" ]] && return 0
+
+  local facts kind source
+  facts="$(row_kind_and_oracle_source "$row")"
+  kind="${facts%%$'\n'*}"
+  if [[ "$facts" == *$'\n'* ]]; then source="${facts#*$'\n'}"; else source=""; fi
+
+  # 3.6 oracle (D1/D2).
+  if [[ "$in_conf" == "high" ]]; then
+    local applies=0
+    if [[ -n "$source" ]]; then
+      applies=1
+    else
+      case "$kind" in
+        computed-logic|business-rule)
+          [[ "$(effective_profile "$run_id")" == "ship" ]] && applies=1 ;;
+      esac
+    fi
+    if [[ "$applies" -eq 1 ]]; then
+      case "$source" in
+        human|spec) ;;
+        *) echo "oracle-ungrounded: oracleSource=${source:-missing} cannot ground a high-confidence pass (allowed: human, spec) — the checklist.json row's oracle was never confirmed, so this pass is overridden (checkpoint.sh ORACLE GATE)" ;;
+      esac
+    fi
+  fi
+
+  local mutating
+  mutating="$(row_is_mutating "$row")"
+  [[ "$mutating" == "true" ]] || return 0
+
+  # 3.7 state (D3) — every profile.
+  local -a kinds_arr=() shown=()
+  local k has_state=0
+  IFS=',' read -ra kinds_arr <<< "$kinds_csv"
+  for k in ${kinds_arr[@]+"${kinds_arr[@]}"}; do
+    k="$(trim "$k")"
+    [[ -z "$k" ]] && continue
+    [[ "$k" == "bake" || "$k" == "probe" ]] && has_state=1
+    shown+=("$k")
+  done
+  if [[ "$has_state" -eq 0 ]]; then
+    local got
+    got="$(IFS=,; echo "${shown[*]+"${shown[*]}"}")"
+    echo "no-state-evidence: ${crit_id} is mutating; a pass needs bake or probe evidence (got: ${got:-none}) — mutation-flag.sh classifies its checklist.json row as a write, and nothing read the persisted state back (checkpoint.sh STATE GATE)"
+  fi
+
+  # 3.8 data policy (D4).
+  [[ "$(effective_config_get "$run_id" gates.dataPolicy)" == "enforce" ]] || return 0
+  local rel trace
+  if [[ -n "$persona" ]]; then
+    rel="evidence/${persona}/${crit_id}/action-trace.json"
+  else
+    rel="evidence/${crit_id}/action-trace.json"
+  fi
+  trace="$(run_dir "$run_id")/${rel}"
+  [[ -f "$trace" ]] || return 0
+  if [[ ! -f "$DATA_POLICY_SH" ]]; then
+    echo "NOTE: data policy not checked for '${crit_id}' — scripts/data-policy.sh not found (older install)." >&2
+    return 0
+  fi
+
+  local text
+  text="$(typed_values_text "$trace")"
+  [[ -z "$text" ]] && return 0
+  # data-policy.sh reads an argument starting with '@' as a file path.
+  [[ "$text" == @* ]] && text=$'\n'"$text"
+
+  local dp_eng="python3" out rc
+  has_jq && dp_eng="jq"
+  out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$DATA_POLICY_SH" check \
+        "$(effective_config_file "$run_id")" "$text" 2>/dev/null)"
+  rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  if [[ "$rc" -ne 1 ]]; then
+    echo "data-policy-violation: typed values in '${rel}' could not be checked against dataPolicy (data-policy.sh exit ${rc}; check effective-config.json) — an unchecked pass under gates.dataPolicy=enforce is overridden (checkpoint.sh DATA POLICY GATE)"
+    return 0
+  fi
+
+  local rules
+  if has_jq; then
+    rules="$(jq -r '.violations[]? | .rule' <<< "$out" 2>/dev/null)"
+  else
+    rules="$(python3 -c '
+import json, sys
+for v in json.loads(sys.argv[1]).get("violations", []):
+    print(v.get("rule"))
+' "$out" 2>/dev/null)"
+  fi
+
+  local -a seen=()
+  local line s dup
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$kind" == "input-validation" ]]; then
+      case "$line" in date-window|email-domain) continue ;; esac
+    fi
+    dup=0
+    for s in ${seen[@]+"${seen[@]}"}; do [[ "$s" == "$line" ]] && { dup=1; break; }; done
+    [[ "$dup" -eq 0 ]] && seen+=("$line")
+  done <<< "$rules"
+  [[ "${#seen[@]}" -eq 0 ]] && return 0
+
+  local listed="${seen[0]}" i
+  for (( i = 1; i < ${#seen[@]}; i++ )); do listed+=", ${seen[$i]}"; done
+  echo "data-policy-violation: typed values in '${rel}' break dataPolicy rule(s): ${listed} (values not shown) — this mutating pass typed data the run's policy forbids (checkpoint.sh DATA POLICY GATE)"
+}
+
+# ---------------------------------------------------------------------------
 # maybe_redrive <run-id> <crit-id> <persona> <kinds-csv> — the pluggable,
 # UN-unit-tested QA_VERIFY_REDRIVE_CMD hook. See the header comment for the
 # full rationale. A no-op unless the env var is set AND the criterion is
@@ -1527,6 +1789,16 @@ process_criterion() {
       fi
     fi
   fi
+
+  # --- Steps 3.6-3.8: the 0.12.0 trusted-verdict gates, mirrored from
+  # checkpoint.sh against the IN-RUN confidence ($4, before any degrade
+  # below). Each reason is an override. ------------------------------------
+  local sg_line
+  while IFS= read -r sg_line; do
+    [[ -z "$sg_line" ]] && continue
+    reasons+=("$sg_line")
+    override=1
+  done < <(ship_gate_reasons "$run_id" "$crit_id" "$persona" "$confidence" "$kinds_csv" "$row")
 
   # --- Steps 2+3: per recorded kind, re-validate structure/value, then bind
   # provenance (bake/probe/human-action only). ------------------------------
