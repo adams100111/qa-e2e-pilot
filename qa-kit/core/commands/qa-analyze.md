@@ -67,18 +67,36 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      is the failure path, and exit 0 is never returned. A caller that treats any non-zero as "failed" silently loses the migration. See
      `/qa-scenarios`.
 
-4b. **Coverage gate (the one blocking check).** When `.qa/census.json` exists, run
-   `bash "{{PLUGIN_ROOT}}/scripts/coverage.sh" .qa/census.json .qa/specs/<target>/checklist.json --mode <mode>`
-   (add `--exclusions .qa/specs/<target>/coverage-exclusions.json` when present), where `<mode>` is the
-   effective config's `gates.coverage` (`block` or `advise`) from the engine's `profile.sh resolve
-   .qa/config.json --run-config .qa/specs/<target>/run-config.json` (an engine script: resolve it against
-   the engine's checkout or plugin root, ADR-0022). `block` is the fail-closed default under `ship`;
-   `advise` under `smoke`; under `full` with no census skip this step. The JSON prints even when the gate
-   blocks. List every `uncovered` pair (surface x role) and every `covered-unscoped` pair (covered only by
-   a row with no role, which counts as uncovered under `block`) in the **Coverage** section.
-   Exit 1 means the gate blocks: uncovered pairs, an empty or uncrawled census, or a census built from a
-   failed adapter. Exit 2 is a usage or input error, not a verdict: report it and stop. Also run
-   `journeys.sh validate` when `journeys.json` exists and list its errors under Coverage.
+4b. **Coverage gate (the one blocking check).** First resolve the effective config with the engine's
+   `profile.sh resolve .qa/config.json --run-config .qa/specs/<target>/run-config.json --stack-profile
+   <stack-profile.json>` (an engine script: resolve it against the engine's checkout or plugin root,
+   ADR-0022; stack profile as in `/qa-scenarios` step 7b). `<mode>` is its `gates.coverage`: `block` is the
+   fail-closed default under `ship`, `advise` under `smoke`.
+   - **Fail closed under `ship`.** If `profile.sh` (or `journeys.sh`) cannot be resolved or fails while the
+     run-config asks for `ship`, the Verdict is **`BLOCKED`** ("engine script unavailable") — never skip
+     the gate because a script was missing. If `.qa/census.json` is missing under `ship`, the Verdict is
+     **`BLOCKED`** ("no census — run `/qa-scenarios` step 7b, which builds it"): a ship gate without a
+     census is no gate. Under `smoke` a missing census is reported as advisory; under `full` skip this step.
+   - **Run** `bash "{{PLUGIN_ROOT}}/scripts/coverage.sh" .qa/census.json .qa/specs/<target>/checklist.json
+     --mode <mode> --roles .qa/specs/<target>/spec-roles.json --defer-channels` plus
+     `--scope "<regex>"` when `.qa/specs/<target>/coverage-scope.txt` exists and `--exclusions
+     .qa/specs/<target>/coverage-exclusions.json` when present (globs allowed in its `surfaceId`).
+     `--defer-channels` is on by default until Increment 4 (mail, notification and job checks), with the
+     reason "channel checks arrive in increment 4"; drop it once that increment ships. Pass
+     `--accept-crawl-only` **only** when a human has explicitly said, in this session, that a census built
+     without the stack adapter (crawl only) is acceptable for this spec; never under `autonomousSetup` and
+     never on your own judgement — record who accepted it in the Coverage section.
+   - **Read the result.** The JSON prints even when the gate blocks. In the **Coverage** section give
+     `functionalCovered` / `sweepCovered` / `total` and the percent, then list every `uncovered` pair
+     (surface x role, or surface x `*` for a declared surface nobody reached or an unprobed write), every
+     `covered-unscoped` pair (covered only by a row with no role) and every `covered-sweep` pair (covered
+     only by generated load / deny / revisit rows) — under `block` the last two count as uncovered.
+   - Exit 1 means the gate blocks: uncovered pairs, an empty or uncrawled census, or a census built from a
+     failed adapter without `--accept-crawl-only`. Exit 2 is a usage or input error: under `ship` that is
+     also `BLOCKED` (report it), never a pass. Also run `journeys.sh validate` when `journeys.json` exists
+     and list its errors under Coverage.
+   - **Engine-only runs have no gate.** A plain `/qa-run` that skips qa-kit (no `/qa-analyze`) is not held
+     to this coverage gate; say so whenever an operator asks to ship from an engine-only run.
 
 5. **Write `analysis.md`** from `{{PLUGIN_ROOT}}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
@@ -107,13 +125,17 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    **Coverage section and BLOCKED verdict.** Fill the template's `## Coverage` section from step 4b (percent,
    counts, the uncovered pair list with a suggested remediation: add a criterion via `/qa-scenarios`
    or record an exclusion with a reason). Under `ship` (gate mode `block`) the Verdict is **`BLOCKED`**
-   until uncovered = 0; set it from the gate's exit code, never from your own count. Under `advise` or with
-   no census the Verdict stays advisory. This coverage gate is the only blocking analyze check besides
+   until uncovered = 0; set it from the gate's exit code (and from the fail-closed rules in step 4b: no
+   census, an unresolvable engine script, exit 2), never from your own count. Under `advise` the Verdict
+   stays advisory. This coverage gate is the only blocking analyze check besides
    plan defects.
 
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
-   into a single "N gaps" figure — plus the next step (`/qa-run "<target>"`). State the Verdict plainly: `BLOCKED` with the
-   uncovered pair count when the coverage gate blocks, otherwise that this step informs and does not gate. If the plan-defect count is non-zero, say plainly that the plan asserts an
+   into a single "N gaps" figure — plus the next step. State the Verdict plainly: `BLOCKED` with the
+   uncovered pair count (or the fail-closed reason) when the coverage gate blocks, and then the next step is
+   `/qa-scenarios <target>` (add criteria or exclusions), **never** `/qa-run` — do not hand off to the run
+   while the Verdict is `BLOCKED`. Otherwise the next step is `/qa-run "<target>"` and this step informs
+   and does not gate. If the plan-defect count is non-zero, say plainly that the plan asserts an
    application failure somewhere and name the criterion ids, rather than reporting a total the reader has
    to decompose.
 

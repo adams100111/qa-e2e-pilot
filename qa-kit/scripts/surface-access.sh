@@ -18,22 +18,40 @@
 #                        reachedWithoutEvidence = crawl `reachedBy` personas no hint matches. Reaching a
 #                        page is never evidence of permission: such a persona stays out of `allowed`, so
 #                        its deny row is generated and census.sh reports the overreach.
-#         Without hints: allowed = crawl `reachedBy`; source "crawl"; reachedWithoutEvidence = the same
-#                        personas, so a human sees that nothing declared protects the surface.
+#         Without hints: source "crawl"; allowed = crawl `reachedBy`, kept ONLY so census.sh's overreach
+#                        diff has a "should" set — it is not evidence: hintMatched stays [], the same
+#                        personas are listed in reachedWithoutEvidence (a human sees that nothing declared
+#                        protects the surface), and the generator emits no deny rows for the surface until
+#                        a human confirms it.
 #       Hint matching (exact, case-sensitive):
 #         role:<a>|<b> / roles:<a>,<b>        -> persona `id`, `role` or `roles[]` equals one
 #         a bare hint "<a>" (no colon)        -> a role name, matched the same way, EXCEPT the
 #                                                framework guard names auth, guest, verified, web, api,
 #                                                which match no persona
-#         can:<p> / permission(s):<p> / ability:<p> / gate:<p> -> persona `permissions[]` holds <p> or "*"
+#         can:<p> / permission(s):<p> / ability:<p> / gate:<p> -> the persona carries `permissions[]` and one
+#                                                entry is <p> exactly, "*", or "<prefix>.*" where <p>
+#                                                starts with "<prefix>." (e.g. "hackathons.*" grants
+#                                                "hackathons.view")
 #         any other prefix (auth:sanctum, throttle:..., ...) -> matches no persona (the human decides)
-#       personas.json is an array of personas or {personas:[...]}; each needs a string `id`.
+#       A hint that matches no persona (a can:/permission: hint while personas carry no `permissions`, a
+#       guard, an unknown prefix) is unresolvable: the personas the crawl saw there go to
+#       reachedWithoutEvidence for a human to decide — a persona is never allowed silently.
+#       personas.json is an array of personas, {personas:[...]} or {roles:[...]}; each needs a string `id`.
+#       Build it with `surface-access.sh personas` so it carries the constitution's `permissions`.
 #   surface-access.sh confirm-table <surface-access.json>
 #       Prints Markdown. First section: "Reached without permission evidence — confirm or deny", one row
 #       per (surface, persona) in reachedWithoutEvidence with the reason (no matching hint / no hints on
 #       surface). Then one `## <hints joined by ", ">` section per hint group (sorted; the
 #       "(no permission hint)" group last), rows sorted by surfaceId.
-#   surface-access.sh apply <surface-access.json> <decisions.json>
+#   surface-access.sh personas <spec-roles.json> <personas.json | .qa/config.json>
+#       Prints the persona input for derive and generate-ship-criteria.sh:
+#       {personas:[{id, role, plane, roles?, permissions?}]}, one per spec role (sorted by id). role and
+#       plane come from the spec snapshot; `roles` and `permissions` (string arrays) from the constitution
+#       persona with the same id (an array, {personas:[...]} or the whole .qa/config.json). Credentials
+#       (`auth`, passwords, storage state) are never copied. stderr warns for a spec role with no
+#       constitution persona and counts the roles carrying no `permissions` (can:/permission: hints
+#       cannot match those). Write it to `.qa/specs/<target>/personas-for-generation.json`.
+#   surface-access.sh apply [--assume] <surface-access.json> [<decisions.json>]
 #       decisions.json = {byHint?:{<group heading>:[personaId]}, bySurface?:{<surfaceId>:[personaId]},
 #                         pairs?:[{surfaceId, persona, decision:"allow"|"deny"}]}.
 #       bySurface wins over byHint. A whole-surface decision sets allowed = the sorted, deduplicated list,
@@ -42,7 +60,16 @@
 #       it from allowed (so a deny row results); either way it leaves reachedWithoutEvidence, source
 #       becomes "human", and confirmed becomes true once no undecided pair remains. Undecided surfaces are
 #       unchanged. An unknown surfaceId, hint group or pair, a pair on a surface also decided whole, or a
-#       malformed decision exits 1 (a typo must not silently confirm nothing).
+#       malformed decision exits 1 (a typo must not silently confirm nothing). A human decision removes
+#       any earlier `assumption` flag.
+#       --assume (autonomousSetup, no human in the loop): an assumption is not a confirmation and never
+#       denies. Without a decisions file every entry not already decided by a human (source != "human")
+#       is marked `assumption:true` as derived: `allowed` is accepted, reachedWithoutEvidence pairs stay
+#       undecided (so they produce no deny rows) and `confirmed` stays false. With a decisions file the
+#       decisions are applied like above but may only ADD personas: a whole-surface decision becomes
+#       allowed = allowed ∪ list (those personas leave reachedWithoutEvidence), a pair must be "allow",
+#       and a "deny" pair or a whole-surface list missing an allowed persona exits 1. Decided entries get
+#       `assumption:true`, keep their source and keep confirmed false.
 #
 # Output JSON has sorted keys, compact separators, raw UTF-8 (byte-identical between engines).
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (QA_ENGINE=jq|python3 forces one).
@@ -57,7 +84,7 @@ has_jq() {
   esac
 }
 has_py() { command -v python3 >/dev/null 2>&1; }
-usage="usage: surface-access.sh derive <census.json> <personas.json> [--adapter <adapter.json>] | confirm-table <surface-access.json> | apply <surface-access.json> <decisions.json>"
+usage="usage: surface-access.sh derive <census.json> <personas.json> [--adapter <adapter.json>] | confirm-table <surface-access.json> | apply [--assume] <surface-access.json> [<decisions.json>] | personas <spec-roles.json> <personas.json|config.json>"
 NO_HINT="(no permission hint)"
 RWE_TITLE="Reached without permission evidence — confirm or deny"
 
@@ -67,11 +94,13 @@ cmd="$1"; shift
 # ---------------------------------------------------------------- jq
 JQ_DEFS='
 def personas: if type == "array" then . elif type == "object" and ((.personas // null) | type) == "array" then .personas
-              else error("surface-access: personas must be an array or {personas:[...]}") end
+              elif type == "object" and ((.roles // null) | type) == "array" then .roles
+              else error("surface-access: personas must be an array, {personas:[...]} or {roles:[...]}") end
             | if all(.[]; type == "object" and (.id | type) == "string") then .
               else error("surface-access: every persona needs a string id") end;
 def strs: if type == "array" then map(select(type == "string")) else [] end;
 def trim: sub("^\\s+"; "") | sub("\\s+$"; "");
+def permGrants($v): . as $g | $g == $v or $g == "*" or (($g | endswith(".*")) and ($v | startswith($g[0:-1])));
 def hintMatches($h; $ps):
   ($h | index(":")) as $i
   | (if $i == null then (if (["auth","guest","verified","web","api"] | index([$h])) != null then {k: "none", v: $h} else {k: "role", v: $h} end)
@@ -82,7 +111,7 @@ def hintMatches($h; $ps):
                                  | any($vals[]; . as $v | $names | index([$v]) != null)) | .id ]
     elif ($p.k == "can" or $p.k == "permission" or $p.k == "permissions" or $p.k == "ability" or $p.k == "gate") then
       [ $ps[] | . as $x | ($x.permissions | strs) as $perms
-              | select(($perms | index(["*"]) != null) or any($vals[]; . as $v | $perms | index([$v]) != null)) | .id ]
+              | select(any($vals[]; . as $v | any($perms[]; permGrants($v)))) | .id ]
     else [] end;
 def groupKey: if (.hints | length) == 0 then $nohint else (.hints | join(", ")) end;
 def accessIn: if type == "object" and ((.surfaces // null) | type) == "object" then .
@@ -132,13 +161,15 @@ jq_table() {
                | "| `" + (.sid | cell) + "` | "
                  + (if ((.e.allowed | strs) | length) == 0 then "(none)" else ((.e.allowed | strs) | join(", ") | cell) end)
                  + " | " + ((.e.source // "") | tostring | cell)
-                 + " | " + (if .e.confirmed == true then "yes" else "no" end) + " |" ) ])
+                 + " | " + (if .e.confirmed == true then "yes" elif .e.assumption == true then "assumed" else "no" end) + " |" ) ])
       | join("\n")
   ' "$1"
 }
 
-jq_apply() {
-  jq -Sc --slurpfile d "$2" --arg nohint "$NO_HINT" "$JQ_DEFS"'
+jq_apply() { # access decisions-or-empty assume(true|false)
+  local dec_arg=()
+  if [ -n "$2" ]; then dec_arg=(--slurpfile d "$2"); else dec_arg=(--argjson d '[{}]'); fi
+  jq -Sc "${dec_arg[@]}" --argjson assume "$3" --argjson whole "$([ -n "$2" ] && echo false || echo true)" --arg nohint "$NO_HINT" "$JQ_DEFS"'
     accessIn
     | ($d[0]) as $dec
     | (if ($dec | type) == "object" then . else error("surface-access: decisions must be an object") end)
@@ -162,18 +193,35 @@ jq_apply() {
              then "pair conflicts with a whole-surface decision: " + $x.surfaceId
            else empty end ] | .[0]) as $bad
     | (if $bad == null then . else error("surface-access: " + $bad) end)
+    | (if $assume then
+         ([ $pairs[] | select(.decision == "deny") | "an assumption never denies: " + .surfaceId + " / " + .persona ]
+          + [ .surfaces | to_entries[] | .key as $sid | (.value + {hints: (.value.hints | strs)}) as $e
+              | ($bs[$sid] // $bh[$e | groupKey] // null) as $pick | select($pick != null)
+              | (($e.allowed | strs) - $pick) as $drop | select(($drop | length) > 0)
+              | "an assumption never denies: " + $sid + " drops " + ($drop | join(", ")) ] | .[0]) as $deny
+         | if $deny == null then . else error("surface-access: " + $deny) end
+       else . end)
     | .surfaces |= with_entries(
         .key as $sid
         | (.value + {hints: (.value.hints | strs)}) as $e
         | ($bs[$sid] // $bh[$e | groupKey] // null) as $pick
         | [ $pairs[] | select(.surfaceId == $sid) ] as $mine
-        | if $pick != null then .value = ($e + {allowed: ($pick | unique), source: "human", confirmed: true, reachedWithoutEvidence: []})
+        | if $assume and $whole then
+            (if ($e.source != "human") then .value = ($e + {assumption: true}) else . end)
+          elif $assume and $pick != null then
+            .value = ($e + {allowed: ((($e.allowed | strs) + $pick) | unique),
+                            reachedWithoutEvidence: (($e.reachedWithoutEvidence | strs) - $pick), assumption: true})
+          elif $assume and ($mine | length) > 0 then
+            ([ $mine[] | .persona ]) as $A
+            | .value = ($e + {allowed: ((($e.allowed | strs) + $A) | unique),
+                              reachedWithoutEvidence: (($e.reachedWithoutEvidence | strs) - $A), assumption: true})
+          elif $pick != null then .value = ($e + {allowed: ($pick | unique), source: "human", confirmed: true, reachedWithoutEvidence: []} | del(.assumption))
           elif ($mine | length) > 0 then
             ([ $mine[] | select(.decision == "allow") | .persona ]) as $A
             | ([ $mine[] | select(.decision == "deny") | .persona ]) as $D
             | (($e.reachedWithoutEvidence | strs) - $A - $D) as $left
             | .value = ($e + {allowed: ((($e.allowed | strs) + $A) - $D | unique), reachedWithoutEvidence: $left,
-                              source: "human", confirmed: (($left | length) == 0)})
+                              source: "human", confirmed: (($left | length) == 0)} | del(.assumption))
           else . end)
   ' "$1"
 }
@@ -191,10 +239,12 @@ def dump(o): print(json.dumps(o, sort_keys=True, separators=(",", ":"), ensure_a
 def strs(v): return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
 def personas(p):
     if isinstance(p, dict) and isinstance(p.get("personas"), list): p = p["personas"]
-    if not isinstance(p, list): die("surface-access: personas must be an array or {personas:[...]}")
+    elif isinstance(p, dict) and isinstance(p.get("roles"), list): p = p["roles"]
+    if not isinstance(p, list): die("surface-access: personas must be an array, {personas:[...]} or {roles:[...]}")
     if not all(isinstance(x, dict) and isinstance(x.get("id"), str) for x in p): die("surface-access: every persona needs a string id")
     return p
 def trim(s): return re.sub(r"\s+$", "", re.sub(r"^\s+", "", s))
+def perm_grants(g, v): return g == v or g == "*" or (g.endswith(".*") and v.startswith(g[:-1]))
 def hint_matches(h, ps):
     i = h.find(":")
     if i < 0: k, v = ("none" if h in ("auth", "guest", "verified", "web", "api") else "role", h)
@@ -207,7 +257,7 @@ def hint_matches(h, ps):
             if any(val in names for val in vals): out.append(x["id"])
         elif k in ("can", "permission", "permissions", "ability", "gate"):
             perms = strs(x.get("permissions"))
-            if "*" in perms or any(val in perms for val in vals): out.append(x["id"])
+            if any(perm_grants(g, val) for val in vals for g in perms): out.append(x["id"])
     return out
 def group_key(e): return NOHINT if len(e["hints"]) == 0 else ", ".join(e["hints"])
 def access_in(a):
@@ -265,15 +315,16 @@ for g in groups:
         al = strs(r["e"].get("allowed"))
         lines.append("| `" + cell(r["sid"]) + "` | " + ("(none)" if not al else cell(", ".join(al)))
                      + " | " + cell(tostr(r["e"].get("source") if r["e"].get("source") is not None else ""))
-                     + " | " + ("yes" if r["e"].get("confirmed") is True else "no") + " |")
+                     + " | " + ("yes" if r["e"].get("confirmed") is True else "assumed" if r["e"].get("assumption") is True else "no") + " |")
 print("\n".join(lines))
 ' "$1" "$RWE_TITLE"
 }
 
-py_apply() {
+py_apply() { # access decisions-or-empty assume(true|false)
   python3 -c "$PY_DEFS"'
 a = access_in(load(sys.argv[1], "surface-access"))
-dec = load(sys.argv[2], "decisions")
+assume = sys.argv[3] == "true"; whole = sys.argv[2] == ""
+dec = load(sys.argv[2], "decisions") if not whole else {}
 if not isinstance(dec, dict): die("surface-access: decisions must be an object")
 bh = dec.get("byHint") if dec.get("byHint") is not None else {}
 bs = dec.get("bySurface") if dec.get("bySurface") is not None else {}
@@ -301,23 +352,94 @@ for x in pairs:
         die("surface-access: not a reached-without-evidence pair: " + x["surfaceId"] + " / " + x["persona"])
     if x["surfaceId"] in bs or bh.get(group_key(norm(v))) is not None:
         die("surface-access: pair conflicts with a whole-surface decision: " + x["surfaceId"])
+if assume:
+    for x in pairs:
+        if x["decision"] == "deny": die("surface-access: an assumption never denies: " + x["surfaceId"] + " / " + x["persona"])
+    for sid in sorted(a["surfaces"]):
+        e = norm(a["surfaces"][sid])
+        pick = bs.get(sid) if sid in bs else bh.get(group_key(e))
+        if pick is None: continue
+        drop = [x for x in strs(e.get("allowed")) if x not in pick]
+        if drop: die("surface-access: an assumption never denies: " + sid + " drops " + ", ".join(drop))
 out = {}
 for sid, v in a["surfaces"].items():
     e = norm(v)
     pick = bs.get(sid) if sid in bs else bh.get(group_key(e))
     mine = [x for x in pairs if x["surfaceId"] == sid]
-    if pick is not None:
-        e.update({"allowed": sorted(set(pick)), "source": "human", "confirmed": True, "reachedWithoutEvidence": []}); out[sid] = e
+    if assume and whole:
+        if e.get("source") != "human": e["assumption"] = True
+        out[sid] = e if e.get("source") != "human" else v
+    elif assume and pick is not None:
+        e.update({"allowed": sorted(set(strs(e.get("allowed")) + pick)),
+                  "reachedWithoutEvidence": [x for x in strs(e.get("reachedWithoutEvidence")) if x not in pick], "assumption": True}); out[sid] = e
+    elif assume and mine:
+        A = [x["persona"] for x in mine]
+        e.update({"allowed": sorted(set(strs(e.get("allowed")) + A)),
+                  "reachedWithoutEvidence": [x for x in strs(e.get("reachedWithoutEvidence")) if x not in A], "assumption": True}); out[sid] = e
+    elif pick is not None:
+        e.update({"allowed": sorted(set(pick)), "source": "human", "confirmed": True, "reachedWithoutEvidence": []})
+        e.pop("assumption", None); out[sid] = e
     elif mine:
         A = [x["persona"] for x in mine if x["decision"] == "allow"]
         D = [x["persona"] for x in mine if x["decision"] == "deny"]
         left = [x for x in strs(e.get("reachedWithoutEvidence")) if x not in A and x not in D]
         e.update({"allowed": sorted(set(x for x in strs(e.get("allowed")) + A if x not in D)), "reachedWithoutEvidence": left,
-                  "source": "human", "confirmed": len(left) == 0}); out[sid] = e
+                  "source": "human", "confirmed": len(left) == 0})
+        e.pop("assumption", None); out[sid] = e
     else: out[sid] = v
 a = dict(a); a["surfaces"] = out
 dump(a)
+' "$1" "$2" "$3"
+}
+
+jq_personas() { # spec-roles constitution-personas
+  jq -Sc --slurpfile c "$2" "$JQ_DEFS"'
+    (.roles // null) as $roles
+    | (if ($roles | type) == "array" and all($roles[]; type == "object" and (.id | type) == "string")
+       then . else error("surface-access: spec-roles.json needs a roles array of {id, role, plane}") end)
+    | ($c[0] | personas | map({key: .id, value: .}) | from_entries) as $cp
+    | {personas: ($roles | sort_by(.id) | map(. as $r | ($cp[$r.id] // null) as $k
+        | {id: $r.id} + (if ($r.role | type) == "string" then {role: $r.role} else {} end)
+          + (if ($r.plane | type) == "string" then {plane: $r.plane} else {} end)
+          + (if $k != null and ($k.roles | type) == "array" then {roles: ($k.roles | strs)} else {} end)
+          + (if $k != null and ($k.permissions | type) == "array" then {permissions: ($k.permissions | strs)} else {} end)))}
+  ' "$1"
+}
+
+py_personas() {
+  python3 -c "$PY_DEFS"'
+sr = load(sys.argv[1], "spec-roles")
+roles = sr.get("roles") if isinstance(sr, dict) else None
+if not (isinstance(roles, list) and all(isinstance(r, dict) and isinstance(r.get("id"), str) for r in roles)):
+    die("surface-access: spec-roles.json needs a roles array of {id, role, plane}")
+cp = {}
+for x in personas(load(sys.argv[2], "personas")): cp[x["id"]] = x
+out = []
+for r in sorted(roles, key=lambda r: r["id"]):
+    k = cp.get(r["id"]); o = {"id": r["id"]}
+    if isinstance(r.get("role"), str): o["role"] = r["role"]
+    if isinstance(r.get("plane"), str): o["plane"] = r["plane"]
+    if k is not None and isinstance(k.get("roles"), list): o["roles"] = strs(k["roles"])
+    if k is not None and isinstance(k.get("permissions"), list): o["permissions"] = strs(k["permissions"])
+    out.append(o)
+dump({"personas": out})
 ' "$1" "$2"
+}
+
+# personas_notes <personas output> <constitution personas file> — stderr warnings (engine-neutral wording).
+personas_notes() {
+  local missing noperm
+  if has_jq; then
+    missing="$(jq -r --slurpfile c "$2" "$JQ_DEFS"'($c[0] | personas | map(.id)) as $k | [ .personas[].id | select(. as $i | $k | index([$i]) == null) ] | join(", ")' <<<"$1")"
+    noperm="$(jq -r '[ .personas[] | select(has("permissions") | not) ] | length' <<<"$1")"
+  else
+    missing="$(python3 -c "$PY_DEFS"'
+o = json.loads(sys.argv[1]); k = [x["id"] for x in personas(load(sys.argv[2], "personas"))]
+print(", ".join(x["id"] for x in o["personas"] if x["id"] not in k))' "$1" "$2")"
+    noperm="$(python3 -c 'import json,sys; print(sum(1 for x in json.loads(sys.argv[1])["personas"] if "permissions" not in x))' "$1")"
+  fi
+  [ -z "$missing" ] || echo "surface-access: warning: spec roles with no constitution persona (no roles/permissions copied): $missing" >&2
+  [ "$noperm" = 0 ] || echo "surface-access: $noperm personas carry no permissions; can:/permission: hints cannot match them, so their crawl reach goes to reachedWithoutEvidence" >&2
 }
 
 # ---------------------------------------------------------------- dispatch
@@ -340,10 +462,20 @@ case "$cmd" in
     if has_jq; then out="$(jq_table "$1")" || die "surface-access: confirm-table failed (malformed surface-access.json)"
     else out="$(py_table "$1")" || exit 1; fi ;;
   apply)
+    assume=false
+    if [ "${1:-}" = "--assume" ]; then assume=true; shift; fi
+    if [ "$assume" = true ]; then { [ "$#" -eq 1 ] || [ "$#" -eq 2 ]; } || die "$usage"
+    else [ "$#" -eq 2 ] || die "$usage"; fi
+    access_f="$1"; dec_f="${2:-}"
+    for f in "$access_f" ${dec_f:+"$dec_f"}; do [ -f "$f" ] || die "surface-access: file not found: $f"; done
+    if has_jq; then out="$(jq_apply "$access_f" "$dec_f" "$assume")" || die "surface-access: apply failed (see the error above)"
+    else out="$(py_apply "$access_f" "$dec_f" "$assume")" || exit 1; fi ;;
+  personas)
     [ "$#" -eq 2 ] || die "$usage"
     for f in "$1" "$2"; do [ -f "$f" ] || die "surface-access: file not found: $f"; done
-    if has_jq; then out="$(jq_apply "$1" "$2")" || die "surface-access: apply failed (see the error above)"
-    else out="$(py_apply "$1" "$2")" || exit 1; fi ;;
+    if has_jq; then out="$(jq_personas "$1" "$2")" || die "surface-access: personas failed (see the error above)"
+    else out="$(py_personas "$1" "$2")" || exit 1; fi
+    personas_notes "$out" "$2" ;;
   *) die "$usage" ;;
 esac
 printf '%s\n' "$out"

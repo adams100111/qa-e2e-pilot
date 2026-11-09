@@ -24,6 +24,12 @@ The spine (each step is a slash command; each writes one human-reviewable artifa
 
 `/qa-status` prints which step is next (and any constitution drift advisory).
 
+**Never hand off to `/qa-run` while the target's `.qa/specs/<target>/analysis.md` Verdict is `BLOCKED`**
+(the ship-profile coverage gate, which also blocks on a missing census or an unavailable engine script).
+Send the operator back to `/qa-scenarios` to add criteria or recorded exclusions, then re-run
+`/qa-analyze`. An engine-only `/qa-run` (without qa-kit) has no coverage gate; say so if asked to ship
+from one.
+
 All seven steps exist (constitution → spec → scenarios → analyze → run → verify → status). When a
 step needs a role flow, stack detection, or any verification skill, invoke the engine's skill by
 its qualified slug (`/qa-e2e-pilot:<skill>`) — never reimplement it here.
