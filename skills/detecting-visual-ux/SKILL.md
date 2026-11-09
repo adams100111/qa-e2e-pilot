@@ -33,6 +33,9 @@ this skill keeps that split load-bearing:
 
 - `analyzing-feature-ui` emits one visual-UX criterion per surface in the checklist. When
   `driving-browser-qa`'s per-step loop reaches that criterion, invoke this skill.
+- Every row tagged `visual-ux` or `ux-revisit` (qa-kit's generated variant revisits carry both),
+  at the row's `variant` (Step 0 first). This is the only path by which an always-on UX sweep finding
+  (driving-browser-qa) becomes a `fail@FE`; the sweep itself never sets a verdict.
 - Any time a criterion's step type is `visual-ux` or the checklist row cites contrast/overflow/
   target-size/accessible-name/aesthetics.
 
