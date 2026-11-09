@@ -17,7 +17,8 @@
 #      Object defaults (detection.ux, gates) are filled per leaf.
 #        ship : responsiveMatrix desktop 1440x900 + mobile 390x844; colorSchemes
 #               [light,dark]; locales from stack-profile (primary.frontend component's
-#               i18n.locales, else primary.backend's, else ["<default>"]);
+#               i18n.locales, else primary.backend's, else [] -- empty means "app
+#               default locale, single pass"; never a placeholder string);
 #               detection.ux {objective,advisoryAesthetics,critic,axe} all true;
 #               gates {coverage:block, oracle:enforce, dataPolicy:enforce}; maxParallel 3.
 #        smoke: ship, but responsiveMatrix desktop only, colorSchemes [light], first
@@ -82,7 +83,7 @@ if has_jq; then
     | def locs($i): if ($i|type)=="number" then (($sp.components // [])[$i].i18n.locales // null) else null end
                     | if (type=="array") and length > 0 then . else null end;
       (if $spGiven == 1 then (locs($sp.primary.frontend) // locs($sp.primary.backend)) else null end
-       // ["<default>"]) as $locales
+       // []) as $locales
     | def present($path): try (getpath($path[:-1]) as $parent
                                | ($parent|type)=="object" and ($parent|has($path[-1]))) catch false;
       def settable($path): [range(1; $path|length) as $i
@@ -163,7 +164,7 @@ locales = None
 if sp_given == "1" and isinstance(primary, dict):
     locales = locs(primary.get("frontend")) or locs(primary.get("backend"))
 if locales is None:
-    locales = ["<default>"]
+    locales = []
 
 tracked = [["responsiveMatrix"], ["colorSchemes"], ["locales"],
            ["detection", "ux", "objective"], ["detection", "ux", "advisoryAesthetics"],

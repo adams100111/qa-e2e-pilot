@@ -10,7 +10,7 @@
 #   app/api/**/route.{ts,js,tsx,jsx} -> one <METHOD> <route> per exported GET|POST|PUT|PATCH|DELETE
 #                                       handler (none found -> GET plus a warning)
 # Route rules: route groups "(g)" and parallel slots "@s" vanish, "index" collapses, "[id]" -> {id},
-# "[...rest]" -> {rest}, "[[...rest]]" -> {rest?}. Pages are reported as GET endpoints because file
+# "[...rest]" -> {rest*} (catch-all: one or more segments), "[[...rest]]" -> {rest*?} (zero or more). Pages are reported as GET endpoints because file
 # routing names URLs, not components. Every surface carries "confidence":"static".
 # An unreadable dir or file adds a "could not scan <path>: <reason>" warning; nothing scannable, or
 # neither app/ nor pages/ present, is ok:false.
@@ -26,7 +26,7 @@ route_of() {
   [ -n "$1" ] || { echo "/"; return; }
   printf '%s' "$1" | sed -E \
     -e 's#(^|/)\([^/]*\)##g' -e 's#(^|/)@[^/]*##g' \
-    -e 's#\[\[\.\.\.([^]/]+)\]\]#{\1?}#g' -e 's#\[\.\.\.([^]/]+)\]#{\1}#g' -e 's#\[([^]/]+)\]#{\1}#g' \
+    -e 's#\[\[\.\.\.([^]/]+)\]\]#{\1*?}#g' -e 's#\[\.\.\.([^]/]+)\]#{\1*}#g' -e 's#\[([^]/]+)\]#{\1}#g' \
     | sed -E -e 's#/+#/#g' -e 's#^([^/])#/\1#' -e 's#^$#/#'
 }
 

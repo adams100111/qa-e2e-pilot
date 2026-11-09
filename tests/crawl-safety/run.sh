@@ -155,8 +155,8 @@ check "C1: 'بدء العرض' reason is not-allowlisted" \
   "$(cls '{"tag":"button","type":"button","text":"بدء العرض"}' reason)" "not-allowlisted"
 check "C1: 'التفاصيل' (leading ال) still safe" \
   "$(cls '{"tag":"button","type":"button","text":"التفاصيل"}' safe)" "true"
-check "C1: 'التالي' still safe" \
-  "$(cls '{"tag":"button","type":"button","text":"التالي"}' safe)" "true"
+check "C1/I11: 'التالي' button is not safe (wizard step-save)" \
+  "$(cls '{"tag":"button","type":"button","text":"التالي"}' safe)" "false"
 # I1: only an explicit method/formmethod of get is GET; a form with no method is non-GET.
 check "I1: 'Next' type=button inside a form with no method is unsafe" \
   "$(cls '{"tag":"button","type":"button","text":"Next","formMethod":""}' reason)" "inside-non-get-form"
@@ -281,15 +281,35 @@ Show more
 عرض التفاصيل
 فتح القائمة
 Edit team
-Next
-Next step
-التالي
-Next ›
 More (12)
 عرض الكل
-Previous page
 Open
 LABELS
+
+# --- final fix wave I11: next/previous are links only, never safe buttons ------------
+# A wizard's "Next"/"التالي" button saves the current step (the saveStep 422 class of bug).
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  check "I11: '$name' button is not-allowlisted" \
+    "$(cls "{\"tag\":\"button\",\"type\":\"button\",\"text\":\"$name\"}" reason)" "not-allowlisted"
+  check "I11: '$name' role=menuitem is not safe" \
+    "$(cls "{\"tag\":\"div\",\"role\":\"menuitem\",\"text\":\"$name\"}" safe)" "false"
+done <<'LABELS'
+Next
+Next step
+Next ›
+Previous
+Previous page
+التالي
+السابق
+الصفحة التالية
+LABELS
+check "I11: 'Next' pagination link is safe (navigated, never clicked)" \
+  "$(cls '{"tag":"a","href":"/ideas?page=2","text":"Next"}' reason)" "same-origin-link"
+check "I11: 'السابق' pagination link is safe" \
+  "$(cls '{"tag":"a","href":"/ideas?page=1","text":"السابق"}' reason)" "same-origin-link"
+check "I11: 'Open step' is not a bare verb any more" \
+  "$(cls '{"tag":"button","type":"button","text":"Open step"}' reason)" "not-allowlisted"
 
 # --- stub-DOM smoke: the in-page walk returns the documented shape ---------------
 scan_smoke() {

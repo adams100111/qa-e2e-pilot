@@ -107,15 +107,16 @@ Static scanners (no runtime tool, `--exec-prefix` accepted and unused). Every su
 - Next.js: `app/**/page.{tsx,jsx,ts,js}` and `pages/**/*.{tsx,jsx}` (also under `src/`; `_app`,
   `_document` and `api/` excluded) become `GET <route>` endpoints, because file routing names URLs, not
   components. `app/api/**/route.*` yields one surface per exported `GET|POST|PUT|PATCH|DELETE`
-  handler. Route groups `(g)` and slots `@s` vanish; `[id]` is `{id}`, `[...x]` is `{x}`,
-  `[[...x]]` is `{x?}`.
+  handler. Route groups `(g)` and slots `@s` vanish; `[id]` is `{id}`, `[...x]` is `{x*}`,
+  `[[...x]]` is `{x*?}`. A trailing `{x*}` matches one or more URL segments
+  and `{x*?}` zero or more (`census.sh`).
 - Express: single-line `app.<method>('/path'` and `<name>Router|router.<method>('/path'` calls
   (string-literal paths). `app.use('/prefix', router)` mounts are not applied; a warning says so.
 
 ## Rails (`rails.sh`)
 
 Runs `<prefix> bin/rails routes` from `--repo` and parses the table. `(.:format)` is dropped,
-`(/:x)` becomes `/{x?}`, `:id` and `*rest` become `{id}` and `{rest}`. Rows without a verb
+`(/:x)` becomes `/{x?}`, `:id` and `*rest` become `{id}` and `{rest*}` (catch-all). Rows without a verb
 (mounted engines) are skipped; `/rails/*` and `/cable` are skipped and named in `warnings`. A
 missing or failing `bin/rails` is `ok:false`.
 

@@ -54,7 +54,9 @@ One file per persona, `.qa/census/crawl/crawl-<personaId>.json` — exactly this
                       "message": "", "originClass": "in-scope", "statusClass": "fatal" } ],
       "forms": [ { "formId": "filters", "action": "/admin/hackathons", "method": "GET",
                    "fields": [ { "name": "q", "type": "search", "required": false,
-                                 "maxLength": null, "min": null, "max": null, "pattern": null } ] } ] }
+                                 "maxLength": null, "min": null, "max": null, "pattern": null } ] } ] },
+    { "url": "https://app.example.sa/admin/hackathons/12", "routeMatch": "page:Admin/Hackathons/Show",
+      "kind": "tab", "subKey": "الفرق", "status": 200, "findings": [], "forms": [] }
   ],
   "unexplored": [ { "url": "https://app.example.sa/admin/hackathons", "reason": "unsafe-name: حذف (#row-3 button)" } ]
 }
@@ -63,6 +65,14 @@ One file per persona, `.qa/census/crawl/crawl-<personaId>.json` — exactly this
 - `url` is the browser-reported, percent-encoded URL (never decoded). Strip the `#fragment`.
 - `kind` is `page`, `tab`, `dialog` or `sheet`. A tab/dialog/sheet visit carries the URL of the
   page it opened on; only a URL change makes a new `page` visit.
+- `subKey` (tab/dialog/sheet visits only, omitted on `page`) is the slug of the tab's or dialog's
+  label: lowercase, whitespace runs → `-`, every character outside `[a-z0-9]`, Arabic
+  (`U+0600–U+06FF`) and `-` dropped, repeated `-` collapsed, leading/trailing `-` trimmed
+  ("Team Members" → `team-members`, "الفرق" → `الفرق`). Take the label from the clicked control
+  (tab) or the dialog's heading / `aria-labelledby` text. `census.sh` turns each one into its own
+  surface `<parent surfaceId>#<kind>:<subKey>` (e.g. `page:Admin/Hackathons/Show#tab:الفرق`);
+  the visit's forms belong to that surface, not to the page. A visit without a usable `subKey`
+  counts as its page.
 - `status` is the document's HTTP status (from `browser_network_requests` for the navigation; a
   tab/dialog visit reuses its page's status).
 - `routeMatch` is `page:<component>` when the page exposes its front-end component (Inertia
@@ -137,8 +147,8 @@ For each dequeued entry, while `visits.length < census.maxVisits`:
         <path>"}`, finish the persona with links only (navigation, no clicks), and report it.
      d. If the URL changed → enqueue the new URL as a page and navigate back. If a tab panel,
         dialog (`[role=dialog]`, `aria-modal`) or sheet appeared → record a `tab`/`dialog`/`sheet`
-        visit (counts against the budget) with its own findings and `form-inventory.js` forms,
-        then **close it** (Step 4). Do not click further controls inside an opened dialog.
+        visit (counts against the budget) with its own `subKey`, findings and `form-inventory.js`
+        forms, then **close it** (Step 4). Do not click further controls inside an opened dialog.
      e. **Menus.** When a `popup-opener` expands a menu, re-scan with `crawl-safety.js` while it
         is open. Its items are new entries: each goes through this same rule (safe only,
         re-verified right before its click, mutation watch after it). Close the menu with
@@ -167,7 +177,19 @@ A dialog the crawl opened is **always** closed without its primary action:
 
 1. Write `.qa/census/crawl/crawl-<personaId>.json` per persona (shape above).
 2. Validate each file parses (`python3 -c 'import json,sys; json.load(open(sys.argv[1]))' <file>`).
-3. Hand off: `${CLAUDE_PLUGIN_ROOT}/scripts/census.sh build --adapter <adapter.json> --crawl .qa/census/crawl --out .qa/census.json`.
+3. **Run the stack adapter** to the canonical path `.qa/census/adapter.json`. Pick the adapter
+   from the stack profile (`.qa/runs/<run-id>/stack-profile.json`, or `.qa/stack-profile.cache.json`
+   outside a run): the stack-profile `framework` id **is** the adapter file name. Use the
+   `primary.backend` component's `framework` when `adapters/census/<framework>.sh` exists, else the
+   `primary.frontend` component's (e.g. `nextjs`), else `generic`. Pass `exec.prefix` as **one**
+   argument, quoted, never spliced into the command string:
+   `bash "${CLAUDE_PLUGIN_ROOT}/adapters/census/<framework>.sh" --repo "<backend repo>" --exec-prefix "<exec.prefix>" > .qa/census/adapter.json`
+   (omit `--exec-prefix` when it is unset). Exit 3 still writes `{ok:false,…}`: keep the file,
+   `census.sh` degrades to crawl-only with an `adapter-failed:` warning.
+4. Hand off: `${CLAUDE_PLUGIN_ROOT}/scripts/census.sh build --adapter .qa/census/adapter.json --crawl .qa/census/crawl --out .qa/census.json`
+   (add `--access <surface-access.json>` when one exists). Each surface carries `sampleUrls`
+   (`{<personaId>: "<path?query>"}`, the first URL that persona actually reached) — open those,
+   never a `{param}` pattern.
 
 ## Hard Rules
 
@@ -187,7 +209,7 @@ A dialog the crawl opened is **always** closed without its primary action:
 
 | Script | Purpose |
 |---|---|
-| `scripts/crawl-safety.js` | In-page: classifies every interactive element `[{selector, label, safe, reason}]`. Unsafe (EN+AR destructive names over every name source incl. `aria-label`/`title`, `type=submit`, form without an explicit GET method, `data-method`/`data-confirm`, unsafe verbs in the href path) wins over safe (same-origin link, tab, disclosure, popup opener, view/details-style button names gated by a detail-object allowlist plus state-change disqualifiers). Narrow status-word exception for tabs/links only. Non-unique selectors → `ambiguous-selector`. Default deny. Also sets `window.__qaRouteMatch` (`page:<component>` from Inertia `data-page` or Next.js `__NEXT_DATA__`). Exports `classify(descriptor, opts)` and `pageComponent(dataPageJson, nextDataJson)` for Node tests |
+| `scripts/crawl-safety.js` | In-page: classifies every interactive element `[{selector, label, safe, reason}]`. Unsafe (EN+AR destructive names over every name source incl. `aria-label`/`title`, `type=submit`, form without an explicit GET method, `data-method`/`data-confirm`, unsafe verbs in the href path) wins over safe (same-origin link, tab, disclosure, popup opener, view/details-style button names gated by a detail-object allowlist plus state-change disqualifiers; Next/Previous/التالي/السابق are never safe button names — wizard step-save — and are followed only as links). Narrow status-word exception for tabs/links only. Non-unique selectors → `ambiguous-selector`. Default deny. Also sets `window.__qaRouteMatch` (`page:<component>` from Inertia `data-page` or Next.js `__NEXT_DATA__`). Exports `classify(descriptor, opts)` and `pageComponent(dataPageJson, nextDataJson)` for Node tests |
 | `scripts/form-inventory.js` | In-page: `[{formId, action, method, fields:[{name, type, required, maxLength, min, max, pattern}]}]`; controls outside any `<form>` grouped as `formId: "page"`. Exports `inventoryForm(descriptor)` |
 | `../driving-browser-qa/scripts/observe.js` | The observe round (console + network since last round) |
 | `../../scripts/classify-finding.sh` | `originClass` / `statusClass` for one observed error |
@@ -201,7 +223,9 @@ Tests: `tests/crawl-safety/run.sh`.
 - [ ] Each visit: observe round, findings classified, forms inventoried, safety classified
 - [ ] Only `safe` entries clicked; every dialog closed via Escape / dismiss / re-navigate
 - [ ] All `safe: false`, budget and depth leftovers in `unexplored` with reasons
-- [ ] `crawl-<personaId>.json` written with `ensure_ascii=False`, parsed back, handed to `census.sh`
+- [ ] Tab/dialog/sheet visits carry `kind` + slugged `subKey`
+- [ ] `crawl-<personaId>.json` written with `ensure_ascii=False`, parsed back
+- [ ] Adapter picked by stack-profile `framework` (else `generic`), written to `.qa/census/adapter.json`, `--exec-prefix` as one argv; `census.sh build` run
 
 ## Mini-Evals
 
@@ -247,3 +271,11 @@ control is not `type=submit`.
 legacy page). `census.sh` then lists `/cap-table` under `crawlOnly` and `/governance` under
 `unreachable` if nothing else reaches it, which surfaces the wrong link without the crawl having
 to judge it.
+
+### Eval 6 — Wizard "التالي" button (bug: `saveStep` 422)
+
+**Situation:** The idea-submission wizard shows a `<button type="button">التالي</button>` and a
+pagination link `<a href="?page=2">التالي</a>` on the list below it.
+**The skill should:** Leave the button unexplored (`not-allowlisted`: a wizard's Next saves the
+step) and follow only the link by navigating to its URL. Clicking the button because "Next only
+moves forward" is the failure.

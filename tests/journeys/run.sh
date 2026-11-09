@@ -55,6 +55,18 @@ run_engine() {
   bash "$VAL" "$T/v.json" >/dev/null 2>&1; check "$E expand_variant output validates" "$?" "0"
   out="$(QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --viewport 1440x900 --locale en)"
   check "$E expand_variant no scheme" "$(q "$out" '[d[0]["id"],d[0]["variant"]]')" '["J1-S1@1440x900-en",{"locale":"en","viewport":"1440x900"}]'
+  # viewport-id convention: the suffix and variant.viewport use the responsiveMatrix id ("mobile"),
+  # the same token qa-kit's ux:* revisit rows use.
+  out="$(QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --viewport-id mobile --locale ar)"; rc=$?
+  check "$E expand_variant viewport-id exit" "$rc" "0"
+  check "$E expand_variant viewport-id ids" "$(q "$out" '[r["id"] for r in d]')" '["J1-S1@mobile-ar","J1-S2@mobile-ar","J1-S3@mobile-ar"]'
+  check "$E expand_variant viewport-id variant+journey" "$(q "$out" '[d[0]["variant"],d[0]["journey"]["id"]]')" '[{"locale":"ar","viewport":"mobile"},"J-SUBMIT@mobile-ar"]'
+  QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --viewport-id mobile --viewport 390x844 --locale ar >/dev/null 2>&1
+  check "$E expand_variant both viewport flags exit" "$?" "1"
+  QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --viewport-id ../x --locale ar >/dev/null 2>&1
+  check "$E expand_variant unsafe viewport-id exit" "$?" "1"
+  QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --locale ar >/dev/null 2>&1
+  check "$E expand_variant no viewport exit" "$?" "1"
   QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey NOPE --viewport 390x844 --locale ar >/dev/null 2>&1
   check "$E expand_variant unknown journey exit" "$?" "1"
   QA_ENGINE=$E bash "$SH" expand-variant "$FX/journeys.json" "$FX/checklist.json" --journey J-SUBMIT --viewport wide --locale ar >/dev/null 2>&1
@@ -73,7 +85,8 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "status $FX/run-all-pass" "status $FX/run-one-fail" "status $FX/run-incomplete" \
     "status $FX/run-superseded" "status $FX/run-multi-persona" "status $FX/run-deferred" \
     "expand-variant $FX/journeys.json $FX/checklist.json --journey J-SUBMIT --viewport 390x844 --locale ar --color-scheme dark" \
-    "expand-variant $FX/journeys.json $FX/checklist.json --journey J-SUBMIT --viewport 1440x900 --locale en"; do
+    "expand-variant $FX/journeys.json $FX/checklist.json --journey J-SUBMIT --viewport 1440x900 --locale en" \
+    "expand-variant $FX/journeys.json $FX/checklist.json --journey J-SUBMIT --viewport-id mobile --locale ar --color-scheme dark"; do
     # shellcheck disable=SC2086
     vj="$(QA_ENGINE=jq bash "$SH" $args; echo "rc=$?")"; vp="$(QA_ENGINE=python3 bash "$SH" $args; echo "rc=$?")"
     check "parity byte-identical: ${args%% *} ${args##*/}" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"

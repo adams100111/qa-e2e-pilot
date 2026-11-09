@@ -71,15 +71,18 @@ run_engine() {
   check "$E explicit_empty_locales_kept" "$(q "$out" 'd["locales"]')" "[]"
   check "$E explicit_empty sources user" "$(q "$out" '[d["profileSources"]["responsiveMatrix"],d["profileSources"]["locales"]]')" '["user","user"]'
 
-  # locales_from_stack_profile: frontend first, then backend, then <default>.
+  # locales_from_stack_profile: frontend first, then backend, then [] (app default, single pass; never a '<default>' placeholder).
   out="$(QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --stack-profile "$FX/stack-profile.json" --profile ship)"
   check "$E locales_from_stack_profile frontend" "$(q "$out" 'd["locales"]')" '["ar","en"]'
   out="$(QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --stack-profile "$FX/stack-profile-backend-only.json" --profile ship)"
   check "$E locales_from_stack_profile backend fallback" "$(q "$out" 'd["locales"]')" '["ar","en","fr"]'
   out="$(QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --stack-profile "$FX/stack-profile-none.json" --profile ship)"
-  check "$E locales_from_stack_profile default fallback" "$(q "$out" 'd["locales"]')" '["<default>"]'
+  check "$E locales_from_stack_profile no locales -> empty" "$(q "$out" 'd["locales"]')" '[]'
   out="$(QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --profile ship)"
-  check "$E locales no stack-profile -> default" "$(q "$out" 'd["locales"]')" '["<default>"]'
+  check "$E locales no stack-profile -> empty" "$(q "$out" 'd["locales"]')" '[]'
+  check "$E locales never the <default> placeholder" "$(printf '%s' "$out" | grep -c '<default>')" "0"
+  out="$(QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --profile smoke)"
+  check "$E smoke no locales -> empty" "$(q "$out" 'd["locales"]')" '[]'
 
   # unknown_profile_rejected: exit 1 with the exact message, from any source.
   local err
