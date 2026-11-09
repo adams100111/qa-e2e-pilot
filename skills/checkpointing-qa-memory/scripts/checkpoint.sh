@@ -1033,23 +1033,23 @@ missing_required_kinds() {
   IFS=',' read -ra rec_arr <<< "$recorded_csv"
 
   local r
-  for r in "${rec_arr[@]}"; do
+  for r in ${rec_arr[@]+"${rec_arr[@]}"}; do
     r="$(trim "$r")"
     [[ -n "$r" ]] && rec_trimmed+=("$r")
   done
 
   local rk item found
-  for rk in "${req_arr[@]}"; do
+  for rk in ${req_arr[@]+"${req_arr[@]}"}; do
     rk="$(trim "$rk")"
     [[ -z "$rk" ]] && continue
     found=""
-    for item in "${rec_trimmed[@]}"; do
+    for item in ${rec_trimmed[@]+"${rec_trimmed[@]}"}; do
       [[ "$item" == "$rk" ]] && { found="yes"; break; }
     done
     [[ -z "$found" ]] && missing+=("$rk")
   done
 
-  (IFS=,; echo "${missing[*]}")
+  (IFS=,; echo "${missing[*]+"${missing[*]}"}")
 }
 
 # print the reject message for a checklist.json-tracked criterion whose
