@@ -1,0 +1,4 @@
+{"pairs":[
+ {"surfaceId":"GET /admin/hackathons/{hackathon}/paths/{path}","persona":"participant","decision":"deny"},
+ {"surfaceId":"GET /account","persona":"participant","decision":"allow"},
+ {"surfaceId":"GET /h/{slug}","persona":"participant","decision":"deny"}]}

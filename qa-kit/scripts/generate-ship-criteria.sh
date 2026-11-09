@@ -16,8 +16,13 @@
 #                                      entry, else census `allowed`; no entry = no rows) excludes it.
 #                                      GET/HEAD/page -> tags independent + read-only. Any other method ->
 #                                      tag deny-write-deferred, or api-write when config allowApiWrites is
-#                                      true AND seedableEnvMarker is non-empty (D6). `denyStatuses` from
-#                                      config ship.denyStatuses, default [401,403,404,302].
+#                                      true AND seedableEnvMarker is non-empty (D6; such rows carry
+#                                      mutates:true). `denyStatuses` from config ship.denyStatuses,
+#                                      default [401,403,404,302]. A persona listed in the access entry's
+#                                      reachedWithoutEvidence on a surface that HAS hints and is not
+#                                      confirmed gets its deny row as usual plus tag needs-confirmation
+#                                      (the run fails it if the role really gets in). stderr counts the
+#                                      unconfirmed access entries the deny rows rest on.
 #   iso:<entity>:<persona>             one per authz-matrix row x persona whose roleScope is "owns": open
 #                                      another owner's record by direct URL (kind cross-tenant, tags
 #                                      independent + ownership-isolation + read-only). surfaceId = the
@@ -141,22 +146,26 @@ def cases:
 
 | [ $S[] as $s
     | ($acc.surfaces[$s.surfaceId] // null) as $e
+    | ($e | if type == "object" then . else {} end) as $eo
+    | ((($eo.hints | strs | length) > 0) and ($eo.confirmed != true)) as $unconfHinted
+    | ($eo.reachedWithoutEvidence | strs) as $rwe
     | (if ($e | type) == "object" and (($e.allowed // null) | type) == "array" then ($e.allowed | strs)
        elif (($s.allowed // null) | type) == "array" then ($s.allowed | strs) else null end) as $allowed
     | select($allowed != null)
     | $pids[] as $pp | select($allowed | index([$pp]) == null)
+    | (if $unconfHinted and ($rwe | index([$pp]) != null) then ["needs-confirmation"] else [] end) as $nc
     | {id: ("deny:" + $s.surfaceId + ":" + $pp), kind: "deny", surface: ($s.pattern | str0), surfaceId: $s.surfaceId,
        persona: $pp, denyStatuses: $ds, humanAction: false}
       + (if isRead($s.surfaceId) then
-           {tags: ["independent", "read-only"], mutates: false,
+           {tags: (["independent"] + $nc + ["read-only"]), mutates: false,
             action: ("As " + $pp + ", navigate directly to " + ($s.pattern | str0) + " (read-only)"),
             expected: ("Refused with one of HTTP " + $dsText + " (302 = redirect to login); none of the surface data is rendered")}
          elif $writes then
-           {tags: ["api-write"],
+           {tags: (["api-write"] + $nc), mutates: true,
             action: ("As " + $pp + ", send " + methodOf($s.surfaceId) + " " + ($s.pattern | str0) + " through the recorded write probe"),
             expected: ("Refused with one of HTTP " + $dsText + "; nothing is persisted")}
          else
-           {tags: ["deny-write-deferred"],
+           {tags: (["deny-write-deferred"] + $nc),
             action: ("As " + $pp + ", send " + methodOf($s.surfaceId) + " " + ($s.pattern | str0) + " without permission"),
             expected: ("Refused with one of HTTP " + $dsText + "; nothing is persisted. Writes are not allowed on this environment, so the run records this row as deferred")}
          end) ] as $deny
@@ -233,6 +242,8 @@ def cases:
      + [ $IS[] | select(has("surfaceId") | not)
          | "generate-ship-criteria: warning: " + .id + " has no readable census surface with a {" + .entity + "} route parameter; emitted without surfaceId" ]
      + ["generate-ship-criteria: \($total) rows (load-clean \($LC | length), deny \($DN | length), iso \($IS | length), input \($IN | length), ux \($UX | length)); \($generated - $total) skipped as already in the checklist"]
+     + ([ $DN[].surfaceId ] | unique | map(select((($acc.surfaces[.] // null) | if type == "object" then .confirmed else null end) != true))
+        | if length > 0 then ["generate-ship-criteria: deny rows use \(length) unconfirmed surface-access entries (\([ $DN[] | select(.tags | index(["needs-confirmation"]) != null) ] | length) rows tagged needs-confirmation)"] else [] end)
      + (if ($cfg.criteriaBudget | type) == "number" and $total > $cfg.criteriaBudget
         then ["generate-ship-criteria: \($total) rows exceeds criteriaBudget \($cfg.criteriaBudget) by \($total - $cfg.criteriaBudget); every row is emitted (criteriaBudget is a run-time cost lever, not a coverage cut)"]
         else [] end))}
@@ -345,20 +356,24 @@ for s in S:
     elif isinstance(s.get("allowed"), list): allowed = strs(s["allowed"])
     else: continue
     pat = str0(s.get("pattern"))
+    eo = e if isinstance(e, dict) else {}
+    unconf_hinted = len(strs(eo.get("hints"))) > 0 and eo.get("confirmed") is not True
+    rwe = strs(eo.get("reachedWithoutEvidence"))
     for pp in pids:
         if pp in allowed: continue
+        nc = ["needs-confirmation"] if unconf_hinted and pp in rwe else []
         row = {"id": "deny:" + s["surfaceId"] + ":" + pp, "kind": "deny", "surface": pat, "surfaceId": s["surfaceId"],
                "persona": pp, "denyStatuses": ds, "humanAction": False}
         if is_read(s["surfaceId"]):
-            row.update({"tags": ["independent", "read-only"], "mutates": False,
+            row.update({"tags": ["independent"] + nc + ["read-only"], "mutates": False,
                 "action": "As " + pp + ", navigate directly to " + pat + " (read-only)",
                 "expected": "Refused with one of HTTP " + ds_text + " (302 = redirect to login); none of the surface data is rendered"})
         elif writes:
-            row.update({"tags": ["api-write"],
+            row.update({"tags": ["api-write"] + nc, "mutates": True,
                 "action": "As " + pp + ", send " + method_of(s["surfaceId"]) + " " + pat + " through the recorded write probe",
                 "expected": "Refused with one of HTTP " + ds_text + "; nothing is persisted"})
         else:
-            row.update({"tags": ["deny-write-deferred"],
+            row.update({"tags": ["deny-write-deferred"] + nc,
                 "action": "As " + pp + ", send " + method_of(s["surfaceId"]) + " " + pat + " without permission",
                 "expected": "Refused with one of HTTP " + ds_text + "; nothing is persisted. Writes are not allowed on this environment, so the run records this row as deferred"})
         deny.append(row)
@@ -469,6 +484,13 @@ for r in IS:
         notes.append("generate-ship-criteria: warning: " + r["id"] + " has no readable census surface with a {" + r["entity"] + "} route parameter; emitted without surfaceId")
 notes.append("generate-ship-criteria: %d rows (load-clean %d, deny %d, iso %d, input %d, ux %d); %d skipped as already in the checklist"
              % (total, len(LC), len(DN), len(IS), len(IN), len(UX), generated - total))
+def confirmed_of(sid):
+    v = acc["surfaces"].get(sid)
+    return v.get("confirmed") if isinstance(v, dict) else None
+unconf = [sid for sid in sorted(set(r["surfaceId"] for r in DN)) if confirmed_of(sid) is not True]
+if unconf:
+    notes.append("generate-ship-criteria: deny rows use %d unconfirmed surface-access entries (%d rows tagged needs-confirmation)"
+                 % (len(unconf), sum(1 for r in DN if "needs-confirmation" in r["tags"])))
 budget = cfg.get("criteriaBudget")
 if isnum(budget) and total > budget:
     notes.append("generate-ship-criteria: " + str(total) + " rows exceeds criteriaBudget " + numstr(budget) + " by " + numstr(total - budget)
