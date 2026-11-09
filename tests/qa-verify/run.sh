@@ -80,7 +80,11 @@ G_C1_REF="$( cd "$WORK" && bash "$REC" genuine C1 action-trace \
   --steps '[{"tool":"browser_click","phase":"act"}]' \
   --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click();"}]' \
   --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
-( cd "$WORK" && bash "$CKPT" genuine C1 pass --kinds human-action --evidence-refs "$G_C1_REF" >/dev/null )
+# 0.12.0 STATE GATE: C1 attempts a write the app must reject, so its state
+# evidence is a read-back showing nothing was persisted (multiplicity 0: the
+# founder is unchanged, no duplicate row) — bound to the g1 capture above.
+G_C1_BAKE_REF="$( cd "$WORK" && bash "$REC" genuine C1 bake --read-back '{"name":"Genuine Founder","equity":55}' --multiplicity 0 )"
+( cd "$WORK" && bash "$CKPT" genuine C1 pass --kinds human-action,bake --evidence-refs "$G_C1_REF,$G_C1_BAKE_REF" >/dev/null )
 
 G_C2_REF="$( cd "$WORK" && bash "$REC" genuine C2 bake --read-back '{"name":"Genuine Founder","equity":55}' --multiplicity 1 )"
 ( cd "$WORK" && bash "$CKPT" genuine C2 pass --kinds bake --evidence-refs "$G_C2_REF" >/dev/null )
@@ -113,7 +117,11 @@ write_checklist genuine '[
 F_AC1_REF="$( cd "$WORK" && bash "$REC" forged F_AC1 action-trace \
   --steps '[{"tool":"browser_click","phase":"act"}]' \
   --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
-( cd "$WORK" && bash "$CKPT" forged F_AC1 pass --kinds human-action --evidence-refs "$F_AC1_REF" >/dev/null )
+# 0.12.0 STATE GATE: a rejected write, so a bound read-back showing nothing
+# persisted (multiplicity 0) — the forgery under test stays the action trace.
+( cd "$WORK" && bash "$TOOLSTREAM" append forged '{"tool":"Bash","args":{},"resultDigest":{"len":0,"sha256":"f3"},"responseBody":"{\"marker\":\"AC1-UNCHANGED-31\"}"}' >/dev/null )
+F_AC1_BAKE_REF="$( cd "$WORK" && bash "$REC" forged F_AC1 bake --read-back '{"marker":"AC1-UNCHANGED-31"}' --multiplicity 0 )"
+( cd "$WORK" && bash "$CKPT" forged F_AC1 pass --kinds human-action,bake --evidence-refs "$F_AC1_REF,$F_AC1_BAKE_REF" >/dev/null )
 
 # Dropped kind: mutating bake criterion, only `bake` recorded (human-action
 # dropped). Bound evidence, so the ONLY failure reason is the dropped kind.
@@ -156,7 +164,9 @@ NT_REF="$( cd "$WORK" && bash "$REC" notoolstream C_NT bake --read-back '{"anyth
 NT_HA_REF="$( cd "$WORK" && bash "$REC" notoolstream C_NT_HA action-trace \
   --steps '[{"tool":"browser_click","phase":"act"}]' \
   --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
-( cd "$WORK" && bash "$CKPT" notoolstream C_NT_HA pass --kinds human-action --evidence-refs "$NT_HA_REF" >/dev/null )
+# 0.12.0 STATE GATE: a rejected write -> read-back showing nothing persisted.
+NT_HA_BAKE_REF="$( cd "$WORK" && bash "$REC" notoolstream C_NT_HA bake --read-back '{"founders":1}' --multiplicity 0 )"
+( cd "$WORK" && bash "$CKPT" notoolstream C_NT_HA pass --kinds human-action,bake --evidence-refs "$NT_HA_REF,$NT_HA_BAKE_REF" >/dev/null )
 
 write_checklist notoolstream '[
   {"id":"C_NT","surface":"/x","kind":"happy-path","tags":[],"action":"View reports"},
