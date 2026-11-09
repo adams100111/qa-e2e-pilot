@@ -24,7 +24,7 @@
 # SCHEMA CHECKED PER ENTRY (all required unless noted "optional"):
 #   id             non-empty string
 #   surface        string
-#   kind           string, one of the 12-value Kind enum (see
+#   kind           string, one of the 15-value Kind enum (see
 #                  templates/checklist.md's Kind field / the schema doc)
 #   tags           array of strings
 #   action         string
@@ -41,6 +41,17 @@
 #                  `mutates: false` together with `humanAction: true`, or
 #                  with a `human-action` entry in `requiredKinds`, is a
 #                  contradiction and is rejected.
+#   surfaceId      optional (ship QA, D1); if present (and non-null), a
+#                  non-empty string or a non-empty array of non-empty strings
+#                  (census surface id(s) this criterion covers)
+#   priority       optional (D1); if present (and non-null), one of P1|P2|P3
+#   journey        optional (D1); if present (and non-null), an object with a
+#                  non-empty string `id` and an integer `step` >= 1
+#   variant        optional (D1); if present (and non-null), an object whose
+#                  keys are each optional: `viewport` and `locale` non-empty
+#                  strings, `colorScheme` one of light|dark (null = absent)
+#                  These four messages end with ` (row "<id>")` when the row
+#                  has a string id, so the offending row is named directly.
 # Duplicate `id` values across entries are rejected.
 #
 # ERROR-HONESTY INVARIANTS (spec `docs/superpowers/specs/
@@ -113,7 +124,15 @@
 set -uo pipefail
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-has_jq() { command -v jq >/dev/null 2>&1; }
+# QA_ENGINE=jq|python3 forces one engine (same idiom as block-hook.sh); unset
+# keeps the default: jq preferred, python3 fallback.
+has_jq() {
+  case "${QA_ENGINE:-}" in
+    python3) return 1 ;;
+    jq) command -v jq >/dev/null 2>&1 ;;
+    *) command -v jq >/dev/null 2>&1 ;;
+  esac
+}
 has_py() { command -v python3 >/dev/null 2>&1; }
 
 usage() { die "Usage: validate-checklist-json.sh <checklist.json-path>"; }
@@ -131,7 +150,7 @@ validate_jq() {
 
   local filter
   filter='
-def kindEnum: ["happy-path","multiplicity-0","multiplicity-1","multiplicity-N","empty-state","loading-state","error-state","computed-logic","business-rule","downstream-cascade","cross-tenant","race"];
+def kindEnum: ["happy-path","multiplicity-0","multiplicity-1","multiplicity-N","empty-state","loading-state","error-state","computed-logic","business-rule","downstream-cascade","cross-tenant","race","load-clean","deny","input-validation"];
 def reqKindEnum: ["bake","computed","probe","human-action"];
 
 # --- error-honesty invariants (spec 2026-09-23 §4.1) -----------------------
@@ -234,6 +253,38 @@ def proseViolations($i; $fields):
     | "entry[\($i)].\($fld.f): reserved phrase \"\($ph)\" may not appear in an oracle/expect field — a criterion may not assert that the application failed"
   ];
 
+# --- ship-QA row fields (D1) ------------------------------------------------
+# All optional; null is treated as absent. Messages name the field and, when
+# the row has a string id, the row itself.
+def rowRef($e): if ($e.id|type) == "string" then " (row \"\($e.id)\")" else "" end;
+def nonEmptyStr: (type == "string") and (length > 0);
+def isInteger: (type == "number") and (floor == .);
+def shipViolations($i; $e):
+  ( if ($e|has("surfaceId")) and ($e.surfaceId != null)
+       and ( ( ($e.surfaceId|nonEmptyStr)
+               or ( (($e.surfaceId|type) == "array") and (($e.surfaceId|length) > 0)
+                    and ($e.surfaceId | map(nonEmptyStr) | all) ) ) | not )
+      then ["entry[\($i)].surfaceId: must be a non-empty string or a non-empty array of non-empty strings\(rowRef($e))"] else [] end )
+  + ( if ($e|has("priority")) and ($e.priority != null) and ((["P1","P2","P3"] | index([$e.priority])) == null)
+      then ["entry[\($i)].priority: must be one of P1|P2|P3\(rowRef($e))"] else [] end )
+  + ( if ($e|has("journey")) and ($e.journey != null) then
+        ( $e.journey ) as $j
+        | if ($j|type) != "object" then ["entry[\($i)].journey: must be null or an object {id, step}\(rowRef($e))"]
+          else
+            (if ($j.id|nonEmptyStr) then [] else ["entry[\($i)].journey.id: must be a non-empty string\(rowRef($e))"] end)
+            + (if ($j.step|isInteger) and ($j.step >= 1) then [] else ["entry[\($i)].journey.step: must be an integer >= 1\(rowRef($e))"] end)
+          end
+      else [] end )
+  + ( if ($e|has("variant")) and ($e.variant != null) then
+        ( $e.variant ) as $v
+        | if ($v|type) != "object" then ["entry[\($i)].variant: must be null or an object\(rowRef($e))"]
+          else
+            (if ($v.viewport == null) or ($v.viewport|nonEmptyStr) then [] else ["entry[\($i)].variant.viewport: must be a non-empty string\(rowRef($e))"] end)
+            + (if ($v.locale == null) or ($v.locale|nonEmptyStr) then [] else ["entry[\($i)].variant.locale: must be a non-empty string\(rowRef($e))"] end)
+            + (if ($v.colorScheme == null) or ((["light","dark"] | index([$v.colorScheme])) != null) then [] else ["entry[\($i)].variant.colorScheme: must be one of light|dark\(rowRef($e))"] end)
+          end
+      else [] end );
+
 def entryViolations($i; $e):
   ( if ($e|type) != "object" then
       ["entry[\($i)]: must be an object"]
@@ -281,6 +332,7 @@ def entryViolations($i; $e):
                 + ( if ($e.expected|type) == "string" then [{f:"expected", t:$e.expected}] else [] end )
                 + expectProseFields("fixture.expect"; $fex)
                 + expectProseFields("expect"; $tex) ) )
+      + shipViolations($i; $e)
     end
   );
 
@@ -324,6 +376,7 @@ KIND_ENUM = {
     "happy-path", "multiplicity-0", "multiplicity-1", "multiplicity-N",
     "empty-state", "loading-state", "error-state", "computed-logic",
     "business-rule", "downstream-cascade", "cross-tenant", "race",
+    "load-clean", "deny", "input-validation",
 }
 REQ_KIND_ENUM = {"bake", "computed", "probe", "human-action"}
 
@@ -455,6 +508,66 @@ def honesty_violations(i, e):
     return v + prose_violations(i, fields)
 
 
+# --- ship-QA row fields (D1) ------------------------------------------------
+# Mirrors the jq engine's shipViolations EXACTLY (same order, same bytes).
+PRIORITY_ENUM = ("P1", "P2", "P3")
+COLOR_SCHEME_ENUM = ("light", "dark")
+
+
+def _row_ref(e):
+    rid = e.get("id")
+    return f' (row "{rid}")' if isinstance(rid, str) else ""
+
+
+def _non_empty_str(x):
+    return isinstance(x, str) and len(x) > 0
+
+
+def _is_integer(x):
+    if isinstance(x, bool):
+        return False
+    if isinstance(x, int):
+        return True
+    return isinstance(x, float) and x.is_integer()
+
+
+def ship_violations(i, e):
+    v = []
+    ref = _row_ref(e)
+    sid = e.get("surfaceId")
+    if sid is not None:
+        ok = _non_empty_str(sid) or (
+            isinstance(sid, list) and len(sid) > 0 and all(_non_empty_str(s) for s in sid))
+        if not ok:
+            v.append(f"entry[{i}].surfaceId: must be a non-empty string or a non-empty array of non-empty strings{ref}")
+    pr = e.get("priority")
+    if pr is not None and not (isinstance(pr, str) and pr in PRIORITY_ENUM):
+        v.append(f"entry[{i}].priority: must be one of P1|P2|P3{ref}")
+    j = e.get("journey")
+    if j is not None:
+        if not isinstance(j, dict):
+            v.append(f"entry[{i}].journey: must be null or an object {{id, step}}{ref}")
+        else:
+            if not _non_empty_str(j.get("id")):
+                v.append(f"entry[{i}].journey.id: must be a non-empty string{ref}")
+            st = j.get("step")
+            if not (_is_integer(st) and st >= 1):
+                v.append(f"entry[{i}].journey.step: must be an integer >= 1{ref}")
+    va = e.get("variant")
+    if va is not None:
+        if not isinstance(va, dict):
+            v.append(f"entry[{i}].variant: must be null or an object{ref}")
+        else:
+            if va.get("viewport") is not None and not _non_empty_str(va.get("viewport")):
+                v.append(f"entry[{i}].variant.viewport: must be a non-empty string{ref}")
+            if va.get("locale") is not None and not _non_empty_str(va.get("locale")):
+                v.append(f"entry[{i}].variant.locale: must be a non-empty string{ref}")
+            cs = va.get("colorScheme")
+            if cs is not None and not (isinstance(cs, str) and cs in COLOR_SCHEME_ENUM):
+                v.append(f"entry[{i}].variant.colorScheme: must be one of light|dark{ref}")
+    return v
+
+
 def entry_violations(i, e):
     v = []
     if not isinstance(e, dict):
@@ -500,6 +613,7 @@ def entry_violations(i, e):
     if e.get("mutates") is False and (e.get("humanAction") is True or (isinstance(rk, list) and "human-action" in rk)):
         v.append(f"entry[{i}].mutates: false contradicts humanAction/requiredKinds human-action — a row cannot declare itself non-mutating and require a human-action trace")
     v.extend(honesty_violations(i, e))
+    v.extend(ship_violations(i, e))
     return v
 
 
