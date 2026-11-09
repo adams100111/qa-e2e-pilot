@@ -1,0 +1,2 @@
+[{"id":"J-CREATE","title":"إنشاء هاكاثون","priority":"P1","roles":["admin"],"steps":["C-CREATE-01","C-CREATE-02"]},
+ {"id":"J-BROWSE","title":"تصفح الهاكاثون","priority":"P2","roles":["participant"],"steps":["C-BROWSE-01"]}]

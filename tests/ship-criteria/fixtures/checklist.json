@@ -1,0 +1,4 @@
+[{"id":"C-CREATE-01","surface":"/admin/hackathons/create","surfaceId":"GET /admin/hackathons/create","kind":"happy-path","tags":["human-action"],"action":"Fill the create form and submit","journey":{"id":"J-CREATE","step":1},"priority":"P1"},
+ {"id":"C-CREATE-02","surface":"Admin/Hackathons/Show","surfaceId":["page:Admin/Hackathons/Show"],"persona":"admin","kind":"multiplicity-1","tags":["read-only"],"action":"Open the new hackathon","journey":{"id":"J-CREATE","step":2},"priority":"P1"},
+ {"id":"C-BROWSE-01","surface":"/h/{slug}","surfaceId":"GET /h/{slug}","kind":"happy-path","tags":["read-only"],"action":"Browse the public page","journey":{"id":"J-BROWSE","step":1},"priority":"P2"},
+ {"id":"load-clean:GET /admin/hackathons/{hackathon}:admin","surface":"/admin/hackathons/{hackathon}","surfaceId":"GET /admin/hackathons/{hackathon}","kind":"load-clean","tags":["independent","read-only"],"action":"Open the hackathon"}]
