@@ -1,0 +1,3 @@
+{"version":1,"surfaces":{
+ "GET /admin/hackathons/{hackathon}/paths/{path}":{"allowed":["admin"],"source":"adapter","confirmed":false},
+ "GET /h/{slug}":{"allowed":["admin","participant"],"source":"human","confirmed":true}}}

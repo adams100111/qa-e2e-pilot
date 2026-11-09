@@ -1,0 +1,4 @@
+[
+  {"surfaceId":"page:Admin/Hackathons/Show","personaId":"admin","reason":"covered by the admin journey in the next increment"},
+  {"surfaceId":"GET /الأخبار","personaId":"*","reason":"صفحة الأخبار خارج نطاق هذا الإصدار"}
+]

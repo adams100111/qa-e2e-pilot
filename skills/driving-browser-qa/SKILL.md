@@ -185,6 +185,7 @@ is silently lost. SPA in-page routing (`pushState`/`replaceState`, no full load)
    ```
    { round, console[], network[], domDigest: { liveText, interactive[] }, ux[], axe }
    ```
+   `ux[]` is empty until `ux-detectors.js` has been injected on the current document (the always-on UX sweep below does that on every new document).
    **How the findings are captured (0.9.0).** The Playwright MCP wraps every result in a content array with markdown (`### Result` ...), so the raw `responseBody` the capture hook keeps (capped at 4000 bytes) is never the observe JSON itself — the wrapper is usually cut mid-string. The capture hook therefore extracts `console[]`/`network[]` from the FULL response into a compact `observed` field on the toolstream event (and `browser_network_requests`' `[GET] url => [200]` list likewise), and qa-verify's findings channel reads that. If the hook reports **"findings-channel check FAILED"** after your first observe round, the run is not being captured — fix the call (full object, verbatim `observe.js`) before continuing; otherwise the run verifies `UNVERIFIED`.
    - **A truncated `domDigest` is now the EXPECTED loss — re-observe, do not treat it as evidence loss.** The DOM inventory is reconstructible by calling `__qaObserve` again; the console/network arrays of a round that already happened are not. So a round whose captured response is cut off mid-`domDigest` is the cap working as designed: re-observe to get a fresh digest, and keep the `console[]`/`network[]` you already have. Never record a criterion `blocked`/`error`, and never discount a finding, because a digest came back truncated.
    - `domDigest.interactive` lists visible buttons/links/inputs with `data-testid`/label/href — this is the snapshot substitute for finding what to act on next. It does not carry a Playwright ref, so build a selector from it (prefer `[data-testid="…"]`) and pass that as the act call's `target` — `browser_click`/`browser_evaluate` accept a unique CSS selector, not only a snapshot ref. Fall back to `scripts/click-by-text.js` for RTL/label-only targeting, or a one-off `browser_snapshot` only when no stable selector exists.
@@ -260,7 +261,47 @@ The re-observe call after every act+wait cycle already drains buffered console e
 
 `browser_console_messages` remains available as a direct, separate read — use it if you need console history from before `observe.js` was installed, or on a driver that lacks `evaluate` (see `references/driver-capabilities.md`).
 
-On the visual-UX criterion specifically, inject `detecting-visual-ux/scripts/ux-detectors.js` via its own `browser_evaluate` call (outside the observe-round's per-step budget) and follow its click-probe step for icon-only controls, then re-observe for `console[]` to confirm whether the probe click threw — see detecting-visual-ux for the full objective-fail/subjective-advisory split.
+## UX Criteria and the Always-On UX Sweep
+
+**Which rows run the UX skills.** Decide from the row's tags and surface, never from its kind:
+
+- A row tagged **`visual-ux` or `ux-revisit`** runs **detecting-visual-ux** in full: objective
+  detectors, the click-probe, axe (when `detection.ux.axe`), the critic (per `detection.ux.critic` and
+  its cost ceiling) and Step 5 adjudication. analyzing-feature-ui emits one `visual-ux` row per
+  surface; qa-kit's generated `ux-revisit` rows carry both tags.
+- A row tagged **`interaction-ux`**, or whose `surfaceId` is a `#dialog:`/`#sheet:` surface, also runs
+  **detecting-interaction-ux** once the overlay is open.
+- **Apply the row's `variant` before any detector runs**, in this order: `browser_resize` to
+  `variant.viewport`, `browser_emulate_media` with `colorScheme` dark/light, then `variant.locale`
+  through the app's own locale switch (a navigation: re-inject `observe.js` and call
+  `browser_network_requests`). Only then inject `detecting-visual-ux/scripts/ux-detectors.js` via
+  its own `browser_evaluate` (outside the per-step budget), click-probe icon-only controls and
+  re-observe for `console[]`. A driver without emulate-media makes a dark row `blocked`. Reset to the
+  primary variant afterwards. Detail: detecting-visual-ux Step 0 and `references/variants.md`.
+
+**The always-on UX sweep.** On under the `ship` profile and whenever `effective-config.json` has
+`detection.ux.objective: true`, in any profile. It records UX findings; it never sets a verdict.
+
+1. **On every new document** (first visit, and after each navigation), inject `ux-detectors.js`
+   once right after `observe.js`. Its return value is this page's findings, and it registers
+   `window.__qaUxDetect`, so every later observe round on that document carries `ux[]`. `axe`
+   holds results only when axe-core is on the page and you ran `window.axe.run()` in its own
+   evaluate; axe-core is not bundled, so a page without it contributes no axe entries.
+2. **Journal each `ux[]` and axe entry** as a finding (checkpointing-qa-memory `journal.sh append`):
+   `{"event":"finding_observed","criterionId":"ux-sweep:<surfaceId>","source":"ux","channel":"ux-detector"|"axe","method":"<detector id, or axe:<rule-id>>","url":"<selector, capped at 1024>","status":"","originClass":"","statusClass":"","message":"<message + variant, ~200 chars>","detailRef":"evidence/ux-sweep/<file>.json"}`.
+   The fold keys it on surface + detector + selector, so a re-observed entry collapses. qa-verify's
+   console/network ledger checks skip `source: "ux"`.
+3. **Promotion only through a planned row.** A sweep finding becomes `fail@FE` only when a
+   `visual-ux` criterion for that surface runs and detecting-visual-ux adjudicates it. Never
+   checkpoint a verdict from the sweep.
+4. **Objective defect on a surface with no `visual-ux` row**: the plan is frozen, so do not add a
+   row (that would be an out-of-plan act). Record it with
+   `bash skills/detecting-visual-ux/scripts/ux-sweep.sh add .qa/runs/<run-id> '{"surfaceId":…,"detector":…,"selector":…,"message":…,"axis":…,"variant":{…},"observedIn":"<criterion-id>"}'`
+   (or `@<file>`). It deduplicates on surface + detector + selector and rewrites `ux-sweep.json`
+   atomically; never write that file by hand. `ux-sweep.sh list .qa/runs/<run-id>` prints the
+   entries. The report lists them under "UX defects outside the plan", outside the verdict tally. Objective means `axis: "ux-objective"` or a definite-oracle
+   suspicion (`content-*`, `i18n-raw-key`, `i18n-script-mismatch`, `broken-image`, `invisible-text`,
+   `modal-behind-backdrop`); a heuristic suspicion (`overlap`, `critic-*`) stays in the ledger only.
 
 ## Checking Network Responses
 

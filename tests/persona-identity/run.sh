@@ -139,12 +139,17 @@ build_humanaction_run() { # <run> <persona>
     --steps '[{"tool":"browser_click","phase":"act"}]' \
     --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#x\").click();"}]' \
     --fingerprint-before '{"count":1}' --fingerprint-after '{"count":2}' )"
-  ( cd "$WORK" && bash "$CKPT" "$run" HA1 pass --persona "$persona" --kinds human-action --evidence-refs "$ref" >/dev/null )
-  # kind error-state (NOT in the bake-kind set) + tags:[human-action] so
-  # required-kinds.sh derives human-action ALONE (rule 1, the mutating verb
-  # "Submit") -- no bake requirement to also satisfy, keeping this fixture
-  # isolated to the identity-check assertion (a dropped-kind override would
-  # otherwise also fire and muddy which reason caused the fail).
+  # 0.12.0 STATE GATE: the row is mutating, so the pass also carries bake
+  # evidence. multiplicity 0 records that the rejected submission persisted
+  # nothing. This run has no toolstream, so the bake degrades exactly like the
+  # action trace (no-toolstream) and adds no override of its own.
+  local bake_ref
+  bake_ref="$( cd "$WORK" && bash "$REC" "$run" HA1 bake --persona "$persona" --read-back '{"submissions":1}' --multiplicity 0 )"
+  ( cd "$WORK" && bash "$CKPT" "$run" HA1 pass --persona "$persona" --kinds human-action,bake --evidence-refs "$ref,$bake_ref" >/dev/null )
+  # kind error-state + tags:[human-action]: required-kinds.sh derives
+  # human-action alone (the mutating verb "Submit"), and the bake recorded
+  # above satisfies the state gate, so the only reason left for this fixture
+  # is the identity check under test.
   write_checklist "$run" '[{"id":"HA1","surface":"/x","kind":"error-state","tags":["human-action"],"action":"Submit invalid data to trigger a validation error"}]'
 }
 

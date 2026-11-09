@@ -268,9 +268,10 @@ Every criterion also carries a derived **`Kinds`** field: a CSV subset of the FO
 | Mutating act on a row tagged `api-write` (and no structured `humanAction: true`) | `probe` instead of `human-action` | `evidence/<crit>/network-response.json`, recorded with `--source-ref seq:<N>` of the sanctioned write probe |
 | `computed-logic`, `business-rule` | `computed` | `evidence/<crit>/recompute.json` |
 | `multiplicity-0`, `multiplicity-1`, `multiplicity-N`, `happy-path`, `downstream-cascade`, or `empty-state` — AND the criterion is NOT tagged `read-only` (this bake-kind enum, not "any criterion") | `bake` | `evidence/<crit>/bake-read-back.json` |
+| `input-validation` (ship-QA kind) — even when tagged `read-only`: the rejected value must leave persisted state unchanged | `bake` | `evidence/<crit>/bake-read-back.json` |
 | `Tag: cross-tenant` OR `Tag: cross-role-fk-chain` OR `Tag: probe-needed` | `probe` | `evidence/<crit>/network-response.json` |
 
-A criterion may match several rows — union the kinds (e.g. a mutating computed write is `bake,computed,human-action`). A criterion tagged `read-only` with no mutating act, no computed logic, and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated.
+A criterion may match several rows — union the kinds (e.g. a mutating computed write is `bake,computed,human-action`). A criterion tagged `read-only` with no mutating act, no computed logic, and no probe-needed tag (pure-display, e.g. `empty-state`, `loading-state`, an error-state that renders but doesn't write) derives `Kinds: none` and is legitimately un-gated. The ship-QA kinds `load-clean` and `deny` are read-only by construction and add nothing on their own (a `deny` row tagged `api-write` still derives `probe`); the full 15-value kind enum is in `references/checklist-json-schema.md`.
 
 Probe evidence carries an `--ok <true|false>` judgment (the verifier's confirm-vs-refute call against the criterion's expectation, not a raw status code — an absence probe correctly getting 403/404 is `--ok true`), recorded by `record-evidence.sh ... probe --ok <true|false>`; the gate consumes `probe.ok` and rejects a checkpointed `pass` when it is `false` or missing.
 

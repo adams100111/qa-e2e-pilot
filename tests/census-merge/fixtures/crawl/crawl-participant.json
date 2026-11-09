@@ -1,0 +1,8 @@
+{"personaId":"participant","visits":[
+ {"url":"/h/هاكاثون-الرياض-للمياه","kind":"page","status":200,"findings":[],"forms":[
+   {"formId":"تسجيل-الفريق","action":"/h/هاكاثون-الرياض-للمياه/register","method":"POST","fields":[{"name":"اسم_الفريق","type":"text","required":true,"maxLength":60,"min":null,"max":null,"pattern":null}]}]},
+ {"url":"/h/%D9%87%D8%A7%D9%83%D8%A7%D8%AB%D9%88%D9%86","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"/admin/hackathons/12","kind":"page","status":403,"findings":[],"forms":[]},
+ {"url":"/admin/hackathons/13/paths/2","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"/الأخبار","kind":"page","status":200,"findings":[],"forms":[]}
+],"unexplored":[]}

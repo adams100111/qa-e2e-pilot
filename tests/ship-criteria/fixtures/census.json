@@ -1,0 +1,25 @@
+{"version":1,"adapter":"laravel","adapterOk":true,
+ "surfaces":[
+  {"surfaceId":"GET /admin/hackathons/{hackathon}","kind":"endpoint","pattern":"/admin/hackathons/{hackathon}","sources":["adapter","crawl"],"reachedBy":["admin"],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /admin/hackathons/create","kind":"endpoint","pattern":"/admin/hackathons/create","sources":["adapter","crawl"],"reachedBy":["admin"],"allowed":null,"forms":[
+   {"formId":"hackathon-create","action":"/admin/hackathons","method":"POST","fields":[
+    {"name":"title_ar","type":"text","required":true,"maxLength":120,"min":null,"max":null,"pattern":null},
+    {"name":"description","type":"textarea","required":false,"maxLength":null,"min":null,"max":null,"pattern":null},
+    {"name":"budget","type":"number","required":false,"maxLength":null,"min":0,"max":null,"pattern":null},
+    {"name":"seats","type":"number","required":false,"maxLength":null,"min":null,"max":null,"pattern":null},
+    {"name":"starts_on","type":"date","required":true,"maxLength":null,"min":"2026-01-01","max":null,"pattern":null},
+    {"name":"contact","type":"email","required":false,"maxLength":null,"min":null,"max":null,"pattern":null},
+    {"name":"logo","type":"file","required":true,"maxLength":null,"min":null,"max":null,"pattern":null},
+    {"name":"status","type":"select","required":false,"maxLength":null,"min":null,"max":null,"pattern":null},
+    {"name":null,"type":"text","required":false,"maxLength":null,"min":null,"max":null,"pattern":null}]}]},
+  {"surfaceId":"GET /h/{slug}","kind":"endpoint","pattern":"/h/{slug}","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"forms":[
+   {"formId":"page","action":null,"method":null,"fields":[{"name":"بحث","type":"search","required":false,"maxLength":null,"min":null,"max":null,"pattern":null}]}]},
+  {"surfaceId":"POST /admin/hackathons","kind":"endpoint","pattern":"/admin/hackathons","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]},
+  {"surfaceId":"page:Admin/Hackathons/Show","kind":"page","pattern":"Admin/Hackathons/Show","sources":["adapter","crawl"],"reachedBy":["admin"],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /ideas/{idea}","kind":"endpoint","pattern":"/ideas/{idea}","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /legacy/form","kind":"page","pattern":"/legacy/form","sources":["crawl"],"reachedBy":[],"allowed":null,"forms":[
+   {"formId":"legacy-form","action":"/legacy/form","method":"POST","fields":[{"name":"note","type":"text","required":true,"maxLength":null,"min":null,"max":null,"pattern":null}]}]},
+  {"surfaceId":"GET /admin/reports","kind":"endpoint","pattern":"/admin/reports","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}
+ ],
+ "jobs":[],"mails":[],"notifications":[],
+ "diffs":{"unreachable":["GET /admin/reports"],"overreach":[],"crawlOnly":[]},"warnings":[]}

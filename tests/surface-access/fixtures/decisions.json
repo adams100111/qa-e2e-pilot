@@ -1,0 +1,2 @@
+{"byHint":{"can:hackathons.view":["admin"]},
+ "bySurface":{"GET /h/{slug}":["participant","admin"],"GET /الأخبار":["participant","organizer"]}}

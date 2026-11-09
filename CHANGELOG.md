@@ -8,6 +8,155 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.12.0 — 2026-11-09 · "Prove what was covered, then trust what passed"
+
+Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `~0.12.0`). See
+[ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md),
+[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md),
+[ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and
+[ADR-0033](./docs/adr/0033-independent-re-adjudication.md).
+
+**Behaviour changes vs 0.11.0**
+
+- **The state gate applies in every profile.** A `pass` on a mutating row now needs `bake` or `probe`
+  evidence, also on a plain `full` run. A rejected write (an error-state row that "adds a duplicate to
+  trigger a validation error") that used to pass on `human-action` alone is refused at record time
+  and overridden by `qa-verify`; record a bake at multiplicity 0 instead.
+- **Generated rows.** A ship run's checklist now carries generated load-clean, deny,
+  ownership-isolation, input-validation and UX-revisit rows (from qa-kit), with new kinds
+  `load-clean`, `deny`, `input-validation`; `input-validation` always requires `bake`.
+- **Profiles.** `profile` (`ship|smoke|full`) resolves into `effective-config.json` at pre-flight and
+  every later phase reads that file. `full` is the default and adds nothing; `ship` turns on the
+  oracle and data-policy gates, the coverage census, variants and parallel read-only lanes.
+- `"responsiveMatrix": []` is gone from the config example: an explicit empty matrix is a user value
+  and turns a ship run's mobile pass off.
+
+**Increment 2 · trusted verdicts**
+
+- **ORACLE GATE** in `checkpoint.sh`: a `confidence: high` pass on a row with
+  `fixture.expect.oracleSource`, or under `ship` on any `computed-logic`/`business-rule` row, needs
+  `oracleSource` `human` or `spec`; `llm-suggested` or missing is refused, `confidence: low` is always
+  allowed. A row with a control character in its kind or source is refused as malformed.
+- **STATE GATE**: a mutating pass (per `mutation-flag.sh`) needs `bake` or `probe` in `--kinds`;
+  `--nonui-reason` does not bypass it.
+- **DATA POLICY GATE**: under `gates.dataPolicy: enforce`, the typed values in a mutating row's
+  `action-trace.json` must pass `data-policy.sh check` (password-like fields skipped, values passed as
+  a mode-600 `@file` that is removed on exit or interrupt; `input-validation` rows skip date window
+  and email domain).
+- **`qa-verify.sh` mirrors the three gates** (checks 3.6–3.8, reasons `oracle-ungrounded`,
+  `no-state-evidence`, `data-policy-violation`; rule names only, never the typed values). It fails
+  closed on any in-run confidence other than `low` and overrides a confidence outside `high|low`
+  (`invalid-confidence`). New run check `effectiveConfigMissing`: a config or spec run-config naming
+  `ship` or `dataPolicy: enforce` with no `effective-config.json` in the run fails the run.
+- **Re-adjudication.** New skill `re-adjudicating-verdicts` (19 skills) with `adjudication.sh
+  select|bundle|apply|capability`. After Verify, every low-confidence pass and every UX-promoted fail
+  goes to one fresh-context verifier per evidence bundle (an allow-list of persisted evidence; never
+  the journal, toolstream or agent prose; `action-trace.json` is a redacted copy in which values typed into
+  password/passwd/secret/token/otp/pin-labelled or `type: password` fields read `[redacted]`). A disputed pass becomes `blocked` with
+  `verifier-disagrees: <reason>`, a disputed fail drops to `confidence: low`, kinds and evidence refs
+  are kept, and any upgrade is refused (`ADJUDICATION: upgrades are not allowed`). Capability is the
+  new boolean `subagentDispatch` in `harness-profiles.json` (claude only); other harnesses print
+  `re-adjudication unavailable on <harness>; <n> low-confidence passes unreviewed`. On Claude, `/qa-run`
+  runs it after the dispatched agent returns, then re-runs `qa-verify`, the bug export and the renderer.
+- **Ship readiness.** `render-report.js` opens the report with `SHIP-READY` / `NOT SHIP-READY` and
+  every failing condition (uncovered census pairs, P1 journeys not passing, coding-layer fails on P1,
+  verifier overrides on P1), plus low-confidence, flaky and regression lines. It fails closed on
+  missing coverage, journeys or verification and on an out-of-date verification; runs without those
+  inputs render byte for byte as before.
+  A P1 criterion the re-adjudicator disputed (`verifier-disagrees:`) blocks on its own, journey step or not; a
+  **Re-adjudication** line reports re-judged / disputed counts, the unavailable banner or `did not run`, and a P1
+  low-confidence pass nobody re-judged blocks. A decision counts as re-judged only when `adjudication/apply.txt` shows it
+  applied or a no-op; one `apply` rejected or `checkpoint.sh` refused stays unreviewed and the line says `N not applied`. A **Needs re-check** row counts `bugs/needs-recheck.json` when the
+  run has a bug export (informational, never blocking); a `needs-recheck.json` older than the run's
+  `verification.json` is a previous export's and is ignored.
+- **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and from verifier overrides that show a contradiction (an artifact that really holds `match: false`, `readBack:null`, a probe artifact that really holds `ok: false`, or an acting identity that differs from the expected one), matched on the exact reason prefixes `qa-verify` emits; its "shows ok:false or missing" / "shows match:false" reason on an artifact with no `ok` / `match` is an evidence gap. Overrides that only show missing or ungrounded evidence (oracle-ungrounded, no-state-evidence, unbound, no toolstream, identity unverified, missing artifacts) are not bugs: they go to `needs-recheck.json` (always written, `[]` when empty) and the summary line carries `needsRecheck`. A re-export removes only the stale `<id>.md` files the previous `bugs.json` listed; unknown files and symlinks stay. A bug without evidence falls back to the latest record's evidence refs, then to the criterion's `evidence/` folder, and a missing journey id comes from `journeys.json`. Bugs are deduplicated against outstanding known defects, secrets are redacted and both engines are byte-identical.
+- **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase runs
+  `qa-verify` → re-adjudication (selection uses the verification-adjusted confidence) → `qa-verify` again → bug export →
+  render (so the **Needs re-check** row reflects this run). `/qa-resume` re-adjudicates too when the agent could not. `gates.oracle` is informational: enforcement
+  keys on `oracleSource` and the `ship` profile.
+- **Suites.** `gate-oracle`, `gate-state`, `gate-data-policy`, `verify-ship-gates`, `ship-summary`,
+  `bug-export`, `adjudication` enrolled (65 engine suites); `missing_required_kinds` is bash 3.2 safe.
+
+**UX detector wiring**
+
+A 260-row hackathons run recorded no detector or axe findings: the UX detectors run only on a
+`visual-ux` row, no row carried that tag, and the generated `ux-revisit` rows were not routed to them.
+English text on an Arabic notifications panel would have gone unflagged.
+
+- **Routing.** A row tagged `visual-ux` or `ux-revisit` runs detecting-visual-ux (detectors, axe and
+  critic per `detection.ux`); a row tagged `interaction-ux`, or on a `#dialog:`/`#sheet:` surface, also
+  runs detecting-interaction-ux. The row's variant is applied first: resize, emulate-media for the
+  color scheme, then the app's own locale switch.
+- **Always-on UX sweep** under `ship`, and whenever `detection.ux.objective` is true. `ux-detectors.js`
+  now registers `window.__qaUxDetect`, so after one injection per document every observe round
+  carries `ux[]` (before this it was always empty). Each entry is journaled as `finding_observed` with
+  `criterionId` `ux-sweep:<surfaceId>`, `source` `ux`, `method` the detector id and `url` the selector,
+  so the fold keeps one per surface + detector + selector. A sweep finding is never a verdict: it
+  becomes `fail@FE` only through a `visual-ux` criterion for its surface. An objective defect on a
+  surface with no such row goes to the new run artifact `ux-sweep.json` through
+  `skills/detecting-visual-ux/scripts/ux-sweep.sh add|list` (dedup on surface + detector + selector,
+  atomic rewrite under a lock, dual-engine; new suite `ux-sweep`, 66 engine suites), never into the
+  frozen plan.
+- **qa-verify** skips `source: "ux"` findings in its console/network ledger and known-defect checks;
+  a test proves they never change a verdict, a confidence, a run check or the exit code.
+- **Report.** New **UX findings (advisory)** section with a **UX defects outside the plan** list from
+  `ux-sweep.json`, neither counted in the tally. A run with neither renders exactly as before.
+- **Limit.** axe-core is not bundled; `axe` entries appear only when the page ships axe-core.
+
+**Increment 1 · prove what was covered**
+
+- **Surface census.** New skill `taking-surface-census`: a read-only, breadth-first
+  crawl per confirmed persona (`census.maxVisits`, default 300; depth 4) that writes
+  `.qa/census/crawl/crawl-<persona>.json` with each visit's status, findings, forms and an
+  `unexplored` list with reasons. `crawl-safety.js` classifies every control before a click: English
+  and Arabic destructive labels (normalised for tashkeel, tatweel and alef/yaa/taa variants) are
+  unsafe in any name source, unsafe always wins, a safe verb must lead the name and name an allowlisted
+  object, and anything else is not clicked. The crawl answers native dialogs `accept:false`, stops
+  clicking after any observed non-GET request, and is skipped on production unless
+  `allowBlackboxCrawl`. `form-inventory.js` records each form's field constraints.
+- **Stack adapters** under `adapters/census/` (laravel, nextjs, rails, django, express, generic) with
+  a README contract. Each prints the app's own surfaces (routes, pages, jobs, mails, notifications,
+  permission hints, locales) or `ok:false` + exit 3. New config key `exec.prefix` wraps adapter
+  commands (`ddev exec`, `docker compose exec -T app`).
+- **`scripts/census.sh build`** merges adapter + crawl into `.qa/census.json`: parameterised routes
+  collapse to one surface, `routeMatch` (Inertia `data-page` / Next `__NEXT_DATA__`) reaches page
+  surfaces, and the diffs list `unreachable`, `overreach` and `crawlOnly`. A failed adapter degrades
+  to crawl-only with an `adapter-failed:` warning and `adapterOk:false`.
+- **Run profiles.** `scripts/profile.sh resolve` turns `ship|smoke|full` (flag > run-config > config >
+  `full`) into the run's `effective-config.json` with `profileSources`. `ship` fills desktop + mobile,
+  light + dark, every app locale, all UX detectors + axe + the critic, blocking coverage/oracle/data
+  gates and `maxParallel` 3, only for keys the user did not set. `full` adds nothing.
+- **Journeys.** `scripts/journeys.sh validate|status|expand-variant`; checklist rows gain optional
+  `surfaceId`, `priority`, `journey {id, step}` and `variant {viewport, locale, colorScheme}`, and the
+  kind enum gains `load-clean`, `deny`, `input-validation` (`validate-checklist-json.sh` now also
+  honours `QA_ENGINE`).
+- **`required-kinds.sh`:** `input-validation` always requires `bake` (a rejected value must leave
+  persisted state unchanged, even on a `read-only` row); `load-clean` and `deny` add nothing on their
+  own, and a `deny` row tagged `api-write` still derives `probe`.
+- **`scripts/data-policy.sh check|record|list`**: forbidden markers (whole-word for ASCII, substring
+  for Arabic), email domain and date window on generated data; created-record ids for cleanup.
+- **Agent.** Phase 0 resolves the profile into `effective-config.json`, which later phases read. Under
+  `ship`: P1 journeys run sequentially at the primary variant; generated read-only rows fan out across
+  up to 3 contexts; exactly one P1 journey is repeated at mobile in the first RTL locale via
+  `journeys.sh expand-variant`; dark mode uses the new `emulate_media` capability (Playwright
+  `browser_emulate_media`, now in `harness-profiles.json` and the agent's tool list).
+- **Config example.** New keys `profile`, `exec.prefix`, `census.maxVisits`, `ship.denyStatuses`,
+  `dataPolicy`, with `colorSchemes`/`locales` documented in `_profileDoc`. `"responsiveMatrix": []`
+  is removed: an explicit empty matrix is a user value and turns a ship run's mobile pass off.
+- **Census details.** Every surface carries `sampleUrls` per persona (the first reached URL, query
+  kept), and the rows open that URL, never a `{param}` pattern. Tabs, dialogs and sheets the crawl
+  opened become `<parent>#<kind>:<subKey>` surfaces. Next.js and Rails catch-all segments read
+  `{x*}` / `{x*?}`. Next/Previous/التالي/السابق buttons are never clicked. Forms are collected only
+  from visits that reached the surface, and `--access` is read with `--slurpfile`.
+- **Smaller fixes.** `profile.sh` resolves undetectable locales to `[]`, never a placeholder;
+  `journeys.sh expand-variant --viewport-id <id>` names variants by matrix id (`@mobile-ar`);
+  `data-policy.sh check --kind input-validation` skips date window and email domain, masks
+  credential-like fields, and rejects a non-array `forbiddenMarkers` (exit 2) in both engines;
+  `write-persona-config.sh` keeps a persona's `permissions`; `isolation.maxOpenContexts` defaults to 3
+  in the config example and caps ship lanes.
+- **Suites.** `census-adapters`, `census-merge`, `profile`, `journeys`, `data-policy`,
+  `checklist-ship-schema`, `crawl-safety` enrolled.
+
 ### v0.11.0 — 2026-10-01 · "Count each criterion once"
 
 Fix-and-feature release from a real 0.10.0 run (`register-choose-later`, 61 criteria, one resume)
@@ -420,6 +569,79 @@ The headline release: the engine now tells the truth about its own accuracy.
 ---
 
 ## qa-kit (process shell)
+
+### v0.3.0 — 2026-11-09 · "Confirm the oracle"
+
+Ships with engine `v0.12.0`, increments 1 and 2. The dependency is now pinned:
+`{ "name": "qa-e2e-pilot", "version": "~0.12.0" }` (it resolves against the `qa-e2e-pilot--v0.12.x`
+release tags).
+
+**Increment 2 · trusted verdicts**
+
+- **Oracle confirmation page.** New `oracle-confirm.sh render|apply` and
+  `templates/oracle-confirm.html`: `/qa-analyze` step 4c renders an offline page (works from
+  `file://`, no network) listing every unconfirmed expected value, grouped by business rule, with
+  accept / edit / unknown per row or per group. Saving downloads `oracle-decisions.json`; `apply`
+  writes accepted and edited values back as `oracleSource: "human"` (backup `checklist.json.bak`),
+  leaves unknown rows alone and lists unmatched ids. Under `autonomousSetup` the page is skipped and
+  the unconfirmed count reported.
+- **`spec` oracle source.** `check-fixtures.sh` accepts `oracleSource: "spec"` with a `citation`
+  `<path>:<line>` that resolves inside the checklist dir or the git root (no absolute paths, no `..`,
+  symlinks resolved and contained; outside git, the checklist dir only); `sources` counts `spec`.
+  Only `human` and `spec` can ground a high-confidence pass under the engine's ORACLE GATE.
+- **Plan drift check.** `/qa-verify` runs `verify-plan.sh --drift <run-checklist> <frozen-checklist>`, which compares by id the
+  trust-bearing fields (`kind`, `tags`, `mutates`, `humanAction`, `priority`, `journey`, `fixture.expect.{oracleSource,citation,value}`)
+  and the run's `journeys.json` against the spec's (`priority`, ordered `steps`, journey ids), and fails on any drift, row or
+  journey added in-run or frozen row or journey missing. The one sanctioned addition is an exact `journeys.sh expand-variant`
+  copy (`<spec id>@<suffix>` rows differing only in `id`, `variant` and `journey.id`, and the suffixed journey whose steps map
+  1:1), reported as `variantsInRun` / `variantJourneysInRun`. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
+  constitution marks `gates.oracle` informational.
+- **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
+  unavailable banner or did not run); the `verification.md` template gains that section.
+- **Suites.** `oracle-confirm` enrolled (15 qa-kit suites).
+
+**UX detector wiring**
+
+- `generate-ship-criteria.sh` emits one `visual-ux` row per census surface an in-scope persona
+  reached (`ux:<surfaceId>`, kind `happy-path`, tags `visual-ux` + `read-only` + `independent` +
+  `sweep`, plus `interaction-ux` on a `#dialog:`/`#sheet:` surface; role = the first such persona,
+  `url` from `sampleUrls`, primary variant). `ux-revisit` rows also carry `visual-ux`, and load-clean
+  and input-validation rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`. A generated ship
+  plan therefore passes `--require-visual-ux` with no hand-authoring.
+- `coverage.sh --require-visual-ux` lists in-scope UI surfaces that a spec role reached and that have
+  no `visual-ux` row (`uxMissing`), and blocks under `--mode block`. `/qa-analyze` passes it under `ship` and lists the surfaces in its
+  Coverage section; `/qa-scenarios` step 5c asks hand-authored plans for a `visual-ux` row per surface
+  and `ux-revisit` rows per locale and viewport.
+
+**Increment 1 · prove what was covered**
+
+- **`surface-access.sh derive|confirm-table|apply`** writes `.qa/surface-access.json` (who SHOULD
+  reach each surface) from adapter permission hints and crawl reach. Crawl reach without a matching
+  hint goes to `reachedWithoutEvidence`, never `allowed`, until a human confirms it in the new
+  `/qa-constitution` surface-access round (auto-accepted with `assumption: true` under
+  `autonomousSetup`).
+- **`generate-ship-criteria.sh`** turns census + access + authz matrix into rows: a load-clean sweep per
+  surface × persona, deny rows only where permission evidence exists (mutating ones `api-write` on a
+  disposable env, else `deny-write-deferred`; unconfirmed overreach tagged `needs-confirmation`),
+  same-role ownership isolation, form input edge cases, and P1 UX revisits per viewport × locale ×
+  color scheme. Overflow past `criteriaBudget` is reported, never dropped.
+- **`coverage.sh`** reports role × surface coverage (covered / excluded with a reason / uncovered,
+  plus `covered-unscoped`) and, in `--mode block`, exits 1 on any uncovered pair, an empty census, or a
+  failed adapter without `--accept-crawl-only`.
+- **Commands.** `/qa-constitution` gains profile/gate rows and the surface-access round; `/qa-spec`
+  authors `journeys.json` (validated by `journeys.sh`) and a run-config `profile`; `/qa-scenarios`
+  builds the census, generates ship rows and fills coverage gaps; `/qa-analyze` runs the coverage gate,
+  its one blocking check under `ship`.
+- **Ship gate fixes.** Generated ids are token-safe (`<prefix>-<slug>-<h8>`, old id kept as `title`)
+  and accepted by the engine's `checkpoint.sh`. `surface-access.sh apply --assume` replaces the
+  autonomous deny-everything path and never denies; permissions match exactly, `*` or `prefix.*`;
+  `surface-access.sh personas` writes `.qa/specs/<target>/personas-for-generation.json`. `coverage.sh`
+  counts sweep rows apart (`covered-sweep`) and takes `--scope`, `--roles` and exclusion globs.
+  `/qa-analyze` is BLOCKED under ship on a missing census or a failed engine script, and `/qa-status`
+  and the agent refuse to hand off to `/qa-run` while it is. Input rows skip GET forms, accept either a
+  validation message or an escaped, intact value where both are correct, and open the form from a
+  sampled URL.
+- **Suites.** `surface-access`, `ship-criteria`, `coverage-gate` enrolled.
 
 ### v0.2.0 — 2026-09-24 · "A defect is not a verdict"
 

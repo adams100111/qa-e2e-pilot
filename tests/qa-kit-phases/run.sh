@@ -127,5 +127,58 @@ for cmd in qa-sanitize qa-assure qa-perf qa-security qa-uiux; do
   grep -q "/$cmd" "$ROOT/qa-kit/templates/constitution-template.md"; check "constitution template drops fictional /$cmd" "$?" "1"
 done
 
+# --- ship-profile wiring (increment 1, task 11): command/template text assertions ---
+QC="$ROOT/qa-kit/commands/qa-constitution.md"; QS="$ROOT/qa-kit/commands/qa-spec.md"
+QSC="$ROOT/qa-kit/commands/qa-scenarios.md"; QA="$ROOT/qa-kit/commands/qa-analyze.md"
+CT="$ROOT/qa-kit/templates/constitution-template.md"; JT="$ROOT/qa-kit/templates/journeys-template.json"
+# constitution_has_profile_rows
+grep -q '| profile |' "$CT"; check "constitution_has_profile_rows: template profile row" "$?" "0"
+grep -q 'detection.ux' "$CT"; check "constitution_has_profile_rows: uiux -> detection.ux" "$?" "0"
+grep -q 'deny' "$CT" && grep -q 'profile.sh' "$QC"; check "constitution_has_profile_rows: security row + profile.sh in command" "$?" "0"
+grep -q 'surface-access.sh" derive' "$QC" && grep -q 'confirm-table' "$QC" && grep -q 'apply' "$QC" && grep -q 'taking-surface-census' "$QC"; check "constitution_has_profile_rows: surface-access confirmation round" "$?" "0"
+grep -q 'assumption' "$QC" && grep -q 'autonomousSetup' "$QC"; check "constitution_has_profile_rows: autonomousSetup assumption" "$?" "0"
+# spec_mentions_journeys_validate
+grep -q 'journeys.json' "$QS" && grep -q 'journeys.sh validate' "$QS" && grep -q 'journeys-template.json' "$QS" && grep -q 'P1' "$QS"; check "spec_mentions_journeys_validate" "$?" "0"
+python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));assert isinstance(d,list)' "$JT" 2>/dev/null; check "journeys template is valid JSON array" "$?" "0"
+# scenarios_runs_generator
+grep -q 'generate-ship-criteria.sh' "$QSC" && grep -q 'taking-surface-census' "$QSC" && grep -q 'coverage.sh' "$QSC"; check "scenarios_runs_generator" "$?" "0"
+# analyze_blocks_on_uncovered_under_ship
+grep -q 'coverage.sh' "$QA" && grep -q 'BLOCKED' "$QA" && grep -q -- '--mode' "$QA"; check "analyze_blocks_on_uncovered_under_ship: command" "$?" "0"
+grep -q 'BLOCKED' "$ROOT/qa-kit/templates/qa-analyze-template.md" && grep -q '## Coverage' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_blocks_on_uncovered_under_ship: template" "$?" "0"
+
+# --- increment 1 final-review fixes: command text assertions ---
+QST="$ROOT/qa-kit/commands/qa-status.md"; AG="$ROOT/qa-kit/agents/qa-kit.md"
+# C2: autonomous setup assumes, never denies
+grep -q 'apply --assume' "$QC"; check "constitution_autonomous_uses_apply_assume" "$?" "0"
+grep -q 'decide every remaining `reachedWithoutEvidence` pair as `deny`' "$QC"; check "constitution_autonomous_never_denies" "$?" "1"
+# canonical adapter path + stack profile for locales (I8)
+grep -q '.qa/census/adapter.json' "$QC" && grep -q '.qa/census/adapter.json' "$QSC"; check "canonical_adapter_path" "$?" "0"
+grep -q -- '--stack-profile' "$QC" && grep -q -- '--stack-profile' "$QSC" && grep -q -- '--stack-profile' "$QA"; check "profile_resolve_gets_stack_profile" "$?" "0"
+grep -q 'stack-profile.cache.json' "$QSC"; check "scenarios_names_stack_profile_cache" "$?" "0"
+# I1: persona input file
+grep -q 'surface-access.sh" personas' "$QS" && grep -q 'personas-for-generation.json' "$QS"; check "spec_writes_personas_for_generation" "$?" "0"
+grep -q -- '--personas .qa/specs/<target>/personas-for-generation.json' "$QSC"; check "scenarios_passes_personas_for_generation" "$?" "0"
+grep -q 'personas-tmp' "$QSC"; check "scenarios_has_no_undefined_personas_tmp" "$?" "1"
+# I3/I4: scoped gate, fail closed, deferred channels, crawl-only only on human ok
+grep -q -- '--roles .qa/specs/<target>/spec-roles.json' "$QA" && grep -q 'coverage-scope.txt' "$QA" && grep -q 'coverage-scope.txt' "$QS"; check "analyze_gate_scoped_to_spec" "$?" "0"
+grep -q 'no census' "$QA" && grep -q 'engine script unavailable' "$QA"; check "analyze_missing_census_blocks_under_ship" "$?" "0"
+grep -q -- '--defer-channels' "$QA" && grep -q 'channel checks arrive in increment 4' "$QA"; check "analyze_defers_channels_with_reason" "$?" "0"
+grep -q -- '--accept-crawl-only' "$QA" && grep -q 'explicitly said' "$QA"; check "analyze_accept_crawl_only_needs_human" "$?" "0"
+grep -q 'covered-sweep' "$QA" && grep -q 'covered-sweep' "$QSC"; check "sweep_rows_do_not_close_pairs" "$?" "0"
+# I4: no hand-off to /qa-run while BLOCKED
+grep -q 'never `/qa-run` while the analysis is' "$QST"; check "status_refuses_run_while_blocked" "$?" "0"
+grep -q 'Never hand off to `/qa-run` while' "$AG"; check "agent_refuses_run_while_blocked" "$?" "0"
+grep -q 'Engine-only runs have no gate' "$QA"; check "analyze_documents_engine_only_has_no_gate" "$?" "0"
+
+# --- UX wiring (0.12.0): hand-authored plans carry visual-ux rows; analyze blocks a ship plan without them ---
+grep -q 'every surface in scope gets a `visual-ux` criterion' "$QSC" && grep -q 'analyzing-feature-ui' "$QSC"; check "scenarios_hand_authored_visual_ux_per_surface" "$?" "0"
+grep -q 'every locale and viewport in the profile gets a `ux-revisit` row' "$QSC"; check "scenarios_hand_authored_ux_revisit_per_variant" "$?" "0"
+grep -q 'interaction-ux' "$QSC"; check "scenarios_names_interaction_ux" "$?" "0"
+grep -q -- '--require-visual-ux' "$QSC"; check "scenarios_fill_gaps_requires_visual_ux" "$?" "0"
+grep -q -- '--require-visual-ux' "$QA" && grep -q 'uxMissing' "$QA"; check "analyze_flags_surfaces_without_visual_ux" "$?" "0"
+grep -q 'until uncovered = 0 and `uxMissing` is empty' "$QA"; check "analyze_visual_ux_blocking_under_ship" "$?" "0"
+grep -q 'uxMissing' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_template_coverage_lists_ux_missing" "$?" "0"
+grep -q -- '--require-visual-ux' "$ROOT/qa-kit/core/commands/qa-analyze.md" && grep -q 'step 5c' "$ROOT/qa-kit/core/commands/qa-scenarios.md"; check "ux_wiring_in_core_sources" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

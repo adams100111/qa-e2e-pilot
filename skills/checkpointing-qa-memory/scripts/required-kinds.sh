@@ -60,6 +60,13 @@
 #            kind implicitly adds `bake` — `computed-logic`/`business-rule`
 #            in particular do NOT imply `bake` on their own (they assert a
 #            computed value, not persisted state; see mini-eval below).
+#         3b. `kind` is `input-validation` (case-insensitive)
+#              -> add `bake`, ALWAYS — a `read-only` tag does NOT suppress it.
+#            (ADR-0030: the row asserts the rejected input left persisted
+#            state unchanged, and only a read-back proves that.)
+#            The other ship-QA kinds, `load-clean` and `deny`, are read-only
+#            by construction and add nothing here; a `deny` row tagged
+#            `api-write` still gets `probe` from rule 1.
 #         4. `tags` contains `cross-tenant`, `cross-role-fk-chain`, or
 #            `probe-needed`
 #              -> add `probe`
@@ -94,6 +101,7 @@ MUTATION_FLAG="${SCRIPT_DIR}/mutation-flag.sh"
 # kind-enum regexes, anchored, case-insensitive (see rules 2 and 3 above).
 COMPUTED_KIND_RE='^(computed-logic|business-rule)$'
 BAKE_KIND_RE='^(multiplicity-0|multiplicity-1|multiplicity-N|happy-path|downstream-cascade|empty-state)$'
+ALWAYS_BAKE_KIND_RE='^(input-validation)$'
 
 # ---------------------------------------------------------------------------
 # read_criterion <criterion-json>
@@ -186,6 +194,11 @@ derive() {
 
   # Rule 3: kind is a bake-kind AND not tagged read-only -> bake.
   if grep -Eiq "$BAKE_KIND_RE" <<< "$kind" && [[ ",${tags_csv}," != *,read-only,* ]]; then
+    kinds+=("bake")
+  fi
+
+  # Rule 3b: kind is input-validation -> bake, regardless of read-only.
+  if grep -Eiq "$ALWAYS_BAKE_KIND_RE" <<< "$kind"; then
     kinds+=("bake")
   fi
 

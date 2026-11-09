@@ -31,10 +31,26 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
      tiers 1-3): run
      `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/specs/<target>/checklist.json`
      — the FROZEN plan, never the run copy (the run copy is agent-amendable and would let a
-     laundered out-of-plan act slip through undetected). Additionally, diff the id sets of the
-     frozen plan vs `.qa/runs/<id>/checklist.json`: any id present in the run copy but absent from
-     the frozen plan is a **plan-divergence finding** — list the ids and the criteria added
-     in-run; never silently accepted.
+     laundered out-of-plan act slip through undetected). Then run the **plan-drift check**:
+     `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" --drift .qa/runs/<id>/checklist.json .qa/specs/<target>/checklist.json`.
+     The engine's gates read the run copy, so an edit there relaxes them silently. The script
+     compares, by id, every trust-bearing field — `kind`, `tags`, `mutates`, `humanAction`,
+     `priority`, `journey`, `fixture.expect.oracleSource`, `fixture.expect.citation`,
+     `fixture.expect.value` — and the id sets; it also compares the run's `journeys.json` with
+     the spec's (the file beside each checklist; a missing file is "no journeys") journey by
+     journey on `priority` and `steps` (ordered), printing `{ok, drift:[{id, field, frozen, run}],
+     addedInRun, missingInRun, journeyDrift:[{id, field, frozen, run}], journeysAddedInRun,
+     journeysMissingInRun, variantsInRun, variantJourneysInRun}`, exit non-zero on any of them.
+     The one sanctioned addition is a `journeys.sh expand-variant` copy, listed in
+     `variantsInRun`/`variantJourneysInRun` and not drift: a row `<spec id>@<suffix>` equal to its
+     spec row except `id`, `variant` and `journey.id` (that id + the same suffix), and a journey
+     `<spec journey id>@<suffix>` equal to its spec journey except `id` and `steps`, whose steps are
+     the spec steps + the suffix, 1:1. Report the variants as information; any other added row or
+     journey is drift. Every entry is a **plan-drift
+     finding**: list each as `<id>.<field>: <frozen> → <run>` (a flipped `oracleSource`, a
+     dropped `human-action` tag, or a P1 row or journey downgraded or trimmed means that verdict
+     was gated against a weaker plan than the one approved), plus the ids added in-run and the
+     frozen ids missing from the run copy; never silently accepted.
    - **No spec plan resolvable** (engine-solo run, ladder tier 4): run
      `bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-plan.sh" .qa/runs/<id>/checkpoint.json .qa/runs/<id>/checklist.json`
      — the run-local copy, and the report MUST carry the banner: `⚠ out-of-plan check ran against
@@ -88,18 +104,39 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
      independent, and a run can carry both a `__run-verified__` and a `__run-checks__` failure at
      once. See `docs/running-in-ci.md`.
 
-4. **Write `verification.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-verify-template.md`: out-of-plan
-   list, override list, confidence downgrades, and the verified/overridden/not-verified state.
+3b. **Independent re-adjudication (engine's second judge — a RESTATEMENT).** The engine's
+   `/qa-e2e-pilot:re-adjudicating-verdicts` skill re-judges every low-confidence pass and every
+   UX-promoted fail with a fresh-context verifier that sees only an evidence bundle, and may only
+   downgrade. Read what it left in `.qa/runs/<id>/`:
+   - **`adjudication/unavailable.txt` present** → quote its banner verbatim (`re-adjudication
+     unavailable on <harness>; <n> low-confidence passes unreviewed`). Those passes were never
+     re-judged; say so, never imply they were.
+   - **`adjudication/decisions.json` present** → report how many records were re-judged, how many
+     the verifier agreed with, and list each **verifier override**: every `checkpoint.json` record
+     with `phase == "adjudicate"` and `last_action` starting `verifier-disagrees:`, as
+     `criterionId[@persona]: <verdict>/<confidence> — <reason>` (a disputed pass is now `blocked`, a
+     disputed fail is now confidence `low`). Quote every `ADJUDICATION:` line in
+     `adjudication/apply.txt` (an upgrade refusal, a rejected entry, a gate refusal) — a rejected
+     entry means that record was **not** re-judged.
+   - **Neither present** → count the `checkpoint.json` records that are `pass` with
+     `confidence: low` and state: "re-adjudication did not run for this run — <n> low-confidence
+     passes unreviewed; run `/qa-e2e-pilot:re-adjudicating-verdicts` before relying on them."
+   Verifier overrides are listed separately from the `verification.json` overrides in step 3; they
+   are different judges. This command never runs `adjudication.sh apply` itself.
 
-5. **Report:** counts — out-of-plan acts, overrides, confidence downgrades — plus the run-scoped
-   checks' state (passed / which of the four failed / did not complete / no record) and whether the
-   run was reported `UNVERIFIED`, and the next step (`/qa-status "<target>"`). Lead with out-of-plan
-   acts, a run-scoped gate failure and overrides when any exist. **Never sum the synthetic run-level
-   records into the override count.**
+4. **Write `verification.md`** from `${CLAUDE_PLUGIN_ROOT}/templates/qa-verify-template.md`: out-of-plan
+   list, plan-drift list, override list, confidence downgrades, the re-adjudication outcome (re-judged / verifier
+   overrides / unavailable banner / did not run), and the verified/overridden/not-verified state.
+
+5. **Report:** counts — out-of-plan acts, plan-drift findings, overrides, confidence downgrades, verifier overrides —
+   plus the run-scoped checks' state (passed / which of the four failed / did not complete / no
+   record), whether the run was reported `UNVERIFIED`, whether re-adjudication ran, and the next
+   step (`/qa-status "<target>"`). Lead with out-of-plan acts, plan drift, a run-scoped gate failure
+   and overrides when any exist. **Never sum the synthetic run-level records into the override count.**
 
 Guardrails: read-only w.r.t. artifacts (never edits `checkpoint.json`/`checklist.json`/
 `verification.json`/`report.md`). This is an agent-followed command — it has no exit code; it
 REPORTS. The deterministic gates for automation are read directly by CI, not from here:
-`verify-plan.sh`'s exit code for out-of-plan acts, `qa-verify.sh`'s own exit code for an overridden
+`verify-plan.sh`'s exit code for out-of-plan acts and `verify-plan.sh --drift`'s for plan drift, `qa-verify.sh`'s own exit code for an overridden
 pass or a failed `__run-checks__`, and `report-to-junit.sh`'s for a `fail`/`error` criterion or an
 `UNVERIFIED` run.

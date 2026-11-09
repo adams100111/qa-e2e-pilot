@@ -104,6 +104,20 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      governing line, applied when you author an oracle: **reject process language, never behaviour
      language.**
 
+5c. **UX rows (the UX detectors run only on them).** The engine's run invokes `detecting-visual-ux` only on a
+   row tagged `visual-ux` or `ux-revisit`, and `detecting-interaction-ux` only on a row tagged
+   `interaction-ux` or on a `#dialog:`/`#sheet:` surface; an always-on sweep finding becomes a `fail@FE`
+   only through such a row. When you author criteria by hand (not through `generate-ship-criteria.sh`):
+   - **every surface in scope gets a `visual-ux` criterion**, one per surface, the way
+     `{{SKILL_REF:analyzing-feature-ui}}` emits it (`surfaceId` set, tag `visual-ux`, plus `interaction-ux`
+     on a `#dialog:`/`#sheet:` surface);
+   - **every locale and viewport in the profile gets a `ux-revisit` row** for those surfaces: tags
+     `ux-revisit` + `visual-ux` + `read-only`, and a `variant` `{viewport, locale, colorScheme}` for each
+     non-primary combination (the generator's `ux:<surface>:<persona>@<viewport>-<locale>-<scheme>` rows
+     are the model). An Arabic page is only checked for English text by a row at locale `ar`.
+   `/qa-analyze` blocks a ship plan with a surface lacking a `visual-ux` row (`coverage.sh
+   --require-visual-ux`).
+
 6. **Alignment check (deterministic, reject on failure).** Every role referenced by any scenario/criterion
    MUST be one of `spec-roles.json`'s `roles[].id`. If a scenario introduces a role not in the snapshot,
    **reject** it — either drop the criterion or send the operator back to `/qa-spec` to add that role via
@@ -116,8 +130,64 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
    criteria the run may act on; after the run, `/qa-verify` runs `verify-plan.sh` and flags any act on a
    criterion NOT in this plan.
 
+7b. **Ship criteria from the census (only when the effective profile is `ship` or `smoke`).** Resolve the
+   effective config with the engine's `profile.sh resolve .qa/config.json --run-config
+   .qa/specs/<target>/run-config.json --stack-profile <stack-profile.json>` (an engine script: resolve it
+   against the engine's checkout or plugin root, ADR-0022; qa-kit cannot path-reference it). The stack
+   profile is `.qa/stack-profile.cache.json` when present, else the latest run's
+   `.qa/runs/<run-id>/stack-profile.json`, else invoke `{{SKILL_REF:detecting-stack-profile}}` to write one;
+   without it the app's locales are unknown and the Arabic/RTL revisits silently vanish. If the resolved
+   `locales` is empty, fill it from the adapter output's `locales` (`.qa/census/adapter.json`) in the
+   effective-config temp file; still empty means the app default, one pass. If `profile.sh` cannot be
+   resolved or fails, stop and report it — do not generate from a guessed config. Skip this step under
+   `full`.
+   - **Census.** If `.qa/census.json` is missing or older than the last role/permission change, invoke
+     `{{SKILL_REF:taking-surface-census}}` first (read-only crawl, then the engine's `census.sh build`).
+     `.qa/surface-access.json` must exist (the `/qa-constitution` confirmation round).
+   - **Personas.** Use `.qa/specs/<target>/personas-for-generation.json` (written by `/qa-spec`; if it is
+     missing, write it now with `surface-access.sh personas .qa/specs/<target>/spec-roles.json
+     .qa/config.json`). It holds the spec's roles with the constitution's `permissions`, so generated rows
+     use only this spec's roles.
+   - **Generate.** Write the effective config to a temp file, then:
+     ```
+     bash "{{PLUGIN_ROOT}}/scripts/generate-ship-criteria.sh" --census .qa/census.json \
+         --access .qa/surface-access.json --matrix .qa/authz-matrix.json \
+         --personas .qa/specs/<target>/personas-for-generation.json \
+         --config <effective-config.json> --journeys .qa/specs/<target>/journeys.json \
+         --checklist .qa/specs/<target>/checklist.json
+     ```
+     It prints append-ready rows with token-safe ids (`<prefix>-<slug>-<hash>`, which the engine's
+     checkpoint and evidence scripts accept) and the readable id in `title` (`load-clean:<surface>:<persona>`,
+     `deny:<surface>:<persona>`, `iso:…`, `input:…`, per-surface UX checks `ux:<surface>`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
+     carrying `role`, and `url` when the census sampled a concrete URL. UX revisits carry `ux-revisit` +
+     `visual-ux`, and rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`, so the run sends them to
+     the UX detectors. It also emits one `visual-ux` row per surface a spec role reached (`ux:<surface>`,
+     kind `happy-path`, at the primary variant), so a generated plan passes `--require-visual-ux` without
+     hand-authoring; step 5c is for plans written by hand. **Append them to `checklist.json`**
+     (merge into the existing top-level array, never a second file), then re-run the alignment check (step 6)
+     and `check-fixtures.sh` (step 7) on the merged plan. Never rename the generated ids. A `deny` row tagged
+     `needs-confirmation` rests on an unconfirmed access entry; list those for the operator, together with
+     the surface-access entries the generator reports as assumptions. Deny rows exist only from positive
+     evidence of who is not allowed; never author one by hand to pad coverage.
+   - **Journeys.** Now that step rows exist, run `journeys.sh validate .qa/specs/<target>/journeys.json
+     .qa/specs/<target>/checklist.json` (engine script); fix every error (priority, missing step id,
+     `journey.id`/`journey.step` on the step row) by editing the journeys or the plan before moving on.
+   - **Fill gaps.** Run `bash "{{PLUGIN_ROOT}}/scripts/coverage.sh" .qa/census.json
+     .qa/specs/<target>/checklist.json --mode advise --roles .qa/specs/<target>/spec-roles.json
+     [--scope "<regex from .qa/specs/<target>/coverage-scope.txt>"] --defer-channels` (add `--exclusions
+     .qa/specs/<target>/coverage-exclusions.json` if the operator has approved exclusions, each with a
+     reason; an exclusion `surfaceId` may use `*`/`?` globs). `--defer-channels` stays on until Increment 4
+     ships the mail/notification/job checks; its reason is "channel checks arrive in increment 4". For every
+     `uncovered`, `covered-unscoped` or `covered-sweep` row, draft a functional criterion for that surface x
+     role pair through the engine's checklist writer (`{{SKILL_REF:generating-qa-checklist}}`), with `role`
+     set to the pair's persona (any spec role for a `"*"` pair) and `surfaceId` set — a generated load /
+     deny / revisit row (tag `sweep`) proves the surface loads or refuses, not that it works, so it never
+     closes a pair under the ship gate. Re-run until `uncovered` is 0 or the operator explicitly excludes
+     the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
+     for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
+
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
-   check-fixtures result (pinned vs unpinned computed), any criterion migrated to
+   check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent (functional vs sweep), uncovered pairs left, any criterion migrated to
    `.qa/known-defects.json` (naming the `ticket`/`expiry` a human still owes — and stating that the
    migration script's exit **2** meant success), and the next step (`/qa-analyze <target>`).
 

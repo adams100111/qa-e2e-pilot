@@ -92,6 +92,43 @@ mkdir -p "$WORK/bare"; printf '%s' '{"criteria":[{"criterion_id":"Z1","verdict":
 check "minimal run renders" "$rc" "0"
 contains "unverified run is labelled" "$(cat "$WORK/bare/report.html")" "Not independently verified"
 
+# UX findings (advisory): the fixture run has no ux finding and no ux-sweep.json -> no section
+lacks "no UX section without a sweep (html)" "$HTML" "UX findings (advisory)"
+lacks "no UX section without a sweep (md)" "$MD" "UX findings (advisory)"
+# swept ux findings (deduplicated per surface+detector+selector) + ux-sweep.json outside the plan
+mkdir -p "$WORK/uxrun"
+cat > "$WORK/uxrun/checkpoint.json" <<'J'
+{"criteria":[{"criterion_id":"U1","verdict":"pass","confidence":"high"}],
+ "findings":[
+  {"findingKey":"k1","criterionId":"ux-sweep:GET /notifications#sheet:panel","source":"ux","channel":"ux-detector","method":"i18n-script-mismatch","url":"#notif-list > li:nth-child(1)","status":"","message":"Latin text on an ar page"},
+  {"findingKey":"k2","criterionId":"ux-sweep:GET /notifications#sheet:panel","source":"ux","channel":"ux-detector","method":"i18n-script-mismatch","url":"#notif-list > li:nth-child(1)","status":"","message":"duplicate"},
+  {"findingKey":"k3","criterionId":"U1","source":"network","channel":"driver-log","method":"GET","url":"https://app.test/x","status":"500","message":"boom"}]}
+J
+cat > "$WORK/uxrun/ux-sweep.json" <<'J'
+{"version":1,"outsidePlan":[
+ {"surfaceId":"GET /notifications#sheet:panel","detector":"contrast","selector":"#notif-list .time","message":"Contrast 2.1:1 below WCAG AA 4.5:1 (SC 1.4.3)","variant":{"viewport":"mobile","locale":"ar","colorScheme":"dark"}},
+ {"surfaceId":"GET /notifications#sheet:panel","detector":"contrast","selector":"#notif-list .time","message":"again"}]}
+J
+( cd "$WORK" && bash "$SH" uxrun --quiet ); rc=$?
+check "ux run renders" "$rc" "0"
+UXH="$(cat "$WORK/uxrun/report.html")"; UXM="$(cat "$WORK/uxrun/report.md")"
+contains "ux section heading (html)" "$UXH" '<h2 id="ux-findings">UX findings (advisory)</h2>'
+contains "ux section heading (md)" "$UXM" "## UX findings (advisory)"
+contains "swept finding deduplicated to one (html)" "$UXH" "Swept findings (1)"
+contains "swept finding row (md)" "$UXM" '| `GET /notifications#sheet:panel` | i18n-script-mismatch | `#notif-list > li:nth-child(1)` | Latin text on an ar page |'
+lacks "network finding is not a UX finding" "$UXM" "https://app.test/x"
+contains "outside-plan heading (html)" "$UXH" "UX defects outside the plan (1)"
+contains "outside-plan heading (md)" "$UXM" "### UX defects outside the plan"
+contains "outside-plan row with variant (md)" "$UXM" '| `GET /notifications#sheet:panel` | contrast | `#notif-list .time` | Contrast 2.1:1 below WCAG AA 4.5:1 (SC 1.4.3) | mobile · ar · dark |'
+contains "outside-plan rows are not counted" "$UXM" "Not counted in verdicts"
+contains "tally unchanged by ux findings" "$UXM" "| **Total** | **1** |"
+# ux-sweep.json alone (no swept findings) still renders the section
+mkdir -p "$WORK/uxonly"; printf '%s' '{"criteria":[]}' > "$WORK/uxonly/checkpoint.json"
+printf '%s' '[{"surfaceId":"page:Home","detector":"target-size","selector":"#menu","message":"16x16 below 24x24"}]' > "$WORK/uxonly/ux-sweep.json"
+( cd "$WORK" && bash "$SH" uxonly --quiet ); rc=$?
+check "ux-sweep.json only renders" "$rc" "0"
+contains "array-form ux-sweep.json listed" "$(cat "$WORK/uxonly/report.md")" '| `page:Home` | target-size | `#menu` | 16x16 below 24x24 |  |'
+
 # errors
 out="$(cd "$WORK" && bash "$SH" nope 2>&1)"; rc=$?
 check "missing run exits 1" "$rc" "1"; contains "missing run message" "$out" "no checkpoint.json"

@@ -1,0 +1,4 @@
+{"personaId":"viewer","visits":[
+ {"url":"/reports","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"https://app.example.sa/","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"/reports/2026/q1","kind":"page","status":200,"findings":[],"forms":[]}],"unexplored":[]}

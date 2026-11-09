@@ -1,6 +1,6 @@
 # Installing qa-e2e-pilot
 
-Three install methods. All three make the **agent** (`qa-e2e-pilot`), the three commands (**`/qa-run`**, **`/qa-roles`**, **`/qa-resume`**), and the seventeen **skills** discoverable by Claude Code. After any of them, restart Claude Code or run `/agents` to load them.
+Three install methods. All three make the **agent** (`qa-e2e-pilot`), the three commands (**`/qa-run`**, **`/qa-roles`**, **`/qa-resume`**), and the nineteen **skills** discoverable by Claude Code. After any of them, restart Claude Code or run `/agents` to load them.
 
 **Hooks note (Method A only):** the plugin also declares three hooks in `.claude-plugin/plugin.json`
 — a `SessionStart` prerequisite check (`check-prereqs.sh`), a `PostToolUse` capture hook

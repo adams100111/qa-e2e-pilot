@@ -1,0 +1,4 @@
+/	home.views.index	home
+/admin/	django.contrib.admin.sites.index	admin:index
+/blog/<slug>/	blog.views.post	post-detail
+/api/users/<pk>/	users.views.UserDetail	user-detail

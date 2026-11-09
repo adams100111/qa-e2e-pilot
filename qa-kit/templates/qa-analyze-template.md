@@ -1,8 +1,22 @@
 # QA analysis — {{TARGET}}
 
-> Authored by `/qa-analyze`. **Advisory only** — this review does not block the run and changes no
-> artifact. Remediation is applied by re-running the relevant earlier step (`/qa-scenarios` or
+> Authored by `/qa-analyze`. **Advisory only, except the Coverage gate** — under the `ship` profile an
+> uncovered surface x role pair makes the Verdict `BLOCKED`; every other section does not block the run.
+> This review changes no artifact. Remediation is applied by re-running the relevant earlier step (`/qa-scenarios` or
 > `/qa-spec`), at the operator's discretion.
+
+## Coverage
+
+<!-- From coverage.sh (mode from the effective config's gates.coverage; --roles spec-roles.json, --scope from
+     coverage-scope.txt, --defer-channels until Increment 4): "<functionalCovered> functional + <sweepCovered>
+     sweep-only / <total> pairs, <percent>%, excluded <n>, mode <block|advise>, scope <regex|whole app>". Then one
+     line per `uncovered` pair (surface x role, or x "*"), per `covered-unscoped` pair (covered only by a row
+     with no role) and per `covered-sweep` pair (covered only by generated load / deny / revisit rows) — both
+     count as uncovered under block — each with the remediation (add a criterion via /qa-scenarios, or record
+     an exclusion with a reason), plus any journeys.sh validate errors and who accepted --accept-crawl-only.
+     Under ship (--require-visual-ux): one line per `uxMissing` surface, "no visual-ux criterion", remediation
+     "add a visual-ux row via /qa-scenarios (step 5c)"; any such surface also makes the Verdict BLOCKED.
+     "(none)" if clean. Under ship, "(no census)" or an unavailable engine script makes the Verdict BLOCKED. -->
 
 ## Coverage gaps
 
@@ -44,4 +58,6 @@
 
 ## Verdict
 
-Advisory only — the run is **not** blocked; this does not extend to plan defects. {{GAP_SUMMARY}}
+**BLOCKED** when the Coverage gate blocks (ship profile: uncovered pairs > 0, an empty, uncrawled or missing census, or an engine script that cannot be resolved); otherwise **PASS (advisory)**. While BLOCKED the next step is `/qa-scenarios`, never `/qa-run`. Set from `coverage.sh`'s exit code, never from a manual count.
+
+Apart from the Coverage gate this review is advisory only — the run is **not** blocked by it; this does not extend to plan defects. {{GAP_SUMMARY}}

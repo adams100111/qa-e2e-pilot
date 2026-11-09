@@ -1,0 +1,10 @@
+[
+  {"id":"C-ADMIN-LIST","surface":"/admin/hackathons","kind":"load-clean","tags":["read-only"],"action":"عرض قائمة الهاكاثونات","surfaceId":"GET /admin/hackathons","persona":"admin"},
+  {"id":"C-HACK-PAGE","surface":"/h/{slug}","kind":"load-clean","tags":["read-only"],"action":"فتح صفحة هاكاثون الرياض للمياه","surfaceId":["GET /h/{slug}","page:Admin/Hackathons/Show"]},
+  {"id":"C-HACK-ANY","surface":"/h/{slug}","kind":"load-clean","tags":["read-only"],"action":"فتح صفحة الهاكاثون","surfaceId":"GET /h/{slug}","persona":"*"},
+  {"id":"C-HACK-VIEW","surface":"/h/{slug}","kind":"load-clean","tags":["read-only"],"action":"عرض صفحة الهاكاثون للمشارك","surfaceId":"GET /h/{slug}","personaId":"participant"},
+  {"id":"C-NEWS","surface":"/الأخبار","kind":"load-clean","tags":["read-only"],"action":"عرض صفحة الأخبار","surfaceId":"GET /الأخبار","role":"participant"},
+  {"id":"C-JOB","surface":"","kind":"business-rule","tags":[],"action":"Close registration after the deadline","surfaceId":"job:hackathons:close-registration"},
+  {"id":"C-MAIL","surface":"","kind":"business-rule","tags":[],"action":"Team invite mail is sent","surfaceId":"mail:App\\Mail\\TeamInvite","persona":"admin"},
+  {"id":"C-REPORTS","surface":"/admin/reports","kind":"happy-path","tags":["read-only"],"action":"عرض تقرير المشاركة في هاكاثون الرياض","surfaceId":"GET /admin/reports"}
+]

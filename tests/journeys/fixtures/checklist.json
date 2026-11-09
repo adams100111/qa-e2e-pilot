@@ -1,0 +1,46 @@
+[
+  {
+    "id": "J1-S1",
+    "surface": "/ideas/submit",
+    "kind": "happy-path",
+    "tags": [],
+    "action": "سجّل الفكرة",
+    "priority": "P1",
+    "journey": {
+      "id": "J-SUBMIT",
+      "step": 1
+    }
+  },
+  {
+    "id": "J1-S2",
+    "surface": "/ideas/submit",
+    "kind": "happy-path",
+    "tags": [],
+    "action": "سجّل الفكرة",
+    "priority": "P1",
+    "journey": {
+      "id": "J-SUBMIT",
+      "step": 2
+    }
+  },
+  {
+    "id": "J1-S3",
+    "surface": "/ideas/submit",
+    "kind": "happy-path",
+    "tags": [],
+    "action": "سجّل الفكرة",
+    "priority": "P1",
+    "journey": {
+      "id": "J-SUBMIT",
+      "step": 3
+    }
+  },
+  {
+    "id": "Z-1",
+    "surface": "/ideas/submit",
+    "kind": "happy-path",
+    "tags": [],
+    "action": "سجّل الفكرة",
+    "priority": "P1"
+  }
+]

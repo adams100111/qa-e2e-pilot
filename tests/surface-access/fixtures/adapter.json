@@ -1,0 +1,9 @@
+{"adapter":"laravel","ok":true,
+ "surfaces":[
+  {"surfaceId":"GET /admin/hackathons/{hackathon}/paths/{path}","kind":"endpoint","pattern":"/admin/hackathons/{hackathon}/paths/{path}","method":"GET","permissionHints":["can:hackathons.view"],"source":"adapter"},
+  {"surfaceId":"GET /admin/reports","kind":"endpoint","pattern":"/admin/reports","method":"GET","permissionHints":["can:reports.view"],"source":"adapter"},
+  {"surfaceId":"GET /organizer/dashboard","kind":"endpoint","pattern":"/organizer/dashboard","method":"GET","permissionHints":["role:organizer|admin"],"source":"adapter"},
+  {"surfaceId":"GET /h/{slug}","kind":"endpoint","pattern":"/h/{slug}","method":"GET","permissionHints":[],"source":"adapter"},
+  {"surfaceId":"POST /admin/hackathons","kind":"endpoint","pattern":"/admin/hackathons","method":"POST","permissionHints":["can:hackathons.create"],"source":"adapter"},
+  {"surfaceId":"page:Orphan","kind":"page","pattern":"Orphan","method":null,"permissionHints":[],"source":"adapter"}
+ ],"jobs":[],"mails":[],"notifications":[],"locales":["ar","en"],"warnings":[]}

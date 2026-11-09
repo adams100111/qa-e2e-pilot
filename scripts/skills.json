@@ -1,7 +1,7 @@
 {
   "name": "qa-e2e-pilot",
   "description": "Full-stack, backend-baking, memory-persistent browser QA skills.",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "agents": [
     {
       "name": "qa-e2e-pilot",
@@ -36,6 +36,11 @@
     {
       "name": "analyzing-feature-ui",
       "path": "skills/analyzing-feature-ui/SKILL.md",
+      "category": "plan"
+    },
+    {
+      "name": "taking-surface-census",
+      "path": "skills/taking-surface-census/SKILL.md",
       "category": "plan"
     },
     {
@@ -96,6 +101,11 @@
     {
       "name": "probing-apis-through-browser",
       "path": "skills/probing-apis-through-browser/SKILL.md",
+      "category": "verify"
+    },
+    {
+      "name": "re-adjudicating-verdicts",
+      "path": "skills/re-adjudicating-verdicts/SKILL.md",
       "category": "verify"
     },
     {

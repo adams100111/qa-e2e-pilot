@@ -45,14 +45,18 @@ agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-a
 commands/         qa-run.md    — /qa-run <target> [checklist|spec]
                   qa-roles.md  — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
                   qa-resume.md — /qa-resume [run-id] (resume an interrupted Run at its frozen cursor)
-skills/           17 skills (see below)
+skills/           19 skills (see below)
 scripts/          install.sh · skills.json · qa-verify.sh · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
-                  build-adapter.sh · validate-adapters.sh · run-engine-ci.sh · check-suite-coverage.sh
+                  build-adapter.sh · validate-adapters.sh · run-engine-ci.sh · check-suite-coverage.sh ·
+                  render-report.sh · bug-export.sh · census.sh · profile.sh · journeys.sh · data-policy.sh
                   (+ the hook scripts wired via .claude-plugin/plugin.json; multi-harness, see below)
 .qa/              config.json.example + per-run output
 qa-kit/           the optional step-gated process shell — 2nd plugin (own manifest, commands,
                   scripts, agent, README); depends on the engine, reuses its skills by qualified slug
-docs/adr/         0001–0024 architecture decisions (0022 = qa-kit, 0023 = TDQA data layer, 0024 = qa-kit multi-harness)
+docs/adr/         0001–0033 architecture decisions (0022 = qa-kit, 0023 = TDQA data layer, 0024 = qa-kit multi-harness,
+                  0030 = surface census + ship profile, 0031 = journeys in the checklist schema,
+                  0032 = trusted-verdict gates + ship verdict, 0033 = independent re-adjudication)
+adapters/census/  per-stack census adapters (laravel, nextjs, rails, django, express, generic) + README contract
 docs/             running-in-ci.md · extending-drivers.md · harness-adapters.md · superpowers/{specs,plans}/
 tools/            accuracy-harness/ — the recall/precision measurement harness backing the numbers
                   in "What a green run actually means" below (fixtures, scorer, measured findings)
@@ -66,10 +70,10 @@ harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sou
 | Phase | Skill | Does |
 |---|---|---|
 | 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config`, `discovering-user-roles`, `confirming-discovered-roles` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one.** Discover the project's roles and confirm each persona + its authz scope (3-round HITL → `personas[]` + `authz-matrix.json`); each run selects which personas/scenarios run |
-| 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep) |
+| 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui`, `taking-surface-census` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep). Under the `ship`/`smoke` profile, also build the coverage census `.qa/census.json` (stack adapter + read-only per-role crawl) |
 | 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle; state-mutating criteria are tagged `human-action` |
 | 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `detecting-interaction-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects (incl. overlay/modal interaction sequences that dead-end or destroy their parent) → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
-| 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
+| 4 Report | `re-adjudicating-verdicts`, `writing-qa-reports` | a fresh-context verifier re-judges low-confidence passes and UX-promoted fails (downgrade only) → `qa-verify.sh` → `bug-export.sh` writes tracker-neutral bugs → `report.md` + single-file `report.html` (opening with **Ship readiness** on ship runs) + per-criterion evidence; honest DEFERRED |
 | 5 Remember | `checkpointing-qa-memory` | typed, resumable run artifacts in `.qa/runs/<run-id>/`; the evidence gate rejects an unevidenced/contradicted `pass` |
 
 Every skill carries ≥3 mini-evals drawn from the real session bugs.
@@ -184,6 +188,69 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 
 Every run tracks its own cost as it goes: `cost-summary.sh` derives `{toolCalls, criteria, criteriaBudget, criteriaDone, budgetWarn, tokens}` from the run's own toolstream (never trusted from the agent's self-report), folded into `run-manifest.json`'s `cost` field. **"Tool-calls"** is the portable proxy metric across harnesses (wall-clock/token counts aren't uniformly available); `tokens` is filled in only when the harness exposes usage. You'll see it in three places: the `report.md`/`report.html` cost block (per-run tool-call + budget summary), the agent's own status update once `criteriaDone` crosses **80% of `criteriaBudget`** (a soft, advisory warning — never a hard stop, see `criteriaBudget` below), and JUnit exports via a `qa.cost` `<property>` on the `<testsuite>` element (e.g. `tool-calls=210 criteria=48 criteriaBudget=48/60 budgetWarn=true`) — see [running-in-ci.md](./docs/running-in-ci.md).
 
+### Ship profile and coverage census
+
+A run can carry a **profile** (`profile` in `.qa/config.json` or a qa-kit spec's `run-config.json`):
+`full` (the default, today's behaviour), `ship` or `smoke`. At pre-flight `scripts/profile.sh resolve`
+writes the run's `effective-config.json`; every later phase reads that file. `ship` turns on, for
+keys you did not set yourself: desktop 1440×900 + mobile 390×844, light + dark (via the driver's
+emulate-media capability), every locale the app ships (none detected = `[]`, one pass in the app's
+default locale), all UX detectors + axe + the critic, a blocking coverage gate, and 3 parallel
+read-only lanes (capped by `isolation.maxOpenContexts`). `smoke` is desktop, light, first locale, and
+an advisory coverage gate. Any key you set wins, including an explicit `[]`.
+
+The **coverage census** (`.qa/census.json`, skill `taking-surface-census`) lists every route, page,
+job, mail and notification the app declares (a stack adapter under `adapters/census/`, picked by the
+stack profile's `framework` id or `generic`, written to `.qa/census/adapter.json`, run through
+`exec.prefix` when the toolchain lives in a container) and what each role actually reaches (a
+read-only crawl that only follows links, tabs and menu/dialog openers classified safe, on any
+environment; a Next/Previous button is never clicked). Each surface records a concrete
+`sampleUrls` entry per role, and tabs, dialogs and sheets the crawl opened become their own
+surfaces (`<page>#tab:<name>`). qa-kit turns the census into generated criteria — a load-clean sweep, a deny matrix,
+ownership isolation, form input edge cases, UX revisits per viewport × locale × color scheme — and
+`/qa-analyze` blocks a ship run while any role × surface pair is neither covered nor excluded with a
+reason. The gate is qa-kit's: an engine-only ship run reports the census diffs but has no coverage
+gate. **Journeys** (`journeys.json`) chain criteria end to end; under `ship` the P1 journeys run
+sequentially at the primary variant and exactly one is repeated at mobile in the first RTL locale
+(`journeys.sh expand-variant --viewport-id mobile`, ids suffixed `@mobile-ar`). Generated data is
+checked with `scripts/data-policy.sh` from an `@file` of the record's own fields only, never
+credentials.
+See [ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md) and
+[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md).
+
+### Trusted verdicts
+
+A `pass` has to rest on more than what the screen said. `checkpoint.sh` refuses it at record time
+when:
+
+- **ORACLE GATE** — a `computed-logic`/`business-rule` row under `ship`, or any row carrying
+  `fixture.expect.oracleSource`, claims `confidence: high` with an oracle that is not `human` (confirmed
+  on qa-kit's oracle confirmation page) or `spec` (quoted from the spec with a `file:line` citation).
+  A low-confidence pass is always allowed.
+- **STATE GATE** — a mutating row passes without `bake` or `probe` evidence. This applies in every
+  profile, which is a change from 0.11.0: a rejected write needs a read-back showing nothing was
+  persisted, not just the error message on screen.
+- **DATA POLICY GATE** — under `gates.dataPolicy: enforce` (the ship default), the values typed into
+  the record break the project's `dataPolicy` (forbidden markers such as "test", the email domain, the
+  date window).
+
+`qa-verify.sh` re-checks the same three conditions and overrides any pass that slipped through, and
+fails the run when a ship or enforce config has no `effective-config.json`. After the run, the
+`re-adjudicating-verdicts` skill hands every low-confidence pass and every UX-promoted fail to a
+fresh-context verifier that sees only the persisted evidence (never the journal or the agent's
+notes); a disagreement turns a pass into `blocked` with `verifier-disagrees: <reason>`, and nothing is
+ever upgraded. It needs fresh-subagent dispatch (Claude Code today); other harnesses print a banner
+saying the passes were not re-judged. The report then opens with **Ship readiness** — `SHIP-READY`
+only with no uncovered census pair, every P1 journey passing, no coding-layer fail on a P1 criterion,
+no verifier override or re-adjudication dispute on one and no P1 low-confidence pass left unreviewed, else
+`NOT SHIP-READY` with each reason; a **Re-adjudication** line says what the second judge did, and a **Needs re-check**
+row counts evidence gaps (informational). The end-of-run order is `qa-verify` → re-adjudication → `qa-verify` →
+bug export → report (so the **Needs re-check** row counts this run's export), and `/qa-resume` follows it too. `scripts/bug-export.sh` writes `bugs.json` plus one
+plain-language markdown file per new bug for real contradictions only (evidence gaps go to `needs-recheck.json`),
+deduplicated against `.qa/known-defects.json`; qa-kit's `/qa-verify` also fails on trust-field drift between the run
+and frozen checklists (`verify-plan.sh --drift`). `gates.oracle` is informational. See [ADR-0032](./docs/adr/0032-trusted-verdict-gates.md) and
+[ADR-0033](./docs/adr/0033-independent-re-adjudication.md).
+
 ### Configuration (`.qa/config.json`)
 
 - `baseUrl`, optional `apiOrigin` (set only for a cross-origin backend), `auth.storageState`.
@@ -192,6 +259,7 @@ Every run tracks its own cost as it goes: `cost-summary.sh` derives `{toolCalls,
 - `maxParallel` — cap on the narrow parallel path (most verification is **sequential by default** — see [ADR-0003](./docs/adr/0003-sequential-verification-narrow-pool.md)).
 - `allowApiWrites` (default **off**) + `seedableEnvMarker` — gate any direct API write/seed behind both.
 - `environment` (`auto`|`disposable`|`production`) + `allowBlackboxCrawl` — production targets force writes off, keep fingerprinting to a tiny serialized allowlist, and require opt-in before any black-box crawl. `fingerprintPaths` / `noProbePaths` / `crawlDenyPatterns` / `maxRequestsPerSecond` tune the prod-safety behavior.
+- Ship-QA keys ([ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md)): `profile`, `exec.prefix` (e.g. `ddev exec`, `docker compose exec -T app`), `census.maxVisits` (crawl budget per role, default 300), `ship.denyStatuses` (default `[401, 403, 404, 302]`), `colorSchemes`, `locales`, and `dataPolicy` (forbidden markers, email domain, date window, cleanup mode — checked by `scripts/data-policy.sh`). `responsiveMatrix`, `colorSchemes` and `locales` are left out of the example on purpose: a set value pins it for every profile, and `"responsiveMatrix": []` opts a ship run out of its mobile pass.
 - `criteriaBudget` (default **60**) — soft cap on criteria generated/run in one pass; a cost lever, not a coverage cut. Exceeding it during generation stops the checklist for a prioritized confirm/trim prompt rather than silently emitting everything; during a run it triggers an advisory warning at 80% consumption (see "Cost telemetry" above).
 
 ---
@@ -274,7 +342,7 @@ policy + version      snapshot (stamped +    checklist.json (the         gate (r
                       drift advisory)        enforcement contract)                                ingests the checklist)
 ```
 
-It's a **second, separately-installable plugin** that declares `dependencies: ["qa-e2e-pilot"]`, reuses
+It's a **second, separately-installable plugin** that declares a dependency on `qa-e2e-pilot` (pinned `~0.12.0` since qa-kit 0.3.0), reuses
 the engine's skills by qualified slug, and bundles only its own new scripts — **the engine stays
 byte-for-byte unchanged** (installable standalone as before). One enforcement seam ships:
 `qa-kit/scripts/verify-plan.sh` flags an act on a criterion that isn't in the frozen plan, running

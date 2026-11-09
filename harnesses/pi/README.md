@@ -1,8 +1,10 @@
 # qa-e2e-pilot on Pi
 
-Runs the same 17 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
+Runs the same 19 skills, 6-phase orchestrator, and human-interaction gate as the Claude Code
 plugin, adapted for Pi's agent markdown + `pi-mcp-adapter` proxy tool. v1 is **sequential-only**
-(ADR-0003/Task 10) — nothing here requires or assumes subagent dispatch.
+(ADR-0003/Task 10) — nothing here requires or assumes subagent dispatch. The one exception is `re-adjudicating-verdicts` (ADR-0033): it needs fresh-subagent dispatch
+(`subagentDispatch: false` here), so it prints `re-adjudication unavailable on <harness>; <n>
+low-confidence passes unreviewed` and the recorded verdicts stand.
 
 ## Prerequisites
 

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake exec wrapper (stands in for `ddev exec` etc.): records its argv, then runs the rest after `--`.
+printf '%s\n' "$*" >> "$FAKE_EXEC_LOG"
+[ "${1:-}" = "--" ] && shift
+exec "$@"

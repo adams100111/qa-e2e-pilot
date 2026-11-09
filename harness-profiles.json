@@ -4,7 +4,7 @@
     "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option",
     "browser_hover", "browser_drag", "browser_drop", "browser_evaluate", "browser_file_upload", "browser_handle_dialog",
     "browser_wait_for", "browser_console_messages", "browser_network_requests", "browser_network_request",
-    "browser_resize", "browser_take_screenshot", "browser_tabs", "browser_close"
+    "browser_resize", "browser_emulate_media", "browser_take_screenshot", "browser_tabs", "browser_close"
   ],
   "harnesses": {
     "claude": {
@@ -15,6 +15,7 @@
       "tierDefault": "Sonnet",
       "tierHeavy": "Opus",
       "dispatch": "via the Agent/Task tool, `subagent_type: qa-e2e-pilot`",
+      "subagentDispatch": true,
       "globalRolesDir": "~/.claude/qa-e2e-pilot/roles",
       "engineSkillsDir": "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude}/skills",
       "commandAgentLine": "",
@@ -29,6 +30,7 @@
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
       "dispatch": "as the qa-e2e-pilot agent profile (.codex/agents/qa-e2e-pilot.toml) — you are that persona when this prompt runs; proceed directly",
+      "subagentDispatch": false,
       "globalRolesDir": "~/.codex/qa-e2e-pilot/roles",
       "engineSkillsDir": ".agents/skills",
       "commandAgentLine": "",
@@ -43,6 +45,7 @@
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
       "dispatch": "as the qa-e2e-pilot persona (.pi/agents/) — you are that persona when this prompt-template runs; proceed directly",
+      "subagentDispatch": false,
       "globalRolesDir": "~/.pi/qa-e2e-pilot/roles",
       "engineSkillsDir": ".pi/agents/skills",
       "commandAgentLine": "",
@@ -57,6 +60,7 @@
       "tierDefault": "the default",
       "tierHeavy": "the most-capable",
       "dispatch": "under the `qa-e2e-pilot` agent (bound by this command's `agent:` frontmatter)",
+      "subagentDispatch": false,
       "globalRolesDir": "~/.config/opencode/qa-e2e-pilot/roles",
       "engineSkillsDir": ".opencode/skills",
       "commandAgentLine": "agent: qa-e2e-pilot\n",

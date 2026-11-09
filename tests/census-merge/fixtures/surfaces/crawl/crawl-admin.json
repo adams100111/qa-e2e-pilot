@@ -1,0 +1,8 @@
+{"personaId":"admin","visits":[
+ {"url":"https://app.example.sa/admin/hackathons/12?lang=ar#top","routeMatch":"page:Admin/Hackathons/Show","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"https://app.example.sa/admin/hackathons/12?lang=ar","routeMatch":"page:Admin/Hackathons/Show","kind":"tab","subKey":"Team  Members","status":200,"findings":[],"forms":[]},
+ {"url":"https://app.example.sa/admin/hackathons/12?lang=ar","routeMatch":"page:Admin/Hackathons/Show","kind":"dialog","subKey":"تعديل الهاكاثون","status":200,"findings":[],"forms":[
+   {"formId":"hackathon-edit","action":"/admin/hackathons/12","method":"POST","fields":[{"name":"title_ar","type":"text","required":true,"maxLength":120,"min":null,"max":null,"pattern":null}]}]},
+ {"url":"https://app.example.sa/admin/hackathons/12","routeMatch":"page:Admin/Hackathons/Show","kind":"tab","status":200,"findings":[],"forms":[]},
+ {"url":"/legacy/board","kind":"page","status":200,"findings":[],"forms":[]},
+ {"url":"/legacy/board","kind":"sheet","subKey":"Filters","status":200,"findings":[],"forms":[]}],"unexplored":[]}

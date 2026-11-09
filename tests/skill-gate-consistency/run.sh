@@ -217,5 +217,48 @@ else
   bad "required-kinds.sh not found at $REQUIRED_KINDS"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. Every command that receives a finished run back from the agent (/qa-run,
+#    /qa-resume) re-adjudicates it when the agent could not (ADR-0033: the
+#    dispatched agent cannot start a fresh verifier), then re-runs qa-verify,
+#    the renderer and the bug export. Checked in core/ and the generated
+#    repo-root copies.
+# ---------------------------------------------------------------------------
+for cmd in qa-run qa-resume; do
+  for f in "$ROOT/core/commands/$cmd.md" "$ROOT/commands/$cmd.md"; do
+    rel="${f#"$ROOT"/}"
+    missing=""
+    for needle in "re-adjudicating-verdicts" "adjudication/" "scripts/qa-verify.sh" "scripts/render-report.sh" "scripts/bug-export.sh"; do
+      grep -qF "$needle" "$f" || missing="$missing $needle"
+    done
+    if [[ -z "$missing" ]]; then ok "$rel re-adjudicates a returned run and re-renders"
+    else bad "$rel lacks the re-adjudication step (missing:$missing)"; fi
+  done
+done
+
+# ---------------------------------------------------------------------------
+# 9. End-of-run order: the bug export runs BEFORE the renderer, so the ship
+#    summary's "Needs re-check" row reflects this run's export. On the line
+#    that states the order, the order reads "bug export → render report" and
+#    scripts/bug-export.sh is named before scripts/render-report.sh.
+# ---------------------------------------------------------------------------
+for f in "$ROOT/core/persona-body.md" "$ROOT/agents/qa-e2e-pilot.md" \
+         "$ROOT/core/commands/qa-run.md" "$ROOT/commands/qa-run.md" \
+         "$ROOT/core/commands/qa-resume.md" "$ROOT/commands/qa-resume.md"; do
+  rel="${f#"$ROOT"/}"
+  verdict="$(python3 - "$f" <<'PY'
+import sys
+lines = [l for l in open(sys.argv[1], encoding="utf-8") if "end-of-run order" in l]
+if not lines: print("no order line"); sys.exit()
+l = lines[0]
+if "again → bug export → render report" not in l: print("order not 'bug export → render report'"); sys.exit()
+b, r = l.find("scripts/bug-export.sh"), l.find("scripts/render-report.sh")
+print("ok" if 0 <= b < r else "bug-export.sh not named before render-report.sh")
+PY
+)"
+  if [[ "$verdict" == "ok" ]]; then ok "$rel exports bugs before rendering"
+  else bad "$rel end-of-run order: $verdict"; fi
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

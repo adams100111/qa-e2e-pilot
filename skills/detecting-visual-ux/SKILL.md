@@ -33,10 +33,17 @@ this skill keeps that split load-bearing:
 
 - `analyzing-feature-ui` emits one visual-UX criterion per surface in the checklist. When
   `driving-browser-qa`'s per-step loop reaches that criterion, invoke this skill.
-- Any time a criterion's step type is `visual-ux` or the checklist row cites contrast/overflow/
-  target-size/accessible-name/aesthetics.
+- Every row tagged `visual-ux` or `ux-revisit`, or citing contrast/overflow/target-size/accessible-
+  name/aesthetics, at its `variant` (Step 0). Only such a row turns a UX sweep finding into `fail@FE`;
+  sweep defects on surfaces with no such row go through `scripts/ux-sweep.sh add` (driving-browser-qa).
 
 ## The Process
+
+**Step 0 — Apply the row's `variant` first** (ship profile, ADR-0030): resize to `variant.viewport`
+(`browser_resize`), set `variant.colorScheme` with the emulate-media capability
+(`browser_emulate_media`, `colorScheme: "dark"|"light"`), and switch to `variant.locale` through the
+app's own locale switch (never a URL hack the app does not offer). Record the variant on every
+finding; a driver without emulate-media makes a dark row `blocked`. Detail: `references/variants.md`.
 
 ### Step 1 — Run the objective detectors (read-only, no side effects)
 
@@ -383,6 +390,7 @@ other finding. Before trusting a `contrast` or `target-size` finding:
 | `scripts/adjudicate.js` | Pure, DOM-free classifier (Step 5): `adjudicate(suspicion, oracleInputs)` -> a verdict object, `{advisory:true}`, or `null`; `deriveCatalogResult(record)` turns a localized i18n record into the catalog-result enum. See `references/adjudication.md` |
 | `scripts/ux-conventions.sh` | `read`/`add` helper for `.qa/ux-conventions.json`'s `knownDeliberate` list — feeds `adjudicate()`'s known-deliberate short-circuit (Step 5.4) |
 | `scripts/vision-binding.sh` | `resolve [<harness>]` prints the per-harness screenshot read binding (`Read`/`localImage`/`adapter`/`absent`); `banner` prints the fixed honest-degrade line — Step 4.2 |
+| `scripts/ux-sweep.sh` | `add <run-dir> <finding-json\|@file>` / `list <run-dir>` — the run's `ux-sweep.json` (objective UX defects on surfaces with no `visual-ux` row), deduplicated on surface + detector + selector, rewritten atomically under a lock; dual-engine |
 | `scripts/critic-coverage.sh` | `log <run-id> <surface> ran\|skipped <reason>` (all four args required) / `read <run-id>` — the sampled-vs-skipped record for the cost-ceiling gate (Step 4.1), so a capped run is never silently "critic ran everywhere" |
 
 ## Mini-Evals

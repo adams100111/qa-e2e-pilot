@@ -40,6 +40,52 @@ run_engine() {
   check "$E missing[] puts null id first" \
     "$(QA_ENGINE=$E bash "$SH" "$T/noid.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing"][0]["id"])')" "None"
 }
+spec_engine() {
+  local E="$1" T; T="$(mktemp -d)"; TMPDIRS+=("$T")
+  printf 'l1\nl2\nl3\n' > "$T/spec.md"
+  mk() { printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec"%s}}}]' "$1" > "$T/c.json"; }
+  mk ',"citation":"spec.md:3"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null; check "$E spec_with_valid_citation_ok" "$?" "0"
+  check "$E sources_counts_spec" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["spec"])')" "1"
+  mk ''
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_missing_citation_missing" "$?" "1"
+  check "$E spec_missing_citation_reason" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing"][0]["reason"])')" \
+    "computed criterion has oracleSource spec but no citation (<file>:<line>)"
+  mk ',"citation":"spec.md:4"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_bad_line_missing" "$?" "1"
+  check "$E bad_citation_named_in_reason" "$(QA_ENGINE=$E bash "$SH" "$T/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing"][0]["reason"])')" \
+    "computed criterion cites spec.md:4, which does not resolve to an existing line of a file inside the repo"
+  mk ',"citation":"nofile.md:1"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_missing_file" "$?" "1"
+  mk ',"citation":"spec.md"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_citation_no_line" "$?" "1"
+  mk ',"citation":""'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_empty_citation_rejected" "$?" "1"
+  mk ',"citation":":3"'
+  QA_ENGINE=$E bash "$SH" "$T/c.json" >/dev/null 2>&1; check "$E spec_colon_only_citation_rejected" "$?" "1"
+  # containment: traversal, absolute path, symlink out
+  mkdir -p "$T/dir"; cp "$T/c.json" "$T/dir/c.json"; printf 'x\ny\n' > "$T/outside.txt"
+  ln -s "$T/outside.txt" "$T/dir/link.md"; ln -s /etc/passwd "$T/dir/pw.md"
+  printf 'a\nb\n' > "$T/dir/in.md"
+  mkd() { printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"%s"}}}]' "$1" > "$T/dir/c.json"; }
+  mkd "in.md:2"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_contained_ok" "$?" "0"
+  mkd "../outside.txt:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_traversal_rejected" "$?" "1"
+  mkd "../../../../../../etc/passwd:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_deep_traversal_rejected" "$?" "1"
+  mkd "/etc/passwd:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_absolute_rejected" "$?" "1"
+  mkd "link.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_out_rejected" "$?" "1"
+  mkd "pw.md:1"; QA_ENGINE=$E bash "$SH" "$T/dir/c.json" >/dev/null 2>&1; check "$E spec_symlink_etc_rejected" "$?" "1"
+  # sources.spec counts only valid citations
+  # non_git_root_is_checklist_dir: outside a git repo the containment root is the checklist's
+  # directory only — a file reachable from cwd (but not the checklist dir) is not a valid citation.
+  mkdir -p "$T/ng/qa"; printf 'l1\n' > "$T/ng/cwd-only.md"; printf 'l1\n' > "$T/ng/qa/local.md"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"cwd-only.md:1"}}}]' > "$T/ng/qa/c.json"
+  (cd "$T/ng" && QA_ENGINE=$E bash "$SH" qa/c.json >/dev/null 2>&1); check "$E non_git_root_is_checklist_dir cwd file rejected" "$?" "1"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"local.md:1"}}}]' > "$T/ng/qa/c.json"
+  (cd "$T/ng" && QA_ENGINE=$E bash "$SH" qa/c.json >/dev/null 2>&1); check "$E non_git_root_is_checklist_dir local file ok" "$?" "0"
+  mkd "../outside.txt:1"; check "$E sources_spec_counts_valid_only" "$(QA_ENGINE=$E bash "$SH" "$T/dir/c.json" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["sources"]["spec"])')" "0"
+}
+command -v jq >/dev/null 2>&1 && spec_engine jq
+command -v python3 >/dev/null 2>&1 && spec_engine python3
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
 if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
@@ -51,5 +97,11 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   printf '[%s,%s]' "$NOID_B" "$NOID_A" > "$X/noid.json"
   vj="$(QA_ENGINE=jq bash "$SH" "$X/noid.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/noid.json" 2>/dev/null; true)"
   check "cross-engine null-id ordering byte-identical" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  printf '[{"id":"S1","surface":"/x","kind":"computed-logic","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":""}}}]' > "$X/e.json"
+  vj="$(QA_ENGINE=jq bash "$SH" "$X/e.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/e.json" 2>/dev/null; true)"
+  check "cross-engine empty citation parity" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
+  printf '[{"id":"S2","surface":"/x","kind":"business-rule","tags":[],"action":"a","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"spec","citation":"مواصفات.md:9"}}}]' > "$X/u.json"
+  vj="$(QA_ENGINE=jq bash "$SH" "$X/u.json" 2>/dev/null; true)"; vp="$(QA_ENGINE=python3 bash "$SH" "$X/u.json" 2>/dev/null; true)"
+  check "cross-engine non-ASCII bad citation parity" "$([ "$vj" = "$vp" ] && echo same || echo diff)" "same"
 fi
 echo "check-fixtures: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

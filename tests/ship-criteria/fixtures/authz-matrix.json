@@ -1,0 +1,2 @@
+[{"entity":"idea","owningChain":["user_id"],"roleScope":{"participant":"owns","judge":"read-scoped","admin":"none"}},
+ {"entity":"team","owningChain":["hackathon_id"],"roleScope":{"participant":"owns"}}]

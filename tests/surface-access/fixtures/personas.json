@@ -1,0 +1,6 @@
+{"personas":[
+ {"id":"participant","role":"participant","plane":"contextual","auth":"seeded"},
+ {"id":"admin","role":"admin","plane":"global","auth":"seeded","permissions":["hackathons.view","hackathons.create"]},
+ {"id":"organizer","role":"organizer","plane":"global","auth":"seeded"},
+ {"id":"api","role":"api","plane":"global","auth":"token"}
+]}

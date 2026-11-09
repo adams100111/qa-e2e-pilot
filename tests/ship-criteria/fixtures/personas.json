@@ -1,0 +1,3 @@
+[{"id":"admin","role":"admin","plane":"global","auth":"seeded"},
+ {"id":"participant","role":"participant","plane":"contextual","auth":"seeded"},
+ {"id":"judge","role":"judge","plane":"contextual","auth":"seeded"}]

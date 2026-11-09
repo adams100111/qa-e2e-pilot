@@ -563,10 +563,13 @@ function DETECT() {
 // ===== Dual entry point =====
 // Browser (injected via browser_evaluate): run the DOM walk — the ternary's VALUE is the
 // findings array, exactly like the previous IIFE form, so the evaluate() contract is preserved.
+// It also registers DETECT as window.__qaUxDetect, so every later observe-round on the same
+// document (observe.js, runUx:true) carries this page's findings in its ux[] — the always-on
+// UX sweep's input. A navigation drops the global; re-inject this file on the new document.
 // Node (unit tests / tooling): export the pure cores; DETECT() is never called, so `document`
 // is never referenced on require.
 typeof document !== 'undefined'
-  ? DETECT()
+  ? ((typeof window !== 'undefined' && (window.__qaUxDetect = DETECT)), DETECT())
   : (typeof module !== 'undefined' && module.exports &&
      (module.exports = {
        relLuminance: relLuminance,

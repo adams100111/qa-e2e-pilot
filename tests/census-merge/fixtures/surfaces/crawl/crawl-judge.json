@@ -1,0 +1,5 @@
+{"personaId":"judge","visits":[
+ {"url":"/admin/hackathons/12","routeMatch":"page:Admin/Hackathons/Show","kind":"page","status":403,"findings":[],"forms":[
+   {"formId":"login","action":"/login","method":"POST","fields":[{"name":"email","type":"email","required":true,"maxLength":null,"min":null,"max":null,"pattern":null}]}]},
+ {"url":"/admin/hackathons/12","routeMatch":"page:Admin/Hackathons/Show","kind":"tab","subKey":"team-members","status":403,"findings":[],"forms":[]},
+ {"url":"/admin/hackathons/14","routeMatch":"page:Admin/Hackathons/Show","kind":"page","status":200,"findings":[],"forms":[]}],"unexplored":[]}

@@ -257,6 +257,8 @@ function buildModel(runDir) {
       overridden: checked && verdict !== inRun, reasons,
       title: asText(row.title || row.label || row.surface || ""), oracle: asText(row.oracle || ""),
       tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+      flaky: typeof c.flaky === "boolean" ? c.flaky : (Array.isArray(row.tags) && row.tags.includes("flaky") ? true : null),
+      stale: !!(v && v.inRunVerdict !== inRun),
       lastAction: asText(c.last_action || ""), kinds: Array.isArray(c.kinds) ? c.kinds.map(String) : [],
       bugRef: c.bug_ref ? String(c.bug_ref) : "", nonUi: asText(c.nonUiActionReason || ""),
       shots: ev.shots, files: ev.files, anchor: "c-" + slug(c.criterion_id + (c.persona ? "-" + c.persona : "")),
@@ -280,7 +282,280 @@ function buildModel(runDir) {
     evidencedTotal: evidenced.length, evidencedWithShot: evidenced.filter((c) => c.shots.some((s) => !s.legacy)).length,
     shotCount, bugs, traceability, superseded, outOfPlan,
     distinct: new Set(criteria.map((c) => c.id)).size,
+    ship: buildShip(runDir, criteria, rows, bugs, allRows, verification !== null),
+    ux: buildUx(runDir, checkpoint),
   };
+}
+
+// ---------------------------------------------------------------------------
+// UX findings (advisory). The always-on UX sweep journals every ux[]/axe entry
+// of an observe round as finding_observed {criterionId: "ux-sweep:<surfaceId>",
+// source: "ux", method: <detector>, url: <selector>}; the fold keeps one per
+// surface + detector + selector. ux-sweep.json lists the objective defects the
+// sweep saw on a surface with no visual-ux criterion in the frozen plan. Both
+// are advisory: listed, never tallied, never a verdict. Null when the run has
+// neither (so a run without a sweep renders exactly as before).
+// ---------------------------------------------------------------------------
+const UX_PREFIX = "ux-sweep:";
+function uxKey(f) { return f.surface + "\u0000" + f.detector + "\u0000" + f.selector; }
+function dedupUx(list) {
+  const seen = new Set();
+  return list.filter((f) => { const k = uxKey(f); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+function buildUx(runDir, checkpoint) {
+  const swept = dedupUx((Array.isArray(checkpoint.findings) ? checkpoint.findings : [])
+    .filter((f) => f && typeof f === "object" && f.source === "ux")
+    .map((f) => {
+      const cid = asText(f.criterionId);
+      return { surface: cid.startsWith(UX_PREFIX) ? cid.slice(UX_PREFIX.length) : cid, detector: asText(f.method),
+        selector: asText(f.url), message: asText(f.message), channel: asText(f.channel) };
+    }));
+  const raw = readJSON(path.join(runDir, "ux-sweep.json"), null);
+  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.outsidePlan) ? raw.outsidePlan : []);
+  const outsidePlan = dedupUx(list.filter((e) => e && typeof e === "object").map((e) => ({
+    surface: asText(e.surfaceId || e.surface), detector: asText(e.detector), selector: asText(e.selector),
+    message: asText(e.message), variant: e.variant && typeof e.variant === "object"
+      ? ["viewport", "locale", "colorScheme"].map((k) => e.variant[k]).filter((v) => typeof v === "string" && v).join(" · ") : asText(e.variant),
+  })));
+  if (!swept.length && !outsidePlan.length) return null;
+  return { swept, outsidePlan };
+}
+
+
+// ---------------------------------------------------------------------------
+// Ship readiness (D6): SHIP-READY iff census uncovered = 0, every P1 journey
+// passes, no coding-layer (route|service|migration|DB) fail on a P1 criterion,
+// no verifier override or re-adjudication dispute on a P1 criterion, and no P1
+// low-confidence pass left unreviewed by re-adjudication (ADR-0033). Null (no
+// section) for a run with neither coverage.json nor journeys.json whose
+// profile is not "ship".
+// ---------------------------------------------------------------------------
+const CODING_LAYERS = ["route", "service", "migration", "db"];
+const DISPUTED_PREFIX = "verifier-disagrees:";
+const isDisputed = (lastAction) => String(lastAction || "").startsWith(DISPUTED_PREFIX);
+
+// Same rule as scripts/journeys.sh status (after ADR-0029 supersession), over
+// the raw checkpoint rows: a persona-less row is dropped when a persona-scoped
+// row for the criterion is strictly later; any fail|error -> fail, all pass ->
+// pass, otherwise incomplete. Journey: any failed step -> fail; else all pass.
+// `adjust(row)` maps a raw row to the verdict the report shows for it (the
+// verifier's where verification.json re-checked it, M7); a step whose record
+// the re-adjudicator disputed is marked `disputed`.
+function journeyStatus(journeys, checkpointRows, adjust) {
+  const rows = checkpointRows.filter((c) => c && typeof c === "object");
+  const verdictOf = adjust || ((r) => r.verdict);
+  const step = (id) => {
+    const mine = rows.filter((r) => r.criterion_id === id);
+    const pr = mine.filter((r) => (r.persona || "") !== "");
+    const eff = mine.filter((r) => (r.persona || "") === ""
+      && !pr.some((p) => String(p.checkpointed_at || "") > String(r.checkpointed_at || ""))).concat(pr);
+    const disputed = eff.some((r) => isDisputed(r.last_action));
+    const vs = eff.map(verdictOf);
+    if (!vs.length) return { verdict: "incomplete", disputed };
+    if (vs.some((v) => v === "fail" || v === "error")) return { verdict: "fail", disputed };
+    if (vs.every((v) => v === "pass")) return { verdict: "pass", disputed };
+    return { verdict: "incomplete", disputed };
+  };
+  return journeys.filter((j) => j && typeof j === "object").map((j) => {
+    const steps = (Array.isArray(j.steps) ? j.steps : []).map((id) => Object.assign({ criterionId: id }, step(id)));
+    const verdict = steps.some((s) => s.verdict === "fail") ? "fail"
+      : (steps.length > 0 && steps.every((s) => s.verdict === "pass") ? "pass" : "incomplete");
+    return { id: j.id, priority: j.priority, steps, verdict };
+  });
+}
+
+// readAdjudication(runDir) -> what re-adjudication left in adjudication/ (ADR-0033):
+// {state: "ran"|"unavailable"|"not-run", decisions, banner, refused:[label],
+//  reviewed:Set(label)}. A decision counts as reviewed only when apply.txt
+// shows it applied ("applied: <label> …") or a no-op ("noop: <label> …"); an
+// entry apply rejected ("ADJUDICATION: rejected entry …"), one checkpoint.sh
+// refused, or a batch refused as an upgrade leaves it unreviewed. <label> is
+// <criterionId>[@<persona>], as adjudication.sh prints it.
+function readAdjudication(runDir) {
+  const dir = path.join(runDir, "adjudication");
+  const refused = [];
+  const reviewed = new Set();
+  try {
+    for (const line of fs.readFileSync(path.join(dir, "apply.txt"), "utf8").split("\n")) {
+      const m = /^ADJUDICATION: checkpoint\.sh refused (\S+?):/.exec(line);
+      if (m) refused.push(m[1]);
+      const ok = /^(?:applied|noop): (\S+) /.exec(line);
+      if (ok) reviewed.add(ok[1]);
+    }
+  } catch (_) { /* no apply.txt: nothing was applied */ }
+  const raw = readJSON(path.join(dir, "decisions.json"), undefined);
+  if (raw !== undefined) {
+    const decisions = (Array.isArray(raw) ? raw : []).filter((d) => d && typeof d === "object" && typeof d.criterionId === "string");
+    return { state: "ran", decisions, banner: "", refused, reviewed, malformed: !Array.isArray(raw) };
+  }
+  let banner = null;
+  try { banner = fs.readFileSync(path.join(dir, "unavailable.txt"), "utf8").split("\n").find((l) => l.trim()) || ""; } catch (_) { banner = null; }
+  if (banner !== null) return { state: "unavailable", decisions: [], banner: banner.trim(), refused, reviewed };
+  return { state: "not-run", decisions: [], banner: "", refused, reviewed };
+}
+
+function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
+  const coverage = readJSON(path.join(runDir, "coverage.json"), null);
+  const journeysRaw = readJSON(path.join(runDir, "journeys.json"), null);
+  const cfg = readJSON(path.join(runDir, "effective-config.json"), null);
+  const profile = cfg && typeof cfg.profile === "string" ? cfg.profile : "";
+  const hasCov = !!coverage && typeof coverage === "object" && !Array.isArray(coverage);
+  const hasJ = Array.isArray(journeysRaw);
+  if (!hasCov && !hasJ && profile !== "ship") return null;
+
+  const conditions = [];
+  const lines = [];
+  const key = (id, persona) => String(id) + "\u0000" + String(persona || "");
+  const byKey = {};
+  for (const c of criteria) byKey[key(c.id, c.persona)] = c;
+  const adjust = (r) => {
+    const c = byKey[key(r.criterion_id, r.persona)];
+    return c && c.inRun === String(r.verdict || "").toLowerCase() ? c.verdict : r.verdict;
+  };
+
+  let census;
+  if (hasCov && Number.isFinite(coverage.uncovered)) {
+    const left = (Number(coverage.total) || 0) - (Number(coverage.excluded) || 0);
+    if (left <= 0) { census = "unknown (empty census)"; conditions.push("census is empty"); }
+    else {
+      const covered = Number.isFinite(coverage.covered) ? coverage.covered : left - coverage.uncovered;
+      const pct = Number.isFinite(coverage.percent) ? coverage.percent : Math.floor((covered / left) * 1000 + 0.5) / 10;
+      census = covered + " of " + left + " covered (" + pct + "%) · " + coverage.uncovered + " uncovered"
+        + (coverage.excluded ? " · " + coverage.excluded + " excluded" : "") + (coverage.adapterOk === false ? " · census adapter failed" : "");
+      if (coverage.uncovered > 0) conditions.push(coverage.uncovered + " census surface(s) uncovered");
+    }
+    if (coverage.adapterOk === false) conditions.push("census adapter failed");
+  } else { census = "unknown"; conditions.push("census coverage unknown"); }
+  lines.push(["Census coverage", census]);
+
+  const p1Ids = new Set();
+  let p1Text;
+  if (hasJ) {
+    const statuses = journeyStatus(journeysRaw, checkpointRows, adjust);
+    const p1 = statuses.filter((j) => j.priority === "P1");
+    for (const j of p1) for (const s of j.steps) p1Ids.add(String(s.criterionId));
+    if (!p1.length) { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
+    else {
+      const bad = p1.filter((j) => j.verdict !== "pass" || j.steps.some((s) => s.disputed));
+      const state = (j) => {
+        const d = j.steps.filter((s) => s.disputed).map((s) => s.criterionId);
+        return j.verdict + (d.length ? " (disputed: " + d.join(", ") + ")" : "");
+      };
+      p1Text = (p1.length - bad.length) + " of " + p1.length + " pass" + (bad.length ? " · " + bad.map((j) => j.id + " " + state(j)).join(", ") : "");
+      for (const j of bad) conditions.push("P1 journey " + j.id + " is " + state(j));
+    }
+  } else { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
+  lines.push(["P1 journeys", p1Text]);
+
+  const isP1 = (c) => p1Ids.has(String(c.id)) || (rows[c.id] && rows[c.id].priority === "P1");
+  const layerOf = (c) => {
+    const b = bugs.find((x) => String(x.criterion_id || x.criterion || "") === c.id || (c.bugRef && String(x.bug_id || x.id || "") === c.bugRef));
+    return String((b && (b.suspected_layer || b.layer)) || (rows[c.id] && rows[c.id].layer) || "").toLowerCase();
+  };
+  const p1Fails = criteria.filter((c) => (c.verdict === "fail" || c.verdict === "error") && isP1(c)).map((c) => ({ id: c.id, layer: layerOf(c) }));
+  const blocking = p1Fails.filter((f) => !f.layer || CODING_LAYERS.includes(f.layer));
+  const listed = p1Fails.filter((f) => f.layer && !CODING_LAYERS.includes(f.layer));
+  const fmt = (f) => f.id + " (" + (f.layer || "layer unknown") + ")";
+  lines.push(["Coding-layer fails on P1", (blocking.length ? blocking.map(fmt).join(", ") : "none")
+    + (listed.length ? " · listed, not blocking: " + listed.map(fmt).join(", ") : "")]);
+  for (const f of blocking) conditions.push((f.layer ? "coding-layer fail on P1 " : "fail on P1 with unknown layer ") + fmt(f));
+
+  // A record the re-adjudicator disputed (ADR-0033) blocks on any P1 criterion,
+  // journey step or priority P1 alike, verified or not (I1).
+  const disputedP1 = [...new Set(criteria.filter((c) => isDisputed(c.lastAction) && isP1(c)).map((c) => c.id))];
+  const disputedText = disputedP1.map((id) => id + " (disputed)");
+  if (!verified) {
+    lines.push(["Verifier overrides on P1", "unknown" + (disputedText.length ? " · " + disputedText.join(", ") : "")]);
+    conditions.push("not independently verified");
+  } else {
+    const ov = [...new Set(criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id))];
+    const shown = ov.concat(disputedText);
+    lines.push(["Verifier overrides on P1", shown.length ? shown.join(", ") : "none"]);
+    for (const id of ov) conditions.push("verifier override on P1 " + id);
+    const stale = criteria.filter((c) => c.stale && isP1(c)).map((c) => c.id);
+    for (const id of stale) conditions.push("verification out of date on P1 " + id);
+  }
+  for (const id of disputedP1) conditions.push("verifier disputed P1 " + id);
+
+  // Re-adjudication (I2). Unreviewed = a low-confidence pass (as shown, i.e.
+  // after verification.json) with no decision that apply.txt shows applied or
+  // a no-op — the same selection adjudication.sh select makes. A decision apply
+  // rejected or checkpoint.sh refused is not a review. Only P1 ones block.
+  const adj = readAdjudication(runDir);
+  const lowPasses = criteria.filter((c) => c.verdict === "pass" && c.confidence === "low");
+  const adjLabel = (id, persona) => String(id) + (persona ? "@" + String(persona) : "");
+  const applied = adj.decisions.filter((d) => adj.reviewed.has(adjLabel(d.criterionId, typeof d.persona === "string" ? d.persona : "")));
+  const notApplied = adj.decisions.length - applied.length;
+  const judged = new Set(applied.map((d) => key(d.criterionId, typeof d.persona === "string" ? d.persona : "")));
+  const unreviewed = lowPasses.filter((c) => !judged.has(key(c.id, c.persona)));
+  const unreviewedP1 = [...new Set(unreviewed.filter(isP1).map((c) => c.id))];
+  let adjText;
+  if (adj.state === "ran") {
+    const disputed = applied.filter((d) => d.agree === false);
+    adjText = "re-judged " + applied.length + " · disputed " + disputed.length
+      + (disputed.length ? " (" + [...new Set(disputed.map((d) => d.criterionId))].join(", ") + ")" : "")
+      + (unreviewed.length ? " · " + unreviewed.length + " low-confidence passes not re-judged" : "")
+      + (notApplied > 0 ? " · " + notApplied + " not applied (see adjudication/apply.txt)" : "");
+    if (unreviewedP1.length) conditions.push(unreviewedP1.length + " P1 low-confidence pass(es) not re-judged: " + unreviewedP1.join(", "));
+    if (adj.malformed) conditions.push("adjudication/decisions.json is not a JSON array");
+  } else if (adj.state === "unavailable") {
+    adjText = adj.banner || "re-adjudication unavailable";
+    if (unreviewedP1.length) conditions.push("re-adjudication unavailable — " + unreviewedP1.length + " P1 low-confidence pass(es) unreviewed: " + unreviewedP1.join(", "));
+  } else {
+    adjText = "did not run — " + unreviewed.length + " low-confidence passes unreviewed";
+    if (unreviewedP1.length) conditions.push("re-adjudication did not run — " + unreviewedP1.length + " P1 low-confidence pass(es) unreviewed: " + unreviewedP1.join(", "));
+  }
+  const refusedP1 = [...new Set(adj.refused.map((l) => l.split("@")[0]).filter((id) => p1Ids.has(id) || (rows[id] && rows[id].priority === "P1")))];
+  for (const id of refusedP1) conditions.push("re-adjudication decision on P1 " + id + " was not applied");
+  lines.push(["Re-adjudication", adjText]);
+
+  lines.push(["Low-confidence passes", String(lowPasses.length)]);
+  // Informational only: rows the bug export parked in <run>/bugs/needs-recheck.json.
+  // A file older than the run's verification.json is a previous export's
+  // (stale) and is ignored: no row.
+  try {
+    const nrPath = path.join(runDir, "bugs", "needs-recheck.json");
+    let stale = false;
+    try { stale = fs.statSync(nrPath).mtimeMs < fs.statSync(path.join(runDir, "verification.json")).mtimeMs; } catch (_) { stale = false; }
+    const nr = stale ? null : JSON.parse(fs.readFileSync(nrPath, "utf8"));
+    if (Array.isArray(nr)) lines.push(["Needs re-check", String(nr.length)]);
+  } catch (e) { /* no export, or unreadable: no row */ }
+  lines.push(["Flaky", criteria.some((c) => c.flaky !== null) ? String(criteria.filter((c) => c.flaky === true).length) : "not tracked"]);
+  lines.push(["Regression suite", "not yet available"]);
+
+  const turnedOn = [];
+  if (cfg && cfg.profileSources && typeof cfg.profileSources === "object") {
+    for (const k of Object.keys(cfg.profileSources)) if (cfg.profileSources[k] === "profile-default") turnedOn.push(k);
+  }
+  return { verdict: conditions.length ? "NOT SHIP-READY" : "SHIP-READY", conditions, lines, profile, turnedOn };
+}
+
+function shipProfileLine(s) {
+  if (!s.profile) return "";
+  return "Profile: " + s.profile + (s.turnedOn.length ? " — turned on by the profile: " + s.turnedOn.join(", ") : "");
+}
+
+function htmlShip(m) {
+  const s = m.ship;
+  if (!s) return "";
+  const ok = s.verdict === "SHIP-READY";
+  return '<section class="panel ship" id="ship-readiness" aria-label="Ship readiness"><h2>Ship readiness</h2>'
+    + '<p class="status-line ' + (ok ? "status-ok" : "status-bad") + '"><b>' + esc(s.verdict) + "</b></p>"
+    + (s.conditions.length ? "<ul>" + s.conditions.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul>" : "")
+    + '<table class="plain"><tbody>' + s.lines.map((l) => "<tr><th>" + esc(l[0]) + "</th><td>" + esc(l[1]) + "</td></tr>").join("") + "</tbody></table>"
+    + (shipProfileLine(s) ? '<p class="status-line">' + esc(shipProfileLine(s)) + "</p>" : "") + "</section>";
+}
+
+function mdShip(m) {
+  const s = m.ship;
+  if (!s) return "";
+  const out = ["## Ship readiness", "", "**" + s.verdict + "**", ""];
+  for (const c of s.conditions) out.push("- " + mdText(c));
+  if (s.conditions.length) out.push("");
+  out.push("| Check | Result |", "|---|---|");
+  for (const l of s.lines) out.push("| " + mdText(l[0]) + " | " + mdText(l[1]) + " |");
+  if (shipProfileLine(s)) out.push("", mdText(shipProfileLine(s)));
+  return out.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +657,34 @@ function htmlAnomalies(m) {
     + (sup ? "<details><summary>Superseded rows (" + m.superseded.length + ")</summary><ul>" + sup + "</ul></details>" : "");
 }
 
+const UX_NOTE = "Recorded by the always-on UX sweep. Advisory: never a verdict on its own and not counted in the tally; "
+  + "an objective defect becomes fail@FE only through a visual-ux criterion for its surface.";
+const OUTSIDE_NOTE = "Objective UX defects the sweep saw on a surface that has no visual-ux criterion in the frozen plan. Not counted in verdicts; add a visual-ux row for the surface to have one judged.";
+function htmlUx(m) {
+  if (!m.ux) return "";
+  const table = (list, withVariant) => '<div class="table-scroll"><table class="plain"><thead><tr><th>Surface</th><th>Detector</th><th>Selector</th><th>Message</th>'
+    + (withVariant ? "<th>Variant</th>" : "") + "</tr></thead><tbody>" + list.map((f) => "<tr><td class=\"mono\">" + esc(f.surface) + "</td><td>" + esc(f.detector)
+    + "</td><td class=\"mono\">" + esc(f.selector) + "</td><td>" + esc(f.message) + "</td>" + (withVariant ? "<td>" + esc(f.variant) + "</td>" : "") + "</tr>").join("")
+    + "</tbody></table></div>";
+  return '<h2 id="ux-findings">UX findings (advisory)</h2><p class="status-line">' + esc(UX_NOTE) + "</p>"
+    + (m.ux.swept.length ? "<details open><summary>Swept findings (" + m.ux.swept.length + ")</summary>" + table(m.ux.swept, false) + "</details>" : "")
+    + (m.ux.outsidePlan.length ? '<h3 id="ux-outside-plan">UX defects outside the plan (' + m.ux.outsidePlan.length + ')</h3><p class="status-line status-warn">'
+      + esc(OUTSIDE_NOTE) + "</p>" + table(m.ux.outsidePlan, true) : "");
+}
+
+function mdUx(m) {
+  if (!m.ux) return "";
+  const out = ["", "---", "", "## UX findings (advisory)", "", UX_NOTE, ""];
+  const table = (list, withVariant) => {
+    out.push("| Surface | Detector | Selector | Message |" + (withVariant ? " Variant |" : ""), "|---|---|---|---|" + (withVariant ? "---|" : ""));
+    for (const f of list) out.push("| `" + mdText(f.surface) + "` | " + mdText(f.detector) + " | `" + mdText(f.selector) + "` | " + mdText(f.message) + " |" + (withVariant ? " " + mdText(f.variant) + " |" : ""));
+    out.push("");
+  };
+  if (m.ux.swept.length) table(m.ux.swept, false);
+  if (m.ux.outsidePlan.length) { out.push("### UX defects outside the plan", "", OUTSIDE_NOTE, ""); table(m.ux.outsidePlan, true); }
+  return out.join("\n");
+}
+
 function verificationLine(m) {
   if (!m.verified) {
     return '<p class="status-line status-warn">Not independently verified — no verification.json. Run <code>scripts/qa-verify.sh ' + esc(m.runId) + "</code>, then re-render.</p>";
@@ -412,7 +715,8 @@ function renderHtml(m, tpl, embed) {
     '<div class="meta"><span><b>Run</b> <span class="mono">' + esc(m.runId) + "</span></span>"
       + (m.started ? "<span><b>Started</b> " + esc(m.started) + "</span>" : "") + (m.ended ? "<span><b>Ended</b> " + esc(m.ended) + "</span>" : "")
       + (m.buildId ? "<span><b>Build</b> " + esc(m.buildId) + "</span>" : "") + (m.baseUrl ? "<span><b>Target</b> " + esc(m.baseUrl) + "</span>" : "")
-      + (m.stack ? "<span><b>Stack</b> " + esc(m.stack) + "</span>" : "") + "</div></header>",
+      + (m.stack ? "<span><b>Stack</b> " + esc(m.stack) + "</span>" : "") + "</div></header>"
+      + (m.ship ? "\n" + htmlShip(m) : ""),
     '<section class="summary" aria-label="Summary">',
     '<div class="panel"><h3>Verdicts</h3><div class="chips">' + chips + "</div>"
       + (m.low ? '<p class="status-line" style="margin-top:8px"><span class="tag low">' + m.low + " with confidence: low</span></p>" : "")
@@ -429,7 +733,7 @@ function renderHtml(m, tpl, embed) {
       '<div class="deferred-item" id="' + esc(c.anchor) + '"><b>DEFERRED — <span class="mono">' + esc(c.id) + "</span>" + (c.title ? ": " + esc(c.title) : "") + "</b>"
       + "<p>" + esc(c.lastAction || c.nonUi || "No reason recorded.") + "</p>" + htmlShots(c, embed) + "</div>").join("") : "<p><em>No criteria were deferred this run.</em></p>") + "</div>",
     "<h2>Bugs</h2>" + (m.bugs.length ? m.bugs.map(htmlBug).join("") : "<p><em>No bugs logged this run.</em></p>"),
-    htmlAnomalies(m),
+    htmlAnomalies(m) + htmlUx(m),
     htmlTraceability(m.traceability),
     '<section id="gallery-section" hidden><h2>All screenshots</h2><div class="shots" id="gallery"></div></section>',
     "<footer>Rendered by qa-e2e-pilot render-report.js from the run's own record" + (embed ? " (screenshots embedded)" : "") + ". Click a screenshot to enlarge; ← → step through, Esc closes.</footer>",
@@ -449,7 +753,7 @@ function renderMd(m, tpl) {
   if (m.buildId) meta.push("**Build:** " + mdText(m.buildId));
   if (m.baseUrl) meta.push("**Target:** " + mdText(m.baseUrl));
   if (m.stack) meta.push("**Stack:** " + mdText(m.stack));
-  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n");
+  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n") + (m.ship ? "\n\n---\n\n" + mdShip(m) : "");
 
   const sum = ["| Verdict | Count |", "|---|---|"].concat(VERDICTS.map((v) => "| " + v + " | " + m.tally[v] + " |"), ["| **Total** | **" + m.total + "** |", ""]);
   if (m.low) sum.push("> " + m.low + " verdict(s) carry confidence: low.", "");
@@ -514,7 +818,7 @@ function renderMd(m, tpl) {
     CRITERIA: crit.join("\n") || "_No criteria were checkpointed._",
     DEFERRED: deferred.join("\n") || "_No criteria were deferred this run._",
     BUGS: bugs.join("\n") || "_No bugs logged this run._",
-    EXTRA: "\n---\n\n_Rendered by qa-e2e-pilot render-report.js from the run's own record. Image links are relative to this run directory._\n",
+    EXTRA: mdUx(m) + "\n---\n\n_Rendered by qa-e2e-pilot render-report.js from the run's own record. Image links are relative to this run directory._\n",
   };
   let out = tpl;
   for (const k of Object.keys(fill)) out = out.split("{{" + k + "}}").join(fill[k]);

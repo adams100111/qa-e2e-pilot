@@ -60,6 +60,7 @@ summary — go back and take one while the run is live (`driving-browser-qa` § 
 | other evidence links | the rest of the criterion's evidence dir + `evidence_refs` |
 | bugs | `bug-log.json` (`entries[]`, `bugs[]` or a bare array) |
 | stack line | `stack-profile.json` |
+| UX findings (advisory) + UX defects outside the plan | `checkpoint.json` `findings[]` with `source: "ux"` (the always-on UX sweep, driving-browser-qa) + `ux-sweep.json`; listed, never tallied |
 
 So the rules below are rules about **what to record**, not what to type into a report:
 

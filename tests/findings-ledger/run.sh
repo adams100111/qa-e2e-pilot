@@ -747,4 +747,32 @@ else
   echo "SKIP - test_jq_and_python_folds_agree: python3 not on this host, cannot exercise both engines"
 fi
 
+# ---------------------------------------------------------------------------
+# test_ux_sweep_findings_dedup_per_surface_detector_selector (both engines)
+# The always-on UX sweep journals each ux[]/axe entry as finding_observed with
+# criterionId "ux-sweep:<surfaceId>", source "ux", method = detector id,
+# url = element selector, status "". The fold's derived key is then exactly
+# surface + detector + selector: a re-observed entry (another round, another
+# criterion, a resume) collapses; another selector or detector does not.
+# ---------------------------------------------------------------------------
+ux_finding() { # ux_finding <surfaceId> <detector> <selector> <message>
+  jq -cn --arg s "$1" --arg d "$2" --arg sel "$3" --arg msg "$4" \
+    '{event:"finding_observed",criterionId:("ux-sweep:" + $s),source:"ux",channel:"ux-detector",
+      method:$d,url:$sel,status:"",originClass:"",statusClass:"",message:$msg,detailRef:""}'
+}
+for eng in jq python3; do
+  [[ "$eng" == python3 ]] && ! command -v python3 >/dev/null 2>&1 && continue
+  R="ux-$eng"
+  emit "$R" '{"event":"run_started","runId":"'"$R"'"}' >/dev/null
+  emit "$R" "$(ux_finding 'GET /notifications#sheet:panel' i18n-script-mismatch '#notif-list > li:nth-child(1)' 'Latin text on an ar page')" >/dev/null
+  emit "$R" "$(ux_finding 'GET /notifications#sheet:panel' i18n-script-mismatch '#notif-list > li:nth-child(1)' 'Latin text on an ar page (dark)')" >/dev/null
+  emit "$R" "$(ux_finding 'GET /notifications#sheet:panel' i18n-script-mismatch '#notif-list > li:nth-child(2)' 'Latin text on an ar page')" >/dev/null
+  emit "$R" "$(ux_finding 'GET /notifications#sheet:panel' contrast '#notif-list > li:nth-child(1)' 'Contrast 2.1:1 below 4.5:1')" >/dev/null
+  ( cd "$WORK" && QA_ENGINE=$eng bash "$FOLD" "$R" >/dev/null 2>&1 )
+  check "$eng ux sweep: repeat of surface+detector+selector collapses" "$(findings_len "$R")" "3"
+  check "$eng ux sweep: key is surface|ux|detector|selector|" "$(get "$(ckpt "$R")" '.findings[0].findingKey')" \
+    "ux-sweep:GET /notifications#sheet:panel|ux|i18n-script-mismatch|#notif-list > li:nth-child(1)|"
+  check "$eng ux sweep: first-seen message kept" "$(get "$(ckpt "$R")" '.findings[0].message')" "Latin text on an ar page"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

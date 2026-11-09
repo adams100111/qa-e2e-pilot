@@ -100,6 +100,41 @@
 #      (write-probe-gate.js) on a config that allows API writes, else
 #      OVERRIDE.
 #
+#   3.6-3.8. TRUSTED-VERDICT GATES (0.12.0) — the record-time gates of
+#      checkpoint.sh (gate_oracle, gate_state, gate_data_policy) re-applied
+#      with the SAME conditions, so a pass written by an older checkpoint or
+#      by a bypass is caught here. Each one only ever OVERRIDES to
+#      fail/high; none applies without a checklist.json row.
+#        3.5b confidence: a pass record whose confidence is not exactly
+#            `high` or `low` is overridden (`invalid-confidence: <value>`).
+#        3.6 oracle (D1/D2): in-run confidence not `low` (fail closed) AND the row carries
+#            fixture.expect.oracleSource, or the effective profile is `ship`
+#            and the row kind is computed-logic|business-rule. Only `human`
+#            and `spec` ground it; a present non-string oracleSource (e.g.
+#            `false`) never does. Reason prefix `oracle-ungrounded:`. A row
+#            whose kind/oracleSource holds a control character is
+#            `oracle-ungrounded: malformed row` at any confidence.
+#        3.7 state (D3, every profile): the row is mutating per
+#            mutation-flag.sh derive and the recorded kinds hold neither
+#            `bake` nor `probe`. Reason prefix `no-state-evidence:`.
+#        3.8 data policy (D4): effective-config gates.dataPolicy ==
+#            "enforce" and the row is mutating — the TYPED values of the
+#            record's action-trace.json (step text/value/values/
+#            fields[].value, never the record's metadata) must pass
+#            scripts/data-policy.sh check. input-validation rows ignore
+#            date-window/email-domain. Reason prefix
+#            `data-policy-violation:`; it names rules only, never the typed
+#            values. Typed values reach data-policy.sh through a mode-600
+#            temp file, never argv; password/secret/token/otp/pin fields are
+#            skipped. data-policy.sh absent -> override `data-policy-violation:
+#            checker unavailable` (checkpoint.sh only NOTEs this).
+#      effective-config.json absent -> profile `full`, no data policy gate;
+#      when .qa/config.json or the run's qa-kit spec run-config.json
+#      (.qa/specs/<run-manifest target_feature>/run-config.json) asks for
+#      profile ship or gates.dataPolicy enforce, that absence is itself a
+#      run-level failure: see `effectiveConfigMissing` under the run-scoped
+#      checks below.
+#
 #   4. WRITE .qa/runs/<run-id>/verification.json — a JSON array, one record
 #      per checked criterion:
 #        {criterionId, persona, inRunVerdict, verifierVerdict, confidence,
@@ -298,7 +333,11 @@
 # (criterionId "__run-checks__") carrying
 #   runChecks: {ledgerComplete, classificationsAgree, loadWindowCovered,
 #               knownDefectsOk}
-# plus `channel` and the registry's per-entry states. Unlike the
+# plus `channel` and the registry's per-entry states. 0.12.0 adds
+# `runChecks.effectiveConfigMissing: true` (present only when it fires): the
+# project config or the run's spec run-config asks for profile ship or
+# gates.dataPolicy enforce but the run has no effective-config.json; it fails
+# the record (and the run). Unlike the
 # phase-surface record, this one DOES flip qa-verify's exit code: its checks
 # are structural proofs about the run's own record rather than best-effort
 # wall-clock correlation, and ADR-0026 settles that an engine invariant
@@ -321,6 +360,8 @@ WRITE_PROBE_GATE_JS="$HERE/../skills/probing-apis-through-browser/scripts/write-
 CLASSIFY_FINDING_SH="$HERE/classify-finding.sh"
 KNOWN_DEFECTS_SH="$HERE/known-defects.sh"
 SCREENSHOT_SH="$HERE/../skills/checkpointing-qa-memory/scripts/screenshot-evidence.sh"
+MUTATION_FLAG_SH="$HERE/../skills/checkpointing-qa-memory/scripts/mutation-flag.sh"
+DATA_POLICY_SH="$HERE/data-policy.sh"
 
 # Script-global (NOT `local` to main) so the EXIT trap registered in main —
 # which fires AFTER main returns, i.e. back at global scope — can still see
@@ -351,6 +392,7 @@ has_py() { command -v python3 >/dev/null 2>&1; }
 [[ -f "$PARSE_SESSION_LOG_JS" ]] || die "qa-verify.sh: cannot find parse-session-log.js at ${PARSE_SESSION_LOG_JS}."
 [[ -f "$CLASSIFY_FINDING_SH" ]] || die "qa-verify.sh: cannot find classify-finding.sh at ${CLASSIFY_FINDING_SH}."
 [[ -f "$KNOWN_DEFECTS_SH" ]] || die "qa-verify.sh: cannot find known-defects.sh at ${KNOWN_DEFECTS_SH}."
+[[ -f "$MUTATION_FLAG_SH" ]] || die "qa-verify.sh: cannot find mutation-flag.sh at ${MUTATION_FLAG_SH}."
 
 # ---------------------------------------------------------------------------
 # validate_run_id — mirrors provenance.sh/checkpoint.sh's Fix 28 path-
@@ -1232,7 +1274,9 @@ read_pass_record() {
     jq -r '
       .criterion_id,
       (.persona // ""),
-      (.confidence // "high"),
+      (if .confidence == null then "high"
+       else (.confidence | if type == "string" then . else tojson end
+             | if (explode | any(. < 32 or . == 127)) then "<control-characters>" else . end) end),
       (.nonUiActionReason // ""),
       ((.kinds // []) | join(","))
     ' <<< "$rec"
@@ -1243,11 +1287,335 @@ c = json.loads(sys.argv[1])
 kinds = c.get("kinds") or []
 print(c.get("criterion_id", ""))
 print(c.get("persona") or "")
-print(c.get("confidence") or "high")
+cf = c.get("confidence")
+if cf is None:
+    cf = "high"
+elif not isinstance(cf, str):
+    cf = json.dumps(cf, separators=(",", ":"), ensure_ascii=False)
+if any(ord(ch) < 32 or ord(ch) == 127 for ch in cf):
+    cf = "<control-characters>"
+print(cf)
 print(c.get("nonUiActionReason") or "")
 print(",".join(kinds))
 ' "$rec"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# TRUSTED-VERDICT GATE MIRRORS (0.12.0, steps 3.6-3.8). Each helper mirrors
+# its checkpoint.sh counterpart (row_oracle_facts,
+# effective_config_get, effective_profile, row_is_mutating,
+# typed_values_text) — duplicated, not sourced, per the convention above.
+# ---------------------------------------------------------------------------
+
+# row_oracle_facts <row-json> — ONE line: `malformed` when the row's `kind`
+# or fixture.expect.oracleSource string holds a control character, else
+# `ok<US>kind<US>source` (US = \x1f, which the control-character check keeps
+# out of both fields). kind is lowercased ("" when absent / not a string);
+# source is "" when absent or null, the string itself, or compact JSON for a
+# present non-string value (e.g. `false`), which is never a grounded source.
+row_oracle_facts() {
+  local row="$1"
+  if has_jq; then
+    jq -r '
+      def ctrl: explode | any(. < 32 or . == 127);
+      (if (.kind | type) == "string" then .kind else "" end) as $k
+      | (((.fixture? | objects | .expect? | objects) // {}) as $ex
+         | if ($ex | has("oracleSource")) then $ex.oracleSource else null end) as $s
+      | if ($k | ctrl) or ((($s | type) == "string") and ($s | ctrl)) then "malformed"
+        else ["ok", ($k | ascii_downcase),
+              (if $s == null then "" elif ($s | type) == "string" then $s else ($s | tojson) end)]
+             | join("\u001f")
+        end
+    ' <<< "$row" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+try:
+    r = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+if not isinstance(r, dict):
+    sys.exit(0)
+def ctrl(s):
+    return any(ord(c) < 32 or ord(c) == 127 for c in s)
+k = r.get("kind")
+k = k if isinstance(k, str) else ""
+fx = r.get("fixture")
+ex = fx.get("expect") if isinstance(fx, dict) else None
+src = ex.get("oracleSource") if isinstance(ex, dict) else None
+if ctrl(k) or (isinstance(src, str) and ctrl(src)):
+    print("malformed")
+    sys.exit(0)
+if src is None:
+    s = ""
+elif isinstance(src, str):
+    s = src
+else:
+    s = json.dumps(src, separators=(",", ":"), ensure_ascii=False)
+low = "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in k)
+print("\x1f".join(["ok", low, s]))
+' "$row" 2>/dev/null
+  fi
+}
+
+effective_config_file() { echo "$(run_dir "$1")/effective-config.json"; }
+
+# effective_config_get <run-id> <dotted.key> — the string value at the key in
+# the run's effective-config.json; "" when the file is absent / invalid or the
+# value is missing / not a string.
+effective_config_get() {
+  local key="$2" file
+  file="$(effective_config_file "$1")"
+  [[ -f "$file" ]] || return 0
+  if has_jq; then
+    jq -r --arg k "$key" '
+      (try getpath($k | split(".")) catch null) | if type == "string" then . else "" end
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for part in sys.argv[2].split("."):
+    d = d.get(part) if isinstance(d, dict) else None
+print(d if isinstance(d, str) else "")
+' "$file" "$key" 2>/dev/null || true
+  fi
+}
+
+# effective_profile <run-id> — `full` when the effective config is absent or
+# names no profile.
+effective_profile() {
+  local p
+  p="$(effective_config_get "$1" profile)"
+  printf '%s\n' "${p:-full}"
+}
+
+# row_is_mutating <row-json> — `true`/`false` from mutation-flag.sh derive on
+# the plan row, with the same ext_path/QA_ENGINE discipline as the
+# required-kinds derive in process_criterion. A derive failure prints `false`
+# (no override can rest on a classifier that did not run).
+row_is_mutating() {
+  local row="$1" mf_eng="python3" out
+  has_jq && mf_eng="jq"
+  out="$(QA_ENGINE="$mf_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$MUTATION_FLAG_SH" derive "$row" 2>/dev/null)" || out="false"
+  [[ "$out" == "true" ]] && echo true || echo false
+}
+
+# typed_values_text <action-trace.json> — every value the act TYPED, one per
+# line: each step's `text`, `value`, `values` and `fields[].value`. Never the
+# record's metadata (run_id, recorded_at, selectors, tool names).
+# A step (or fill_form field) whose target/field/selector/element/name names
+# a password, passwd, secret, token, otp or pin field, or whose type /
+# inputType is `password`, is skipped: a secret is never handed to the checker.
+typed_values_text() {
+  local file="$1"
+  if has_jq; then
+    jq -r '
+      def secretname: if type == "string" then
+          [ gsub("(?<a>[a-z0-9])(?<b>[A-Z])"; "\(.a) \(.b)") | ascii_downcase
+            | splits("[^a-z0-9]+") | select(. != "")
+            | select(IN("otp", "pin") or test("password|passwd|secret|token")) ] | length > 0
+        else false end;
+      def secret: objects
+        | ([ .target?, .field?, .selector?, .element?, .name? | secretname ] | any)
+          or ([ .type?, .inputType? | strings | ascii_downcase == "password" ] | any);
+      [ (.steps // []) | if type == "array" then .[] else empty end | objects
+        | select(secret | not)
+        | (.text?, .value?, .values?,
+           ((.fields? // []) | if type == "array" then .[] else empty end | objects
+            | select(secret | not) | .value?)) ]
+      | [ .. | strings ] | join("\n")
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+def low(s):
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+def secretname(v):
+    if not isinstance(v, str):
+        return False
+    toks = [t for t in re.split(r"[^a-z0-9]+", low(re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", v))) if t]
+    return any(t in ("otp", "pin") or re.search(r"password|passwd|secret|token", t) for t in toks)
+def secret(o):
+    if any(secretname(o.get(k)) for k in ("target", "field", "selector", "element", "name")):
+        return True
+    return any(isinstance(o.get(k), str) and low(o.get(k)) == "password" for k in ("type", "inputType"))
+out = []
+def walk(x):
+    if isinstance(x, str): out.append(x)
+    elif isinstance(x, list):
+        for i in x: walk(i)
+    elif isinstance(x, dict):
+        for i in x.values(): walk(i)
+steps = d.get("steps") if isinstance(d, dict) else None
+for st in (steps if isinstance(steps, list) else []):
+    if not isinstance(st, dict) or secret(st): continue
+    for k in ("text", "value", "values"):
+        if k in st: walk(st[k])
+    fl = st.get("fields")
+    for f in (fl if isinstance(fl, list) else []):
+        if isinstance(f, dict) and not secret(f) and "value" in f: walk(f["value"])
+sys.stdout.write("\n".join(out))
+' "$file" 2>/dev/null || true
+  fi
+}
+
+# dp_check_text <config.json> <text> — run data-policy.sh check (path in
+# DP_SH_PATH) on <text> via a mode-600 temp file holding it as one JSON string
+# (`@file`), never argv, so typed values do not show in the process list.
+# Prints data-policy.sh's stdout and returns its exit code.
+# The body runs in its own subshell whose EXIT trap removes the temp file, and
+# whose INT/TERM/HUP traps turn an interruption into that exit, so the file is
+# gone even when the check is interrupted (kill -9 aside). Traps set in a
+# subshell never touch the caller's: an EXIT trap the calling shell installed
+# (qa-verify's results file) is neither replaced nor run here. bash 3.2-safe.
+dp_check_text() {
+  local cfg="$1" text="$2"
+  (
+    tf=""
+    trap 'rm -f "$tf"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    dp_eng="python3"
+    has_jq && dp_eng="jq"
+    tf="$(umask 077; mktemp "${TMPDIR:-/tmp}/qa-dp.XXXXXX")" || exit 2
+    chmod 600 "$tf"
+    if has_jq; then
+      printf '%s' "$text" | jq -Rs . > "$tf"
+    else
+      printf '%s' "$text" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False))' > "$tf"
+    fi
+    rc=0
+    out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$DP_SH_PATH" check "$cfg" "@${tf}" 2>/dev/null)" || rc=$?
+    printf '%s' "$out"
+    exit "$rc"
+  )
+}
+
+# ship_gate_reasons <run-id> <crit-id> <persona> <in-confidence> <kinds-csv>
+# <row-json> — steps 3.6-3.8. Prints one override reason per line (nothing
+# when every gate holds). Rules only, never typed values or secrets.
+ship_gate_reasons() {
+  local run_id="$1" crit_id="$2" persona="$3" in_conf="$4" kinds_csv="$5" row="$6"
+  [[ -z "$row" ]] && return 0
+
+  local facts tag kind="" source=""
+  facts="$(row_oracle_facts "$row")"
+  if [[ "$facts" == ok* ]]; then
+    IFS=$'\x1f' read -r tag kind source <<< "$facts"
+  else
+    # A control character in kind/oracleSource (or an unreadable row): the
+    # row cannot ground anything, at any confidence.
+    echo "oracle-ungrounded: malformed row (control character in kind or oracleSource) — the checklist.json row cannot be read reliably, so this pass is overridden (checkpoint.sh ORACLE GATE)"
+  fi
+
+  # 3.6 oracle (D1/D2). Fail closed: every confidence but an exact `low`
+  # (the honest downgrade) is held to the gate — a bypass record carrying
+  # "HIGH", "" or junk must not slip past it.
+  if [[ "$facts" == ok* && "$in_conf" != "low" ]]; then
+    local applies=0
+    if [[ -n "$source" ]]; then
+      applies=1
+    else
+      case "$kind" in
+        computed-logic|business-rule)
+          [[ "$(effective_profile "$run_id")" == "ship" ]] && applies=1 ;;
+      esac
+    fi
+    if [[ "$applies" -eq 1 ]]; then
+      case "$source" in
+        human|spec) ;;
+        *) echo "oracle-ungrounded: oracleSource=${source:-missing} cannot ground a high-confidence pass (allowed: human, spec) — the checklist.json row's oracle was never confirmed, so this pass is overridden (checkpoint.sh ORACLE GATE)" ;;
+      esac
+    fi
+  fi
+
+  local mutating
+  mutating="$(row_is_mutating "$row")"
+  [[ "$mutating" == "true" ]] || return 0
+
+  # 3.7 state (D3) — every profile.
+  local -a kinds_arr=() shown=()
+  local k has_state=0
+  IFS=',' read -ra kinds_arr <<< "$kinds_csv"
+  for k in ${kinds_arr[@]+"${kinds_arr[@]}"}; do
+    k="$(trim "$k")"
+    [[ -z "$k" ]] && continue
+    [[ "$k" == "bake" || "$k" == "probe" ]] && has_state=1
+    shown+=("$k")
+  done
+  if [[ "$has_state" -eq 0 ]]; then
+    local got
+    got="$(IFS=,; echo "${shown[*]+"${shown[*]}"}")"
+    echo "no-state-evidence: ${crit_id} is mutating; a pass needs bake or probe evidence (got: ${got:-none}) — mutation-flag.sh classifies its checklist.json row as a write, and nothing read the persisted state back (checkpoint.sh STATE GATE)"
+  fi
+
+  # 3.8 data policy (D4).
+  [[ "$(effective_config_get "$run_id" gates.dataPolicy)" == "enforce" ]] || return 0
+  local rel trace
+  if [[ -n "$persona" ]]; then
+    rel="evidence/${persona}/${crit_id}/action-trace.json"
+  else
+    rel="evidence/${crit_id}/action-trace.json"
+  fi
+  trace="$(run_dir "$run_id")/${rel}"
+  [[ -f "$trace" ]] || return 0
+  if [[ ! -f "$DATA_POLICY_SH" ]]; then
+    # Unlike checkpoint.sh (a NOTE, per the plan), the out-of-agent check
+    # fails closed: an enforced policy that nothing checked is not a pass.
+    echo "data-policy-violation: checker unavailable (scripts/data-policy.sh not found) — gates.dataPolicy=enforce, but the typed values in '${rel}' could not be checked, so this pass is overridden"
+    return 0
+  fi
+
+  local text
+  text="$(typed_values_text "$trace")"
+  [[ -z "$text" ]] && return 0
+
+  local out rc
+  out="$(DP_SH_PATH="$DATA_POLICY_SH" dp_check_text "$(effective_config_file "$run_id")" "$text")"
+  rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  if [[ "$rc" -ne 1 ]]; then
+    echo "data-policy-violation: typed values in '${rel}' could not be checked against dataPolicy (data-policy.sh exit ${rc}; check effective-config.json) — an unchecked pass under gates.dataPolicy=enforce is overridden (checkpoint.sh DATA POLICY GATE)"
+    return 0
+  fi
+
+  local rules
+  if has_jq; then
+    rules="$(jq -r '.violations[]? | .rule' <<< "$out" 2>/dev/null)"
+  else
+    rules="$(python3 -c '
+import json, sys
+for v in json.loads(sys.argv[1]).get("violations", []):
+    print(v.get("rule"))
+' "$out" 2>/dev/null)"
+  fi
+
+  local -a seen=()
+  local line s dup
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$kind" == "input-validation" ]]; then
+      case "$line" in date-window|email-domain) continue ;; esac
+    fi
+    dup=0
+    for s in ${seen[@]+"${seen[@]}"}; do [[ "$s" == "$line" ]] && { dup=1; break; }; done
+    [[ "$dup" -eq 0 ]] && seen+=("$line")
+  done <<< "$rules"
+  [[ "${#seen[@]}" -eq 0 ]] && return 0
+
+  local listed="${seen[0]}" i
+  for (( i = 1; i < ${#seen[@]}; i++ )); do listed+=", ${seen[$i]}"; done
+  echo "data-policy-violation: typed values in '${rel}' break dataPolicy rule(s): ${listed} (values not shown) — this mutating pass typed data the run's policy forbids (checkpoint.sh DATA POLICY GATE)"
 }
 
 # ---------------------------------------------------------------------------
@@ -1527,6 +1895,23 @@ process_criterion() {
       fi
     fi
   fi
+
+  # --- Steps 3.6-3.8: the 0.12.0 trusted-verdict gates, mirrored from
+  # checkpoint.sh against the IN-RUN confidence ($4, before any degrade
+  # below). Each reason is an override. ------------------------------------
+  case "$confidence" in
+    high|low) ;;
+    *)
+      reasons+=("invalid-confidence: ${confidence:0:40} — a pass record's confidence must be exactly high or low; anything else was not written by checkpoint.sh, so this pass is overridden")
+      override=1
+      ;;
+  esac
+  local sg_line
+  while IFS= read -r sg_line; do
+    [[ -z "$sg_line" ]] && continue
+    reasons+=("$sg_line")
+    override=1
+  done < <(ship_gate_reasons "$run_id" "$crit_id" "$persona" "$confidence" "$kinds_csv" "$row")
 
   # --- Steps 2+3: per recorded kind, re-validate structure/value, then bind
   # provenance (bake/probe/human-action only). ------------------------------
@@ -2139,6 +2524,12 @@ observe_rows() {
 # A torn or unparseable line is skipped, exactly as fold.sh skips it; the
 # events AFTER it are still read (a torn write must not hide the findings
 # that follow it).
+#
+# A `source: "ux"` finding (the always-on UX sweep: a detector/axe id, the
+# element selector, never a request) is SKIPPED here. It is advisory UX data,
+# not an observed console/network error: it has no request url or status to
+# re-classify, must not count as findings-channel evidence, and must not
+# reach the known-defect evidence as a url-less (fail-closed fatal) finding.
 # ---------------------------------------------------------------------------
 journal_finding_rows() {
   local f
@@ -2153,7 +2544,7 @@ journal_finding_rows() {
                       then ($v | floor | tostring)
                     else "" end;
       (try fromjson catch null) as $o
-      | if ($o | type) == "object" and ($o.event == "finding_observed") then
+      | if ($o | type) == "object" and ($o.event == "finding_observed") and ($o.source != "ux") then
           (kstr($o.source) | sane),
           (kstr($o.method) | sane),
           (kstr($o.url) | sane),
@@ -2199,7 +2590,7 @@ with open(sys.argv[1]) as fh:
             o = json.loads(line)
         except Exception:
             continue
-        if not isinstance(o, dict) or o.get("event") != "finding_observed":
+        if not isinstance(o, dict) or o.get("event") != "finding_observed" or o.get("source") == "ux":
             continue
         out.extend([
             sane(kstr(o.get("source"))),
@@ -2555,6 +2946,49 @@ if isinstance(d, list):
 # fixture byte-identical, and is honest: there is nothing to report about
 # checks that had nothing to check.
 # ---------------------------------------------------------------------------
+# config_asks_ship_gates <json-file> — true (exit 0) iff the file is a JSON
+# object whose `profile` is "ship" or whose gates.dataPolicy is "enforce".
+config_asks_ship_gates() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  if has_jq; then
+    jq -e 'type == "object" and (.profile == "ship" or ((.gates | objects | .dataPolicy) == "enforce"))' "$file" >/dev/null 2>&1
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+g = d.get("gates") if isinstance(d, dict) else None
+ok = isinstance(d, dict) and (d.get("profile") == "ship" or (isinstance(g, dict) and g.get("dataPolicy") == "enforce"))
+sys.exit(0 if ok else 1)' "$file" >/dev/null 2>&1
+  fi
+}
+
+# effective_config_missing_source <run-id> — prints the file that asks for the
+# ship gates (.qa/config.json, or the qa-kit spec run-config.json of the run's
+# run-manifest target_feature) when the run has NO effective-config.json;
+# prints nothing otherwise. Without the effective config every gate above
+# silently reads profile `full` and no data policy, so the run itself fails.
+effective_config_missing_source() {
+  local run_id="$1"
+  [[ -f "$(effective_config_file "$run_id")" ]] && return 0
+  if config_asks_ship_gates "$(qa_config_file)"; then
+    echo "$(qa_config_file)"; return 0
+  fi
+  local manifest target=""
+  manifest="$(run_dir "$run_id")/run-manifest.json"
+  [[ -f "$manifest" ]] || return 0
+  target="$(json_field "$manifest" target_feature 2>/dev/null || true)"
+  case "$target" in
+    ""|*/*|*\\*|*..*|.*) return 0 ;;
+  esac
+  local rc_file=".qa/specs/${target}/run-config.json"
+  config_asks_ship_gates "$rc_file" && echo "$rc_file"
+  return 0
+}
+
 run_run_checks_pass() {
   local run_id="$1"
   # window_ok is THREE-STATE (fix round 1, item 5): "true" (evaluated and
@@ -2975,9 +3409,19 @@ run_run_checks_pass() {
 
   [[ -n "$cfg_tmp" ]] && rm -f "$cfg_tmp"
 
+  # --- effectiveConfigMissing (0.12.0): the project or the run's qa-kit spec
+  # asks for profile ship or gates.dataPolicy enforce, yet the run has no
+  # effective-config.json — the trusted-verdict gates could not apply. ------
+  local ecm_src ecm="false"
+  ecm_src="$(effective_config_missing_source "$run_id")"
+  if [[ -n "$ecm_src" ]]; then
+    ecm="true"
+    reason_add "effectiveConfigMissing: ${ecm_src} asks for profile ship or gates.dataPolicy enforce, but .qa/runs/${run_id}/effective-config.json is absent — the oracle and data-policy gates could not apply as configured (resolve it with scripts/profile.sh resolve at pre-flight)"
+  fi
+
   # --- emit ---------------------------------------------------------------
   local any_false=0
-  [[ "$ledger_ok" == "false" || "$class_ok" == "false" || "$window_ok" == "false" || "$kd_ok" == "false" ]] && any_false=1
+  [[ "$ledger_ok" == "false" || "$class_ok" == "false" || "$window_ok" == "false" || "$kd_ok" == "false" || "$ecm" == "true" ]] && any_false=1
   # The record is withheld ONLY when nothing was wrong AND there was no
   # findings evidence to reason about AND every check actually ran. An
   # unperformed check must never be silent: an absent record reads as
@@ -3018,17 +3462,19 @@ run_run_checks_pass() {
       --argjson ledger "$ledger_ok" --argjson class "$class_ok" \
       --argjson window "$window_json" --argjson kdok "$kd_ok" \
       --arg fchan "$findings_channel" --arg nchan "$navigations_channel" \
+      --argjson ecm "$ecm" \
       '{criterionId: "__run-checks__", persona: "", inRunVerdict: "n/a",
         verifierVerdict: $verV, confidence: $conf, reasons: $reasons,
         channel: $channel, knownDefects: $kd,
-        runChecks: {ledgerComplete: $ledger, classificationsAgree: $class,
+        runChecks: ({ledgerComplete: $ledger, classificationsAgree: $class,
                     loadWindowCovered: $window, knownDefectsOk: $kdok,
-                    findingsChannel: $fchan, navigationsChannel: $nchan}}'
+                    findingsChannel: $fchan, navigationsChannel: $nchan}
+                    + (if $ecm then {effectiveConfigMissing: true} else {} end))}'
   else
     python3 -c '
 import json, sys
-verV, conf, channel, reasons, kd, ledger, klass, window, kdok, fchan, nchan = sys.argv[1:12]
-print(json.dumps({
+verV, conf, channel, reasons, kd, ledger, klass, window, kdok, fchan, nchan, ecm = sys.argv[1:13]
+rec = {
     "criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a",
     "verifierVerdict": verV, "confidence": conf, "reasons": json.loads(reasons),
     "channel": channel, "knownDefects": json.loads(kd),
@@ -3040,8 +3486,11 @@ print(json.dumps({
         "findingsChannel": fchan,
         "navigationsChannel": nchan,
     },
-}, separators=(",", ":")))
-' "$verdict" "$conf" "$channel" "$reasons_json" "$kd_json" "$ledger_ok" "$class_ok" "$window_json" "$kd_ok" "$findings_channel" "$navigations_channel"
+}
+if ecm == "true":
+    rec["runChecks"]["effectiveConfigMissing"] = True
+print(json.dumps(rec, separators=(",", ":")))
+' "$verdict" "$conf" "$channel" "$reasons_json" "$kd_json" "$ledger_ok" "$class_ok" "$window_json" "$kd_ok" "$findings_channel" "$navigations_channel" "$ecm"
   fi
 }
 
