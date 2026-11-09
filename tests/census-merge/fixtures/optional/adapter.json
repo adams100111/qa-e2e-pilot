@@ -1,0 +1,4 @@
+{"adapter":"laravel","ok":true,"surfaces":[
+ {"surfaceId":"GET /reports/{year?}","kind":"endpoint","pattern":"reports/{year?}","method":"GET|HEAD","permissionHints":[],"source":"adapter"},
+ {"surfaceId":"GET /","kind":"endpoint","pattern":"/","method":"GET|HEAD","permissionHints":[],"source":"adapter"}],
+ "jobs":[],"mails":[],"notifications":[],"locales":["ar"],"warnings":[]}
