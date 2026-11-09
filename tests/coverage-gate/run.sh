@@ -52,8 +52,8 @@ run_engine() {
   check "$E no uxMissing key without the flag" "$(q "$T/all.json" '"uxMissing" in c')" "False"
   cov "$C" "$ALL" --mode block --require-visual-ux > "$T/ux0.json" 2> "$T/ux0.err"; rc=$?
   check "$E require_visual_ux blocks when surfaces lack a visual-ux row" "$rc" "1"
-  check "$E require_visual_ux lists the UI surfaces" "$(q "$T/ux0.json" 'c["uxMissing"]')" '["GET /admin/hackathons","GET /admin/reports","GET /h/{slug}","GET /الأخبار","page:Admin/Hackathons/Show"]'
-  check "$E require_visual_ux message" "$(grep -c '5 surface(s) have no visual-ux criterion' "$T/ux0.err")" "1"
+  check "$E require_visual_ux lists the reached UI surfaces (unreached GET /admin/reports is an uncovered pair, not a UX gap)" "$(q "$T/ux0.json" 'c["uxMissing"]')" '["GET /admin/hackathons","GET /h/{slug}","GET /الأخبار","page:Admin/Hackathons/Show"]'
+  check "$E require_visual_ux message" "$(grep -c '4 surface(s) have no visual-ux criterion' "$T/ux0.err")" "1"
   check "$E require_visual_ux leaves coverage counts alone" "$(q "$T/ux0.json" "$COUNTS")" '[8,8,0,0]'
   python3 -c '
 import json,sys

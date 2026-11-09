@@ -50,9 +50,12 @@
 #   both engines agree); 100 when nothing is left to cover. A whole value prints without ".0".
 # WARNINGS: census warnings are copied. adapterOk is false only when the census says so.
 # --require-visual-ux (the ship plan's per-surface UX check): adds `uxMissing`, the sorted surfaceIds
-#   that have at least one in-scope, non-excluded pair, are UI surfaces (not a job:/mail:/notification:
-#   channel and not a non-GET write endpoint), match no exclusion whose personaId is "*", and that no
-#   checklist row tagged `visual-ux` names in its surfaceId. Without the flag the output is unchanged (no `uxMissing` key).
+#   that have at least one in-scope, non-excluded pair, were reached in the census by at least one
+#   in-scope persona (reachedBy, filtered by --roles; a surface nobody reached cannot be looked at and
+#   is already an uncovered pair), are UI surfaces (not a job:/mail:/notification: channel and not a
+#   non-GET write endpoint), match no exclusion whose personaId is "*", and that no checklist row
+#   tagged `visual-ux` names in its surfaceId. qa-kit's generate-ship-criteria.sh emits exactly one
+#   such row per reached surface, so a generated plan passes. Without the flag the output is unchanged (no `uxMissing` key).
 #
 # EXIT: 0 ok; 1 the gate blocks (only under --mode block): uncovered > 0 (including
 #   covered-unscoped and covered-sweep pairs), total - excluded == 0 (empty or uncrawled census, or everything
@@ -186,7 +189,10 @@ if has_jq; then
         warnings: ($c.warnings // []),
         rows: $out }
       + (if $uxreq then
-           {uxMissing: ([ $out[] | select(.state != "excluded") | .surfaceId
+           ([ $c.surfaces[] | select(type == "object" and (.surfaceId | type) == "string")
+              | select([ .reachedBy | strs | .[] | select(($roleIds == null) or (. as $x | $roleIds | index([$x]) != null)) ] | length > 0)
+              | .surfaceId ]) as $reachedS
+           | {uxMissing: ([ $out[] | select(.state != "excluded") | .surfaceId | select(. as $x | $reachedS | index([$x]) != null)
                           | select(((startswith("job:") or startswith("mail:") or startswith("notification:")) or isWrite) | not) ]
                         | unique
                         | map(. as $s | select(any($excR[]; . as $e | $e.personaId == "*" and ($s | test($e.re))) | not))
@@ -295,7 +301,9 @@ res = {"total": total, "covered": cov, "functionalCovered": fnc, "sweepCovered":
        "warnings": c.get("warnings") or [],
        "rows": out}
 if os.environ.get("UXREQ") == "true":
-    ui = sorted(set(x["surfaceId"] for x in out if x["state"] != "excluded"
+    reached_s = set(sv["surfaceId"] for sv in c["surfaces"] if isinstance(sv, dict) and isinstance(sv.get("surfaceId"), str)
+                    and any(role_ids is None or x in role_ids for x in strs(sv.get("reachedBy"))))
+    ui = sorted(set(x["surfaceId"] for x in out if x["state"] != "excluded" and x["surfaceId"] in reached_s
                     and not x["surfaceId"].startswith(("job:", "mail:", "notification:")) and not is_write(x["surfaceId"])))
     ui = [sid for sid in ui if not any(e["personaId"] == "*" and rx.search(sid) for e, rx in exc_re)]
     res["uxMissing"] = [sid for sid in ui if not any(r["ux"] and sid in r["sids"] for r in rows)]

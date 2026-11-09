@@ -158,11 +158,12 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      ```
      It prints append-ready rows with token-safe ids (`<prefix>-<slug>-<hash>`, which the engine's
      checkpoint and evidence scripts accept) and the readable id in `title` (`load-clean:<surface>:<persona>`,
-     `deny:<surface>:<persona>`, `iso:…`, `input:…`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
+     `deny:<surface>:<persona>`, `iso:…`, `input:…`, per-surface UX checks `ux:<surface>`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
      carrying `role`, and `url` when the census sampled a concrete URL. UX revisits carry `ux-revisit` +
      `visual-ux`, and rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`, so the run sends them to
-     the UX detectors. The generator does not emit a primary-variant `visual-ux` row per surface: add those
-     per step 5c. **Append them to `checklist.json`**
+     the UX detectors. It also emits one `visual-ux` row per surface a spec role reached (`ux:<surface>`,
+     kind `happy-path`, at the primary variant), so a generated plan passes `--require-visual-ux` without
+     hand-authoring; step 5c is for plans written by hand. **Append them to `checklist.json`**
      (merge into the existing top-level array, never a second file), then re-run the alignment check (step 6)
      and `check-fixtures.sh` (step 7) on the merged plan. Never rename the generated ids. A `deny` row tagged
      `needs-confirmation` rests on an unconfirmed access entry; list those for the operator, together with
