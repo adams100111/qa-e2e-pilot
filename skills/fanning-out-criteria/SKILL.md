@@ -74,6 +74,15 @@ Run this for every criterion before assigning it to a driver. Answer each questi
 - [ ] Assign fanned criteria to drivers round-robin up to the cap. If eligible criteria outnumber the cap, queue the remainder and run them as earlier fanned criteria complete.
 - [ ] Never assign more than one race-test pair to the same driver simultaneously — a race test already uses two sessions on coordinated drivers.
 
+### Step 2b — Ship profile lanes (D7, ADR-0030)
+
+Under the ship profile, read `maxParallel` and the rows from the run's `effective-config.json` and `checklist.json`, not raw `.qa/config.json` (`profile.sh resolve` fills `maxParallel: 3` unless the user set it).
+
+- [ ] The rows `generate-ship-criteria.sh` emits for the load-clean sweep, read-only deny rows, ownership-isolation rows and ux revisits carry `independent` + `read-only`. They go through the decision list above like any other row, so they fan out across up to `min(maxParallel, available)` contexts.
+- [ ] Each fanned row runs as its own `persona`: load that persona's storageState into the context, and record its identity (persona-identity binding) before its first row.
+- [ ] Journey rows (rows with a `journey` field) never carry `independent` and always stay sequential, at the primary variant, in step order. Deny rows tagged `api-write` or `deny-write-deferred` and every `input-validation` row stay sequential too (they write or try to).
+- [ ] A ux-revisit row's `variant` (viewport, locale, color scheme) is applied inside its own context (see detecting-visual-ux `references/variants.md`), so a fanned dark/mobile revisit never changes the primary session's size or theme.
+
 ### Step 3 — Isolate Sessions (Read-Only Fan-Out)
 
 For each `read-only` eligible criterion assigned to a driver:

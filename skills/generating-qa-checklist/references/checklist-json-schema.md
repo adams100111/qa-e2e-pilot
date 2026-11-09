@@ -121,9 +121,12 @@ input-validation
 
 The first 12 are the same list as `checklist.md`'s Kind field comment and
 `required-kinds.sh`'s kind-enum regexes — keep them in sync if the
-vocabulary ever changes. The last three are the ship-QA kinds (D1, below);
-`required-kinds.sh` gives them no implicit evidence kind, so what they
-require comes from their tags and action shape.
+vocabulary ever changes. The last three are the ship-QA kinds (D1, below).
+In `required-kinds.sh`, `input-validation` always requires `bake` (the
+rejected value must leave persisted state unchanged; a `read-only` tag does
+not suppress it), while `load-clean` and `deny` add nothing on their own, so
+what they require comes from their tags and action shape (a `deny` row
+tagged `api-write` derives `probe`).
 
 ## Ship-QA fields (D1)
 

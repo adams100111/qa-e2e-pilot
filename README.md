@@ -45,14 +45,16 @@ agents/           qa-e2e-pilot.md      — the 6-phase orchestrator (generated-a
 commands/         qa-run.md    — /qa-run <target> [checklist|spec]
                   qa-roles.md  — /qa-roles [--refresh] [--global] [--from-global] (define/refresh roles standalone)
                   qa-resume.md — /qa-resume [run-id] (resume an interrupted Run at its frozen cursor)
-skills/           17 skills (see below)
+skills/           18 skills (see below)
 scripts/          install.sh · skills.json · qa-verify.sh · report-to-junit.sh · qa-ci.sh · memory-sync.sh ·
                   build-adapter.sh · validate-adapters.sh · run-engine-ci.sh · check-suite-coverage.sh
                   (+ the hook scripts wired via .claude-plugin/plugin.json; multi-harness, see below)
 .qa/              config.json.example + per-run output
 qa-kit/           the optional step-gated process shell — 2nd plugin (own manifest, commands,
                   scripts, agent, README); depends on the engine, reuses its skills by qualified slug
-docs/adr/         0001–0024 architecture decisions (0022 = qa-kit, 0023 = TDQA data layer, 0024 = qa-kit multi-harness)
+docs/adr/         0001–0031 architecture decisions (0022 = qa-kit, 0023 = TDQA data layer, 0024 = qa-kit multi-harness,
+                  0030 = surface census + ship profile, 0031 = journeys in the checklist schema)
+adapters/census/  per-stack census adapters (laravel, nextjs, rails, django, express, generic) + README contract
 docs/             running-in-ci.md · extending-drivers.md · harness-adapters.md · superpowers/{specs,plans}/
 tools/            accuracy-harness/ — the recall/precision measurement harness backing the numbers
                   in "What a green run actually means" below (fixtures, scorer, measured findings)
@@ -66,7 +68,7 @@ harness-profiles.json, core/, harnesses/<codex|pi|opencode>/   multi-harness sou
 | Phase | Skill | Does |
 |---|---|---|
 | 0 Pre-flight | `driving-browser-qa` (`preflight.sh`), `bootstrapping-qa-config`, `discovering-user-roles`, `confirming-discovered-roles` | app live? auth present? enumerate+ping drivers; record build/deploy id. **No `.qa/config.json`? interactively bootstrap one.** Discover the project's roles and confirm each persona + its authz scope (3-round HITL → `personas[]` + `authz-matrix.json`); each run selects which personas/scenarios run |
-| 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep) |
+| 1 Analyze *(v1.1)* | `detecting-stack-profile`, `analyzing-feature-ui`, `taking-surface-census` | **detect the stack first** (language/framework/ORM/auth/routing — local source *and/or* the running app, any stack, prod-safe) → pick a playbook → build `surface-map.json` (server-bridge frontends derive surfaces from backend routes, not href-grep). Under the `ship`/`smoke` profile, also build the coverage census `.qa/census.json` (stack adapter + read-only per-role crawl) |
 | 2 Generate *(v1.1)* | `generating-qa-checklist`, `ingesting-spec-kit` | derive a human-editable checklist (or ingest one / import spec-kit artifacts), each criterion carrying its oracle; state-mutating criteria are tagged `human-action` |
 | 3 Verify | `driving-browser-qa`, `verifying-backend-persistence`, `verifying-computed-logic`, `walking-multistep-flows`, `probing-apis-through-browser`, `detecting-visual-ux`, `detecting-interaction-ux`, `fanning-out-criteria` | drive **through real UI affordances only** → bake → recompute/reconcile → probe → detect visual/a11y defects (incl. overlay/modal interaction sequences that dead-end or destroy their parent) → one verdict + confidence (sequential by default; `fanning-out-criteria` for the narrow parallel path) |
 | 4 Report | `writing-qa-reports` | `report.md` + single-file `report.html` + per-criterion evidence; honest DEFERRED |
@@ -184,6 +186,28 @@ The agent pre-flights (app live? auth? build id?), then verifies each criterion 
 
 Every run tracks its own cost as it goes: `cost-summary.sh` derives `{toolCalls, criteria, criteriaBudget, criteriaDone, budgetWarn, tokens}` from the run's own toolstream (never trusted from the agent's self-report), folded into `run-manifest.json`'s `cost` field. **"Tool-calls"** is the portable proxy metric across harnesses (wall-clock/token counts aren't uniformly available); `tokens` is filled in only when the harness exposes usage. You'll see it in three places: the `report.md`/`report.html` cost block (per-run tool-call + budget summary), the agent's own status update once `criteriaDone` crosses **80% of `criteriaBudget`** (a soft, advisory warning — never a hard stop, see `criteriaBudget` below), and JUnit exports via a `qa.cost` `<property>` on the `<testsuite>` element (e.g. `tool-calls=210 criteria=48 criteriaBudget=48/60 budgetWarn=true`) — see [running-in-ci.md](./docs/running-in-ci.md).
 
+### Ship profile and coverage census
+
+A run can carry a **profile** (`profile` in `.qa/config.json` or a qa-kit spec's `run-config.json`):
+`full` (the default, today's behaviour), `ship` or `smoke`. At pre-flight `scripts/profile.sh resolve`
+writes the run's `effective-config.json`; every later phase reads that file. `ship` turns on, for
+keys you did not set yourself: desktop 1440×900 + mobile 390×844, light + dark (via the driver's
+emulate-media capability), every locale the app ships, all UX detectors + axe + the critic, a
+blocking coverage gate, and 3 parallel read-only lanes. `smoke` is desktop, light, first locale, and
+an advisory coverage gate. Any key you set wins, including an explicit `[]`.
+
+The **coverage census** (`.qa/census.json`, skill `taking-surface-census`) lists every route, page,
+job, mail and notification the app declares (a stack adapter under `adapters/census/`, run through
+`exec.prefix` when the toolchain lives in a container) and what each role actually reaches (a
+read-only crawl that only follows links, tabs and menu/dialog openers classified safe, on any
+environment). qa-kit turns the census into generated criteria — a load-clean sweep, a deny matrix,
+ownership isolation, form input edge cases, UX revisits per viewport × locale × color scheme — and
+`/qa-analyze` blocks a ship run while any role × surface pair is neither covered nor excluded with a
+reason. **Journeys** (`journeys.json`) chain criteria end to end; under `ship` the P1 journeys run
+sequentially at the primary variant and exactly one is repeated at mobile in the first RTL locale.
+See [ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md) and
+[ADR-0031](./docs/adr/0031-journeys-in-checklist-schema.md).
+
 ### Configuration (`.qa/config.json`)
 
 - `baseUrl`, optional `apiOrigin` (set only for a cross-origin backend), `auth.storageState`.
@@ -192,6 +216,7 @@ Every run tracks its own cost as it goes: `cost-summary.sh` derives `{toolCalls,
 - `maxParallel` — cap on the narrow parallel path (most verification is **sequential by default** — see [ADR-0003](./docs/adr/0003-sequential-verification-narrow-pool.md)).
 - `allowApiWrites` (default **off**) + `seedableEnvMarker` — gate any direct API write/seed behind both.
 - `environment` (`auto`|`disposable`|`production`) + `allowBlackboxCrawl` — production targets force writes off, keep fingerprinting to a tiny serialized allowlist, and require opt-in before any black-box crawl. `fingerprintPaths` / `noProbePaths` / `crawlDenyPatterns` / `maxRequestsPerSecond` tune the prod-safety behavior.
+- Ship-QA keys ([ADR-0030](./docs/adr/0030-surface-census-and-ship-profile.md)): `profile`, `exec.prefix` (e.g. `ddev exec`, `docker compose exec -T app`), `census.maxVisits` (crawl budget per role, default 300), `ship.denyStatuses` (default `[401, 403, 404, 302]`), `colorSchemes`, `locales`, and `dataPolicy` (forbidden markers, email domain, date window, cleanup mode — checked by `scripts/data-policy.sh`). `responsiveMatrix`, `colorSchemes` and `locales` are left out of the example on purpose: a set value pins it for every profile, and `"responsiveMatrix": []` opts a ship run out of its mobile pass.
 - `criteriaBudget` (default **60**) — soft cap on criteria generated/run in one pass; a cost lever, not a coverage cut. Exceeding it during generation stops the checklist for a prioritized confirm/trim prompt rather than silently emitting everything; during a run it triggers an advisory warning at 80% consumption (see "Cost telemetry" above).
 
 ---
