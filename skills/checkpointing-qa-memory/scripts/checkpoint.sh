@@ -56,6 +56,9 @@
 #                 computed-logic|business-rule. `--confidence low` is allowed.
 #   STATE GATE    a pass on a mutating row (mutation-flag.sh) needs `bake` or
 #                 `probe` in --kinds; --nonui-reason does not bypass it.
+#   DATA POLICY GATE  with gates.dataPolicy "enforce", a mutating row's typed
+#                 values (action-trace.json) must pass scripts/data-policy.sh
+#                 check; input-validation rows skip date-window/email-domain.
 #
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
@@ -1306,6 +1309,131 @@ gate_state() {
   return 1
 }
 
+# typed_values_text <action-trace.json> — print every value the act TYPED,
+# one per line: each step's `text`, `value`, `values` and `fields[].value`
+# (browser_type / browser_fill_form / browser_select_option shapes). Only
+# typed data is checked — never the record's own metadata (run_id,
+# recorded_at, criterion_id, tool names, selectors), which would otherwise
+# trip a marker or a date window on every pass.
+typed_values_text() {
+  local file="$1"
+  if has_jq; then
+    jq -r '
+      [ (.steps // []) | if type == "array" then .[] else empty end | objects
+        | (.text?, .value?, .values?,
+           ((.fields? // []) | if type == "array" then .[] else empty end | objects | .value?)) ]
+      | [ .. | strings ] | join("\n")
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+out = []
+def walk(x):
+    if isinstance(x, str): out.append(x)
+    elif isinstance(x, list):
+        for i in x: walk(i)
+    elif isinstance(x, dict):
+        for i in x.values(): walk(i)
+steps = d.get("steps") if isinstance(d, dict) else None
+for st in (steps if isinstance(steps, list) else []):
+    if not isinstance(st, dict): continue
+    for k in ("text", "value", "values"):
+        if k in st: walk(st[k])
+    fl = st.get("fields")
+    for f in (fl if isinstance(fl, list) else []):
+        if isinstance(f, dict) and "value" in f: walk(f["value"])
+sys.stdout.write("\n".join(out))
+' "$file" 2>/dev/null || true
+  fi
+}
+
+# gate_data_policy <run-id> <crit-id> <persona> <row-json> — DATA POLICY GATE
+# (D4). Only when the effective config sets gates.dataPolicy == "enforce": on
+# a pass of a mutating row, the typed values in its action-trace.json must
+# pass scripts/data-policy.sh check (resolved relative to the engine root)
+# against the effective config. input-validation rows type invalid values on
+# purpose, so their date-window / email-domain violations are ignored; a
+# forbidden marker still refuses. An older install without data-policy.sh
+# gets a NOTE, never a refusal. At most the first 3 violations are listed.
+gate_data_policy() {
+  local run_id="$1" crit_id="$2" persona="$3" checklist_row="$4"
+  [[ -z "$checklist_row" ]] && return 0
+  [[ "$(effective_config_get "$run_id" gates.dataPolicy)" == "enforce" ]] || return 0
+  [[ "$(row_is_mutating "$checklist_row")" == "true" ]] || return 0
+
+  local trace
+  if [[ -n "$persona" ]]; then
+    trace="$(run_dir "$run_id")/evidence/${persona}/${crit_id}/action-trace.json"
+  else
+    trace="$(run_dir "$run_id")/evidence/${crit_id}/action-trace.json"
+  fi
+  [[ -f "$trace" ]] || return 0
+
+  local dp_dir dp_sh
+  dp_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$dp_dir" == "${BASH_SOURCE[0]}" ]] && dp_dir="."
+  dp_sh="${dp_dir}/../../../scripts/data-policy.sh"
+  if [[ ! -f "$dp_sh" ]]; then
+    echo "NOTE: data policy not checked for '${crit_id}' — scripts/data-policy.sh not found (older install); update the engine to enforce gates.dataPolicy." >&2
+    return 0
+  fi
+
+  local text
+  text="$(typed_values_text "$trace")"
+  [[ -z "$text" ]] && return 0
+  # data-policy.sh reads an argument starting with '@' as a file path.
+  [[ "$text" == @* ]] && text=$'\n'"$text"
+
+  local dp_eng="python3" out rc
+  has_jq && dp_eng="jq"
+  out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$dp_sh" check \
+        "$(run_dir "$run_id")/effective-config.json" "$text" 2>/dev/null)"
+  rc=$?
+  [[ "$rc" -eq 0 ]] && return 0
+  if [[ "$rc" -ne 1 ]]; then
+    echo "DATA POLICY GATE: ${crit_id} typed data could not be checked against dataPolicy (data-policy.sh exit ${rc}; check effective-config.json)" >&2
+    return 1
+  fi
+
+  local pairs
+  if has_jq; then
+    pairs="$(jq -r '.violations[]? | "\(.rule)=\(.match)"' <<< "$out" 2>/dev/null)"
+  else
+    pairs="$(python3 -c '
+import json, sys
+for v in json.loads(sys.argv[1]).get("violations", []):
+    print("%s=%s" % (v.get("rule"), v.get("match")))
+' "$out" 2>/dev/null)"
+  fi
+
+  local facts kind
+  facts="$(row_kind_and_oracle_source "$checklist_row")"
+  kind="${facts%%$'\n'*}"
+
+  local -a shown=()
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$kind" == "input-validation" ]]; then
+      case "$line" in
+        date-window=*|email-domain=*) continue ;;
+      esac
+    fi
+    shown+=("$line")
+    [[ "${#shown[@]}" -ge 3 ]] && break
+  done <<< "$pairs"
+  [[ "${#shown[@]}" -eq 0 ]] && return 0
+
+  local listed="${shown[0]}" i
+  for (( i = 1; i < ${#shown[@]}; i++ )); do listed+=", ${shown[$i]}"; done
+  echo "DATA POLICY GATE: ${crit_id} typed data violates dataPolicy: ${listed}" >&2
+  return 1
+}
+
 cmd_upsert() {
   local run_id="$1" crit_id="$2" verdict="$3"
   shift 3
@@ -1429,6 +1557,9 @@ cmd_upsert() {
     else
       gate_pass "$run_id" "$crit_id" "$kinds_csv" "$persona" "$nonui_reason" || exit 1
     fi
+
+    # After gate_pass, so the action-trace it reads is already validated.
+    gate_data_policy "$run_id" "$crit_id" "$persona" "$pass_row" || exit 1
   fi
 
   # The screenshot gate (0.10.0, ADR-0028): a pass or fail must be SEEN.
