@@ -28,6 +28,13 @@
 #      ({<key or dotted leaf>: "user"|"profile-default"}) for every profile-managed key
 #      present in the output, so the report can say what the profile turned on.
 #
+# gates.oracle IS INFORMATIONAL (ADR-0032). It is filled and reported like the other
+#   gates, but nothing reads its value: checkpoint.sh's ORACLE GATE and qa-verify's
+#   mirror switch on the row's fixture.expect.oracleSource or on profile `ship`, never on
+#   gates.oracle. A user value other than "enforce" (e.g. "advise", "off") therefore does
+#   NOT relax the gate; resolve prints a one-line NOTE on stderr saying so (stdout, the
+#   effective config, is unchanged). gates.coverage and gates.dataPolicy are live.
+#
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred; QA_ENGINE=jq|python3
 #   forces one). Both engines produce byte-identical output. No node/perl/grep -P.
 set -uo pipefail
@@ -60,7 +67,7 @@ done
 [ -z "$STACK" ] || [ -f "$STACK" ] || die "profile: stack-profile not found: $STACK"
 
 # Empty-file placeholders keep a single invocation shape for both engines.
-EMPTY_OBJ="$(mktemp)"; trap 'rm -f "$EMPTY_OBJ"' EXIT
+EMPTY_OBJ="$(mktemp)"; OUT="$(mktemp)"; trap 'rm -f "$EMPTY_OBJ" "$OUT"' EXIT
 printf '%s' '{}' > "$EMPTY_OBJ"
 RC_FILE="${RUNCFG:-$EMPTY_OBJ}"
 SP_FILE="${STACK:-$EMPTY_OBJ}"
@@ -114,7 +121,7 @@ if has_jq; then
             .cfg |= setpath($path; $defaults[$key]) | .src[$key] = "profile-default"
           else . end)
     | .cfg + {profile: $p, profileSources: .src}
-  ' 2>"$EMPTY_OBJ.err"
+  ' >"$OUT" 2>"$EMPTY_OBJ.err"
   rc=$?
   if [ "$rc" -ne 0 ]; then
     msg="$(sed -n 's/.*unknown profile: \(.*\)$/\1/p' "$EMPTY_OBJ.err" | head -n1)"
@@ -124,7 +131,7 @@ if has_jq; then
   fi
   rm -f "$EMPTY_OBJ.err"
 elif has_py; then
-  python3 - "$CONFIG" "$RC_FILE" "$SP_FILE" "$FLAG" "$FLAG_SET" "$SP_GIVEN" <<'PY' || exit 1
+  python3 - "$CONFIG" "$RC_FILE" "$SP_FILE" "$FLAG" "$FLAG_SET" "$SP_GIVEN" >"$OUT" <<'PY' || exit 1
 import json, sys
 cfg_path, rc_path, sp_path, flag, flag_set, sp_given = sys.argv[1:7]
 def load(path, what):
@@ -232,3 +239,22 @@ PY
 else
   die "profile.sh needs either 'jq' or 'python3'."
 fi
+
+cat "$OUT"
+
+# gates.oracle is informational (see header): say so when a user value suggests otherwise.
+if has_jq; then
+  ORACLE_NOTE="$(jq -r 'if (.gates|type)=="object" and (.gates|has("oracle")) and .gates.oracle != "enforce"
+                         then (.gates.oracle|tojson) else empty end' "$OUT" 2>/dev/null)"
+else
+  ORACLE_NOTE="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+g = d.get("gates")
+if isinstance(g, dict) and "oracle" in g and g["oracle"] != "enforce":
+    print(json.dumps(g["oracle"], ensure_ascii=False))' "$OUT" 2>/dev/null)"
+fi
+if [ -n "$ORACLE_NOTE" ]; then
+  echo "NOTE: gates.oracle is informational — ${ORACLE_NOTE} does not relax the ORACLE GATE, which follows each row's fixture.expect.oracleSource and profile ship (ADR-0032)." >&2
+fi
+exit 0

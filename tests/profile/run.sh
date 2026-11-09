@@ -99,6 +99,17 @@ run_engine() {
   QA_ENGINE=$E bash "$SH" resolve "$T/missing.json" >/dev/null 2>&1; check "$E missing config -> exit 1" "$?" "1"
   printf '%s' '[1]' > "$T/arr.json"
   QA_ENGINE=$E bash "$SH" resolve "$T/arr.json" >/dev/null 2>&1; check "$E non-object config -> exit 1" "$?" "1"
+
+  # gates_oracle_informational (M5): a user gates.oracle other than "enforce" is kept
+  # in the output untouched, and resolve says on stderr that it does not relax the gate.
+  printf '%s' '{"baseUrl":"https://innovation.localhost","gates":{"oracle":"advise"}}' > "$T/oracle-advise.json"
+  out="$(QA_ENGINE=$E bash "$SH" resolve "$T/oracle-advise.json" --profile ship 2>"$T/oracle.err")"; rc=$?
+  check "$E gates_oracle_informational exit 0" "$rc" "0"
+  check "$E gates_oracle_informational value kept" "$(q "$out" 'd["gates"]["oracle"]')" '"advise"'
+  check "$E gates_oracle_informational source user" "$(q "$out" 'd["profileSources"]["gates.oracle"]')" '"user"'
+  check "$E gates_oracle_informational note" "$(grep -c '^NOTE: gates.oracle is informational — "advise" does not relax the ORACLE GATE' "$T/oracle.err")" "1"
+  QA_ENGINE=$E bash "$SH" resolve "$FX/config-min.json" --stack-profile "$FX/stack-profile.json" --profile ship >/dev/null 2>"$T/oracle2.err"
+  check "$E gates_oracle_informational no note on default" "$(wc -c < "$T/oracle2.err" | tr -d ' ')" "0"
 }
 command -v jq >/dev/null 2>&1 && run_engine jq
 command -v python3 >/dev/null 2>&1 && run_engine python3
