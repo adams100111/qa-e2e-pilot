@@ -56,6 +56,16 @@ PY
   printf '%s' '[{"criterionId":"ZZ","decision":"accept"},{"criterionId":"D1","decision":"accept"},{"criterionId":"B1","decision":"edit"},{"criterionId":"B1b","decision":"accept"}]' > "$T/d2.json"
   QA_ENGINE=$E bash "$SH" apply "$T/c.json" "$T/d2.json" > "$T/a2.out"
   check "$E apply_reports_unmatched" "$(cat "$T/a2.out")" '{"accepted":0,"edited":0,"unknown":0,"unmatched":["B1","B1b","D1","ZZ"]}'
+  # fix round 1: human/spec rows, malformed expects, empty edit value -> unmatched, file unchanged
+  printf '%s' '[{"id":"N1","kind":"computed-logic","fixture":{"expect":{"path":"t","tolerance":0,"oracleSource":"llm-suggested"}}},{"id":"N2","kind":"computed-logic","fixture":{"expect":{"path":"t","value":"1","oracleSource":"llm-suggested"}}},{"id":"N3","kind":"computed-logic","fixture":{"expect":{"path":"t","value":"1","tolerance":0,"oracleSource":"llm-suggested"}}}]' > "$T/m2.json"
+  printf "%s" "$CHECKLIST" > "$T/c5.json"
+  printf '%s' '[{"criterionId":"H1","decision":"edit","value":"9"},{"criterionId":"S1","decision":"accept"},{"criterionId":"N1","decision":"accept"},{"criterionId":"N2","decision":"edit","value":"2"},{"criterionId":"N3","decision":"edit","value":""}]' > "$T/d5.json"
+  QA_ENGINE=$E bash "$SH" apply "$T/c5.json" "$T/d5.json" > "$T/a5.out"
+  check "$E apply_refuses_human_spec_and_malformed" "$(cat "$T/a5.out")" '{"accepted":0,"edited":0,"unknown":0,"unmatched":["H1","N1","N2","N3","S1"]}'
+  check "$E apply_refusal_leaves_checklist_values" "$(pyj '[r for r in d if r["id"]=="H1"][0]["fixture"]["expect"]["value"]' < "$T/c5.json")" "1"
+  printf '%s' '[{"criterionId":"N1","decision":"accept"},{"criterionId":"N2","decision":"accept"},{"criterionId":"N3","decision":"edit","value":""},{"criterionId":"N3","decision":"edit","value":"5"}]' > "$T/d6.json"
+  QA_ENGINE=$E bash "$SH" apply "$T/m2.json" "$T/d6.json" > "$T/a6.out"
+  check "$E apply_malformed_expect_unmatched" "$(cat "$T/a6.out")" '{"accepted":0,"edited":1,"unknown":0,"unmatched":["N1","N2"]}'
   printf '%s' '[{"criterionId":"AR1","decision":"edit","value":"٤٥٦ ريال"}]' > "$T/d3.json"
   QA_ENGINE=$E bash "$SH" apply "$T/c.json" "$T/d3.json" >/dev/null
   check "$E arabic_values_roundtrip value" "$(pyj '[r for r in d if r["id"]=="AR1"][0]["fixture"]["expect"]["value"]' < "$T/c.json")" "٤٥٦ ريال"
