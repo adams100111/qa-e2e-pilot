@@ -7,11 +7,14 @@
 
 ## Coverage
 
-<!-- From coverage.sh (mode from the effective config's gates.coverage): "<covered>/<total> pairs, <percent>%,
-     excluded <n>, mode <block|advise>". Then one line per `uncovered` pair (surface x role) and per
-     `covered-unscoped` pair (covered only by a row with no role; counts as uncovered under block), each with
-     the remediation (add a criterion via /qa-scenarios, or record an exclusion with a reason), plus any
-     journeys.sh validate errors. "(none)" if clean; "(no census)" when no census exists. -->
+<!-- From coverage.sh (mode from the effective config's gates.coverage; --roles spec-roles.json, --scope from
+     coverage-scope.txt, --defer-channels until Increment 4): "<functionalCovered> functional + <sweepCovered>
+     sweep-only / <total> pairs, <percent>%, excluded <n>, mode <block|advise>, scope <regex|whole app>". Then one
+     line per `uncovered` pair (surface x role, or x "*"), per `covered-unscoped` pair (covered only by a row
+     with no role) and per `covered-sweep` pair (covered only by generated load / deny / revisit rows) — both
+     count as uncovered under block — each with the remediation (add a criterion via /qa-scenarios, or record
+     an exclusion with a reason), plus any journeys.sh validate errors and who accepted --accept-crawl-only.
+     "(none)" if clean. Under ship, "(no census)" or an unavailable engine script makes the Verdict BLOCKED. -->
 
 ## Coverage gaps
 
@@ -53,6 +56,6 @@
 
 ## Verdict
 
-**BLOCKED** when the Coverage gate blocks (ship profile, uncovered pairs > 0, an empty or uncrawled census); otherwise **PASS (advisory)**. Set from `coverage.sh`'s exit code, never from a manual count.
+**BLOCKED** when the Coverage gate blocks (ship profile: uncovered pairs > 0, an empty, uncrawled or missing census, or an engine script that cannot be resolved); otherwise **PASS (advisory)**. While BLOCKED the next step is `/qa-scenarios`, never `/qa-run`. Set from `coverage.sh`'s exit code, never from a manual count.
 
 Apart from the Coverage gate this review is advisory only — the run is **not** blocked by it; this does not extend to plan defects. {{GAP_SUMMARY}}

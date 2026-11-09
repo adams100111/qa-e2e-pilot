@@ -8,7 +8,7 @@
  *
  * Returns: [{ formId, action, method, fields: [{ name, type, required, maxLength, min, max, pattern }] }]
  *   - formId:  the form's id, else its name, else `form[<index>]`
- *   - action:  the `action` attribute, else the current path; method upper-cased, default GET
+ *   - action:  the `action` attribute, else the current path; method upper-cased, null when the attribute is absent (script-submitted forms are not assumed GET)
  *   - fields:  user-editable controls only (hidden/submit/button/reset/image inputs excluded);
  *              `type` is the input type (default `text`), or `select` / `textarea`;
  *              `required` is the `required` attribute or `aria-required="true"`;
@@ -67,7 +67,7 @@ function inventoryForm(d) {
   return {
     formId: nullIfEmpty(d.id) || nullIfEmpty(d.name) || ('form[' + (d.index || 0) + ']'),
     action: nullIfEmpty(d.action),
-    method: d.method ? String(d.method).toUpperCase() : 'GET',
+    method: d.method ? String(d.method).toUpperCase() : null,
     fields: fields
   };
 }

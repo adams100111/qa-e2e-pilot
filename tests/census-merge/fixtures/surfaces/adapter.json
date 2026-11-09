@@ -1,0 +1,4 @@
+{"adapter":"laravel","ok":true,"surfaces":[
+ {"surfaceId":"GET /admin/hackathons/{hackathon}","kind":"endpoint","pattern":"/admin/hackathons/{hackathon}","method":"GET|HEAD","permissionHints":["can:hackathons.view"],"source":"adapter"},
+ {"surfaceId":"page:Admin/Hackathons/Show","kind":"page","pattern":"Admin/Hackathons/Show","method":null,"permissionHints":[],"source":"adapter"}],
+ "jobs":[],"mails":[],"notifications":[],"locales":["ar","en"],"warnings":[]}

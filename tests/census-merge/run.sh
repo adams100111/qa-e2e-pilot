@@ -69,6 +69,47 @@ run_engine() {
   # arabic: raw (not \u-escaped) UTF-8 in output
   check "$E arabic raw utf-8 in output" "$(grep -c 'تسجيل-الفريق' "$T/c.json")" "1"
 
+  # sampleUrls (contract §1, I6): first reached path+query per persona; fragment dropped, query kept
+  check "$E sample_urls two personas" "$(q "$T/c.json" "s('$PATHS')['sampleUrls']")" '{"admin":"/admin/hackathons/12/paths/7?tab=teams","participant":"/admin/hackathons/13/paths/2"}'
+  check "$E sample_urls skip unreached (403) visits" "$(q "$T/c.json" "s('GET /admin/hackathons/{hackathon}')['sampleUrls']")" '{"admin":"/admin/hackathons/12"}'
+  check "$E sample_urls empty when nobody reached" "$(q "$T/c.json" "s('GET /admin/reports')['sampleUrls']")" '{}'
+  check "$E sample_urls crawl-only arabic path kept raw" "$(q "$T/c.json" "s('GET /الأخبار')['sampleUrls']")" '{"participant":"/الأخبار"}'
+
+  # tab/dialog/sheet surfaces (contract §1, I9)
+  QA_ENGINE=$E bash "$SH" build --adapter "$FX/surfaces/adapter.json" --crawl "$FX/surfaces/crawl" --out "$T/s.json"; rc=$?
+  check "$E subsurfaces build exit 0" "$rc" "0"
+  check "$E subsurfaces ids" "$(q "$T/s.json" "[x['surfaceId'] for x in c['surfaces']]")" \
+    '["GET /admin/hackathons/{hackathon}","GET /legacy/board","GET /legacy/board#sheet:filters","page:Admin/Hackathons/Show","page:Admin/Hackathons/Show#dialog:تعديل-الهاكاثون","page:Admin/Hackathons/Show#tab:team-members"]'
+  check "$E subsurface tab kind+pattern+sources" "$(q "$T/s.json" "[s('page:Admin/Hackathons/Show#tab:team-members')[k] for k in ('kind','pattern','sources')]")" '["tab","Admin/Hackathons/Show",["crawl"]]'
+  check "$E subsurface tab reachedBy (403 not reached)" "$(q "$T/s.json" "s('page:Admin/Hackathons/Show#tab:team-members')['reachedBy']")" '["admin"]'
+  check "$E subsurface sampleUrls = parent's" "$(q "$T/s.json" "s('page:Admin/Hackathons/Show#tab:team-members')['sampleUrls']==s('page:Admin/Hackathons/Show')['sampleUrls']")" "True"
+  check "$E parent sampleUrls" "$(q "$T/s.json" "s('page:Admin/Hackathons/Show')['sampleUrls']")" '{"admin":"/admin/hackathons/12?lang=ar","judge":"/admin/hackathons/14"}'
+  check "$E dialog forms belong to the dialog surface" "$(q "$T/s.json" "[[f['formId'] for f in s('page:Admin/Hackathons/Show#dialog:تعديل-الهاكاثون')['forms']], len(s('page:Admin/Hackathons/Show')['forms'])]")" '[["hackathon-edit"],0]'
+  check "$E tab visit without subKey counts as its page" "$(q "$T/s.json" "len([x for x in c['surfaces'] if x['surfaceId'].endswith('#tab:')])")" "0"
+  check "$E sub of a crawl-only parent is crawl-only" "$(q "$T/s.json" "c['diffs']['crawlOnly']")" '["GET /legacy/board","GET /legacy/board#sheet:filters"]'
+  check "$E subsurfaces never unreachable" "$(q "$T/s.json" "c['diffs']['unreachable']")" '[]'
+
+  # forms only from visits that reached the surface (I12)
+  check "$E forms of a 403 visit are dropped" "$(q "$T/s.json" "[f['formId'] for x in c['surfaces'] for f in x['forms']]")" '["hackathon-edit"]'
+
+  # catch-all params (Next.js [...x] -> {x*}, [[...x]] -> {x*?})
+  QA_ENGINE=$E bash "$SH" build --adapter "$FX/catchall/adapter.json" --crawl "$FX/catchall/crawl" --out "$T/ca.json"; rc=$?
+  check "$E catchall exit 0" "$rc" "0"
+  check "$E catchall {x*} matches many segments" "$(q "$T/ca.json" "s('GET /docs/{slug*}')['sampleUrls']")" '{"viewer":"/docs/guides/setup/linux"}'
+  check "$E catchall literal beats {x*}" "$(q "$T/ca.json" "s('GET /docs/intro')['reachedBy']")" '["viewer"]'
+  check "$E catchall {x*} needs one segment" "$(q "$T/ca.json" "c['diffs']['crawlOnly']")" '["GET /docs"]'
+  check "$E catchall {x*?} matches zero or many" "$(q "$T/ca.json" "s('GET /shop/{cat*?}')['sampleUrls']")" '{"viewer":"/shop"}'
+
+  # --access is read with --slurpfile: a >1 MB access file still works (I12)
+  python3 -c '
+import json,sys
+s={"GET /h/{slug}":{"allowed":["admin","participant"],"source":"human","confirmed":True}}
+for i in range(12000): s["GET /filler/%05d" % i]={"allowed":["admin"],"source":"adapter","confirmed":False,"hints":["can:filler.view"]}
+json.dump({"version":1,"surfaces":s},open(sys.argv[1],"w"))' "$T/big-access.json"
+  QA_ENGINE=$E bash "$SH" build --adapter "$FX/adapter.json" --crawl "$FX/crawl" --access "$T/big-access.json" --out "$T/big.json"; rc=$?
+  check "$E big access file exit 0" "$rc" "0"
+  check "$E big access allowed copied" "$(q "$T/big.json" "s('GET /h/{slug}')['allowed']")" '["admin","participant"]'
+
   # argument errors
   QA_ENGINE=$E bash "$SH" build --adapter "$FX/adapter.json" --out "$T/x.json" >/dev/null 2>&1; check "$E missing --crawl dies" "$?" "1"
   QA_ENGINE=$E bash "$SH" build --adapter "$FX/nope.json" --crawl "$FX/crawl" --out "$T/x.json" >/dev/null 2>&1; check "$E missing adapter file dies" "$?" "1"
@@ -85,6 +126,11 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "arabic_urls_parity census byte-identical" "$(cmp -s "$X/j.json" "$X/p.json" && echo same || echo diff)" "same"
   QA_ENGINE=jq bash "$SH" build --adapter "$FX/adapter-failed.json" --crawl "$FX/crawl" --out "$X/jf.json"
   QA_ENGINE=python3 bash "$SH" build --adapter "$FX/adapter-failed.json" --crawl "$FX/crawl" --out "$X/pf.json"
+  for F in surfaces catchall; do
+    QA_ENGINE=jq bash "$SH" build --adapter "$FX/$F/adapter.json" --crawl "$FX/$F/crawl" --out "$X/j-$F.json"
+    QA_ENGINE=python3 bash "$SH" build --adapter "$FX/$F/adapter.json" --crawl "$FX/$F/crawl" --out "$X/p-$F.json"
+    check "cross-engine $F census byte-identical" "$(cmp -s "$X/j-$F.json" "$X/p-$F.json" && echo same || echo diff)" "same"
+  done
   check "cross-engine adapter-failure census byte-identical" "$(cmp -s "$X/jf.json" "$X/pf.json" && echo same || echo diff)" "same"
 fi
 echo "census-merge: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

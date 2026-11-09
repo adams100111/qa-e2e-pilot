@@ -57,7 +57,7 @@ MATRIX_EMPTY='[]'
 PRESERVE_SEED='{
   "baseUrl": "http://localhost:3000",
   "personas": [
-    { "id": "admin", "role": "admin", "plane": "global", "auth": "old-auth", "expectedSubject": "admin@corp.example" },
+    { "id": "admin", "role": "admin", "plane": "global", "auth": "old-auth", "expectedSubject": "admin@corp.example", "permissions": ["hackathons.*", "users.view"] },
     { "id": "reviewer", "role": "reviewer", "plane": "global", "auth": "old-auth-2", "expectedSubject": "rev@corp.example" }
   ]
 }'
@@ -168,6 +168,21 @@ for path_mode in jq py; do
   check "[$path_mode] new persona 'user' has no expectedSubject" \
     "$(python3 -c "import json;d=json.load(open('$LAST_CFG'))['personas'];print('expectedSubject' in next(p for p in d if p['id']=='user'))" 2>/dev/null)" \
     "False"
+
+  check "[$path_mode] admin keeps operator-set permissions[]" \
+    "$(python3 -c "import json;d=json.load(open('$LAST_CFG'))['personas'];print(json.dumps(next(p.get('permissions') for p in d if p['id']=='admin')))" 2>/dev/null)" \
+    '["hackathons.*", "users.view"]'
+  check "[$path_mode] new persona 'user' has no permissions" \
+    "$(python3 -c "import json;d=json.load(open('$LAST_CFG'))['personas'];print('permissions' in next(p for p in d if p['id']=='user'))" 2>/dev/null)" \
+    "False"
+
+  # --- permissions[] supplied by the personas-file wins and is validated ----
+  run_case "perm-new-$path_mode" "$fp" '[{"id":"admin","role":"admin","plane":"global","auth":"a","permissions":["ideas.view"]}]' '[]' --allow-empty
+  check "[$path_mode] personas-file permissions[] written" \
+    "$(python3 -c "import json;d=json.load(open('$LAST_CFG'))['personas'];print(json.dumps(d[0].get('permissions')))" 2>/dev/null)" '["ideas.view"]'
+  run_case "perm-bad-$path_mode" "$fp" '[{"id":"admin","role":"admin","plane":"global","auth":"a","permissions":"ideas.view"}]' '[]' --allow-empty
+  check "[$path_mode] non-array permissions rejected" "$([[ "$RC" -ne 0 ]] && echo yes)" "yes"
+  check "[$path_mode] bad permissions msg names permissions" "$(echo "$ERR" | grep -qi 'permissions' && echo yes)" "yes"
 
   if [[ "$path_mode" == "jq" ]]; then
     PRESERVE_CFG_JQ="$(cat "$LAST_CFG")"

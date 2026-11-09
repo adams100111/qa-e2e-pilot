@@ -45,7 +45,8 @@
 # key, but per-persona id it MERGES forward a small preserve-list of
 # operator-only keys (`expectedSubject` and, since 0.11.0, `expectedSubjects` --
 # the ground truth qa-verify.sh uses to hard-fail an acting-identity mismatch,
-# CONTEXT.md) from
+# CONTEXT.md -- plus the optional `permissions` string array that
+# qa-kit's surface-access.sh matches `can:X`/`permission:X` hints against) from
 # the OLD config onto the freshly discovered entry of the same id. Discovered
 # fields (id/role/plane/auth) always come from --personas-file; a persona id
 # dropped from --personas-file disappears from the config (still wholesale --
@@ -63,7 +64,7 @@ ALLOW_EMPTY=0
 # Operator-only keys preserved across wholesale personas regeneration, merged
 # forward per persona id. Single source of truth for both engine legs --
 # encoded to a JSON array string below without needing jq/python3 yet.
-PRESERVE_KEYS=(expectedSubject expectedSubjects)
+PRESERVE_KEYS=(expectedSubject expectedSubjects permissions)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,6 +95,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 if have jq; then
   jq -e 'type=="array" and length>0 and all(.[]; has("id") and has("role") and has("plane") and has("auth") and (.plane=="global" or .plane=="contextual"))' \
      "$PERSONAS_FILE" >/dev/null || { echo "write-persona-config: personas-file failed shape validation (need id/role/plane[global|contextual]/auth on every entry)" >&2; exit 4; }
+
+  # Optional `permissions` must be an array of strings when present.
+  jq -e 'all(.[]; (has("permissions") | not) or ((.permissions | type) == "array" and all(.permissions[]; type == "string")))' \
+     "$PERSONAS_FILE" >/dev/null || { echo "write-persona-config: personas-file permissions must be an array of strings" >&2; exit 4; }
 
   # Persona ids must be UNIQUE: checkpoints are keyed by (criterion_id, persona_id)
   # (ADR-0012); a duplicate id would let one persona's pass read back as covering
@@ -152,6 +157,8 @@ if not isinstance(personas, list) or not personas:
 for p in personas:
     if not all(k in p for k in ("id", "role", "plane", "auth")) or p.get("plane") not in ("global", "contextual"):
         sys.exit("write-persona-config: personas-file failed shape validation (need id/role/plane[global|contextual]/auth on every entry)")
+    if "permissions" in p and not (isinstance(p["permissions"], list) and all(isinstance(x, str) for x in p["permissions"])):
+        sys.exit("write-persona-config: personas-file permissions must be an array of strings")
 # Persona ids must be UNIQUE (ADR-0012): checkpoints are keyed by
 # (criterion_id, persona_id); a duplicate id would let one persona's pass read
 # back as covering another persona's untested run. Fail loud rather than collide.

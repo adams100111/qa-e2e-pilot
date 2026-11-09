@@ -37,6 +37,23 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    **Never hand-author `spec-roles.json`** — always via `spec-snapshot.sh` (re-run with different
    overrides to change it).
 
+   Then write the **persona input for generation** — the spec's roles plus the constitution personas'
+   `roles` and `permissions` (credentials are never copied):
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/surface-access.sh" personas \
+       .qa/specs/<target>/spec-roles.json .qa/config.json > .qa/specs/<target>/personas-for-generation.json
+   ```
+   `/qa-scenarios` passes this file to `generate-ship-criteria.sh --personas`. Re-run it whenever
+   `spec-roles.json` or the constitution changes. Relay its stderr warnings (a spec role with no
+   constitution persona, roles without `permissions`).
+
+4b. **Coverage scope (ship profile).** The coverage gate counts the whole census unless the spec says
+   which part of the app it covers. With the operator, write `.qa/specs/<target>/coverage-scope.txt` — one
+   line, a regex over census `surfaceId`s (e.g. `hackathon|^GET /h/`; unanchored search, plain syntax both
+   jq and Python accept). `/qa-scenarios` and `/qa-analyze` pass it as `coverage.sh --scope` and always
+   pass `--roles .qa/specs/<target>/spec-roles.json`, so only this spec's surfaces x roles are gated.
+   Omit the file only when the spec really targets the whole app.
+
 5. **Drift advisory.** If the constitution existed, run
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/spec-snapshot.sh" drift .qa/specs/<target>/spec-roles.json <current-version>`
    and print the result plainly (in sync, or "snapshotted from `<stamped>`, constitution now
@@ -168,8 +185,8 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    (`{id, priority: P1|P2|P3, roles: [personaId], steps: [criterionId…]}`). Draft them as the agent from the
    census (`.qa/census.json`: surfaces and what each role reaches) and the project docs/spec-kit — the real
    things users do end to end (sign in, create, submit, approve), not one journey per page. Then ask the
-   human to mark which are **P1** (the ones that must work to ship; P1 journeys get viewport/locale
-   revisits in the generated plan). Step ids are the checklist criterion ids `/qa-scenarios` will
+   human to mark which are **P1** (the ones that must work to ship). Every journey's surfaces get
+   read-only viewport/locale/scheme revisits in the generated plan; the priority orders them. Step ids are the checklist criterion ids `/qa-scenarios` will
    write, so at this point journeys may name steps that do not exist yet: the check that matters runs
    after `/qa-scenarios` writes `checklist.json` (and `/qa-analyze` reports it):
    `journeys.sh validate .qa/specs/<target>/journeys.json .qa/specs/<target>/checklist.json` — an

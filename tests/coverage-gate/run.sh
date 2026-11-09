@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Dual-engine tests for qa-kit/scripts/coverage.sh — per role x surface coverage of a checklist
-# against the census, and the ship-profile coverage gate.
+# against the census (functional vs sweep coverage, --scope / --roles filters, glob exclusions), and
+# the ship-profile coverage gate.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SH="$DIR/../../qa-kit/scripts/coverage.sh"
@@ -11,6 +12,7 @@ pass=0; fail=0
 TMPDIRS=()
 cleanup() { for d in "${TMPDIRS[@]}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
+SHARED="$(mktemp -d)"; TMPDIRS+=("$SHARED")
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 # q <file> <python expression over `c`> — prints the expression's value (json for lists/dicts).
 # r(surfaceId, personaId) returns that coverage row.
@@ -34,26 +36,28 @@ run_engine() {
   # all_covered_exit0
   cov "$C" "$ALL" --mode block > "$T/all.json"; rc=$?
   check "$E all_covered_exit0 exit" "$rc" "0"
-  check "$E all_covered counts" "$(q "$T/all.json" "$COUNTS")" '[7,7,0,0]'
+  check "$E all_covered counts" "$(q "$T/all.json" "$COUNTS")" '[8,8,0,0]'
   check "$E all_covered percent" "$(q "$T/all.json" 'c["percent"]')" "100"
-  check "$E all_covered pair order" "$(q "$T/all.json" '[[x["surfaceId"],x["personaId"]] for x in c["rows"]]')" '[["GET /admin/hackathons","admin"],["GET /h/{slug}","admin"],["GET /h/{slug}","participant"],["GET /الأخبار","participant"],["job:hackathons:close-registration","*"],["mail:App\\Mail\\TeamInvite","*"],["page:Admin/Hackathons/Show","admin"]]'
+  check "$E all_covered pair order" "$(q "$T/all.json" '[[x["surfaceId"],x["personaId"]] for x in c["rows"]]')" '[["GET /admin/hackathons","admin"],["GET /admin/reports","*"],["GET /h/{slug}","admin"],["GET /h/{slug}","participant"],["GET /الأخبار","participant"],["job:hackathons:close-registration","*"],["mail:App\\Mail\\TeamInvite","*"],["page:Admin/Hackathons/Show","admin"]]'
   check "$E all_covered each persona by its own row" "$(q "$T/all.json" '[r("GET /h/{slug}","admin")["criteria"],r("GET /h/{slug}","participant")["criteria"],c["unscopedCovered"]]')" '[["C-HACK-PAGE"],["C-HACK-VIEW"],0]'
   check "$E all_covered role field matches persona" "$(q "$T/all.json" 'r("GET /الأخبار","participant")["state"]')" "covered"
   check "$E all_covered channel pair covered by any persona" "$(q "$T/all.json" 'r("mail:App\\Mail\\TeamInvite","*")["criteria"]')" '["C-MAIL"]'
   check "$E all_covered no reason on covered rows" "$(q "$T/all.json" 'any("reason" in x for x in c["rows"])')" "False"
-  check "$E reachless surface makes no pair" "$(q "$T/all.json" 'any(x["surfaceId"]=="GET /admin/reports" for x in c["rows"])')" "False"
+  # unreached_declared_surface_is_a_star_pair (I2): an adapter surface nobody reached must still be covered
+  check "$E unreached adapter surface is a * pair" "$(q "$T/all.json" '[x["personaId"] for x in c["rows"] if x["surfaceId"]=="GET /admin/reports"]')" '["*"]'
+  check "$E * pair covered by a scoped functional row" "$(q "$T/all.json" 'r("GET /admin/reports","*")["criteria"]')" '["C-REPORTS"]'
 
   # unscoped_row_does_not_cover_role_pair_in_block
   U="$FX/checklist-unscoped.json"
   cov "$C" "$U" --mode block > "$T/ub.json" 2>/dev/null; rc=$?
   check "$E unscoped_row_does_not_cover_role_pair_in_block exit" "$rc" "1"
-  check "$E unscoped block counts" "$(q "$T/ub.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[7,5,0,2,2,71.4]'
+  check "$E unscoped block counts" "$(q "$T/ub.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[8,6,0,2,2,75]'
   check "$E unscoped rows labelled" "$(q "$T/ub.json" '[r("GET /h/{slug}","admin")["state"],r("GET /h/{slug}","admin")["criteria"],r("page:Admin/Hackathons/Show","admin")["state"]]')" '["covered-unscoped",["C-HACK-PAGE","C-HACK-ANY"],"covered-unscoped"]'
   check "$E scoped row wins over unscoped" "$(q "$T/ub.json" '[r("GET /h/{slug}","participant")["state"],r("GET /h/{slug}","participant")["criteria"]]')" '["covered",["C-HACK-VIEW"]]'
   check "$E channel pair covered by a persona-less row" "$(q "$T/ub.json" 'r("job:hackathons:close-registration","*")["state"]')" "covered"
   cov "$C" "$U" --mode advise > "$T/ua.json"; rc=$?
   check "$E unscoped advise exit 0" "$rc" "0"
-  check "$E unscoped advise counts toward covered" "$(q "$T/ua.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[7,7,0,0,2,100]'
+  check "$E unscoped advise counts toward covered" "$(q "$T/ua.json" '[c["total"],c["covered"],c["excluded"],c["uncovered"],c["unscopedCovered"],c["percent"]]')" '[8,8,0,0,2,100]'
   check "$E unscoped advise still labelled" "$(q "$T/ua.json" 'r("GET /h/{slug}","admin")["state"]')" "covered-unscoped"
 
   # empty_census_blocks
@@ -70,7 +74,7 @@ run_engine() {
   # uncovered_blocks
   cov "$C" "$PART" --mode block > "$T/pb.json" 2>"$T/pb.err"; rc=$?
   check "$E uncovered_blocks exit" "$rc" "1"
-  check "$E uncovered_blocks still prints coverage" "$(q "$T/pb.json" "$COUNTS")" '[7,2,0,5]'
+  check "$E uncovered_blocks still prints coverage" "$(q "$T/pb.json" "$COUNTS")" '[8,2,0,6]'
   check "$E uncovered_blocks persona must match" "$(q "$T/pb.json" '[r("GET /admin/hackathons","admin")["criteria"],r("GET /h/{slug}","admin")["state"],r("GET /h/{slug}","participant")["criteria"]]')" '[["C-ADMIN-LIST"],"uncovered",["C-HACK-PARTICIPANT"]]'
   check "$E uncovered_blocks uncovered criteria empty" "$(q "$T/pb.json" 'r("page:Admin/Hackathons/Show","admin")["criteria"]')" '[]'
   check "$E uncovered_blocks says why on stderr" "$(grep -c 'uncovered' "$T/pb.err")" "1"
@@ -82,10 +86,10 @@ run_engine() {
 
   # --defer-channels
   cov "$C" "$PART" --mode advise --defer-channels > "$T/pd.json"
-  check "$E defer_channels counts" "$(q "$T/pd.json" "$COUNTS")" '[7,2,2,3]'
+  check "$E defer_channels counts" "$(q "$T/pd.json" "$COUNTS")" '[8,2,2,4]'
   check "$E defer_channels reason" "$(q "$T/pd.json" '[r("job:hackathons:close-registration","*")["reason"],r("mail:App\\Mail\\TeamInvite","*")["state"]]')" '["channel checks arrive in increment 4","excluded"]'
   cov "$C" "$ALL" --mode advise --defer-channels > "$T/ad.json"
-  check "$E defer_channels never overrides a covered channel" "$(q "$T/ad.json" "$COUNTS")" '[7,7,0,0]'
+  check "$E defer_channels never overrides a covered channel" "$(q "$T/ad.json" "$COUNTS")" '[8,8,0,0]'
 
   # exclusion_without_reason_rejected
   for f in empty missing blank; do
@@ -97,19 +101,19 @@ run_engine() {
   # wildcard_persona_exclusion
   cov "$C" "$PART" --exclusions "$FX/exclusions-wildcard.json" --mode block > "$T/w.json" 2>/dev/null; rc=$?
   check "$E wildcard_persona_exclusion still blocks on others" "$rc" "1"
-  check "$E wildcard_persona_exclusion counts" "$(q "$T/w.json" "$COUNTS")" '[7,2,1,4]'
+  check "$E wildcard_persona_exclusion counts" "$(q "$T/w.json" "$COUNTS")" '[8,2,1,5]'
   check "$E wildcard_persona_exclusion excludes uncovered persona" "$(q "$T/w.json" '[r("GET /h/{slug}","admin")["state"],r("GET /h/{slug}","admin")["reason"]]')" '["excluded","public page, checked by the smoke profile"]'
   check "$E wildcard_persona_exclusion covered wins" "$(q "$T/w.json" '[r("GET /h/{slug}","participant")["state"],"reason" in r("GET /h/{slug}","participant")]')" '["covered",false]'
 
   # percent_rounding_one_decimal
-  check "$E percent_rounding 2/7 -> 28.6" "$(q "$T/pb.json" 'c["percent"]')" "28.6"
+  check "$E percent_rounding 2/8 -> 25" "$(q "$T/pb.json" 'c["percent"]')" "25"
   cov "$C" "$PART" --exclusions "$FX/exclusions-ok.json" --defer-channels --mode block > "$T/r.json" 2>/dev/null; rc=$?
   check "$E percent_rounding exit" "$rc" "1"
-  check "$E percent_rounding counts" "$(q "$T/r.json" "$COUNTS")" '[7,2,4,1]'
-  check "$E percent_rounding 2/3 -> 66.7 (excluded leave the denominator)" "$(q "$T/r.json" 'c["percent"]')" "66.7"
+  check "$E percent_rounding counts" "$(q "$T/r.json" "$COUNTS")" '[8,2,4,2]'
+  check "$E percent_rounding 2/4 -> 50 (excluded leave the denominator)" "$(q "$T/r.json" 'c["percent"]')" "50"
   check "$E percent_rounding arabic reason copied" "$(q "$T/r.json" 'r("GET /الأخبار","participant")["reason"]')" "صفحة الأخبار خارج نطاق هذا الإصدار"
   cov "$C" "$PART" --exclusions "$FX/exclusions-ok.json" --mode advise > "$T/r2.json"
-  check "$E percent_rounding 2/5 -> 40" "$(q "$T/r2.json" 'c["percent"]')" "40"
+  check "$E percent_rounding 2/6 -> 33.3" "$(q "$T/r2.json" 'c["percent"]')" "33.3"
 
   # adapter_warning_surfaces_in_coverage
   check "$E census warnings copied" "$(q "$T/all.json" 'c["warnings"]')" '["skipped vendor route: horizon"]'
@@ -127,6 +131,63 @@ run_engine() {
 
   # arabic: raw (not \u-escaped) UTF-8 in output
   check "$E arabic raw utf-8 in output" "$(grep -c 'الأخبار' "$T/r.json")" "1"
+
+  # sweep_rows_are_not_functional_coverage (I2) + non-GET / unreached declared surfaces + tab surfaces
+  cat > "$T/c2.json" <<'J'
+{"version":1,"adapter":"laravel","adapterOk":true,"jobs":[],"mails":[],"notifications":[],"warnings":[],
+ "diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},
+ "surfaces":[
+  {"surfaceId":"GET /admin/hackathons","kind":"endpoint","pattern":"/admin/hackathons","sources":["adapter","crawl"],"reachedBy":["admin"],"allowed":["admin"],"forms":[]},
+  {"surfaceId":"page:Admin/Hackathons/Show","kind":"page","pattern":"Admin/Hackathons/Show","sources":["adapter","crawl"],"reachedBy":["admin","participant"],"allowed":null,"forms":[]},
+  {"surfaceId":"page:Admin/Hackathons/Show#tab:الفرق","kind":"tab","pattern":"Admin/Hackathons/Show","sources":["crawl"],"reachedBy":["admin"],"allowed":null,"forms":[]},
+  {"surfaceId":"POST /admin/hackathons","kind":"endpoint","pattern":"/admin/hackathons","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]},
+  {"surfaceId":"DELETE /admin/hackathons/{hackathon}","kind":"endpoint","pattern":"/admin/hackathons/{hackathon}","sources":["adapter"],"reachedBy":[],"allowed":["admin"],"forms":[]},
+  {"surfaceId":"GET /old","kind":"page","pattern":"/old","sources":["crawl"],"reachedBy":[],"allowed":null,"forms":[]},
+  {"surfaceId":"GET /reports/{report}","kind":"endpoint","pattern":"/reports/{report}","sources":["adapter"],"reachedBy":[],"allowed":null,"forms":[]}]}
+J
+  cat > "$T/k2.json" <<'J'
+[{"id":"load-clean-get-admin-hackathons-admin-11111111","title":"load-clean:GET /admin/hackathons:admin","kind":"load-clean","tags":["independent","read-only","sweep"],"surfaceId":"GET /admin/hackathons","persona":"admin","action":"open"},
+ {"id":"C-LIST","kind":"happy-path","tags":["read-only"],"surfaceId":"page:Admin/Hackathons/Show","persona":"admin","action":"افتح هاكاثون الرياض للمياه"},
+ {"id":"load-clean-page-show-participant-22222222","kind":"load-clean","tags":["independent","read-only","sweep"],"surfaceId":"page:Admin/Hackathons/Show","persona":"participant","action":"open"},
+ {"id":"C-TEAMS","kind":"happy-path","tags":["read-only"],"surfaceId":"page:Admin/Hackathons/Show#tab:الفرق","persona":"admin","action":"افتح تبويب الفرق"},
+ {"id":"deny-post-admin-hackathons-participant-33333333","kind":"deny","tags":["deny-write-deferred","probe-needed","sweep"],"surfaceId":"POST /admin/hackathons","persona":"participant","action":"send"}]
+J
+  cov "$T/c2.json" "$T/k2.json" --mode block > "$T/sw.json" 2> "$T/sw.err"; rc=$?
+  check "$E sweep_only_pairs_block" "$rc" "1"
+  check "$E sweep pair order (non-GET + unreached declared are * pairs, crawl-only unreached none, tab counted)" "$(q "$T/sw.json" '[[x["surfaceId"],x["personaId"],x["state"]] for x in c["rows"]]')" \
+    '[["DELETE /admin/hackathons/{hackathon}","admin","uncovered"],["GET /admin/hackathons","admin","covered-sweep"],["GET /reports/{report}","*","uncovered"],["POST /admin/hackathons","*","covered-sweep"],["page:Admin/Hackathons/Show","admin","covered"],["page:Admin/Hackathons/Show","participant","covered-sweep"],["page:Admin/Hackathons/Show#tab:الفرق","admin","covered"]]'
+  check "$E functional vs sweep counts (block)" "$(q "$T/sw.json" '[c["total"],c["covered"],c["functionalCovered"],c["sweepCovered"],c["uncovered"],c["percent"]]')" '[7,2,2,3,5,28.6]'
+  check "$E sweep-only stated on stderr" "$(grep -c 'sweep-only pairs count as uncovered' "$T/sw.err")" "1"
+  cov "$T/c2.json" "$T/k2.json" --mode advise > "$T/swa.json"; rc=$?
+  check "$E sweep advise exit 0 and counted" "$rc$(q "$T/swa.json" '[c["covered"],c["functionalCovered"],c["sweepCovered"],c["uncovered"]]')" '0[5,2,3,2]'
+
+  # scope_and_roles_filters (I3)
+  cov "$T/c2.json" "$T/k2.json" --mode block --scope 'Show' > "$T/sc.json" 2>/dev/null
+  check "$E --scope keeps matching surfaces only" "$(q "$T/sc.json" '[[x["surfaceId"],x["personaId"]] for x in c["rows"]]')" '[["page:Admin/Hackathons/Show","admin"],["page:Admin/Hackathons/Show","participant"],["page:Admin/Hackathons/Show#tab:الفرق","admin"]]'
+  cov "$T/c2.json" "$T/k2.json" --mode block --scope '^page:Admin/Hackathons/Show$' --roles "$T/roles.json" > /dev/null 2>&1; check "$E --roles file missing exit 2" "$?" "2"
+  printf '%s' '{"constitutionVersion":"v1","roles":[{"id":"admin","role":"admin","plane":"global"}],"overrides":[]}' > "$T/roles.json"
+  cov "$T/c2.json" "$T/k2.json" --mode block --scope 'Show$|reports' --roles "$T/roles.json" > "$T/sr.json" 2>/dev/null; rc=$?
+  check "$E --roles keeps spec roles and * pairs" "$(q "$T/sr.json" '[[x["surfaceId"],x["personaId"]] for x in c["rows"]]')" '[["GET /reports/{report}","*"],["page:Admin/Hackathons/Show","admin"]]'
+  check "$E --scope + --roles gate on the filtered pairs" "$rc" "1"
+  cov "$T/c2.json" "$T/k2.json" --mode block --scope '^page:' --roles "$T/roles.json" > /dev/null 2>&1; rc=$?
+  check "$E scoped gate passes when the scope is covered" "$rc" "0"
+  printf '%s' '[{"id":"participant"}]' > "$T/roles-arr.json"
+  cov "$T/c2.json" "$T/k2.json" --mode advise --roles "$T/roles-arr.json" > "$T/ra.json"
+  check "$E --roles accepts a persona array" "$(q "$T/ra.json" 'sorted(set(x["personaId"] for x in c["rows"]))')" '["*","participant"]'
+  cov "$T/c2.json" "$T/k2.json" --mode advise --scope '([' > /dev/null 2>&1; check "$E invalid --scope regex exit 2" "$?" "2"
+  printf '%s' '{"nope":1}' > "$T/roles-bad.json"
+  cov "$T/c2.json" "$T/k2.json" --mode advise --roles "$T/roles-bad.json" > /dev/null 2>&1; check "$E roles file of unknown shape exit 2" "$?" "2"
+
+  # glob_exclusions (I3): * and ? in the exclusion surfaceId
+  printf '%s' '[{"surfaceId":"* /admin/hackathons*","personaId":"*","reason":"إدارة الهاكاثونات تغطيها رحلة لاحقة"},{"surfaceId":"GET /reports/{report?}","personaId":"*","reason":"not a glob hit: literal ? needs one char"},{"surfaceId":"GET /reports/{repor?}","personaId":"*","reason":"reports are out of scope"}]' > "$T/gx.json"
+  cov "$T/c2.json" "$T/k2.json" --mode block --exclusions "$T/gx.json" > "$T/gx.out" 2>/dev/null
+  check "$E glob_exclusions" "$(q "$T/gx.out" '[[x["surfaceId"],x["state"],x.get("reason")] for x in c["rows"] if x["state"]=="excluded"]')" \
+    '[["DELETE /admin/hackathons/{hackathon}","excluded","إدارة الهاكاثونات تغطيها رحلة لاحقة"],["GET /admin/hackathons","excluded","إدارة الهاكاثونات تغطيها رحلة لاحقة"],["GET /reports/{report}","excluded","reports are out of scope"],["POST /admin/hackathons","excluded","إدارة الهاكاثونات تغطيها رحلة لاحقة"]]'
+  check "$E glob exclusion never overrides functional coverage" "$(q "$T/gx.out" 'r("page:Admin/Hackathons/Show","admin")["state"]')" "covered"
+  printf '%s' '[{"surfaceId":"page:Admin/Hackathons/Show#tab:الفرق","personaId":"admin","reason":"exact ids still match"},{"surfaceId":"page:Admin/(Hackathons)/Show","personaId":"*","reason":"regex characters are literal"}]' > "$T/gl.json"
+  cov "$T/c2.json" "$T/k2.json" --mode advise --exclusions "$T/gl.json" > "$T/gl.out"
+  check "$E exclusion regex characters are literal" "$(q "$T/gl.out" 'r("page:Admin/Hackathons/Show","participant")["state"]')" "covered-sweep"
+  cp "$T/c2.json" "$SHARED/c2.json"; cp "$T/k2.json" "$SHARED/k2.json"; cp "$T/gx.json" "$SHARED/gx.json"; cp "$T/roles.json" "$SHARED/roles.json"
 
   # argument / input errors exit 2 (exit 1 is reserved for the gate)
   cov "$C" > /dev/null 2>&1; check "$E missing checklist arg exit 2" "$?" "2"
@@ -148,10 +209,12 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   while IFS='|' read -r cen chk args; do
     n=$((n+1))
     # shellcheck disable=SC2086
-    QA_ENGINE=jq bash "$SH" "$FX/$cen" "$FX/$chk" $args > "$X/j$n.json" 2>/dev/null
+    case "$cen" in /*) ;; *) cen="$FX/$cen"; chk="$FX/$chk" ;; esac
+    QA_ENGINE=jq bash "$SH" "$cen" "$chk" $args > "$X/j$n.json" 2>/dev/null
     # shellcheck disable=SC2086
-    QA_ENGINE=python3 bash "$SH" "$FX/$cen" "$FX/$chk" $args > "$X/p$n.json" 2>/dev/null
-    check "parity #$n ($chk $args) byte-identical" "$(cmp -s "$X/j$n.json" "$X/p$n.json" && echo same || echo diff)" "same"
+    QA_ENGINE=python3 bash "$SH" "$cen" "$chk" $args > "$X/p$n.json" 2>/dev/null
+    check "parity #$n produced output" "$([ -s "$X/j$n.json" ] && echo yes || echo no)" "yes"
+    check "parity #$n (${chk##*/} $args) byte-identical" "$(cmp -s "$X/j$n.json" "$X/p$n.json" && echo same || echo diff)" "same"
   done <<EOF
 census.json|checklist-all.json|--mode block
 census.json|checklist-partial.json|--mode advise
@@ -161,6 +224,8 @@ census-adapter-failed.json|checklist-all.json|--mode block --accept-crawl-only
 census.json|checklist-unscoped.json|--mode block
 census.json|checklist-unscoped.json|--mode advise
 census-empty.json|checklist-all.json|--mode block
+$SHARED/c2.json|$SHARED/k2.json|--mode block --exclusions $SHARED/gx.json
+$SHARED/c2.json|$SHARED/k2.json|--mode advise --scope Show$ --roles $SHARED/roles.json
 EOF
 fi
 echo "coverage-gate: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

@@ -5,5 +5,6 @@
   {"id":"C-NEWS","surface":"/الأخبار","kind":"load-clean","tags":["read-only"],"action":"عرض صفحة الأخبار","surfaceId":"GET /الأخبار","role":"participant"},
   {"id":"C-JOB","surface":"","kind":"business-rule","tags":[],"action":"Close registration after the deadline","surfaceId":"job:hackathons:close-registration"},
   {"id":"C-MAIL","surface":"","kind":"business-rule","tags":[],"action":"Team invite mail is sent","surfaceId":"mail:App\\Mail\\TeamInvite","persona":"admin"},
-  {"id":"C-NO-SURFACE","surface":"/admin","kind":"happy-path","tags":[],"action":"Open the dashboard"}
+  {"id":"C-NO-SURFACE","surface":"/admin","kind":"happy-path","tags":[],"action":"Open the dashboard"},
+  {"id":"C-REPORTS","surface":"/admin/reports","kind":"happy-path","tags":["read-only"],"action":"عرض تقرير المشاركة في هاكاثون الرياض","surfaceId":"GET /admin/reports","persona":"admin"}
 ]
