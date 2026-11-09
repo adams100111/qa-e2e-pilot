@@ -100,8 +100,8 @@ run_engine() {
   check "$E generator exit 0" "$rc" "0"
   check "$E generator_emits_deny_for_unconfirmed_overreach" "$(python3 -c '
 import json,sys
-r=next((x for x in json.load(open(sys.argv[1],encoding="utf-8")) if x["id"]=="deny:"+sys.argv[2]+":participant"),None)
-print(None if r is None else json.dumps(r["tags"]))' "$T/rows.json" "$PATHS")" '["independent", "needs-confirmation", "read-only"]'
+r=next((x for x in json.load(open(sys.argv[1],encoding="utf-8")) if x["title"]=="deny:"+sys.argv[2]+":participant"),None)
+print(None if r is None else json.dumps(r["tags"]))' "$T/rows.json" "$PATHS")" '["independent", "needs-confirmation", "probe-needed", "read-only", "sweep"]'
   check "$E generator reports unconfirmed entries on stderr" "$(grep -c 'unconfirmed surface-access entries' "$T/rows.err")" "1"
   check "$E apply by surface (sorted, deduped)" "$(q "$T/h.json" "[e('GET /h/{slug}')['allowed'],e('GET /h/{slug}')['source'],e('GET /h/{slug}')['confirmed']]")" '[["admin","participant"],"human",true]'
   check "$E apply arabic surface" "$(q "$T/h.json" "e('GET /الأخبار')['allowed']")" '["organizer","participant"]'
