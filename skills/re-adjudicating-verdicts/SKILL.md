@@ -62,7 +62,11 @@ bash "<skill-dir>/scripts/adjudication.sh" select .qa/runs/<run-id>
 ```
 
 Each line is `<criterionId>\t<persona>\t<why>`, `why` = `low-confidence-pass` or
-`ux-promoted-fail`. No lines → write `decisions.json` as `[]`, note "nothing to re-judge", stop.
+`ux-promoted-fail`. A record's verdict and confidence are read as the report shows them: when
+`verification.json` re-checked the record, its `verifierVerdict` and `confidence` count, so a pass
+`qa-verify` lowered to `low` is selected and one it overrode to `fail` is not. The capability
+banner's count and the report's **Re-adjudication** line use the same rule. No lines → write
+`decisions.json` as `[]`, note "nothing to re-judge", stop.
 
 ### Step 3 — Bundle each selected record
 
@@ -115,7 +119,8 @@ bash "<skill-dir>/scripts/adjudication.sh" apply .qa/runs/<run-id> \
 | `agree: false` | `blocked`/`deferred`/`error` | no change (already not a pass) |
 
 Exit 0 = all applied. Exit 1 = `ADJUDICATION: upgrades are not allowed` (nothing written), a
-rejected entry (unknown criterion or persona, malformed entry: skipped, the rest applied), or a
+rejected entry (unknown criterion or persona, a record `select` does not list, malformed entry:
+skipped, the rest applied), or a
 `checkpoint.sh` gate refusal. Report every `ADJUDICATION:` line to the operator; never edit
 `checkpoint.json` or the journal by hand to "fix" one.
 
@@ -129,7 +134,10 @@ into the hand-off.
 ### Step 7 — Hand off
 
 Tell the report phase how many records were re-judged, how many the verifier disputed, and which.
-A `verifier-disagrees:` record on a P1 journey criterion blocks `SHIP-READY` (D6).
+A `verifier-disagrees:` record on any P1 criterion (a P1 journey step or a row with priority P1)
+blocks `SHIP-READY` (D6). The report's **Re-adjudication** line reads `adjudication/` itself:
+re-judged and disputed counts, the unavailable banner, or `did not run — <n> low-confidence passes
+unreviewed`; an unreviewed P1 low-confidence pass blocks `SHIP-READY`.
 
 ## Hard Rules
 

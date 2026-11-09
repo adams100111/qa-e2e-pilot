@@ -156,11 +156,20 @@ C-UX${TAB}${TAB}ux-promoted-fail"
   check "$E apply lifting a fail refused unchanged" "$(rec "$P" C-UX "" verdict)/$(rec "$P" C-UX "" confidence)" "fail/high"
 
   # --- apply_agree_noop -------------------------------------------------------
-  printf '[{"criterionId":"C-HIGH","persona":"","agree":true,"reason":"bake row present"},{"criterionId":"C-LOW","persona":"admin","agree":true,"reason":"matches"}]' > "$P/d6.json"
+  printf '[{"criterionId":"C-LOW","persona":"admin","agree":true,"reason":"matches"}]' > "$P/d6.json"
   out="$(adj apply "$R" "$P/d6.json" 2>"$P/err")"; rc=$?
   check "$E apply_agree_noop rc" "$rc" "0"
   check "$E apply_agree_noop unchanged" "$(cmp -s "$R/checkpoint.json" "$P/cp.before" && echo same)" "same"
-  check "$E apply_agree_noop summary" "$(printf '%s\n' "$out" | tail -1)" "adjudication: applied=0 noop=2 rejected=0 failed=0"
+  check "$E apply_agree_noop summary" "$(printf '%s\n' "$out" | tail -1)" "adjudication: applied=0 noop=1 rejected=0 failed=0"
+
+  # --- apply_rejects_unselected (M3): a record select does not list is refused,
+  # even a high-confidence pass or a plain (non-UX) fail; the rest still apply.
+  printf '[{"criterionId":"C-HIGH","persona":"","agree":false,"reason":"no read-back"},{"criterionId":"C-PLAINFAIL","persona":"","agree":false,"reason":"banner visible"},{"criterionId":"C-HIGH","persona":"","agree":true,"reason":"fine"}]' > "$P/d6b.json"
+  out="$(adj apply "$R" "$P/d6b.json" 2>"$P/err")"; rc=$?
+  check "$E apply_rejects_unselected rc" "$rc" "1"
+  check "$E apply_rejects_unselected msg" "$(grep -c '^ADJUDICATION: rejected entry [0-9] (C-[A-Z]*): not selected for re-adjudication' "$P/err")" "3"
+  check "$E apply_rejects_unselected unchanged" "$(cmp -s "$R/checkpoint.json" "$P/cp.before" && echo same)" "same"
+  check "$E apply_rejects_unselected summary" "$(printf '%s\n' "$out" | tail -1)" "adjudication: applied=0 noop=0 rejected=3 failed=0"
 
   # --- apply_unknown_criterion_rejected --------------------------------------
   printf '[{"criterionId":"C-NOPE","persona":"","agree":false,"reason":"r"},{"criterionId":"C-LOW","persona":"admin","agree":false,"reason":"no read-back of the new row"},{"criterionId":"C-HIGH","agree":false,"reason":"r"},{"criterionId":"C-LOW","persona":"viewer","agree":false,"reason":"r"},"junk"]' > "$P/d7.json"
@@ -186,10 +195,11 @@ C-UX${TAB}${TAB}ux-promoted-fail"
     bash "$CP" r1 C-NU fail --confidence high --nonui-reason "the drag handle is canvas-drawn; the driver cannot reach it" --last-action "card did not move" >/dev/null 2>&1
     bash "$CP" r1 'C,UX2' fail --confidence high --last-action "label clipped" >/dev/null 2>&1
   )
-  printf '%s' '[{"id":"C-REFS","surface":"/budget","kind":"computed-logic","tags":[],"action":"see the remaining budget","role":"admin"},{"id":"C,UX2","surface":"/budget","kind":"happy-path","tags":["visual-ux"],"action":"view the budget card","role":"admin"}]' > "$R/checklist.json"
+  printf '%s' '[{"id":"C-REFS","surface":"/budget","kind":"computed-logic","tags":[],"action":"see the remaining budget","role":"admin"},{"id":"C-NU","surface":"/board","kind":"happy-path","tags":["interaction-ux"],"action":"drag the card to done","role":"admin"},{"id":"C,UX2","surface":"/budget","kind":"happy-path","tags":["visual-ux"],"action":"view the budget card","role":"admin"}]' > "$R/checklist.json"
   check "$E fixture C-REFS recorded" "$(rec "$P" C-REFS "" verdict)/$(rec "$P" C-REFS "" confidence)" "pass/low"
   check "$E fixture C-NU nonui" "$(rec "$P" C-NU "" confidence)" "low"
   check "$E rows_keep_commas_in_ids select" "$(adj select "$R")" "C-REFS${TAB}${TAB}low-confidence-pass
+C-NU${TAB}${TAB}ux-promoted-fail
 C,UX2${TAB}${TAB}ux-promoted-fail"
   printf '[{"criterionId":"C-REFS","persona":"","agree":false,"reason":"recompute oracle is the backend formula"},{"criterionId":"C-NU","persona":"","agree":false,"reason":"screenshot shows the card moved"}]' > "$P/d9.json"
   out="$(adj apply "$R" "$P/d9.json" 2>"$P/err")"; rc=$?
@@ -199,6 +209,27 @@ C,UX2${TAB}${TAB}ux-promoted-fail"
   check "$E evidence_refs_survive_disputed_pass kinds" "$(rec "$P" C-REFS "" kinds)" '["computed"]'
   check "$E nonui_reason_kept_on_disputed_fail" "$(rec "$P" C-NU "" nonUiActionReason)" "the drag handle is canvas-drawn; the driver cannot reach it"
   check "$E nonui disputed fail last_action" "$(rec "$P" C-NU "" last_action)" "verifier-disagrees: screenshot shows the card moved"
+
+  # --- select_uses_verification_confidence (M2): the record as the report shows it
+  P="$(make_fx)"; R="$P/.qa/runs/r1"
+  printf '%s' '[{"criterionId":"C-HIGH","persona":"","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"low","reasons":["identity unverifiable"]},{"criterionId":"C-LOW","persona":"admin","inRunVerdict":"pass","verifierVerdict":"fail","confidence":"high","reasons":["no-state-evidence"]},{"criterionId":"C-UX","persona":"","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"low","reasons":[]},{"criterionId":"__run__","persona":"","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"low"}]' > "$R/verification.json"
+  check "$E select_uses_verification_confidence" "$(adj select "$R")" "C-HIGH${TAB}${TAB}low-confidence-pass
+C-UX${TAB}${TAB}ux-promoted-fail"
+  check "$E capability counts verification confidence" "$(adj capability codex "$R")" "re-adjudication unavailable on codex; 1 low-confidence passes unreviewed"
+  printf '[{"criterionId":"C-HIGH","persona":"","agree":false,"reason":"identity of the acting user not shown"}]' > "$P/dv.json"
+  adj apply "$R" "$P/dv.json" >/dev/null 2>"$P/err"; rc=$?
+  check "$E apply verifier-lowered pass rc" "$rc" "0"
+  check "$E apply verifier-lowered pass verdict" "$(rec "$P" C-HIGH "" verdict)/$(rec "$P" C-HIGH "" confidence)" "blocked/low"
+  printf '[{"criterionId":"C-LOW","persona":"admin","agree":false,"reason":"r"}]' > "$P/dv2.json"
+  adj apply "$R" "$P/dv2.json" >/dev/null 2>"$P/err"; rc=$?
+  check "$E apply verifier-overridden pass not selected rc" "$rc" "1"
+  check "$E apply verifier-overridden pass untouched" "$(rec "$P" C-LOW admin verdict)" "pass"
+  printf '[]' > "$R/verification.json"
+  check "$E select empty verification" "$(adj select "$R")" "C-LOW${TAB}admin${TAB}low-confidence-pass
+C-UX${TAB}${TAB}ux-promoted-fail"
+  printf 'not json' > "$R/verification.json"
+  check "$E select unreadable verification falls back" "$(adj select "$R")" "C-LOW${TAB}admin${TAB}low-confidence-pass
+C-UX${TAB}${TAB}ux-promoted-fail"
 
   # --- capability -------------------------------------------------------------
   P="$(make_fx)"; R="$P/.qa/runs/r1"

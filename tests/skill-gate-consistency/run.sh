@@ -217,5 +217,24 @@ else
   bad "required-kinds.sh not found at $REQUIRED_KINDS"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. Every command that receives a finished run back from the agent (/qa-run,
+#    /qa-resume) re-adjudicates it when the agent could not (ADR-0033: the
+#    dispatched agent cannot start a fresh verifier), then re-runs qa-verify,
+#    the renderer and the bug export. Checked in core/ and the generated
+#    repo-root copies.
+# ---------------------------------------------------------------------------
+for cmd in qa-run qa-resume; do
+  for f in "$ROOT/core/commands/$cmd.md" "$ROOT/commands/$cmd.md"; do
+    rel="${f#"$ROOT"/}"
+    missing=""
+    for needle in "re-adjudicating-verdicts" "adjudication/" "scripts/qa-verify.sh" "scripts/render-report.sh" "scripts/bug-export.sh"; do
+      grep -qF "$needle" "$f" || missing="$missing $needle"
+    done
+    if [[ -z "$missing" ]]; then ok "$rel re-adjudicates a returned run and re-renders"
+    else bad "$rel lacks the re-adjudication step (missing:$missing)"; fi
+  done
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

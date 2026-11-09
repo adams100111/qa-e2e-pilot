@@ -79,8 +79,15 @@ what 0.11.0 passed, **except the state gate** (E).
 **Ship readiness** when the run has `coverage.json` or `journeys.json`, or the profile is `ship`.
 `SHIP-READY` only when: census coverage has no uncovered pair; every P1 journey passed (same rule as
 `journeys.sh status`); no P1 criterion failed or errored at a coding layer
-(`route|service|migration|DB`); and `qa-verify` overrode no P1 criterion. A pass the re-adjudicator
-disputed is `blocked`, so its journey is not `pass` and the verdict blocks through the journey rule. Otherwise
+(`route|service|migration|DB`); `qa-verify` overrode no P1 criterion; the re-adjudicator (ADR-0033)
+disputed no P1 criterion — a record whose latest `last_action` starts `verifier-disagrees:`, on a
+journey step or on any row with priority `P1`, blocks on its own, not only through its journey; and
+no P1 low-confidence pass is left unreviewed (re-adjudication did not run, was unavailable on the
+harness, or has no decision for it). Journey steps use the verifier-adjusted verdicts and the
+journey line names disputed steps. A **Re-adjudication** line reports re-judged and disputed counts
+from `adjudication/decisions.json`, the `unavailable.txt` banner, or `did not run — <n>
+low-confidence passes unreviewed`, counted on the confidence the report shows (after
+`verification.json`), the same rule `adjudication.sh select` uses. Otherwise
 `NOT SHIP-READY` with each failing condition listed. It fails closed: a missing `coverage.json`
 (unknown), no P1 journey declared, a failed adapter, an empty census, a missing or out-of-date
 `verification.json` on P1 criteria, and a P1 fail with an unknown layer all block. An FE fail on a P1

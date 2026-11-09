@@ -289,35 +289,66 @@ function buildModel(runDir) {
 
 // ---------------------------------------------------------------------------
 // Ship readiness (D6): SHIP-READY iff census uncovered = 0, every P1 journey
-// passes, no coding-layer (route|service|migration|DB) fail on a P1 criterion
-// and no verifier override on a P1 criterion. Null (no section) for a run with
-// neither coverage.json nor journeys.json whose profile is not "ship".
+// passes, no coding-layer (route|service|migration|DB) fail on a P1 criterion,
+// no verifier override or re-adjudication dispute on a P1 criterion, and no P1
+// low-confidence pass left unreviewed by re-adjudication (ADR-0033). Null (no
+// section) for a run with neither coverage.json nor journeys.json whose
+// profile is not "ship".
 // ---------------------------------------------------------------------------
 const CODING_LAYERS = ["route", "service", "migration", "db"];
+const DISPUTED_PREFIX = "verifier-disagrees:";
+const isDisputed = (lastAction) => String(lastAction || "").startsWith(DISPUTED_PREFIX);
 
 // Same rule as scripts/journeys.sh status (after ADR-0029 supersession), over
 // the raw checkpoint rows: a persona-less row is dropped when a persona-scoped
 // row for the criterion is strictly later; any fail|error -> fail, all pass ->
 // pass, otherwise incomplete. Journey: any failed step -> fail; else all pass.
-function journeyStatus(journeys, checkpointRows) {
+// `adjust(row)` maps a raw row to the verdict the report shows for it (the
+// verifier's where verification.json re-checked it, M7); a step whose record
+// the re-adjudicator disputed is marked `disputed`.
+function journeyStatus(journeys, checkpointRows, adjust) {
   const rows = checkpointRows.filter((c) => c && typeof c === "object");
-  const stepVerdict = (id) => {
+  const verdictOf = adjust || ((r) => r.verdict);
+  const step = (id) => {
     const mine = rows.filter((r) => r.criterion_id === id);
     const pr = mine.filter((r) => (r.persona || "") !== "");
     const eff = mine.filter((r) => (r.persona || "") === ""
       && !pr.some((p) => String(p.checkpointed_at || "") > String(r.checkpointed_at || ""))).concat(pr);
-    const vs = eff.map((r) => r.verdict);
-    if (!vs.length) return "incomplete";
-    if (vs.some((v) => v === "fail" || v === "error")) return "fail";
-    if (vs.every((v) => v === "pass")) return "pass";
-    return "incomplete";
+    const disputed = eff.some((r) => isDisputed(r.last_action));
+    const vs = eff.map(verdictOf);
+    if (!vs.length) return { verdict: "incomplete", disputed };
+    if (vs.some((v) => v === "fail" || v === "error")) return { verdict: "fail", disputed };
+    if (vs.every((v) => v === "pass")) return { verdict: "pass", disputed };
+    return { verdict: "incomplete", disputed };
   };
   return journeys.filter((j) => j && typeof j === "object").map((j) => {
-    const steps = (Array.isArray(j.steps) ? j.steps : []).map((id) => ({ criterionId: id, verdict: stepVerdict(id) }));
+    const steps = (Array.isArray(j.steps) ? j.steps : []).map((id) => Object.assign({ criterionId: id }, step(id)));
     const verdict = steps.some((s) => s.verdict === "fail") ? "fail"
       : (steps.length > 0 && steps.every((s) => s.verdict === "pass") ? "pass" : "incomplete");
     return { id: j.id, priority: j.priority, steps, verdict };
   });
+}
+
+// readAdjudication(runDir) -> what re-adjudication left in adjudication/ (ADR-0033):
+// {state: "ran"|"unavailable"|"not-run", decisions, banner, refused:[label]}.
+function readAdjudication(runDir) {
+  const dir = path.join(runDir, "adjudication");
+  const refused = [];
+  try {
+    for (const line of fs.readFileSync(path.join(dir, "apply.txt"), "utf8").split("\n")) {
+      const m = /^ADJUDICATION: checkpoint\.sh refused (\S+?):/.exec(line);
+      if (m) refused.push(m[1]);
+    }
+  } catch (_) { /* no apply.txt */ }
+  const raw = readJSON(path.join(dir, "decisions.json"), undefined);
+  if (raw !== undefined) {
+    const decisions = (Array.isArray(raw) ? raw : []).filter((d) => d && typeof d === "object" && typeof d.criterionId === "string");
+    return { state: "ran", decisions, banner: "", refused, malformed: !Array.isArray(raw) };
+  }
+  let banner = null;
+  try { banner = fs.readFileSync(path.join(dir, "unavailable.txt"), "utf8").split("\n").find((l) => l.trim()) || ""; } catch (_) { banner = null; }
+  if (banner !== null) return { state: "unavailable", decisions: [], banner: banner.trim(), refused };
+  return { state: "not-run", decisions: [], banner: "", refused };
 }
 
 function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
@@ -331,6 +362,13 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
 
   const conditions = [];
   const lines = [];
+  const key = (id, persona) => String(id) + "\u0000" + String(persona || "");
+  const byKey = {};
+  for (const c of criteria) byKey[key(c.id, c.persona)] = c;
+  const adjust = (r) => {
+    const c = byKey[key(r.criterion_id, r.persona)];
+    return c && c.inRun === String(r.verdict || "").toLowerCase() ? c.verdict : r.verdict;
+  };
 
   let census;
   if (hasCov && Number.isFinite(coverage.uncovered)) {
@@ -350,14 +388,18 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
   const p1Ids = new Set();
   let p1Text;
   if (hasJ) {
-    const statuses = journeyStatus(journeysRaw, checkpointRows);
+    const statuses = journeyStatus(journeysRaw, checkpointRows, adjust);
     const p1 = statuses.filter((j) => j.priority === "P1");
     for (const j of p1) for (const s of j.steps) p1Ids.add(String(s.criterionId));
     if (!p1.length) { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
     else {
-      const bad = p1.filter((j) => j.verdict !== "pass");
-      p1Text = (p1.length - bad.length) + " of " + p1.length + " pass" + (bad.length ? " · " + bad.map((j) => j.id + " " + j.verdict).join(", ") : "");
-      for (const j of bad) conditions.push("P1 journey " + j.id + " is " + j.verdict);
+      const bad = p1.filter((j) => j.verdict !== "pass" || j.steps.some((s) => s.disputed));
+      const state = (j) => {
+        const d = j.steps.filter((s) => s.disputed).map((s) => s.criterionId);
+        return j.verdict + (d.length ? " (disputed: " + d.join(", ") + ")" : "");
+      };
+      p1Text = (p1.length - bad.length) + " of " + p1.length + " pass" + (bad.length ? " · " + bad.map((j) => j.id + " " + state(j)).join(", ") : "");
+      for (const j of bad) conditions.push("P1 journey " + j.id + " is " + state(j));
     }
   } else { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
   lines.push(["P1 journeys", p1Text]);
@@ -375,18 +417,52 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
     + (listed.length ? " · listed, not blocking: " + listed.map(fmt).join(", ") : "")]);
   for (const f of blocking) conditions.push((f.layer ? "coding-layer fail on P1 " : "fail on P1 with unknown layer ") + fmt(f));
 
+  // A record the re-adjudicator disputed (ADR-0033) blocks on any P1 criterion,
+  // journey step or priority P1 alike, verified or not (I1).
+  const disputedP1 = [...new Set(criteria.filter((c) => isDisputed(c.lastAction) && isP1(c)).map((c) => c.id))];
+  const disputedText = disputedP1.map((id) => id + " (disputed)");
   if (!verified) {
-    lines.push(["Verifier overrides on P1", "unknown"]);
+    lines.push(["Verifier overrides on P1", "unknown" + (disputedText.length ? " · " + disputedText.join(", ") : "")]);
     conditions.push("not independently verified");
   } else {
-    const ov = criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id);
-    lines.push(["Verifier overrides on P1", ov.length ? ov.join(", ") : "none"]);
+    const ov = [...new Set(criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id))];
+    const shown = ov.concat(disputedText);
+    lines.push(["Verifier overrides on P1", shown.length ? shown.join(", ") : "none"]);
     for (const id of ov) conditions.push("verifier override on P1 " + id);
     const stale = criteria.filter((c) => c.stale && isP1(c)).map((c) => c.id);
     for (const id of stale) conditions.push("verification out of date on P1 " + id);
   }
+  for (const id of disputedP1) conditions.push("verifier disputed P1 " + id);
 
-  lines.push(["Low-confidence passes", String(criteria.filter((c) => c.verdict === "pass" && c.confidence === "low").length)]);
+  // Re-adjudication (I2). Unreviewed = a low-confidence pass (as shown, i.e.
+  // after verification.json) with no decision in adjudication/decisions.json —
+  // the same selection adjudication.sh select makes. Only P1 ones block.
+  const adj = readAdjudication(runDir);
+  const lowPasses = criteria.filter((c) => c.verdict === "pass" && c.confidence === "low");
+  const judged = new Set(adj.decisions.map((d) => key(d.criterionId, d.persona)));
+  const unreviewed = lowPasses.filter((c) => !judged.has(key(c.id, c.persona)));
+  const unreviewedP1 = [...new Set(unreviewed.filter(isP1).map((c) => c.id))];
+  let adjText;
+  if (adj.state === "ran") {
+    const disputed = adj.decisions.filter((d) => d.agree === false);
+    adjText = "re-judged " + adj.decisions.length + " · disputed " + disputed.length
+      + (disputed.length ? " (" + [...new Set(disputed.map((d) => d.criterionId))].join(", ") + ")" : "")
+      + (unreviewed.length ? " · " + unreviewed.length + " low-confidence passes not re-judged" : "")
+      + (adj.refused.length ? " · " + adj.refused.length + " decision(s) not applied (see adjudication/apply.txt)" : "");
+    if (unreviewedP1.length) conditions.push(unreviewedP1.length + " P1 low-confidence pass(es) not re-judged: " + unreviewedP1.join(", "));
+    if (adj.malformed) conditions.push("adjudication/decisions.json is not a JSON array");
+  } else if (adj.state === "unavailable") {
+    adjText = adj.banner || "re-adjudication unavailable";
+    if (unreviewedP1.length) conditions.push("re-adjudication unavailable — " + unreviewedP1.length + " P1 low-confidence pass(es) unreviewed: " + unreviewedP1.join(", "));
+  } else {
+    adjText = "did not run — " + unreviewed.length + " low-confidence passes unreviewed";
+    if (unreviewedP1.length) conditions.push("re-adjudication did not run — " + unreviewedP1.length + " P1 low-confidence pass(es) unreviewed: " + unreviewedP1.join(", "));
+  }
+  const refusedP1 = [...new Set(adj.refused.map((l) => l.split("@")[0]).filter((id) => p1Ids.has(id) || (rows[id] && rows[id].priority === "P1")))];
+  for (const id of refusedP1) conditions.push("re-adjudication decision on P1 " + id + " was not applied");
+  lines.push(["Re-adjudication", adjText]);
+
+  lines.push(["Low-confidence passes", String(lowPasses.length)]);
   lines.push(["Flaky", criteria.some((c) => c.flaky !== null) ? String(criteria.filter((c) => c.flaky === true).length) : "not tracked"]);
   lines.push(["Regression suite", "not yet available"]);
 
