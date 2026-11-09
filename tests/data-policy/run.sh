@@ -57,6 +57,21 @@ run_engine() {
   # long values truncated to 80
   out="$(chk "$P" "$(printf 'x%.0s' $(seq 1 120)) bot")"; rc=$?
   check "$E truncated value" "$(q "$out" 'len(d["violations"][0]["value"])')" "80"
+  # --kind input-validation: date-window and email-domain skipped, markers still enforced (I10)
+  out="$(chk "$P" "starts 2025-12-31 reach faisal@gmail.com" --kind input-validation)"; rc=$?
+  check "$E kind_input_validation skips date+email rc" "$rc" "0"
+  out="$(chk "$P" --kind input-validation "dummy 2025-12-31")"; rc=$?
+  check "$E kind_input_validation keeps markers rc" "$rc" "1"
+  check "$E kind_input_validation keeps markers rule" "$(q "$out" '[v["rule"] for v in d["violations"]]')" '["forbidden-marker"]'
+  out="$(chk "$P" "starts 2025-12-31" --kind business-rule)"; rc=$?
+  check "$E other kind still enforces date window" "$rc" "1"
+  chk "$P" "x" --kind >/dev/null 2>&1; check "$E --kind without value rc" "$?" "2"
+  # masking: sensitive keys / name fields are checked but never echoed (I10)
+  out="$(chk "$P" @"$FX/input-sensitive.json")"; rc=$?
+  check "$E masked rc" "$rc" "1"
+  check "$E masked: secret values never echoed" "$(printf '%s' "$out" | grep -c 'gmail\|2019-01-01\|qa bot')" "0"
+  check "$E masked: violations" "$(q "$out" '[[v["rule"],v["value"],v["match"]] for v in d["violations"]]')" \
+    '[["forbidden-marker","[masked]","qa"],["forbidden-marker","[masked]","bot"],["email-domain","[masked]","[masked]"],["date-window","[masked]","[masked]"],["forbidden-marker","[masked]","dummy"],["forbidden-marker","Please ignore this dummy entry","dummy"],["email-domain","[masked]","[masked]"]]'
   # usage errors
   chk "$P" >/dev/null 2>&1; check "$E usage rc" "$?" "2"
   QA_ENGINE=$E bash "$SH" bogus >/dev/null 2>&1; check "$E bad subcommand rc" "$?" "2"
@@ -81,7 +96,7 @@ for e in "${engines[@]}"; do run_engine "$e"; done
 # parity: byte-identical output across engines.
 if [ "${#engines[@]}" -eq 2 ]; then
   P="$FX/config-policy.json"
-  for args in "check $P @$FX/input-nested.json" "check $P مرحبا_qa_فيصل@x.com_2027-01-01_اختبار" "check $FX/config-nopolicy.json x"; do
+  for args in "check $P @$FX/input-nested.json" "check $P @$FX/input-sensitive.json" "check $P @$FX/input-sensitive.json --kind input-validation" "check $P مرحبا_qa_فيصل@x.com_2027-01-01_اختبار" "check $FX/config-nopolicy.json x"; do
     a="$(QA_ENGINE=jq bash "$SH" $args 2>&1)"; b="$(QA_ENGINE=python3 bash "$SH" $args 2>&1)"
     check "parity: $args" "$a" "$b"
   done
