@@ -257,7 +257,8 @@ function buildModel(runDir) {
       overridden: checked && verdict !== inRun, reasons,
       title: asText(row.title || row.label || row.surface || ""), oracle: asText(row.oracle || ""),
       tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
-      flaky: c.flaky === true || (Array.isArray(row.tags) && row.tags.includes("flaky")),
+      flaky: typeof c.flaky === "boolean" ? c.flaky : (Array.isArray(row.tags) && row.tags.includes("flaky") ? true : null),
+      stale: !!(v && v.inRunVerdict !== inRun),
       lastAction: asText(c.last_action || ""), kinds: Array.isArray(c.kinds) ? c.kinds.map(String) : [],
       bugRef: c.bug_ref ? String(c.bug_ref) : "", nonUi: asText(c.nonUiActionReason || ""),
       shots: ev.shots, files: ev.files, anchor: "c-" + slug(c.criterion_id + (c.persona ? "-" + c.persona : "")),
@@ -281,7 +282,7 @@ function buildModel(runDir) {
     evidencedTotal: evidenced.length, evidencedWithShot: evidenced.filter((c) => c.shots.some((s) => !s.legacy)).length,
     shotCount, bugs, traceability, superseded, outOfPlan,
     distinct: new Set(criteria.map((c) => c.id)).size,
-    ship: buildShip(runDir, criteria, rows, bugs, allRows),
+    ship: buildShip(runDir, criteria, rows, bugs, allRows, verification !== null),
   };
 }
 
@@ -319,7 +320,7 @@ function journeyStatus(journeys, checkpointRows) {
   });
 }
 
-function buildShip(runDir, criteria, rows, bugs, checkpointRows) {
+function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
   const coverage = readJSON(path.join(runDir, "coverage.json"), null);
   const journeysRaw = readJSON(path.join(runDir, "journeys.json"), null);
   const cfg = readJSON(path.join(runDir, "effective-config.json"), null);
@@ -333,10 +334,16 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows) {
 
   let census;
   if (hasCov && Number.isFinite(coverage.uncovered)) {
-    const left = (coverage.total || 0) - (coverage.excluded || 0);
-    census = coverage.covered + " of " + left + " covered (" + coverage.percent + "%) · " + coverage.uncovered + " uncovered"
-      + (coverage.excluded ? " · " + coverage.excluded + " excluded" : "") + (coverage.adapterOk === false ? " · census adapter failed" : "");
-    if (coverage.uncovered > 0) conditions.push(coverage.uncovered + " census surface(s) uncovered");
+    const left = (Number(coverage.total) || 0) - (Number(coverage.excluded) || 0);
+    if (left <= 0) { census = "unknown (empty census)"; conditions.push("census is empty"); }
+    else {
+      const covered = Number.isFinite(coverage.covered) ? coverage.covered : left - coverage.uncovered;
+      const pct = Number.isFinite(coverage.percent) ? coverage.percent : Math.floor((covered / left) * 1000 + 0.5) / 10;
+      census = covered + " of " + left + " covered (" + pct + "%) · " + coverage.uncovered + " uncovered"
+        + (coverage.excluded ? " · " + coverage.excluded + " excluded" : "") + (coverage.adapterOk === false ? " · census adapter failed" : "");
+      if (coverage.uncovered > 0) conditions.push(coverage.uncovered + " census surface(s) uncovered");
+    }
+    if (coverage.adapterOk === false) conditions.push("census adapter failed");
   } else { census = "unknown"; conditions.push("census coverage unknown"); }
   lines.push(["Census coverage", census]);
 
@@ -360,20 +367,27 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows) {
     const b = bugs.find((x) => String(x.criterion_id || x.criterion || "") === c.id || (c.bugRef && String(x.bug_id || x.id || "") === c.bugRef));
     return String((b && (b.suspected_layer || b.layer)) || (rows[c.id] && rows[c.id].layer) || "").toLowerCase();
   };
-  const p1Fails = criteria.filter((c) => c.verdict === "fail" && isP1(c)).map((c) => ({ id: c.id, layer: layerOf(c) }));
-  const coding = p1Fails.filter((f) => CODING_LAYERS.includes(f.layer));
-  const listed = p1Fails.filter((f) => !CODING_LAYERS.includes(f.layer));
-  const fmt = (f) => f.id + (f.layer ? " (" + f.layer + ")" : "");
-  lines.push(["Coding-layer fails on P1", (coding.length ? coding.map(fmt).join(", ") : "none")
+  const p1Fails = criteria.filter((c) => (c.verdict === "fail" || c.verdict === "error") && isP1(c)).map((c) => ({ id: c.id, layer: layerOf(c) }));
+  const blocking = p1Fails.filter((f) => !f.layer || CODING_LAYERS.includes(f.layer));
+  const listed = p1Fails.filter((f) => f.layer && !CODING_LAYERS.includes(f.layer));
+  const fmt = (f) => f.id + " (" + (f.layer || "layer unknown") + ")";
+  lines.push(["Coding-layer fails on P1", (blocking.length ? blocking.map(fmt).join(", ") : "none")
     + (listed.length ? " · listed, not blocking: " + listed.map(fmt).join(", ") : "")]);
-  for (const f of coding) conditions.push("coding-layer fail on P1 " + fmt(f));
+  for (const f of blocking) conditions.push((f.layer ? "coding-layer fail on P1 " : "fail on P1 with unknown layer ") + fmt(f));
 
-  const ov = criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id);
-  lines.push(["Verifier overrides on P1", ov.length ? ov.join(", ") : "none"]);
-  for (const id of ov) conditions.push("verifier override on P1 " + id);
+  if (!verified) {
+    lines.push(["Verifier overrides on P1", "unknown"]);
+    conditions.push("not independently verified");
+  } else {
+    const ov = criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id);
+    lines.push(["Verifier overrides on P1", ov.length ? ov.join(", ") : "none"]);
+    for (const id of ov) conditions.push("verifier override on P1 " + id);
+    const stale = criteria.filter((c) => c.stale && isP1(c)).map((c) => c.id);
+    for (const id of stale) conditions.push("verification out of date on P1 " + id);
+  }
 
   lines.push(["Low-confidence passes", String(criteria.filter((c) => c.verdict === "pass" && c.confidence === "low").length)]);
-  lines.push(["Flaky", String(criteria.filter((c) => c.flaky).length)]);
+  lines.push(["Flaky", criteria.some((c) => c.flaky !== null) ? String(criteria.filter((c) => c.flaky === true).length) : "not tracked"]);
   lines.push(["Regression suite", "not yet available"]);
 
   const turnedOn = [];
@@ -408,7 +422,7 @@ function mdShip(m) {
   out.push("| Check | Result |", "|---|---|");
   for (const l of s.lines) out.push("| " + mdText(l[0]) + " | " + mdText(l[1]) + " |");
   if (shipProfileLine(s)) out.push("", mdText(shipProfileLine(s)));
-  return out.join("\n") + "\n\n---\n\n";
+  return out.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +592,7 @@ function renderMd(m, tpl) {
   if (m.buildId) meta.push("**Build:** " + mdText(m.buildId));
   if (m.baseUrl) meta.push("**Target:** " + mdText(m.baseUrl));
   if (m.stack) meta.push("**Stack:** " + mdText(m.stack));
-  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n") + (m.ship ? "\n\n---\n\n" + mdShip(m).replace(/\n\n---\n\n$/, "") : "");
+  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n") + (m.ship ? "\n\n---\n\n" + mdShip(m) : "");
 
   const sum = ["| Verdict | Count |", "|---|---|"].concat(VERDICTS.map((v) => "| " + v + " | " + m.tally[v] + " |"), ["| **Total** | **" + m.total + "** |", ""]);
   if (m.low) sum.push("> " + m.low + " verdict(s) carry confidence: low.", "");
