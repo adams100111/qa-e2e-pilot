@@ -257,6 +257,7 @@ function buildModel(runDir) {
       overridden: checked && verdict !== inRun, reasons,
       title: asText(row.title || row.label || row.surface || ""), oracle: asText(row.oracle || ""),
       tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+      flaky: c.flaky === true || (Array.isArray(row.tags) && row.tags.includes("flaky")),
       lastAction: asText(c.last_action || ""), kinds: Array.isArray(c.kinds) ? c.kinds.map(String) : [],
       bugRef: c.bug_ref ? String(c.bug_ref) : "", nonUi: asText(c.nonUiActionReason || ""),
       shots: ev.shots, files: ev.files, anchor: "c-" + slug(c.criterion_id + (c.persona ? "-" + c.persona : "")),
@@ -280,7 +281,134 @@ function buildModel(runDir) {
     evidencedTotal: evidenced.length, evidencedWithShot: evidenced.filter((c) => c.shots.some((s) => !s.legacy)).length,
     shotCount, bugs, traceability, superseded, outOfPlan,
     distinct: new Set(criteria.map((c) => c.id)).size,
+    ship: buildShip(runDir, criteria, rows, bugs, allRows),
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Ship readiness (D6): SHIP-READY iff census uncovered = 0, every P1 journey
+// passes, no coding-layer (route|service|migration|DB) fail on a P1 criterion
+// and no verifier override on a P1 criterion. Null (no section) for a run with
+// neither coverage.json nor journeys.json whose profile is not "ship".
+// ---------------------------------------------------------------------------
+const CODING_LAYERS = ["route", "service", "migration", "db"];
+
+// Same rule as scripts/journeys.sh status (after ADR-0029 supersession), over
+// the raw checkpoint rows: a persona-less row is dropped when a persona-scoped
+// row for the criterion is strictly later; any fail|error -> fail, all pass ->
+// pass, otherwise incomplete. Journey: any failed step -> fail; else all pass.
+function journeyStatus(journeys, checkpointRows) {
+  const rows = checkpointRows.filter((c) => c && typeof c === "object");
+  const stepVerdict = (id) => {
+    const mine = rows.filter((r) => r.criterion_id === id);
+    const pr = mine.filter((r) => (r.persona || "") !== "");
+    const eff = mine.filter((r) => (r.persona || "") === ""
+      && !pr.some((p) => String(p.checkpointed_at || "") > String(r.checkpointed_at || ""))).concat(pr);
+    const vs = eff.map((r) => r.verdict);
+    if (!vs.length) return "incomplete";
+    if (vs.some((v) => v === "fail" || v === "error")) return "fail";
+    if (vs.every((v) => v === "pass")) return "pass";
+    return "incomplete";
+  };
+  return journeys.filter((j) => j && typeof j === "object").map((j) => {
+    const steps = (Array.isArray(j.steps) ? j.steps : []).map((id) => ({ criterionId: id, verdict: stepVerdict(id) }));
+    const verdict = steps.some((s) => s.verdict === "fail") ? "fail"
+      : (steps.length > 0 && steps.every((s) => s.verdict === "pass") ? "pass" : "incomplete");
+    return { id: j.id, priority: j.priority, steps, verdict };
+  });
+}
+
+function buildShip(runDir, criteria, rows, bugs, checkpointRows) {
+  const coverage = readJSON(path.join(runDir, "coverage.json"), null);
+  const journeysRaw = readJSON(path.join(runDir, "journeys.json"), null);
+  const cfg = readJSON(path.join(runDir, "effective-config.json"), null);
+  const profile = cfg && typeof cfg.profile === "string" ? cfg.profile : "";
+  const hasCov = !!coverage && typeof coverage === "object" && !Array.isArray(coverage);
+  const hasJ = Array.isArray(journeysRaw);
+  if (!hasCov && !hasJ && profile !== "ship") return null;
+
+  const conditions = [];
+  const lines = [];
+
+  let census;
+  if (hasCov && Number.isFinite(coverage.uncovered)) {
+    const left = (coverage.total || 0) - (coverage.excluded || 0);
+    census = coverage.covered + " of " + left + " covered (" + coverage.percent + "%) · " + coverage.uncovered + " uncovered"
+      + (coverage.excluded ? " · " + coverage.excluded + " excluded" : "") + (coverage.adapterOk === false ? " · census adapter failed" : "");
+    if (coverage.uncovered > 0) conditions.push(coverage.uncovered + " census surface(s) uncovered");
+  } else { census = "unknown"; conditions.push("census coverage unknown"); }
+  lines.push(["Census coverage", census]);
+
+  const p1Ids = new Set();
+  let p1Text;
+  if (hasJ) {
+    const statuses = journeyStatus(journeysRaw, checkpointRows);
+    const p1 = statuses.filter((j) => j.priority === "P1");
+    for (const j of p1) for (const s of j.steps) p1Ids.add(String(s.criterionId));
+    if (!p1.length) { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
+    else {
+      const bad = p1.filter((j) => j.verdict !== "pass");
+      p1Text = (p1.length - bad.length) + " of " + p1.length + " pass" + (bad.length ? " · " + bad.map((j) => j.id + " " + j.verdict).join(", ") : "");
+      for (const j of bad) conditions.push("P1 journey " + j.id + " is " + j.verdict);
+    }
+  } else { p1Text = "none declared"; conditions.push("no P1 journeys declared"); }
+  lines.push(["P1 journeys", p1Text]);
+
+  const isP1 = (c) => p1Ids.has(String(c.id)) || (rows[c.id] && rows[c.id].priority === "P1");
+  const layerOf = (c) => {
+    const b = bugs.find((x) => String(x.criterion_id || x.criterion || "") === c.id || (c.bugRef && String(x.bug_id || x.id || "") === c.bugRef));
+    return String((b && (b.suspected_layer || b.layer)) || (rows[c.id] && rows[c.id].layer) || "").toLowerCase();
+  };
+  const p1Fails = criteria.filter((c) => c.verdict === "fail" && isP1(c)).map((c) => ({ id: c.id, layer: layerOf(c) }));
+  const coding = p1Fails.filter((f) => CODING_LAYERS.includes(f.layer));
+  const listed = p1Fails.filter((f) => !CODING_LAYERS.includes(f.layer));
+  const fmt = (f) => f.id + (f.layer ? " (" + f.layer + ")" : "");
+  lines.push(["Coding-layer fails on P1", (coding.length ? coding.map(fmt).join(", ") : "none")
+    + (listed.length ? " · listed, not blocking: " + listed.map(fmt).join(", ") : "")]);
+  for (const f of coding) conditions.push("coding-layer fail on P1 " + fmt(f));
+
+  const ov = criteria.filter((c) => c.overridden && isP1(c)).map((c) => c.id);
+  lines.push(["Verifier overrides on P1", ov.length ? ov.join(", ") : "none"]);
+  for (const id of ov) conditions.push("verifier override on P1 " + id);
+
+  lines.push(["Low-confidence passes", String(criteria.filter((c) => c.verdict === "pass" && c.confidence === "low").length)]);
+  lines.push(["Flaky", String(criteria.filter((c) => c.flaky).length)]);
+  lines.push(["Regression suite", "not yet available"]);
+
+  const turnedOn = [];
+  if (cfg && cfg.profileSources && typeof cfg.profileSources === "object") {
+    for (const k of Object.keys(cfg.profileSources)) if (cfg.profileSources[k] === "profile-default") turnedOn.push(k);
+  }
+  return { verdict: conditions.length ? "NOT SHIP-READY" : "SHIP-READY", conditions, lines, profile, turnedOn };
+}
+
+function shipProfileLine(s) {
+  if (!s.profile) return "";
+  return "Profile: " + s.profile + (s.turnedOn.length ? " — turned on by the profile: " + s.turnedOn.join(", ") : "");
+}
+
+function htmlShip(m) {
+  const s = m.ship;
+  if (!s) return "";
+  const ok = s.verdict === "SHIP-READY";
+  return '<section class="panel ship" id="ship-readiness" aria-label="Ship readiness"><h2>Ship readiness</h2>'
+    + '<p class="status-line ' + (ok ? "status-ok" : "status-bad") + '"><b>' + esc(s.verdict) + "</b></p>"
+    + (s.conditions.length ? "<ul>" + s.conditions.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul>" : "")
+    + '<table class="plain"><tbody>' + s.lines.map((l) => "<tr><th>" + esc(l[0]) + "</th><td>" + esc(l[1]) + "</td></tr>").join("") + "</tbody></table>"
+    + (shipProfileLine(s) ? '<p class="status-line">' + esc(shipProfileLine(s)) + "</p>" : "") + "</section>";
+}
+
+function mdShip(m) {
+  const s = m.ship;
+  if (!s) return "";
+  const out = ["## Ship readiness", "", "**" + s.verdict + "**", ""];
+  for (const c of s.conditions) out.push("- " + mdText(c));
+  if (s.conditions.length) out.push("");
+  out.push("| Check | Result |", "|---|---|");
+  for (const l of s.lines) out.push("| " + mdText(l[0]) + " | " + mdText(l[1]) + " |");
+  if (shipProfileLine(s)) out.push("", mdText(shipProfileLine(s)));
+  return out.join("\n") + "\n\n---\n\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +540,8 @@ function renderHtml(m, tpl, embed) {
     '<div class="meta"><span><b>Run</b> <span class="mono">' + esc(m.runId) + "</span></span>"
       + (m.started ? "<span><b>Started</b> " + esc(m.started) + "</span>" : "") + (m.ended ? "<span><b>Ended</b> " + esc(m.ended) + "</span>" : "")
       + (m.buildId ? "<span><b>Build</b> " + esc(m.buildId) + "</span>" : "") + (m.baseUrl ? "<span><b>Target</b> " + esc(m.baseUrl) + "</span>" : "")
-      + (m.stack ? "<span><b>Stack</b> " + esc(m.stack) + "</span>" : "") + "</div></header>",
+      + (m.stack ? "<span><b>Stack</b> " + esc(m.stack) + "</span>" : "") + "</div></header>"
+      + (m.ship ? "\n" + htmlShip(m) : ""),
     '<section class="summary" aria-label="Summary">',
     '<div class="panel"><h3>Verdicts</h3><div class="chips">' + chips + "</div>"
       + (m.low ? '<p class="status-line" style="margin-top:8px"><span class="tag low">' + m.low + " with confidence: low</span></p>" : "")
@@ -449,7 +578,7 @@ function renderMd(m, tpl) {
   if (m.buildId) meta.push("**Build:** " + mdText(m.buildId));
   if (m.baseUrl) meta.push("**Target:** " + mdText(m.baseUrl));
   if (m.stack) meta.push("**Stack:** " + mdText(m.stack));
-  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n");
+  const head = "# QA report — " + mdText(m.feature || m.runId) + "\n\n" + meta.join("  \n") + (m.ship ? "\n\n---\n\n" + mdShip(m).replace(/\n\n---\n\n$/, "") : "");
 
   const sum = ["| Verdict | Count |", "|---|---|"].concat(VERDICTS.map((v) => "| " + v + " | " + m.tally[v] + " |"), ["| **Total** | **" + m.total + "** |", ""]);
   if (m.low) sum.push("> " + m.low + " verdict(s) carry confidence: low.", "");

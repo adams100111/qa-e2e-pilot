@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Tests for the "Ship readiness" section of the deterministic report renderer
+# (scripts/render-report.js, D6): verdict from coverage.json + journeys.json +
+# checkpoint.json + verification.json, rendered first in report.md / report.html.
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+RR="$ROOT/scripts/render-report.js"
+JSH="$ROOT/scripts/journeys.sh"
+pass=0; fail=0
+check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
+has(){ case "$2" in *"$3"*) pass=$((pass+1)) ;; *) fail=$((fail+1)); echo "FAIL: $1 (expected to contain [$3])"; ;; esac; }
+lacks(){ case "$2" in *"$3"*) fail=$((fail+1)); echo "FAIL: $1 (expected NOT to contain [$3])" ;; *) pass=$((pass+1)) ;; esac; }
+command -v node >/dev/null 2>&1 || { echo "SKIP: node not available"; echo "ship-summary: PASS=0 FAIL=0"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: ship-summary needs python3 to write fixtures" >&2; exit 1; }
+W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+
+# mk <name> <uncovered|none> <c9-verdict> <c9-layer> : a run dir with one P1 journey (J1-S1..S2, both pass)
+# plus a P1-priority criterion C9 outside any journey.
+mk() {
+  local d="$W/$1"; mkdir -p "$d"
+  python3 - "$d" "$2" "$3" "$4" <<'PY'
+import json, sys
+d, unc, c9, layer = sys.argv[1:5]
+w = lambda n, v: open(d + "/" + n, "w", encoding="utf-8").write(json.dumps(v, ensure_ascii=False))
+row = lambda i, extra=None: dict({"id": i, "surface": "/x", "kind": "happy-path", "tags": [], "action": "a", "priority": "P1"}, **(extra or {}))
+w("checklist.json", [row("J1-S1", {"journey": {"id": "J-SUBMIT", "step": 1}}), row("J1-S2", {"journey": {"id": "J-SUBMIT", "step": 2}}), row("C9")])
+cp = lambda i, v: {"criterion_id": i, "persona": "", "verdict": v, "confidence": "high", "checkpointed_at": "2026-11-09T10:00:00Z", "last_action": "ok", "bug_ref": "BUG-9" if v == "fail" else None, "evidence_refs": []}
+w("checkpoint.json", {"run_id": "r", "criteria": [cp("J1-S1", "pass"), cp("J1-S2", "pass"), cp("C9", c9)]})
+w("journeys.json", [{"id": "J-SUBMIT", "title": "t", "priority": "P1", "roles": ["participant"], "steps": ["J1-S1", "J1-S2"]}])
+if unc != "none":
+    u = int(unc)
+    w("coverage.json", {"total": 10, "covered": 10 - u, "excluded": 0, "uncovered": u, "unscopedCovered": 0, "percent": 100 if u == 0 else 80, "rows": [], "warnings": [], "adapterOk": True})
+w("verification.json", [])
+w("bug-log.json", [{"bug_id": "BUG-9", "criterion_id": "C9", "title": "t", "suspected_layer": layer}] if layer else [])
+w("effective-config.json", {"profile": "ship", "profileSources": {"gates.coverage": "profile-default", "maxParallel": "user"}})
+PY
+  node "$RR" "$d" --quiet >/dev/null 2>&1; check "render $1 exits 0" "$?" "0"
+}
+md(){ cat "$W/$1/report.md"; }
+html(){ cat "$W/$1/report.html"; }
+
+mk green 0 pass ""
+M="$(md green)"; H="$(html green)"
+has "ship_ready_all_green md verdict" "$M" "**SHIP-READY**"
+lacks "ship_ready_all_green not-ready absent" "$M" "NOT SHIP-READY"
+has "ship_ready_all_green html heading" "$H" "Ship readiness"
+has "ship_ready_all_green census row" "$M" "| Census coverage | 10 of 10 covered (100%) · 0 uncovered |"
+has "ship_ready_all_green p1 row" "$M" "| P1 journeys | 1 of 1 pass |"
+has "ship_ready_all_green regression row" "$M" "| Regression suite | not yet available |"
+has "ship_ready_all_green profile line" "$M" "turned on by the profile: gates.coverage"
+lacks "profile-user key not listed as turned on" "$M" "maxParallel"
+check "ship section is first (md)" "$(printf '%s' "$M" | grep -n '^## ' | head -1 | cut -d: -f2)" "## Ship readiness"
+case "$H" in *'id="ship-readiness"'*'class="summary"'*) pass=$((pass+1)) ;; *) fail=$((fail+1)); echo "FAIL: ship before summary (html)" ;; esac
+
+mk uncov 2 pass ""
+M="$(md uncov)"
+has "uncovered_not_ready verdict" "$M" "**NOT SHIP-READY**"
+has "uncovered_not_ready reason" "$M" "2 census surface(s) uncovered"
+
+mk svc 0 fail service
+M="$(md svc)"
+has "p1_service_fail_not_ready verdict" "$M" "**NOT SHIP-READY**"
+has "p1_service_fail_not_ready reason" "$M" "coding-layer fail on P1 C9 (service)"
+
+mk fe 0 fail FE
+M="$(md fe)"
+has "fe_fail_still_ready verdict" "$M" "**SHIP-READY**"
+has "fe_fail_still_ready listed" "$M" "listed, not blocking: C9 (fe)"
+
+mk nocov none pass ""
+M="$(md nocov)"
+has "missing_coverage_unknown row" "$M" "| Census coverage | unknown |"
+has "missing_coverage_unknown verdict" "$M" "**NOT SHIP-READY**"
+
+mk noj 0 pass ""; rm "$W/noj/journeys.json"; node "$RR" "$W/noj" --quiet >/dev/null 2>&1
+M="$(md noj)"
+has "missing journeys row" "$M" "| P1 journeys | none declared |"
+has "missing journeys verdict" "$M" "**NOT SHIP-READY**"
+
+# verifier override on a P1 criterion blocks
+mk ovr 0 pass ""
+python3 - "$W/ovr" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump([{"criterionId": "C9", "persona": "", "inRunVerdict": "pass", "verifierVerdict": "fail", "confidence": "high", "reasons": ["x"]}], open(d + "/verification.json", "w"))
+PY
+node "$RR" "$W/ovr" --quiet >/dev/null 2>&1
+has "verifier_override_on_p1 blocks" "$(md ovr)" "verifier override on P1 C9"
+
+# non-ship run (no coverage/journeys/profile): byte-identical to the pre-ship renderer (commit 8a207a2)
+git -C "$ROOT" show 8a207a2:scripts/render-report.js > "$W/old-render.js" 2>/dev/null
+if [ -s "$W/old-render.js" ]; then
+  mkdir -p "$W/g-new" "$W/g-old"
+  cp -R "$ROOT/tests/render-report/fixture-run/." "$W/g-new/"; cp -R "$ROOT/tests/render-report/fixture-run/." "$W/g-old/"
+  T="$ROOT/skills/writing-qa-reports/templates"
+  node "$RR" "$W/g-new" --templates "$T" --quiet >/dev/null 2>&1
+  node "$W/old-render.js" "$W/g-old" --templates "$T" --quiet >/dev/null 2>&1
+  check "non_ship_run_golden_unchanged html" "$(cmp -s "$W/g-new/report.html" "$W/g-old/report.html" && echo same)" "same"
+  check "non_ship_run_golden_unchanged md" "$(cmp -s "$W/g-new/report.md" "$W/g-old/report.md" && echo same)" "same"
+  lacks "non_ship_run has no ship section" "$(cat "$W/g-new/report.md")" "Ship readiness"
+else
+  fail=$((fail+1)); echo "FAIL: could not read 8a207a2 render-report.js for golden compare"
+fi
+
+# journey verdict equals journeys.sh status on the same fixtures; superseded verdict used
+FX="$ROOT/tests/journeys/fixtures"
+for r in run-all-pass run-one-fail run-incomplete run-superseded run-multi-persona run-deferred; do
+  d="$W/j-$r"; mkdir -p "$d"; cp -R "$FX/$r/." "$d/"
+  python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]
+json.dump({"total": 1, "covered": 1, "excluded": 0, "uncovered": 0, "unscopedCovered": 0, "percent": 100, "rows": [], "warnings": [], "adapterOk": True}, open(d + "/coverage.json", "w"))
+PY
+  node "$RR" "$d" --quiet >/dev/null 2>&1
+  want="$(bash "$JSH" status "$d" | python3 -c 'import json,sys;j=json.load(sys.stdin)[0];print("1 of 1 pass" if j["verdict"]=="pass" else "0 of 1 pass · %s %s" % (j["id"], j["verdict"]))')"
+  has "journey_status_matches_shell $r" "$(md "j-$r")" "| P1 journeys | $want |"
+done
+has "superseded_verdict_used" "$(md j-run-superseded)" "| P1 journeys | 1 of 1 pass |"
+
+echo "ship-summary: PASS=$pass FAIL=$fail"
+[ "$fail" -eq 0 ]
