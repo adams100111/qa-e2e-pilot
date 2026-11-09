@@ -463,6 +463,11 @@ function buildShip(runDir, criteria, rows, bugs, checkpointRows, verified) {
   lines.push(["Re-adjudication", adjText]);
 
   lines.push(["Low-confidence passes", String(lowPasses.length)]);
+  // Informational only: rows the bug export parked in <run>/bugs/needs-recheck.json.
+  try {
+    const nr = JSON.parse(fs.readFileSync(path.join(runDir, "bugs", "needs-recheck.json"), "utf8"));
+    if (Array.isArray(nr)) lines.push(["Needs re-check", String(nr.length)]);
+  } catch (e) { /* no export, or unreadable: no row */ }
   lines.push(["Flaky", criteria.some((c) => c.flaky !== null) ? String(criteria.filter((c) => c.flaky === true).length) : "not tracked"]);
   lines.push(["Regression suite", "not yet available"]);
 
