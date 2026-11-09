@@ -77,6 +77,28 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
 - **Suites.** `gate-oracle`, `gate-state`, `gate-data-policy`, `verify-ship-gates`, `ship-summary`,
   `bug-export`, `adjudication` enrolled (65 engine suites); `missing_required_kinds` is bash 3.2 safe.
 
+**UX detector wiring**
+
+A 260-row hackathons run recorded no detector or axe findings: the UX detectors run only on a
+`visual-ux` row, no row carried that tag, and the generated `ux-revisit` rows were not routed to them.
+English text on an Arabic notifications panel would have gone unflagged.
+
+- **Routing.** A row tagged `visual-ux` or `ux-revisit` runs detecting-visual-ux (detectors, axe and
+  critic per `detection.ux`); a row tagged `interaction-ux`, or on a `#dialog:`/`#sheet:` surface, also
+  runs detecting-interaction-ux. The row's variant is applied first: resize, emulate-media for the
+  color scheme, then the app's own locale switch.
+- **Always-on UX sweep** under `ship`, and whenever `detection.ux.objective` is true. `ux-detectors.js`
+  now registers `window.__qaUxDetect`, so after one injection per document every observe round
+  carries `ux[]` (before this it was always empty). Each entry is journaled as `finding_observed` with
+  `criterionId` `ux-sweep:<surfaceId>`, `source` `ux`, `method` the detector id and `url` the selector,
+  so the fold keeps one per surface + detector + selector. A sweep finding is never a verdict: it
+  becomes `fail@FE` only through a `visual-ux` criterion for its surface. An objective defect on a
+  surface with no such row goes to the new run artifact `ux-sweep.json`, not into the frozen plan.
+- **qa-verify** skips `source: "ux"` findings in its console/network ledger and known-defect checks.
+- **Report.** New **UX findings (advisory)** section with a **UX defects outside the plan** list from
+  `ux-sweep.json`, neither counted in the tally. A run with neither renders exactly as before.
+- **Limit.** axe-core is not bundled; `axe` entries appear only when the page ships axe-core.
+
 **Increment 1 · prove what was covered**
 
 - **Surface census.** New skill `taking-surface-census`: a read-only, breadth-first
@@ -573,6 +595,16 @@ release tags).
 - **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
   unavailable banner or did not run); the `verification.md` template gains that section.
 - **Suites.** `oracle-confirm` enrolled (15 qa-kit suites).
+
+**UX detector wiring**
+
+- `generate-ship-criteria.sh`: `ux-revisit` rows also carry `visual-ux`, and load-clean and
+  input-validation rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`, so the engine sends
+  them to the UX detectors.
+- `coverage.sh --require-visual-ux` lists in-scope UI surfaces with no `visual-ux` row (`uxMissing`)
+  and blocks under `--mode block`. `/qa-analyze` passes it under `ship` and lists the surfaces in its
+  Coverage section; `/qa-scenarios` step 5c asks hand-authored plans for a `visual-ux` row per surface
+  and `ux-revisit` rows per locale and viewport.
 
 **Increment 1 · prove what was covered**
 
