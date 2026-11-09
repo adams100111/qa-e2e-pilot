@@ -90,5 +90,5 @@ if [ "${#engines[@]}" -eq 2 ]; then
   check "parity list" "$(QA_ENGINE=jq bash "$SH" list "$PT")" "$(QA_ENGINE=python3 bash "$SH" list "$PT")"
 fi
 
-echo "data-policy: pass=$pass fail=$fail"
+echo "data-policy: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
