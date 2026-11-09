@@ -1,0 +1,5 @@
+[
+  {"id":"C-ADMIN-LIST","surface":"/admin/hackathons","kind":"load-clean","tags":["read-only"],"action":"عرض قائمة الهاكاثونات","surfaceId":"GET /admin/hackathons","personaId":"admin"},
+  {"id":"C-HACK-PARTICIPANT","surface":"/h/{slug}","kind":"load-clean","tags":["read-only"],"action":"فتح صفحة الهاكاثون","surfaceId":["GET /h/{slug}"],"role":"participant"},
+  {"id":"C-ADMIN-LIST-DENY","surface":"/admin/hackathons","kind":"deny","tags":[],"action":"Participant is refused the admin list","surfaceId":"GET /admin/hackathons","persona":"participant"}
+]
