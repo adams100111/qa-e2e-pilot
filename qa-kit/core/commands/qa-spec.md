@@ -163,11 +163,26 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
      target path under `.qa/runs/` is refused outright. Fill in `ticket` and `expiry`, then re-run
      `known-defects.sh validate`.
 
+6d. **Journeys (ship profile).** Author `.qa/specs/<target>/journeys.json` — a JSON **array** of
+   multi-step user journeys, starting from `{{PLUGIN_ROOT}}/templates/journeys-template.json`
+   (`{id, priority: P1|P2|P3, roles: [personaId], steps: [criterionId…]}`). Draft them as the agent from the
+   census (`.qa/census.json`: surfaces and what each role reaches) and the project docs/spec-kit — the real
+   things users do end to end (sign in, create, submit, approve), not one journey per page. Then ask the
+   human to mark which are **P1** (the ones that must work to ship; P1 journeys get viewport/locale
+   revisits in the generated plan). Step ids are the checklist criterion ids `/qa-scenarios` will
+   write, so at this point journeys may name steps that do not exist yet: the check that matters runs
+   after `/qa-scenarios` writes `checklist.json` (and `/qa-analyze` reports it):
+   `journeys.sh validate .qa/specs/<target>/journeys.json .qa/specs/<target>/checklist.json` — an
+   engine script, so resolve it against the engine's checkout or plugin root (ADR-0022). It prints
+   `{errors:[…], ok}` and exits 0 iff ok; **it must pass** before the plan is accepted (bad priority, a
+   step id missing from the checklist, a wrong `journey.id`/`journey.step` on the step row, a repeated
+   step). Rows that belong to a journey carry `journey: {id, step}` (1-based step index).
+
 7. **Write `qa-spec.md` + a machine run-config.** Copy `{{PLUGIN_ROOT}}/templates/qa-spec-template.md`
    to `.qa/specs/<target>/qa-spec.md` and fill in: Target, Scenario selection, Roles (referencing the
    `spec-roles.json` snapshot + the overrides summary), Run-config deltas (only what differs from
    `.qa/config.json`), Oracles & out-of-scope, and the optional Ingested-spec-kit note. **Also write the
-   machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas
+   machine copy** `.qa/specs/<target>/run-config.json` — a JSON object of ONLY the run-config deltas (which may include `profile`: `ship`, `smoke` or `full`, expanded by the engine's `profile.sh resolve` into the effective config)
    (`{}` if none), so the run can compute its effective config deterministically (see step 8). In the
    **Oracles** section, state how "correct" is independently determined — never that a failure is
    correct. A known application defect belongs in `.qa/known-defects.json` (step 6c), not in an oracle,
@@ -175,7 +190,7 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    carries an owner, a capped deadline and a severity.
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
-   applied, the drift result, the data-baseline entity count (seeded vs created), any known-defect entry
+   applied, the drift result, the data-baseline entity count (seeded vs created), the journeys written (count, how many P1), any known-defect entry
    you wrote or migrated (with the `ticket`/`expiry` fields still owed by a human), and the next step
    (`/qa-scenarios <target>`). State that **roles freeze
    when a run starts** (`plan_frozen`), not now — the snapshot is still soft while authoring. Note that
@@ -206,7 +221,8 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    The exec only ever runs on a disposable env, with writes allowed, and with explicit human confirmation. On a
    non-disposable env qa-kit never writes — it verifies what is already there.
 
-Guardrails: `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
+Guardrails: `journeys.json` is validated by `journeys.sh validate` once `checklist.json` exists, never
+trusted as authored; `spec-roles.json` is a point-in-time COPY, never a live reference to the constitution
 (design decision 6); run-config holds only DELTAS over `.qa/config.json`, not a restatement; the
 drift check is advisory, never an auto-migrate; a known application defect goes in the project-level
 `.qa/known-defects.json`, never into an oracle and never into a per-spec copy.

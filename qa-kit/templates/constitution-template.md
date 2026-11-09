@@ -33,19 +33,19 @@ run's spec, not here.
 
 ## Enabled optional gates
 
-Which of qa-kit's optional gates this project turns on for its runs. **None of these gates ship as
-commands yet** — the table below is a roadmap placeholder for this project's future policy, not a
-list of runnable `/qa-*` commands today. This is a plain human-edited table, not a render
-placeholder — fill in "yes"/"no" (and any project-specific notes, e.g. a perf budget or a security
-scope exclusion) directly, so the intent is recorded before the gate exists.
+The run profile this project defaults to and the gates it turns on. `/qa-constitution` fills the values
+from the engine's `profile.sh resolve` (never guessed); they are plain table text, not render
+placeholders, so re-apply any hand edit after a re-render. The gates are engine settings resolved
+into each run's effective config, not separate commands.
 
-| Gate (future) | Enabled | Notes |
-|---------------|---------|-------|
-| sanitize | no | |
-| assure | no | |
-| perf | no | |
-| security | no | |
-| uiux | no | |
+| Setting | Value | Notes |
+|---------|-------|-------|
+| profile | full | default run profile: `ship` (census, deny and UX criteria, blocking coverage), `smoke` (ship, desktop only, advisory coverage) or `full` (today's behaviour) |
+| coverage | advise | `gates.coverage`: `block` fails analyze until every surface x role pair is covered |
+| oracle | off | `gates.oracle` |
+| dataPolicy | off | `gates.dataPolicy` |
+| uiux | off | `detection.ux` (objective, advisoryAesthetics, critic, axe) |
+| security | off | deny and isolation criteria generation (on under `ship`) |
 
 ---
 

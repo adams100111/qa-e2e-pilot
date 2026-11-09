@@ -1,12 +1,13 @@
 ---
-description: A read-only, advisory consistency + coverage gate before a qa-kit run — cross-checks the scenarios/checklist against the spec, its snapshot roles, the surface map, and any ingested spec-kit, flagging gaps for the operator to approve. Never blocks.
+description: A read-only, advisory consistency + coverage gate before a qa-kit run — cross-checks the scenarios/checklist against the spec, its snapshot roles, the surface map, and any ingested spec-kit, flagging gaps for the operator to approve. Advisory, except the ship-profile coverage gate, which blocks until every surface x role pair is covered.
 argument-hint: <target>
 disable-model-invocation: false
 ---
 
 Produce `.qa/specs/<target>/analysis.md` — a coverage/consistency review of the scenarios before the
 (expensive) run. **Read-only and advisory** (the spec-kit `analyze` pattern): it reports gaps and offers
-remediation the human approves; it does not modify artifacts and does not block the run. Fourth qa-kit
+remediation the human approves; it does not modify artifacts and does not block the run, with one exception: under the `ship` profile the census coverage gate
+(step 4b) sets the Verdict to `BLOCKED` until no surface x role pair is uncovered. Fourth qa-kit
 step. Full input: `$ARGUMENTS` — the first token is `<target>`.
 
 ## What to do
@@ -66,6 +67,19 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      is the failure path, and exit 0 is never returned. A caller that treats any non-zero as "failed" silently loses the migration. See
      `/qa-scenarios`.
 
+4b. **Coverage gate (the one blocking check).** When `.qa/census.json` exists, run
+   `bash "{{PLUGIN_ROOT}}/scripts/coverage.sh" .qa/census.json .qa/specs/<target>/checklist.json --mode <mode>`
+   (add `--exclusions .qa/specs/<target>/coverage-exclusions.json` when present), where `<mode>` is the
+   effective config's `gates.coverage` (`block` or `advise`) from the engine's `profile.sh resolve
+   .qa/config.json --run-config .qa/specs/<target>/run-config.json` (an engine script: resolve it against
+   the engine's checkout or plugin root, ADR-0022). `block` is the fail-closed default under `ship`;
+   `advise` under `smoke`; under `full` with no census skip this step. The JSON prints even when the gate
+   blocks. List every `uncovered` pair (surface x role) and every `covered-unscoped` pair (covered only by
+   a row with no role, which counts as uncovered under `block`) in the **Coverage** section.
+   Exit 1 means the gate blocks: uncovered pairs, an empty or uncrawled census, or a census built from a
+   failed adapter. Exit 2 is a usage or input error, not a verdict: report it and stop. Also run
+   `journeys.sh validate` when `journeys.json` exists and list its errors under Coverage.
+
 5. **Write `analysis.md`** from `{{PLUGIN_ROOT}}/templates/qa-analyze-template.md`: the gaps by
    category, each with a suggested remediation (usually "add a criterion via `/qa-scenarios`" or "add an
    oracle note via `/qa-spec`") the operator may accept or decline. The template ships **six** gap
@@ -90,13 +104,21 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    and the registry (`ticket`, a 90-day-capped `expiry`, a severity floor) is what carries the defect
    afterwards.
 
+   **Coverage section and BLOCKED verdict.** Fill the template's `## Coverage` section from step 4b (percent,
+   counts, the uncovered pair list with a suggested remediation: add a criterion via `/qa-scenarios`
+   or record an exclusion with a reason). Under `ship` (gate mode `block`) the Verdict is **`BLOCKED`**
+   until uncovered = 0; set it from the gate's exit code, never from your own count. Under `advise` or with
+   no census the Verdict stays advisory. This coverage gate is the only blocking analyze check besides
+   plan defects.
+
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
-   into a single "N gaps" figure — plus the next step (`/qa-run "<target>"`). Make clear this step never
-   gates; it informs. If the plan-defect count is non-zero, say plainly that the plan asserts an
+   into a single "N gaps" figure — plus the next step (`/qa-run "<target>"`). State the Verdict plainly: `BLOCKED` with the
+   uncovered pair count when the coverage gate blocks, otherwise that this step informs and does not gate. If the plan-defect count is non-zero, say plainly that the plan asserts an
    application failure somewhere and name the criterion ids, rather than reporting a total the reader has
    to decompose.
 
-Guardrails: read-only (never edit `scenarios.md`/`checklist.json`/`spec-roles.json`); advisory (never a
+Guardrails: the coverage gate (step 4b) is the one blocking check besides plan defects, and its verdict comes from
+`coverage.sh`'s exit code; read-only (never edit `scenarios.md`/`checklist.json`/`spec-roles.json`); advisory (never a
 `fail`/block) — **and that advisory charter is explicitly carved out for `plan-defect`**: this step still
 never blocks the run, but it must not present a plan defect as an optional, declinable suggestion;
 remediation for every other category is the human's to approve, applied by re-running the relevant

@@ -1,8 +1,17 @@
 # QA analysis — {{TARGET}}
 
-> Authored by `/qa-analyze`. **Advisory only** — this review does not block the run and changes no
-> artifact. Remediation is applied by re-running the relevant earlier step (`/qa-scenarios` or
+> Authored by `/qa-analyze`. **Advisory only, except the Coverage gate** — under the `ship` profile an
+> uncovered surface x role pair makes the Verdict `BLOCKED`; every other section does not block the run.
+> This review changes no artifact. Remediation is applied by re-running the relevant earlier step (`/qa-scenarios` or
 > `/qa-spec`), at the operator's discretion.
+
+## Coverage
+
+<!-- From coverage.sh (mode from the effective config's gates.coverage): "<covered>/<total> pairs, <percent>%,
+     excluded <n>, mode <block|advise>". Then one line per `uncovered` pair (surface x role) and per
+     `covered-unscoped` pair (covered only by a row with no role; counts as uncovered under block), each with
+     the remediation (add a criterion via /qa-scenarios, or record an exclusion with a reason), plus any
+     journeys.sh validate errors. "(none)" if clean; "(no census)" when no census exists. -->
 
 ## Coverage gaps
 
@@ -44,4 +53,6 @@
 
 ## Verdict
 
-Advisory only — the run is **not** blocked; this does not extend to plan defects. {{GAP_SUMMARY}}
+**BLOCKED** when the Coverage gate blocks (ship profile, uncovered pairs > 0, an empty or uncrawled census); otherwise **PASS (advisory)**. Set from `coverage.sh`'s exit code, never from a manual count.
+
+Apart from the Coverage gate this review is advisory only — the run is **not** blocked by it; this does not extend to plan defects. {{GAP_SUMMARY}}
