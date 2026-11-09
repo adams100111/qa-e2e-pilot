@@ -7,31 +7,41 @@
 #               [--mode block|advise] [--defer-channels] [--accept-crawl-only]
 #
 #   Prints coverage.json on stdout (compact, sorted keys, raw UTF-8):
-#     {total, covered, excluded, uncovered, percent, adapterOk, warnings:[...],
-#      rows:[{surfaceId, personaId, state:"covered"|"excluded"|"uncovered", criteria:[ids], reason?}]}
+#     {total, covered, excluded, uncovered, unscopedCovered, percent, adapterOk, warnings:[...],
+#      rows:[{surfaceId, personaId, state:"covered"|"covered-unscoped"|"excluded"|"uncovered",
+#             criteria:[ids], reason?}]}
 #
 # PAIRS: every census surface x each persona in (reachedBy ∪ allowed). A surface no persona
 #   reached and none is allowed on makes no pair (it is already in census diffs.unreachable).
 #   Census jobs, mails and notifications are pairs with persona "*", surfaceIds
 #   "job:<id>", "mail:<id>", "notification:<id>".
-# COVERED: a checklist row's surfaceId (string or string[]) includes the pair's surface AND the
-#   row's persona matches the pair's persona. The row persona is the first set field of
-#   persona | personaId | role; a row with none (or "*") matches every persona, and a "*" pair
-#   (a channel) is matched by any row persona. criteria = the covering row ids, checklist order.
-# EXCLUDED: a pair not covered that matches an exclusion {surfaceId, personaId|"*", reason}
-#   (first match, file order); its reason is copied. Every exclusion needs a non-empty reason.
-#   With --defer-channels an uncovered channel pair is excluded with reason
-#   "channel checks arrive in increment 4". A covered pair is never excluded.
+# The row persona is the first set field of persona | personaId | role. A row with none, or with
+#   "*", is UNSCOPED. A row matches a pair when its surfaceId (string or string[]) includes the
+#   pair's surface. criteria = the matching row ids in checklist order.
+# State, first that applies:
+#   covered           a channel pair ("*") matched by any row, or a role pair matched by a row
+#                     whose persona equals the pair's persona (criteria = those scoped rows);
+#   excluded          the pair matches an exclusion {surfaceId, personaId|"*", reason} (first
+#                     match, file order; reason copied; every exclusion needs a non-empty reason);
+#   covered-unscoped  a role pair matched only by unscoped rows (criteria = those rows);
+#   excluded          with --defer-channels, an unmatched channel pair, reason
+#                     "channel checks arrive in increment 4";
+#   uncovered         otherwise.
+# COUNTS: unscopedCovered = covered-unscoped rows. Under --mode block they do NOT count as
+#   covered (they add to uncovered and block); under --mode advise they add to covered.
 # PERCENT: covered / (total - excluded) x 100, rounded half-up to one decimal (integer math, so
 #   both engines agree); 100 when nothing is left to cover. A whole value prints without ".0".
 # WARNINGS: census warnings are copied. adapterOk is false only when the census says so.
 #
-# EXIT: 0 ok; 1 the gate blocks (only under --mode block): uncovered > 0, or the census was
-#   built with a failed adapter and --accept-crawl-only was not passed; 2 usage or input error.
+# EXIT: 0 ok; 1 the gate blocks (only under --mode block): uncovered > 0 (including
+#   covered-unscoped pairs), total - excluded == 0 (empty or uncrawled census, or everything
+#   excluded), or the census was built with a failed adapter and --accept-crawl-only was not
+#   passed; 2 usage or input error.
 #   --mode defaults to block (fail closed). Coverage JSON is printed even when the gate blocks.
 #
-# DEPENDENCIES: bash, coreutils, grep, and EITHER jq OR python3 (jq preferred; QA_ENGINE=jq|python3
-# forces one). Deterministic given inputs; jq and python3 outputs are byte-identical.
+# DEPENDENCIES: bash, coreutils, and EITHER jq >= 1.7 OR python3 (jq preferred; QA_ENGINE=jq|python3
+# forces one). jq >= 1.7 is needed for shortest float printing (28.6, not 28.600000000000001).
+# Deterministic given inputs; jq and python3 outputs are byte-identical.
 set -uo pipefail
 
 DEFER_REASON="channel checks arrive in increment 4"
@@ -72,7 +82,7 @@ if has_jq; then
   EXC_JSON='[]'
   if [ -n "$EXCLUSIONS" ]; then EXC_JSON="$(jq -c '.' "$EXCLUSIONS")" || die "malformed exclusions: $EXCLUSIONS"; fi
   OUT="$(jq -n -S -c --slurpfile cen "$CENSUS" --slurpfile chk "$CHECKLIST" --argjson exc "$EXC_JSON" \
-      --argjson defer "$DEFER" --arg deferReason "$DEFER_REASON" '
+      --argjson defer "$DEFER" --arg deferReason "$DEFER_REASON" --arg mode "$MODE" '
     def dedupe: reduce .[] as $i ([]; if any(.[]; . == $i) then . else . + [$i] end);
     ($cen[0]) as $c
     | if ($c | type) != "object" or ($c.surfaces | type) != "array" then error("census: .surfaces must be an array") else . end
@@ -98,26 +108,29 @@ if has_jq; then
             p: (.persona // .personaId // .role // null) }
         | select((.sids | length) > 0) ] as $rows
     | [ $pairs[] as $pr
-        | ([ $rows[] | select(.sids | index([$pr.s]))
-                     | select(.p == null or .p == "*" or $pr.p == "*" or .p == $pr.p) | .id ] | dedupe) as $crit
+        | [ $rows[] | select(.sids | index([$pr.s])) ] as $hit
+        | (if $pr.p == "*" then ($hit | map(.id)) else ($hit | map(select(.p == $pr.p) | .id)) end | dedupe) as $crit
+        | (if $pr.p == "*" then [] else ($hit | map(select(.p == null or .p == "*") | .id)) end | dedupe) as $uns
         | (first($exc[] | select(.surfaceId == $pr.s and (.personaId == "*" or .personaId == $pr.p))) // null) as $ex
         | if ($crit | length) > 0 then {surfaceId: $pr.s, personaId: $pr.p, state: "covered", criteria: $crit}
           elif $ex != null then {surfaceId: $pr.s, personaId: $pr.p, state: "excluded", criteria: [], reason: $ex.reason}
+          elif ($uns | length) > 0 then {surfaceId: $pr.s, personaId: $pr.p, state: "covered-unscoped", criteria: $uns}
           elif ($defer and $pr.ch) then {surfaceId: $pr.s, personaId: $pr.p, state: "excluded", criteria: [], reason: $deferReason}
           else {surfaceId: $pr.s, personaId: $pr.p, state: "uncovered", criteria: []} end ] as $out
     | ($out | length) as $total
-    | ($out | map(select(.state == "covered")) | length) as $cov
+    | ($out | map(select(.state == "covered-unscoped")) | length) as $unsc
+    | (($out | map(select(.state == "covered")) | length) + (if $mode == "advise" then $unsc else 0 end)) as $cov
     | ($out | map(select(.state == "excluded")) | length) as $exd
     | ($total - $exd) as $den
     | (if $den == 0 then 1000 else (((2000 * $cov) + $den) / (2 * $den) | floor) end) as $tenths
-    | { total: $total, covered: $cov, excluded: $exd, uncovered: ($total - $cov - $exd),
+    | { total: $total, covered: $cov, excluded: $exd, uncovered: ($total - $cov - $exd), unscopedCovered: $unsc,
         percent: (if ($tenths % 10) == 0 then ($tenths / 10 | floor) else ($tenths / 10) end),
         adapterOk: (if $c.adapterOk == false then false else true end),
         warnings: ($c.warnings // []),
         rows: $out }
   ')" || die "could not compute coverage (see the message above)"
 elif has_py; then
-  OUT="$(EXCP="$EXCLUSIONS" DEFER="$DEFER" DEFER_REASON="$DEFER_REASON" python3 -c '
+  OUT="$(EXCP="$EXCLUSIONS" DEFER="$DEFER" DEFER_REASON="$DEFER_REASON" MODE="$MODE" python3 -c '
 import json, os, sys
 def fail(m):
     sys.stderr.write("ERROR: " + m + "\n"); sys.exit(2)
@@ -156,21 +169,26 @@ for r in rows0:
     rows.append({"id": r.get("id"), "sids": sids, "p": p})
 out = []
 for (s, p) in sorted(pairs):
-    crit = []
+    crit, uns = [], []
     for r in rows:
-        if s in r["sids"] and (r["p"] is None or r["p"] == "*" or p == "*" or r["p"] == p) and r["id"] not in crit:
-            crit.append(r["id"])
+        if s not in r["sids"]: continue
+        if p == "*" or r["p"] == p:
+            if r["id"] not in crit: crit.append(r["id"])
+        elif r["p"] is None or r["p"] == "*":
+            if r["id"] not in uns: uns.append(r["id"])
     ex = next((e for e in exc if e["surfaceId"] == s and (e["personaId"] == "*" or e["personaId"] == p)), None)
     if crit: out.append({"surfaceId": s, "personaId": p, "state": "covered", "criteria": crit})
     elif ex is not None: out.append({"surfaceId": s, "personaId": p, "state": "excluded", "criteria": [], "reason": ex["reason"]})
+    elif uns: out.append({"surfaceId": s, "personaId": p, "state": "covered-unscoped", "criteria": uns})
     elif defer and pairs[(s, p)]: out.append({"surfaceId": s, "personaId": p, "state": "excluded", "criteria": [], "reason": defer_reason})
     else: out.append({"surfaceId": s, "personaId": p, "state": "uncovered", "criteria": []})
 total = len(out)
-cov = sum(1 for x in out if x["state"] == "covered")
+unsc = sum(1 for x in out if x["state"] == "covered-unscoped")
+cov = sum(1 for x in out if x["state"] == "covered") + (unsc if os.environ.get("MODE") == "advise" else 0)
 exd = sum(1 for x in out if x["state"] == "excluded")
 den = total - exd
 tenths = 1000 if den == 0 else (2000 * cov + den) // (2 * den)
-res = {"total": total, "covered": cov, "excluded": exd, "uncovered": total - cov - exd,
+res = {"total": total, "covered": cov, "excluded": exd, "uncovered": total - cov - exd, "unscopedCovered": unsc,
        "percent": tenths // 10 if tenths % 10 == 0 else tenths / 10,
        "adapterOk": c.get("adapterOk") is not False,
        "warnings": c.get("warnings") or [],
@@ -184,13 +202,26 @@ fi
 printf '%s\n' "$OUT"
 
 [ "$MODE" = "block" ] || exit 0
+# Read the gate inputs back from the result with the engine (never by grepping serialized JSON):
+# "<uncovered> <adapterOk:0|1> <total-excluded>".
+if has_jq; then
+  GATE="$(printf '%s\n' "$OUT" | jq -r '"\(.uncovered) \(if .adapterOk then 1 else 0 end) \(.total - .excluded)"')" || die "could not read the coverage result"
+else
+  GATE="$(printf '%s\n' "$OUT" | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c["uncovered"], 1 if c["adapterOk"] else 0, c["total"] - c["excluded"])')" || die "could not read the coverage result"
+fi
+read -r uncovered adapter_ok coverable <<EOF_GATE
+$GATE
+EOF_GATE
 blocked=0
-uncovered="$(printf '%s' "$OUT" | grep -o '"uncovered":[0-9]*' | head -n 1 | cut -d: -f2)"
-if [ "${uncovered:-0}" -gt 0 ]; then
-  echo "coverage: gate blocked: $uncovered role x surface pair(s) uncovered" >&2
+if [ "$coverable" -eq 0 ]; then
+  echo "coverage: nothing to cover — census is empty or uncrawled" >&2
   blocked=1
 fi
-if printf '%s' "$OUT" | grep -q '"adapterOk":false' && [ "$ACCEPT_CRAWL" != true ]; then
+if [ "$uncovered" -gt 0 ]; then
+  echo "coverage: gate blocked: $uncovered role x surface pair(s) uncovered (covered-unscoped pairs count as uncovered)" >&2
+  blocked=1
+fi
+if [ "$adapter_ok" -eq 0 ] && [ "$ACCEPT_CRAWL" != true ]; then
   echo "coverage: gate blocked: the census adapter failed, so the census is crawl-only; pass --accept-crawl-only to run on it anyway" >&2
   blocked=1
 fi
