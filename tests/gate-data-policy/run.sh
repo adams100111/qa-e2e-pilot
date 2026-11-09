@@ -128,6 +128,19 @@ run_engine() {
   check "$E past date on happy-path refused msg" "$(has_line "$ERR" "DATA POLICY GATE: M1 typed data violates dataPolicy: date-window=2020-01-01")" "yes"
   record "$E" "validation=$RC"
 
+  # password_not_echoed — password/secret/token/otp/pin fields are skipped, so
+  # a secret never reaches the checker or a refusal message.
+  setup "$W" d6 M1 '[{"tool":"browser_fill_form","phase":"act","fields":[{"name":"Title","type":"textbox","ref":"e1","value":"تسجيل فريق الابتكار"},{"name":"Password","type":"textbox","ref":"e2","value":"test-Hunter2-fake"}]},{"tool":"browser_type","target":"#otpCode","text":"bot 4321","phase":"act"},{"tool":"browser_type","target":"#pin","inputType":"password","text":"dummy 99","phase":"act"}]' enforce
+  cp_run "$E" "$W" "$CP" d6 M1 pass --kinds human-action,bake
+  check "$E password_not_echoed rc" "$RC" "0"
+  check "$E password_not_echoed no gate line" "$(printf '%s' "$ERR" | grep -c 'DATA POLICY GATE')" "0"
+  check "$E password_not_echoed value absent" "$(printf '%s' "$ERR" | grep -c -e 'Hunter2' -e '4321')" "0"
+  # ... while a non-secret field with the same value is still checked
+  setup "$W" d6b M1 '[{"tool":"browser_fill_form","phase":"act","fields":[{"name":"Shipping notes","type":"textbox","ref":"e1","value":"test note"}]}]' enforce
+  cp_run "$E" "$W" "$CP" d6b M1 pass --kinds human-action,bake
+  check "$E non_secret_field_checked rc" "$RC" "1"
+  record "$E" "password=$RC"
+
   # non-pass verdicts are unaffected
   cp_run "$E" "$W" "$CP" d1 M1 fail --bug-ref B3
   check "$E fail_unaffected rc" "$RC" "0"

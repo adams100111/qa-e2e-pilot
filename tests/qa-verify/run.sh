@@ -80,9 +80,10 @@ G_C1_REF="$( cd "$WORK" && bash "$REC" genuine C1 action-trace \
   --steps '[{"tool":"browser_click","phase":"act"}]' \
   --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#add\").click();"}]' \
   --fingerprint-before '{"count":1}' --fingerprint-after '{"count":1}' )"
-# 0.12.0 STATE GATE: C1 attempts a write the app must reject, so its state
-# evidence is a read-back showing nothing was persisted (multiplicity 0: the
-# founder is unchanged, no duplicate row) — bound to the g1 capture above.
+# 0.12.0 STATE GATE: C1's row is mutating (the duplicate add is a write the
+# app must reject), so the pass also carries bake evidence. multiplicity 0
+# records that no duplicate row was persisted; the read-back is the existing
+# founder exactly as the g1 capture returned it, so its provenance binds.
 G_C1_BAKE_REF="$( cd "$WORK" && bash "$REC" genuine C1 bake --read-back '{"name":"Genuine Founder","equity":55}' --multiplicity 0 )"
 ( cd "$WORK" && bash "$CKPT" genuine C1 pass --kinds human-action,bake --evidence-refs "$G_C1_REF,$G_C1_BAKE_REF" >/dev/null )
 

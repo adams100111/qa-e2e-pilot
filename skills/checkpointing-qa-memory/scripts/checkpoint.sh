@@ -1170,17 +1170,25 @@ gate_screenshot() {
 # adds nothing — 0.11.0 behaviour).
 # ---------------------------------------------------------------------------
 
-# row_kind_and_oracle_source <row-json> — print two lines: the row's `kind`
-# lowercased ("" when absent / not a string) and its
-# fixture.expect.oracleSource ("" when absent, null or empty; a non-string
-# value is printed as compact JSON so the refusal can show it verbatim).
-row_kind_and_oracle_source() {
+# row_oracle_facts <row-json> — ONE line: `malformed` when the row's `kind`
+# or fixture.expect.oracleSource string holds a control character, else
+# `ok<US>kind<US>source` (US = \x1f, which the control-character check keeps
+# out of both fields). kind is lowercased ("" when absent / not a string);
+# source is "" when absent or null, the string itself, or compact JSON for a
+# present non-string value (e.g. `false`), which is never a grounded source.
+row_oracle_facts() {
   local row="$1"
   if has_jq; then
     jq -r '
-      (if (.kind | type) == "string" then (.kind | ascii_downcase) else "" end),
-      (((.fixture? | objects | .expect? | objects | .oracleSource?) // null)
-        | if type == "string" then . elif . == null then "" else tojson end)
+      def ctrl: explode | any(. < 32 or . == 127);
+      (if (.kind | type) == "string" then .kind else "" end) as $k
+      | (((.fixture? | objects | .expect? | objects) // {}) as $ex
+         | if ($ex | has("oracleSource")) then $ex.oracleSource else null end) as $s
+      | if ($k | ctrl) or ((($s | type) == "string") and ($s | ctrl)) then "malformed"
+        else ["ok", ($k | ascii_downcase),
+              (if $s == null then "" elif ($s | type) == "string" then $s else ($s | tojson) end)]
+             | join("\u001f")
+        end
     ' <<< "$row" 2>/dev/null
   else
     python3 -c '
@@ -1189,17 +1197,26 @@ try:
     r = json.loads(sys.argv[1])
 except Exception:
     sys.exit(0)
-k = r.get("kind") if isinstance(r, dict) else None
-print("".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in k) if isinstance(k, str) else "")
-fx = r.get("fixture") if isinstance(r, dict) else None
+if not isinstance(r, dict):
+    sys.exit(0)
+def ctrl(s):
+    return any(ord(c) < 32 or ord(c) == 127 for c in s)
+k = r.get("kind")
+k = k if isinstance(k, str) else ""
+fx = r.get("fixture")
 ex = fx.get("expect") if isinstance(fx, dict) else None
 src = ex.get("oracleSource") if isinstance(ex, dict) else None
+if ctrl(k) or (isinstance(src, str) and ctrl(src)):
+    print("malformed")
+    sys.exit(0)
 if src is None:
-    print("")
+    s = ""
 elif isinstance(src, str):
-    print(src)
+    s = src
 else:
-    print(json.dumps(src, separators=(",", ":"), ensure_ascii=False))
+    s = json.dumps(src, separators=(",", ":"), ensure_ascii=False)
+low = "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in k)
+print("\x1f".join(["ok", low, s]))
 ' "$row" 2>/dev/null
   fi
 }
@@ -1242,16 +1259,21 @@ effective_profile() {
 # fixture.expect.oracleSource, or (effective profile `ship`) whose kind is
 # computed-logic|business-rule. Only `human` and `spec` can ground it; any
 # other source, or none, is refused. A low-confidence pass is the honest
-# downgrade and is always allowed. No row -> 0.11.0 behaviour.
+# downgrade and is always allowed. No row -> 0.11.0 behaviour. A row whose
+# kind or oracleSource holds a control character is refused at any
+# confidence (malformed: its fields cannot be read reliably).
 gate_oracle() {
   local run_id="$1" crit_id="$2" confidence="$3" checklist_row="$4"
-  [[ "$confidence" == "high" ]] || return 0
   [[ -z "$checklist_row" ]] && return 0
 
-  local facts kind source
-  facts="$(row_kind_and_oracle_source "$checklist_row")"
-  kind="${facts%%$'\n'*}"
-  if [[ "$facts" == *$'\n'* ]]; then source="${facts#*$'\n'}"; else source=""; fi
+  local facts tag kind source
+  facts="$(row_oracle_facts "$checklist_row")"
+  if [[ "$facts" == "malformed" ]]; then
+    echo "ORACLE GATE: ${crit_id} malformed checklist row (control character in kind or oracleSource) cannot ground a pass" >&2
+    return 1
+  fi
+  [[ "$confidence" == "high" ]] || return 0
+  IFS=$'\x1f' read -r tag kind source <<< "$facts"
 
   if [[ -z "$source" ]]; then
     case "$kind" in
@@ -1316,22 +1338,46 @@ gate_state() {
 # typed data is checked — never the record's own metadata (run_id,
 # recorded_at, criterion_id, tool names, selectors), which would otherwise
 # trip a marker or a date window on every pass.
+# A step (or fill_form field) whose target/field/selector/element/name names
+# a password, passwd, secret, token, otp or pin field, or whose type /
+# inputType is `password`, is skipped: a secret is never handed to the checker.
 typed_values_text() {
   local file="$1"
   if has_jq; then
     jq -r '
+      def secretname: if type == "string" then
+          [ gsub("(?<a>[a-z0-9])(?<b>[A-Z])"; "\(.a) \(.b)") | ascii_downcase
+            | splits("[^a-z0-9]+") | select(. != "")
+            | select(IN("otp", "pin") or test("password|passwd|secret|token")) ] | length > 0
+        else false end;
+      def secret: objects
+        | ([ .target?, .field?, .selector?, .element?, .name? | secretname ] | any)
+          or ([ .type?, .inputType? | strings | ascii_downcase == "password" ] | any);
       [ (.steps // []) | if type == "array" then .[] else empty end | objects
+        | select(secret | not)
         | (.text?, .value?, .values?,
-           ((.fields? // []) | if type == "array" then .[] else empty end | objects | .value?)) ]
+           ((.fields? // []) | if type == "array" then .[] else empty end | objects
+            | select(secret | not) | .value?)) ]
       | [ .. | strings ] | join("\n")
     ' "$file" 2>/dev/null || true
   else
     python3 -c '
-import json, sys
+import json, re, sys
 try:
     d = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
     sys.exit(0)
+def low(s):
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+def secretname(v):
+    if not isinstance(v, str):
+        return False
+    toks = [t for t in re.split(r"[^a-z0-9]+", low(re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", v))) if t]
+    return any(t in ("otp", "pin") or re.search(r"password|passwd|secret|token", t) for t in toks)
+def secret(o):
+    if any(secretname(o.get(k)) for k in ("target", "field", "selector", "element", "name")):
+        return True
+    return any(isinstance(o.get(k), str) and low(o.get(k)) == "password" for k in ("type", "inputType"))
 out = []
 def walk(x):
     if isinstance(x, str): out.append(x)
@@ -1341,15 +1387,36 @@ def walk(x):
         for i in x.values(): walk(i)
 steps = d.get("steps") if isinstance(d, dict) else None
 for st in (steps if isinstance(steps, list) else []):
-    if not isinstance(st, dict): continue
+    if not isinstance(st, dict) or secret(st): continue
     for k in ("text", "value", "values"):
         if k in st: walk(st[k])
     fl = st.get("fields")
     for f in (fl if isinstance(fl, list) else []):
-        if isinstance(f, dict) and "value" in f: walk(f["value"])
+        if isinstance(f, dict) and not secret(f) and "value" in f: walk(f["value"])
 sys.stdout.write("\n".join(out))
 ' "$file" 2>/dev/null || true
   fi
+}
+
+# dp_check_text <config.json> <text> — run data-policy.sh check (path in
+# DP_SH_PATH) on <text> via a mode-600 temp file holding it as one JSON string
+# (`@file`), never argv, so typed values do not show in the process list.
+# Prints data-policy.sh's stdout and returns its exit code.
+dp_check_text() {
+  local cfg="$1" text="$2" tf dp_eng="python3" out rc
+  has_jq && dp_eng="jq"
+  tf="$(umask 077; mktemp "${TMPDIR:-/tmp}/qa-dp.XXXXXX")" || return 2
+  chmod 600 "$tf"
+  if has_jq; then
+    printf '%s' "$text" | jq -Rs . > "$tf"
+  else
+    printf '%s' "$text" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read(), ensure_ascii=False))' > "$tf"
+  fi
+  out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$DP_SH_PATH" check "$cfg" "@${tf}" 2>/dev/null)"
+  rc=$?
+  rm -f "$tf"
+  printf '%s' "$out"
+  return "$rc"
 }
 
 # gate_data_policy <run-id> <crit-id> <persona> <row-json> — DATA POLICY GATE
@@ -1386,13 +1453,9 @@ gate_data_policy() {
   local text
   text="$(typed_values_text "$trace")"
   [[ -z "$text" ]] && return 0
-  # data-policy.sh reads an argument starting with '@' as a file path.
-  [[ "$text" == @* ]] && text=$'\n'"$text"
 
-  local dp_eng="python3" out rc
-  has_jq && dp_eng="jq"
-  out="$(QA_ENGINE="$dp_eng" PATH="${PATH}:${BASH%/*}:/usr/bin:/bin" "$BASH" "$dp_sh" check \
-        "$(run_dir "$run_id")/effective-config.json" "$text" 2>/dev/null)"
+  local out rc
+  out="$(DP_SH_PATH="$dp_sh" dp_check_text "$(run_dir "$run_id")/effective-config.json" "$text")"
   rc=$?
   [[ "$rc" -eq 0 ]] && return 0
   if [[ "$rc" -ne 1 ]]; then
@@ -1411,9 +1474,10 @@ for v in json.loads(sys.argv[1]).get("violations", []):
 ' "$out" 2>/dev/null)"
   fi
 
-  local facts kind
-  facts="$(row_kind_and_oracle_source "$checklist_row")"
-  kind="${facts%%$'\n'*}"
+  local facts tag kind source
+  facts="$(row_oracle_facts "$checklist_row")"
+  kind=""
+  [[ "$facts" == ok* ]] && IFS=$'\x1f' read -r tag kind source <<< "$facts"
 
   local -a shown=()
   local line
