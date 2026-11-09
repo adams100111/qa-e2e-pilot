@@ -46,11 +46,15 @@ decision that would raise a verdict or a confidence makes the whole batch exit 1
 `ADJUDICATION: upgrades are not allowed` and nothing written. Unknown criteria or personas and
 malformed entries are rejected and reported; the rest still apply (exit 1).
 
-**C. Where it runs.** The agent invokes it at the start of its Report phase, before `qa-verify.sh`,
-so `verification.json` and the ship summary see the final verdicts. On Claude Code, `/qa-run`
+**C. Where it runs.** The end-of-run order is fixed: `qa-verify.sh` → re-adjudication → `qa-verify.sh` again → render report →
+bug export. The first `qa-verify` gives `adjudication.sh select` the verification-adjusted confidence (a pass `qa-verify`
+lowered to `low` is selected; `apply` rejects a decision for a record `select` did not list); the second makes
+`verification.json` and the ship summary see the final verdicts. On Claude Code, `/qa-run`
 dispatches the agent as a subagent that cannot start agents of its own; it then lists the pending
 records and leaves `adjudication/` absent, and the `/qa-run` session runs the skill after the agent
-returns, then re-runs `qa-verify.sh`, the renderer and the bug export. qa-kit's `/qa-verify`
+returns, then re-runs `qa-verify.sh`, the renderer and the bug export; `/qa-resume` does the same when the agent could not.
+The report's **Re-adjudication** line and the P1 ship conditions (not run, unavailable, not re-judged, decision refused) read
+`adjudication/`. qa-kit's `/qa-verify`
 restates the outcome and never applies decisions itself.
 
 **D. Capability is declared, not guessed.** `harness-profiles.json` carries a boolean

@@ -62,12 +62,15 @@ Ship QA increments 1 and 2, released together with qa-kit `v0.3.0` (which pins `
   verifier overrides on P1), plus low-confidence, flaky and regression lines. It fails closed on
   missing coverage, journeys or verification and on an out-of-date verification; runs without those
   inputs render byte for byte as before.
-- **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes
-  `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and verifier overrides,
-  deduplicated against outstanding known defects (same surface and criterion, or observed class),
-  with secrets redacted and both engines byte-identical.
-- **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase
-  re-adjudicates, runs `qa-verify`, renders, relays the ship verdict and exports bugs.
+  A P1 criterion the re-adjudicator disputed (`verifier-disagrees:`) blocks on its own, journey step or not; a
+  **Re-adjudication** line reports re-judged / disputed counts, the unavailable banner or `did not run`, and a P1
+  low-confidence pass nobody re-judged blocks. A **Needs re-check** row counts `bugs/needs-recheck.json` when the
+  run has a bug export (informational, never blocking).
+- **Bug export.** `scripts/bug-export.sh <run-dir> --out <dir> [--known-defects <registry>]` writes `bugs.json` and one plain-language `<id>.md` per new bug from `bug-log.json` and from verifier overrides that show a contradiction (`match:false`, `readBack:null`, `ok:false`, or an acting identity that differs from the expected one). Overrides that only show missing or ungrounded evidence (oracle-ungrounded, no-state-evidence, unbound, no toolstream, identity unverified, missing artifacts) are not bugs: they go to `needs-recheck.json` (always written, `[]` when empty) and the summary line carries `needsRecheck`. A re-export removes only the stale `<id>.md` files the previous `bugs.json` listed; unknown files and symlinks stay. A bug without evidence falls back to the latest record's evidence refs, then to the criterion's `evidence/` folder, and a missing journey id comes from `journeys.json`. Bugs are deduplicated against outstanding known defects, secrets are redacted and both engines are byte-identical.
+- **Agent.** The Verify phase names the three gates and what to record to pass them; the Report phase runs
+  `qa-verify` → re-adjudication (selection uses the verification-adjusted confidence) → `qa-verify` again → render →
+  bug export. `/qa-resume` re-adjudicates too when the agent could not. `gates.oracle` is informational: enforcement
+  keys on `oracleSource` and the `ship` profile.
 - **Suites.** `gate-oracle`, `gate-state`, `gate-data-policy`, `verify-ship-gates`, `ship-summary`,
   `bug-export`, `adjudication` enrolled (65 engine suites); `missing_required_kinds` is bash 3.2 safe.
 
@@ -557,6 +560,10 @@ release tags).
   `<path>:<line>` that resolves inside the checklist dir or the git root (no absolute paths, no `..`,
   symlinks resolved and contained; outside git, the checklist dir only); `sources` counts `spec`.
   Only `human` and `spec` can ground a high-confidence pass under the engine's ORACLE GATE.
+- **Plan drift check.** `/qa-verify` runs `verify-plan.sh --drift <run-checklist> <frozen-checklist>`, which compares by id the
+  trust-bearing fields (`kind`, `tags`, `mutates`, `humanAction`, `fixture.expect.{oracleSource,citation,value}`) and fails on any
+  drift, row added in-run or frozen row missing. `check-fixtures.sh` names the unresolved citation in its missing reason, and the
+  constitution marks `gates.oracle` informational.
 - **`/qa-verify`** restates the engine's re-adjudication outcome (re-judged, verifier overrides,
   unavailable banner or did not run); the `verification.md` template gains that section.
 - **Suites.** `oracle-confirm` enrolled (15 qa-kit suites).

@@ -300,5 +300,17 @@ PY
 done
 has "superseded_verdict_used" "$(md j-run-superseded)" "| P1 journeys | 1 of 1 pass |"
 
+# Needs re-check row: informational, from <run>/bugs/needs-recheck.json when present.
+mk nrc 0 pass ""
+lacks "needs_recheck absent without export" "$(md nrc)" "Needs re-check"
+mkdir -p "$W/nrc/bugs"; printf '[{"criterionId":"C9"},{"criterionId":"J1-S1"}]' > "$W/nrc/bugs/needs-recheck.json"
+node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
+has "needs_recheck row counts" "$(md nrc)" "| Needs re-check | 2 |"
+has "needs_recheck not blocking" "$(md nrc)" "**SHIP-READY**"
+printf '[]' > "$W/nrc/bugs/needs-recheck.json"; node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
+has "needs_recheck zero" "$(md nrc)" "| Needs re-check | 0 |"
+printf 'junk' > "$W/nrc/bugs/needs-recheck.json"; node "$RR" "$W/nrc" --quiet >/dev/null 2>&1
+lacks "needs_recheck unreadable no row" "$(md nrc)" "Needs re-check"
+
 echo "ship-summary: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

@@ -97,7 +97,7 @@ byte for byte as before.
 
 **E. The bug export is tracker-neutral.** `scripts/bug-export.sh <run-dir> --out <dir>` writes
 `bugs.json` and one plain-language `<id>.md` per new bug (What happened, What should happen, Steps,
-Evidence) from `bug-log.json` and every verifier override without a bug entry. A bug matching an
+Evidence) from `bug-log.json` and every verifier override without a bug entry **that shows a contradiction** (`match:false`, `readBack:null`, `ok:false`, or an acting identity different from the expected one). Every other override is an evidence gap, not a defect: it is written to `needs-recheck.json` (always present, `[]` when empty; the summary line carries `needsRecheck`) and the ship summary counts it on an informational **Needs re-check** row. A re-export removes only the `<id>.md` files the previous `bugs.json` listed and this export did not write again (ids must be plain file names; symlinks and unknown files are kept). A bug without evidence takes the latest record's evidence refs, else the criterion's `evidence/` folder; a missing journey id comes from `journeys.json`. A bug matching an
 `outstanding` known defect on the same surface (and criterion, or observed class when the defect
 names none) gets `duplicateOf` and no `.md`. Severity defaults to `high` for coding layers, else
 `medium`. Secrets are redacted before anything is written. Tracker adapters stay outside the core.
