@@ -139,7 +139,11 @@ build_humanaction_run() { # <run> <persona>
     --steps '[{"tool":"browser_click","phase":"act"}]' \
     --session-calls '[{"class":"human-path","mutating":true,"code":"await page.locator(\"#x\").click();"}]' \
     --fingerprint-before '{"count":1}' --fingerprint-after '{"count":2}' )"
-  ( cd "$WORK" && bash "$CKPT" "$run" HA1 pass --persona "$persona" --kinds human-action --evidence-refs "$ref" >/dev/null )
+  # 0.12.0 STATE GATE: invalid data must be rejected, so the state evidence
+  # is a read-back showing nothing was persisted (multiplicity 0).
+  local bake_ref
+  bake_ref="$( cd "$WORK" && bash "$REC" "$run" HA1 bake --persona "$persona" --read-back '{"submissions":1}' --multiplicity 0 )"
+  ( cd "$WORK" && bash "$CKPT" "$run" HA1 pass --persona "$persona" --kinds human-action,bake --evidence-refs "$ref,$bake_ref" >/dev/null )
   # kind error-state (NOT in the bake-kind set) + tags:[human-action] so
   # required-kinds.sh derives human-action ALONE (rule 1, the mutating verb
   # "Submit") -- no bake requirement to also satisfy, keeping this fixture
