@@ -9,7 +9,7 @@
 #   Lines look like `<name> <VERB> <path>(.:format) <controller#action>` (the name and, for repeated
 #   routes, the name column may be blank). Rows without a verb (mounted engines) are skipped; /rails/* and /cable
 #   (framework routes) are skipped and named once in warnings.
-# Path rules: "(.:format)" dropped, "(/:x)" -> "/{x?}", ":id" -> "{id}", "*rest" -> "{rest}".
+# Path rules: "(.:format)" dropped, "(/:x)" -> "/{x?}", ":id" -> "{id}", "*rest" -> "{rest*}" (glob: one or more segments).
 #   "PATCH|PUT" -> one surface each; HEAD dropped when GET is present.
 # EXIT: 0 ok:true; 3 ok:false (bin/rails missing or failing, no routes parsed, no engine); 1 usage error.
 ADAPTER="rails"
@@ -40,7 +40,7 @@ while IFS="$(printf '\t')" read -r verb path; do
   esac
   p="$(printf '%s' "$path" | sed -E \
     -e 's#\(\.:format\)##g' -e 's#\(/:([A-Za-z0-9_]+)\)#/{\1?}#g' \
-    -e 's#:([A-Za-z0-9_]+)#{\1}#g' -e 's#\*([A-Za-z0-9_]+)#{\1}#g')"
+    -e 's#:([A-Za-z0-9_]+)#{\1}#g' -e 's#\*([A-Za-z0-9_]+)#{\1*}#g')"
   p="$(norm_path "$p")"
   case "|$verb|" in *"|GET|"*) verb="$(printf '%s' "$verb" | tr '|' '\n' | grep -vx HEAD | tr '\n' '|')"; verb="${verb%|}" ;; esac
   printf '%s\n' "$verb" | tr '|' '\n' | while IFS= read -r m; do

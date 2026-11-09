@@ -154,7 +154,7 @@ run_engine() {
   stack nextjs "$E" "$T/nx.json" --repo "$NX"; rc=$?
   check "$E nextjs exit 0" "$rc" "0"
   check "$E nextjs surface ids" "$(q "$T/nx.json" "[x['surfaceId'] for x in c['surfaces']]")" \
-    '["DELETE /api/users/{id}","GET /","GET /about","GET /api/health","GET /api/ping","GET /blog/{slug}","GET /contact","GET /docs/{slug}","GET /legacy","GET /login","GET /shop/{cat?}","GET /users/{id}","POST /api/health"]'
+    '["DELETE /api/users/{id}","GET /","GET /about","GET /api/health","GET /api/ping","GET /blog/{slug}","GET /contact","GET /docs/{slug*}","GET /legacy","GET /login","GET /shop/{cat*?}","GET /users/{id}","POST /api/health"]'
   check "$E nextjs excludes _app/_document/pages-api/layout" "$(q "$T/nx.json" "any('_app' in x['surfaceId'] or '_document' in x['surfaceId'] or 'old' in x['surfaceId'] or 'layout' in x['surfaceId'] for x in c['surfaces'])")" "False"
   check "$E nextjs surfaces are static endpoints" "$(q "$T/nx.json" "sorted(set((x['confidence'],x['kind'],x['source']) for x in c['surfaces']))")" '[["static","endpoint","adapter"]]'
   check "$E nextjs surface shape" "$(q "$T/nx.json" "s('GET /users/{id}')")" '{"confidence":"static","kind":"endpoint","method":"GET","pattern":"/users/{id}","permissionHints":[],"source":"adapter","surfaceId":"GET /users/{id}"}'
@@ -178,7 +178,7 @@ run_engine() {
   stack rails "$E" "$T/rb.json" --repo "$RB"; rc=$?
   check "$E rails exit 0" "$rc" "0"
   check "$E rails surface ids" "$(q "$T/rb.json" "[x['surfaceId'] for x in c['surfaces']]")" \
-    '["DELETE /users/{id}","GET /","GET /archive/{locale?}/{path}","GET /pages/{slug}/comments/{comment_id}","GET /users","GET /users/{id}","PATCH /users/{id}","POST /users","PUT /users/{id}"]'
+    '["DELETE /users/{id}","GET /","GET /archive/{locale?}/{path*}","GET /pages/{slug}/comments/{comment_id}","GET /users","GET /users/{id}","PATCH /users/{id}","POST /users","PUT /users/{id}"]'
   check "$E rails framework routes skipped + warned, engine mount skipped" "$(q "$T/rb.json" "c['warnings']")" '["skipped framework route: /rails, /cable"]'
   check "$E rails runtime surfaces have no confidence" "$(q "$T/rb.json" "any('confidence' in x for x in c['surfaces'])")" "False"
   FAKE_RAILS_FAIL=1 stack rails "$E" "$T/rbf.json" --repo "$RB"; rc=$?
