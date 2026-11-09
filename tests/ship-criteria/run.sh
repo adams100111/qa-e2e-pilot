@@ -94,7 +94,11 @@ run_engine() {
   check "$E ux secondary combos present" "$(q "$T/o.json" "[i.split('@')[1] for i in ids('ux:$CREATE:admin@')]")" \
     '["desktop-ar-dark","desktop-en-dark","desktop-en-light","mobile-ar-dark","mobile-ar-light","mobile-en-dark","mobile-en-light"]'
   check "$E ux row shape" "$(q "$T/o.json" "[r('ux:$SHOW:admin@mobile-en-dark')[k] for k in ('surfaceId','persona','variant','priority')]+[sorted(r('ux:$SHOW:admin@mobile-en-dark')['tags'])]")" \
-    "[\"$SHOW\",\"admin\",{\"colorScheme\":\"dark\",\"locale\":\"en\",\"viewport\":\"mobile\"},\"P1\",[\"independent\",\"read-only\",\"sweep\",\"ux-revisit\"]]"
+    "[\"$SHOW\",\"admin\",{\"colorScheme\":\"dark\",\"locale\":\"en\",\"viewport\":\"mobile\"},\"P1\",[\"independent\",\"read-only\",\"sweep\",\"ux-revisit\",\"visual-ux\"]]"
+  # ux_revisit_rows_carry_visual_ux (driving-browser-qa runs detecting-visual-ux only on a visual-ux row)
+  check "$E ux_revisit_rows_carry_visual_ux" "$(q "$T/o.json" "[x['title'] for x in rows if 'ux-revisit' in x['tags'] and 'visual-ux' not in x['tags']]")" '[]'
+  check "$E visual-ux only on ux-revisit rows" "$(q "$T/o.json" "[x['title'] for x in rows if 'visual-ux' in x['tags'] and 'ux-revisit' not in x['tags']]")" '[]'
+  check "$E no dialog/sheet surface: no interaction-ux" "$(q "$T/o.json" "[x['title'] for x in rows if 'interaction-ux' in x['tags']]")" '[]'
   # ux_revisits_every_journey (Settled matrix: every journey's surfaces, not only P1; priority = the journey's)
   check "$E ux revisits a P2 journey too" "$(q "$T/o.json" "[len(ids('ux:GET /h/{slug}:participant@')), r('ux:GET /h/{slug}:participant@mobile-en-dark')['priority']]")" '[7,"P2"]'
 
@@ -228,6 +232,29 @@ J
     'As admin, open /admin/hackathons/42, then open the tab "الفرق" and let it settle'
   check "$E dialog_surface_action_opens_the_dialog" "$(q "$T/s.json" "r('load-clean:GET /ideas/{idea}#dialog:delete:participant')['action']")" \
     'As participant, open /ideas/7?tab=summary, then open the dialog "delete" and let it settle'
+  # dialog_sheet_rows_carry_interaction_ux (driving-browser-qa runs detecting-interaction-ux on these)
+  check "$E dialog_rows_carry_interaction_ux" "$(q "$T/s.json" "sorted(x['title'] for x in rows if 'interaction-ux' in x['tags'])")" \
+    '["load-clean:GET /ideas/{idea}#dialog:delete:participant"]'
+  check "$E dialog load-clean row tags" "$(q "$T/s.json" "r('load-clean:GET /ideas/{idea}#dialog:delete:participant')['tags']")" \
+    '["independent","interaction-ux","read-only","sweep"]'
+  check "$E tab surface: no interaction-ux" "$(q "$T/s.json" "'interaction-ux' in r('load-clean:page:Admin/Hackathons/Show#tab:الفرق:admin')['tags']")" "False"
+  # sheet surface on a journey: the ux revisit carries visual-ux AND interaction-ux; the input row interaction-ux
+  cat > "$T/c5.json" <<'J'
+{"version":1,"adapterOk":true,"surfaces":[
+ {"surfaceId":"GET /notifications#sheet:panel","kind":"sheet","pattern":"/notifications","sources":["crawl"],"reachedBy":["admin"],"allowed":null,"sampleUrls":{"admin":"/notifications"},
+  "forms":[{"formId":"notif-reply","method":"POST","fields":[{"name":"body","type":"text","required":true}]}]}],
+ "jobs":[],"mails":[],"notifications":[],"diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},"warnings":[]}
+J
+  printf '%s' '{"version":1,"surfaces":{}}' > "$T/a5.json"
+  printf '%s' '[{"id":"S5","surfaceId":"GET /notifications#sheet:panel","persona":"admin","kind":"happy-path","tags":["read-only"],"action":"Open the panel"}]' > "$T/k5.json"
+  printf '%s' '[{"id":"J5","title":"الإشعارات","priority":"P1","roles":["admin"],"steps":["S5"]}]' > "$T/j5.json"
+  printf '%s' '{"profile":"ship","locales":["ar","en"],"colorSchemes":["light"]}' > "$T/cfg5.json"
+  QA_ENGINE=$E bash "$SH" --census "$T/c5.json" --access "$T/a5.json" --matrix "$T/m3.json" --personas "$FX/personas.json" --config "$T/cfg5.json" \
+    --journeys "$T/j5.json" --checklist "$T/k5.json" > "$T/x5.json" 2> "$T/x5.err"; rc=$?
+  check "$E sheet fixture exit 0" "$rc" "0"
+  check "$E sheet ux revisit carries visual-ux + interaction-ux" "$(q "$T/x5.json" "r('ux:GET /notifications#sheet:panel:admin@default-en-light')['tags']")" \
+    '["independent","interaction-ux","read-only","sweep","ux-revisit","visual-ux"]'
+  check "$E sheet input row carries interaction-ux" "$(q "$T/x5.json" "'interaction-ux' in r('input:notif-reply:body:empty')['tags']")" "True"
   check "$E tab surface id token-safe" "$(q "$T/s.json" "r('load-clean:page:Admin/Hackathons/Show#tab:الفرق:admin')['id'][:-9]")" "load-clean-page-admin-hackathons-show-tab-admin"
   check "$E iso ignores tab/dialog subsurfaces" "$(q "$T/s.json" "r('iso:idea:participant')['surfaceId']")" "GET /ideas/{idea}"
   check "$E iso matches a catch-all {x*?} parameter" "$(q "$T/s.json" "r('iso:team:participant')['surfaceId']")" "GET /docs/{team*?}"

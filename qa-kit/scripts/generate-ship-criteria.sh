@@ -90,8 +90,12 @@
 #                                      no locale in the title (`@<viewport>-<scheme>`) nor in `variant`.
 #                                      kind load-clean, priority = the best (lowest) priority of the
 #                                      journeys that touched the pair (absent when none has one), tags
-#                                      independent + read-only + sweep + ux-revisit, `variant` set.
+#                                      independent + read-only + sweep + ux-revisit + visual-ux (the
+#                                      visual-ux tag is what makes driving-browser-qa run
+#                                      detecting-visual-ux on the row), `variant` set.
 #                                      Needs --checklist to resolve steps.
+#   UX TAGS: every load-clean / input-validation row (ux revisits included) whose surfaceId names a
+#   `#dialog:` or `#sheet:` surface also carries `interaction-ux` (runs detecting-interaction-ux).
 #   A row whose title or id is already an id or title in --checklist is never emitted. criteriaBudget
 #   is NOT applied: it is a run-time cost lever, so every row is emitted and an overflow is reported on
 #   stderr.
@@ -169,6 +173,10 @@ def target($s; $u): (if $u != null then $u else ($s.pattern | str0) + $nosample 
   + (subKind($s) as $sk | if $sk != null then ", then open the " + $sk.kind + " \"" + $sk.key + "\"" else "" end);
 def withUrl($u): if $u != null then {url: $u} else {} end;
 def tagset: unique;
+def uxTags: (if (.tags | index(["ux-revisit"])) != null then .tags += ["visual-ux"] else . end)
+  | (if (.kind == "load-clean" or .kind == "input-validation") and ((.surfaceId // "") | str0 | test("#(dialog|sheet):"))
+     then .tags += ["interaction-ux"] else . end)
+  | .tags |= unique;
 def caseExpect($c): if (["special","long-5000","past"] | index([$c]) != null) then $accrej else $mustrej end;
 def cases:
   ((.type // "text") | if type == "string" then . else "text" end) as $t
@@ -336,7 +344,7 @@ def cases:
   ($groups | map(finish)) as $G
 | ($G[0] | keep) as $LC | ($G[1] | keep) as $DN | ($G[2] | keep) as $IS | ($G[3] | keep) as $IN | ($G[4] | keep) as $UX
 | ($G | map(length) | add) as $generated
-| ($LC + $DN + $IS + $IN + $UX | map(. + {role: .persona})) as $rows
+| ($LC + $DN + $IS + $IN + $UX | map(. + {role: .persona} | uxTags)) as $rows
 | ($rows | length) as $total
 | {rows: $rows,
    notes: ((if $census.adapterOk == false then ["generate-ship-criteria: warning: the census adapter did not run (adapterOk false); rows cover crawl-observed surfaces only"] else [] end)
@@ -684,7 +692,14 @@ groups = [uniq(g) for g in (load_clean, deny, iso, inputs, ux)]
 generated = sum(len(g) for g in groups)
 LC, DN, IS, IN, UX = [[r for r in g if r["title"] not in ex_keys and r["id"] not in ex_keys] for g in groups]
 rows = LC + DN + IS + IN + UX
-for r in rows: r["role"] = r["persona"]
+for r in rows:
+    r["role"] = r["persona"]
+    tg = set(r["tags"])
+    if "ux-revisit" in tg: tg.add("visual-ux")
+    sid = r.get("surfaceId") if isinstance(r.get("surfaceId"), str) else ""
+    if r.get("kind") in ("load-clean", "input-validation") and re.search(r"#(dialog|sheet):", sid):
+        tg.add("interaction-ux")
+    r["tags"] = sorted(tg)
 total = len(rows)
 notes = []
 if census.get("adapterOk") is False:
