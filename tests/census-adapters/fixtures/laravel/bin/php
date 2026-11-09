@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Fake `php` for the census-adapter tests: records argv + cwd, prints fixture output per argv.
+[ -n "${FAKE_PHP_LOG:-}" ] && printf '%s|%s\n' "$(pwd)" "$*" >> "$FAKE_PHP_LOG"
+case "$*" in
+  "artisan route:list --json")
+    [ "${FAKE_PHP_FAIL:-}" = "route:list" ] && { echo "In Connection.php line 825: SQLSTATE[08006] could not connect" >&2; exit 1; }
+    cat "$FAKE_ROUTES" ;;
+  "artisan schedule:list")
+    [ "${FAKE_PHP_FAIL:-}" = "schedule:list" ] && { echo "Command \"schedule:list\" is not defined." >&2; exit 1; }
+    cat "$FAKE_SCHEDULE" ;;
+  *) echo "fake php: unexpected argv: $*" >&2; exit 64 ;;
+esac

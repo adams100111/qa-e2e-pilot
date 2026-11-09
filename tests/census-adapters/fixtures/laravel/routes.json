@@ -1,0 +1,17 @@
+[
+  {"domain":null,"method":"GET|HEAD","uri":"/","name":"home","action":"Closure","middleware":["web"]},
+  {"domain":null,"method":"GET|HEAD","uri":"admin/hackathons/{hackathon}","name":"admin.hackathons.show","action":"App\\Http\\Controllers\\Admin\\HackathonController@show","middleware":["web","auth","can:hackathons.view"]},
+  {"domain":null,"method":"PUT|PATCH","uri":"admin/hackathons/{hackathon}","name":"admin.hackathons.update","action":"App\\Http\\Controllers\\Admin\\HackathonController@update","middleware":["web","auth","role:admin"]},
+  {"domain":null,"method":"POST","uri":"admin/hackathons","name":"admin.hackathons.store","action":"App\\Http\\Controllers\\Admin\\HackathonController@store","middleware":["web","auth","permission:hackathons.create","license.feature:hackathons"]},
+  {"domain":"admin.example.sa","method":"POST","uri":"admin/hackathons","name":"admin.hackathons.store2","action":"App\\Http\\Controllers\\Admin\\HackathonController@store","middleware":["web","can:hackathons.create"]},
+  {"domain":null,"method":"GET|HEAD","uri":"admin/settings","name":"admin.settings","action":"App\\Http\\Controllers\\Admin\\SettingsController@index","middleware":["web","Illuminate\\Auth\\Middleware\\Authorize:settings.view"]},
+  {"domain":null,"method":"GET|HEAD","uri":"h/{slug}","name":"public.hackathon","action":"Modules\\Hackathons\\Http\\Controllers\\PublicHackathonController@show","middleware":["web"]},
+  {"domain":null,"method":"GET|HEAD","uri":"reports/{year?}","name":"reports","action":"App\\Http\\Controllers\\ReportController@index","middleware":"web\nauth\ncan:reports.view"},
+  {"domain":null,"method":"GET|HEAD","uri":"الأخبار/{slug}","name":"news.show","action":"App\\Http\\Controllers\\NewsController@show","middleware":null},
+  {"domain":null,"method":"GET|HEAD","uri":"_ignition/health-check","name":"ignition.healthCheck","action":"Spatie\\LaravelIgnition\\Http\\Controllers\\HealthCheckController","middleware":["web"]},
+  {"domain":null,"method":"POST","uri":"_ignition/execute-solution","name":"ignition.executeSolution","action":"Spatie\\LaravelIgnition\\Http\\Controllers\\ExecuteSolutionController","middleware":["web"]},
+  {"domain":null,"method":"GET|HEAD","uri":"horizon/api/stats","name":"horizon.stats.index","action":"Laravel\\Horizon\\Http\\Controllers\\DashboardStatsController@index","middleware":["web"]},
+  {"domain":null,"method":"GET|HEAD","uri":"telescope/{view?}","name":"telescope","action":"Laravel\\Telescope\\Http\\Controllers\\HomeController@index","middleware":["telescope"]},
+  {"domain":null,"method":"GET|HEAD","uri":"sanctum/csrf-cookie","name":"sanctum.csrf-cookie","action":"Laravel\\Sanctum\\Http\\Controllers\\CsrfCookieController@show","middleware":["web"]},
+  {"domain":null,"method":"GET|HEAD","uri":"horizonte/plans","name":"plans","action":"App\\Http\\Controllers\\PlanController@index","middleware":["web"]}
+]

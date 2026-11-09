@@ -1,0 +1,5 @@
+
+  0 0 * * *    php artisan hackathons:close-registration ............ Next Due: 5 hours from now
+  */5 * * * *  App\Jobs\SyncMetrics ............................... Next Due: 2 minutes from now
+  * * * * *    Closure at: routes/console.php:12 .................. Next Due: 1 second from now
+
