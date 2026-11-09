@@ -51,7 +51,7 @@ bash "<skill-dir>/scripts/adjudication.sh" capability <harness> .qa/runs/<run-id
   unreviewed`. Print it, write it to `adjudication/unavailable.txt`, and stop. This is not an
   error: the run's verdicts stand as recorded and the report says they were not re-judged.
 
-Capability comes from `harness-profiles.json` (`dispatch` via the Agent/Task tool). Do not
+Capability comes from the boolean `subagentDispatch` in `harness-profiles.json`. Do not
 "re-judge" in your own context on a harness that cannot dispatch: a judge that has seen the run is
 not independent.
 
@@ -72,9 +72,10 @@ bash "<skill-dir>/scripts/adjudication.sh" bundle .qa/runs/<run-id> <criterionId
 ```
 
 Pass `--persona` whenever the selected line has one. The bundle holds `criterion.json` (the plan
-row), `claim.json` (verdict, confidence, kinds — no prose), and `evidence/` (bake, recompute,
-probe, action-trace, screenshots, identity). It never holds `journal.ndjson`, `toolstream.jsonl`,
-`*.md`, or `last_action`. Do not add anything to it.
+row), `claim.json` (verdict, confidence, kinds — no prose), and `evidence/` holding only what
+`record-evidence.sh` writes (bake, recompute, probe, action-trace, screenshots, identity, `findings/`).
+Any other file in the evidence folder is left out, so it never holds `journal.ndjson`,
+`toolstream.jsonl`, notes, or `last_action`. Do not add anything to it.
 
 ### Step 4 — Dispatch one fresh verifier per bundle
 
@@ -109,14 +110,21 @@ bash "<skill-dir>/scripts/adjudication.sh" apply .qa/runs/<run-id> \
 | Decision | Record | Result |
 |---|---|---|
 | `agree: true` | any | no change |
-| `agree: false` | `pass` | `blocked`, confidence `low`, last action `verifier-disagrees: <reason>`, phase `adjudicate` |
-| `agree: false` | `fail` | stays `fail`, confidence `low`, same last action; kinds, bug ref and evidence refs kept |
+| `agree: false` | `pass` | `blocked`, confidence `low`, last action `verifier-disagrees: <reason>`, phase `adjudicate`; kinds and evidence refs kept |
+| `agree: false` | `fail` | stays `fail`, confidence `low`, same last action; kinds, bug ref, evidence refs and a logged non-UI reason kept |
 | `agree: false` | `blocked`/`deferred`/`error` | no change (already not a pass) |
 
 Exit 0 = all applied. Exit 1 = `ADJUDICATION: upgrades are not allowed` (nothing written), a
 rejected entry (unknown criterion or persona, malformed entry: skipped, the rest applied), or a
 `checkpoint.sh` gate refusal. Report every `ADJUDICATION:` line to the operator; never edit
 `checkpoint.json` or the journal by hand to "fix" one.
+
+A refused write changes nothing. When `checkpoint.sh` refuses the re-upsert of a disputed fail
+(for example the screenshot gate on a browser-driven run), the record stays exactly as it was —
+still `fail` at its old confidence, with no `verifier-disagrees:` last action — so neither
+`checkpoint.json` nor the report shows the dispute. The only trace is the
+`ADJUDICATION: checkpoint.sh refused …` line in `adjudication/apply.txt`; read it and carry it
+into the hand-off.
 
 ### Step 7 — Hand off
 

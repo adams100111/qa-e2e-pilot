@@ -7,6 +7,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 SH="$ROOT/skills/re-adjudicating-verdicts/scripts/adjudication.sh"
 CP="$ROOT/skills/checkpointing-qa-memory/scripts/checkpoint.sh"
+RE="$ROOT/skills/checkpointing-qa-memory/scripts/record-evidence.sh"
 command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || { echo "ERROR: adjudication: neither jq nor python3 available - suite cannot run" >&2; exit 1; }
 pass=0; fail=0
 TMPDIRS=()
@@ -21,7 +22,8 @@ rec() {
 import json,sys
 d=json.load(open(sys.argv[1]))
 m=[r for r in d["criteria"] if r["criterion_id"]==sys.argv[2] and r["persona"]==sys.argv[3]]
-print(m[0][sys.argv[4]] if m else "<none>")' "$1/.qa/runs/r1/checkpoint.json" "$2" "$3" "$4"
+v=m[0].get(sys.argv[4]) if m else "<none>"
+print(json.dumps(v, ensure_ascii=False) if isinstance(v,(list,dict)) else v)' "$1/.qa/runs/r1/checkpoint.json" "$2" "$3" "$4"
 }
 
 # make_fx -> prints a fresh project dir holding run r1.
@@ -56,6 +58,14 @@ JSON
   printf '{"event":"x"}\n' > "$R/evidence/admin/C-LOW/journal.ndjson"
   printf '{"tool":"browser_click"}\n' > "$R/evidence/admin/C-LOW/toolstream.jsonl"
   printf '{"persona":"admin","capturedSubject":"faisal.alharbi@innovation-lab.co","method":"whoami"}' > "$R/evidence/admin/identity.json"
+  # not record-evidence outputs: never bundled (allow-list)
+  printf 'scratch\n' > "$R/evidence/admin/C-LOW/random.txt"
+  printf '{"summary":"saw the green toast"}' > "$R/evidence/admin/C-LOW/agent-summary.json"
+  printf 'x' > "$R/evidence/admin/C-LOW/screenshot-after.png.bak"
+  mkdir -p "$R/evidence/admin/C-LOW/scratch" "$R/evidence/admin/C-LOW/findings"
+  printf '{"k":1}' > "$R/evidence/admin/C-LOW/scratch/bake-read-back.json"
+  printf '{"status":500,"url":"/api/projects"}' > "$R/evidence/admin/C-LOW/findings/net-1.json"
+  ln -s ../../../checkpoint.json "$R/evidence/admin/C-LOW/screenshot-link.json"
   echo "$P"
 }
 
@@ -85,6 +95,9 @@ C-UX${TAB}${TAB}ux-promoted-fail"
     "$(find "$P/b" \( -name journal.ndjson -o -name toolstream.jsonl -o -name '*.md' \) | wc -l | tr -d ' ')" "0"
   check "$E bundle_excludes_journal_and_prose no lastAction prose" \
     "$(grep -rlE 'green toast|last_action|lastAction' "$P/b" | wc -l | tr -d ' ')" "0"
+  # --- unknown_file_not_bundled ----------------------------------------------
+  check "$E unknown_file_not_bundled tree" "$(cd "$P/b" && find . \( -type f -o -type l \) | LC_ALL=C sort | tr '\n' ' ')" \
+    "./claim.json ./criterion.json ./evidence/admin/C-LOW/bake-read-back.json ./evidence/admin/C-LOW/findings/net-1.json ./evidence/admin/C-LOW/screenshot-after.json ./evidence/admin/C-LOW/screenshot-after.png ./evidence/admin/identity.json "
   check "$E bundle arabic kept" "$(grep -c 'عداد المياه الذكي' "$P/b/evidence/admin/C-LOW/bake-read-back.json")" "1"
   cp "$P/b/claim.json" "$P/claim.$E"; cp "$P/b/criterion.json" "$P/criterion.$E"
   adj bundle "$R" C-NOPE "$P/b2" >/dev/null 2>"$P/err"; rc=$?
@@ -165,6 +178,28 @@ C-UX${TAB}${TAB}ux-promoted-fail"
   adj apply "$R" "$P/d8.json" >/dev/null 2>&1; rc=$?
   check "$E apply non-array refused" "$rc" "2"
 
+  # --- evidence_refs_survive_disputed_pass + nonUiActionReason kept + comma ids ---
+  P="$(mktemp -d)"; TMPDIRS+=("$P"); R="$P/.qa/runs/r1"
+  ( cd "$P" || exit 1
+    bash "$RE" r1 C-REFS computed --oracle 1250 --observed 1250 --match true >/dev/null 2>&1
+    bash "$CP" r1 C-REFS pass --confidence low --kinds computed --evidence-refs evidence/C-REFS/recompute.json --last-action "total matched" >/dev/null 2>&1
+    bash "$CP" r1 C-NU fail --confidence high --nonui-reason "the drag handle is canvas-drawn; the driver cannot reach it" --last-action "card did not move" >/dev/null 2>&1
+    bash "$CP" r1 'C,UX2' fail --confidence high --last-action "label clipped" >/dev/null 2>&1
+  )
+  printf '%s' '[{"id":"C-REFS","surface":"/budget","kind":"computed-logic","tags":[],"action":"see the remaining budget","role":"admin"},{"id":"C,UX2","surface":"/budget","kind":"happy-path","tags":["visual-ux"],"action":"view the budget card","role":"admin"}]' > "$R/checklist.json"
+  check "$E fixture C-REFS recorded" "$(rec "$P" C-REFS "" verdict)/$(rec "$P" C-REFS "" confidence)" "pass/low"
+  check "$E fixture C-NU nonui" "$(rec "$P" C-NU "" confidence)" "low"
+  check "$E rows_keep_commas_in_ids select" "$(adj select "$R")" "C-REFS${TAB}${TAB}low-confidence-pass
+C,UX2${TAB}${TAB}ux-promoted-fail"
+  printf '[{"criterionId":"C-REFS","persona":"","agree":false,"reason":"recompute oracle is the backend formula"},{"criterionId":"C-NU","persona":"","agree":false,"reason":"screenshot shows the card moved"}]' > "$P/d9.json"
+  out="$(adj apply "$R" "$P/d9.json" 2>"$P/err")"; rc=$?
+  check "$E evidence_refs_survive_disputed_pass rc" "$rc" "0"
+  check "$E evidence_refs_survive_disputed_pass verdict" "$(rec "$P" C-REFS "" verdict)/$(rec "$P" C-REFS "" confidence)" "blocked/low"
+  check "$E evidence_refs_survive_disputed_pass refs" "$(rec "$P" C-REFS "" evidence_refs)" '["evidence/C-REFS/recompute.json"]'
+  check "$E evidence_refs_survive_disputed_pass kinds" "$(rec "$P" C-REFS "" kinds)" '["computed"]'
+  check "$E nonui_reason_kept_on_disputed_fail" "$(rec "$P" C-NU "" nonUiActionReason)" "the drag handle is canvas-drawn; the driver cannot reach it"
+  check "$E nonui disputed fail last_action" "$(rec "$P" C-NU "" last_action)" "verifier-disagrees: screenshot shows the card moved"
+
   # --- capability -------------------------------------------------------------
   P="$(make_fx)"; R="$P/.qa/runs/r1"
   check "$E capability claude" "$(adj capability claude "$R")" "available"
@@ -173,6 +208,11 @@ C-UX${TAB}${TAB}ux-promoted-fail"
   check "$E capability codex banner" "$out" "re-adjudication unavailable on codex; 1 low-confidence passes unreviewed"
   check "$E capability unknown harness" "$(adj capability nosuch)" "re-adjudication unavailable on nosuch; 0 low-confidence passes unreviewed"
   check "$E capability no profiles claude" "$(QA_HARNESS_PROFILES="$P/none.json" adj capability claude)" "available"
+  printf '%s' '{"harnesses":{"x1":{"dispatch":"via the Agent/Task tool, prose only"},"x2":{"subagentDispatch":true},"x3":{"subagentDispatch":"true"}}}' > "$P/prof.json"
+  check "$E capability_reads_boolean prose without flag" "$(QA_HARNESS_PROFILES="$P/prof.json" adj capability x1)" "re-adjudication unavailable on x1; 0 low-confidence passes unreviewed"
+  check "$E capability_reads_boolean flag true" "$(QA_HARNESS_PROFILES="$P/prof.json" adj capability x2)" "available"
+  check "$E capability_reads_boolean string is not true" "$(QA_HARNESS_PROFILES="$P/prof.json" adj capability x3)" "re-adjudication unavailable on x3; 0 low-confidence passes unreviewed"
+  check "$E capability opencode" "$(adj capability opencode)" "re-adjudication unavailable on opencode; 0 low-confidence passes unreviewed"
   check "$E capability no profiles pi" "$(QA_HARNESS_PROFILES="$P/none.json" adj capability pi)" "re-adjudication unavailable on pi; 0 low-confidence passes unreviewed"
 
   echo "$P" > "$PARITY_DIR/$E"
