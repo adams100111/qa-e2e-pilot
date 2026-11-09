@@ -239,6 +239,58 @@ dup_smoke() {
 check "I5: duplicate selectors are ambiguous-selector with no selector; unique one stays safe" \
   "$(dup_smoke)" "[]:false:ambiguous-selector,[]:false:ambiguous-selector,[#one]:true:same-origin-link"
 
+# --- fix round 2: object allowlisting for safe verbs ----------------------------------
+# A safe verb is safe-name ONLY when the name is the bare verb (+ optional count/chevron), the
+# next word is a detail object (details, more, menu, …), or the verb is edit/تعديل.
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  check "R2: '$name' button is not-allowlisted" \
+    "$(cls "{\"tag\":\"button\",\"type\":\"button\",\"text\":\"$name\"}" reason)" "not-allowlisted"
+done <<'LABELS'
+فتح التصويت
+فتح باب التصويت
+فتح الترشح
+فتح التقييم
+فتح الجولة
+فتح المسابقة
+فتح الهاكاثون
+فتح القفل
+عرض الفائزين
+عرض الجوائز
+Open challenge
+Open evaluation
+Open submissions
+Open applications
+Open nominations
+Open round
+Open hackathon
+View awards
+Show prizes
+Next round
+LABELS
+check "R2: 'Open hackathon' role=menuitem is not-allowlisted" \
+  "$(cls '{"tag":"div","role":"menuitem","text":"Open hackathon"}' reason)" "not-allowlisted"
+while IFS= read -r name; do
+  [[ -z "$name" ]] && continue
+  check "R2: '$name' button is safe-name" \
+    "$(cls "{\"tag\":\"button\",\"type\":\"button\",\"text\":\"$name\"}" reason)" "safe-name"
+done <<'LABELS'
+View details
+Open menu
+Show more
+عرض التفاصيل
+فتح القائمة
+Edit team
+Next
+Next step
+التالي
+Next ›
+More (12)
+عرض الكل
+Previous page
+Open
+LABELS
+
 # --- stub-DOM smoke: the in-page walk returns the documented shape ---------------
 scan_smoke() {
   node -e '

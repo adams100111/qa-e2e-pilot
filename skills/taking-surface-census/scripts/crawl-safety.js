@@ -38,7 +38,11 @@
  *   `[aria-expanded]` → `disclosure`; `[aria-haspopup]` → `popup-opener`; a button/menuitem whose
  *   accessible name STARTS with a SAFE_EN term or an Arabic safe term (optional leading ال) and
  *   contains no safe-name disqualifier ("Open registration", "Next stage", "عرض النتائج" →
- *   `not-allowlisted`) → `safe-name`.
+ *   `not-allowlisted`) AND passes the object allowlist → `safe-name`. Object allowlist: the name
+ *   is the bare verb (+ optional count/chevron; "Next step" counts as bare), or the word after
+ *   the verb is a detail object (details, more, menu, profile, info, information, filters,
+ *   options, list, page, all / التفاصيل, القائمة, المزيد, الملف, المعلومات, الخيارات, الكل,
+ *   الصفحة), or the verb is edit/تعديل. "Open hackathon", "View awards", "فتح التصويت" → not.
  * SELECTORS: the in-page walk emits a selector only when it matches exactly one element; else the
  *   selector is blank and a would-be-safe entry becomes `ambiguous-selector`.
  */
@@ -93,10 +97,39 @@ function isUnsafeName(s) {
   var n = normalizeText(s);
   return n !== '' && (UNSAFE_EN.test(n) || UNSAFE_AR.test(n) || UNSAFE_LOGOUT.test(n));
 }
+// Object allowlist (fix round 2): a safe verb is safe-name only when (a) the name is the bare
+// verb with an optional count/chevron (or "step": "Next step"), (b) the next word is a detail
+// object, or (c) the verb is edit/تعديل. "Open hackathon", "View awards", "فتح التصويت" → not safe.
+var SAFE_EDIT_VERBS = ['edit', 'تعديل'];
+var SAFE_OBJECTS_EN = ['details', 'more', 'menu', 'profile', 'info', 'information', 'filters', 'options', 'list', 'page', 'all'];
+var SAFE_OBJECTS_AR_TERMS = ['التفاصيل', 'القائمة', 'المزيد', 'الملف', 'المعلومات', 'الخيارات', 'الكل', 'الصفحة'];
+var BARE_TAIL = /^(?:step\s*)?(?:\(?[0-9\u0660-\u0669]+\)?)?\s*[\u2039\u203A\u00AB\u00BB\u2190-\u2193\u25B4-\u25BF\u2304\u2335<>\u2026.:]*$/i;
+var SAFE_VERB_AR = new RegExp('^((?:ال)?(?:' + SAFE_AR_TERMS.map(function (t) { return escapeRe(normalizeText(t)); }).join('|') + '))(?:\\s|$)');
+
+/** safeVerbAndTail(normalizedName) → { verb, tail } or null when no safe verb leads the name. */
+function safeVerbAndTail(n) {
+  var m = n.match(SAFE_EN);
+  if (!m) m = n.match(SAFE_VERB_AR);
+  if (!m) return null;
+  return { verb: m[1].toLowerCase(), tail: n.slice(m[0].length).trim() };
+}
+
+function passesObjectAllowlist(n) {
+  var vt = safeVerbAndTail(n);
+  if (!vt) return false;
+  var verb = vt.verb.replace(/^ال/, '');
+  if (SAFE_EDIT_VERBS.indexOf(verb) !== -1 || SAFE_EDIT_VERBS.indexOf(vt.verb) !== -1) return true;
+  if (BARE_TAIL.test(vt.tail)) return true;
+  var first = vt.tail.split(' ')[0].replace(/[.,:;!?\u060C\u061B\u061F]+$/, '').toLowerCase();
+  if (SAFE_OBJECTS_EN.indexOf(first) !== -1) return true;
+  return SAFE_OBJECTS_AR_TERMS.map(normalizeText).indexOf(first) !== -1;
+}
+
 function isSafeName(s) {
   var n = normalizeText(s);
   if (n === '' || !(SAFE_EN.test(n) || SAFE_AR.test(n))) return false;
-  return !(SAFE_DISQUALIFY_EN.test(n) || SAFE_DISQUALIFY_AR.test(n));
+  if (SAFE_DISQUALIFY_EN.test(n) || SAFE_DISQUALIFY_AR.test(n)) return false;
+  return passesObjectAllowlist(n);
 }
 function isStatusName(s) {
   var n = normalizeText(s);
@@ -319,6 +352,7 @@ typeof document !== 'undefined'
        isUnsafeName: isUnsafeName,
        isSafeName: isSafeName,
        isStatusName: isStatusName,
+       passesObjectAllowlist: passesObjectAllowlist,
        SCAN: SCAN,
        pageComponent: pageComponent,
        routeMatchFor: routeMatchFor,
