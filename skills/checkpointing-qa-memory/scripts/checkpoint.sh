@@ -49,6 +49,12 @@
 #                               no evidence is required, but a stderr note
 #                               flags the pass as un-gated.
 #
+# TRUSTED-VERDICT GATES (0.12.0) — on a `pass` with a checklist.json row:
+#   ORACLE GATE   a high-confidence pass needs fixture.expect.oracleSource
+#                 human|spec when the row carries an oracleSource, or when the
+#                 effective profile is `ship` and kind is
+#                 computed-logic|business-rule. `--confidence low` is allowed.
+#
 # DEPENDENCIES: bash, coreutils (date, mkdir, mv, cat), and EITHER jq OR python3
 #               for safe JSON updates (jq preferred; python3 used as fallback).
 #               NODE is required ONLY when gating a `human-action` kind (the value-check
@@ -1150,6 +1156,113 @@ gate_screenshot() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Trusted-verdict gates (0.12.0, Increment 2). Each one only ever REFUSES a
+# pass; none can turn a non-pass into a pass or raise confidence. They read
+# the run's frozen checklist.json row (checklist_row_for) and, where a gate
+# depends on the run profile, .qa/runs/<run-id>/effective-config.json
+# (written by scripts/profile.sh; an absent file means profile `full`, which
+# adds nothing — 0.11.0 behaviour).
+# ---------------------------------------------------------------------------
+
+# row_kind_and_oracle_source <row-json> — print two lines: the row's `kind`
+# lowercased ("" when absent / not a string) and its
+# fixture.expect.oracleSource ("" when absent, null or empty; a non-string
+# value is printed as compact JSON so the refusal can show it verbatim).
+row_kind_and_oracle_source() {
+  local row="$1"
+  if has_jq; then
+    jq -r '
+      (if (.kind | type) == "string" then (.kind | ascii_downcase) else "" end),
+      (((.fixture? | objects | .expect? | objects | .oracleSource?) // null)
+        | if type == "string" then . elif . == null then "" else tojson end)
+    ' <<< "$row" 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+try:
+    r = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+k = r.get("kind") if isinstance(r, dict) else None
+print("".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in k) if isinstance(k, str) else "")
+fx = r.get("fixture") if isinstance(r, dict) else None
+ex = fx.get("expect") if isinstance(fx, dict) else None
+src = ex.get("oracleSource") if isinstance(ex, dict) else None
+if src is None:
+    print("")
+elif isinstance(src, str):
+    print(src)
+else:
+    print(json.dumps(src, separators=(",", ":"), ensure_ascii=False))
+' "$row" 2>/dev/null
+  fi
+}
+
+# effective_config_get <run-id> <dotted.key> — print the string value at the
+# key in the run's effective-config.json, or "" when the file is absent, not
+# valid JSON, or the value is missing / not a string.
+effective_config_get() {
+  local run_id="$1" key="$2" file
+  file="$(run_dir "$run_id")/effective-config.json"
+  [[ -f "$file" ]] || return 0
+  if has_jq; then
+    jq -r --arg k "$key" '
+      (try getpath($k | split(".")) catch null) | if type == "string" then . else "" end
+    ' "$file" 2>/dev/null || true
+  else
+    python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for part in sys.argv[2].split("."):
+    d = d.get(part) if isinstance(d, dict) else None
+print(d if isinstance(d, str) else "")
+' "$file" "$key" 2>/dev/null || true
+  fi
+}
+
+# effective_profile <run-id> — the run's resolved profile; `full` when the
+# effective config is absent or names none.
+effective_profile() {
+  local p
+  p="$(effective_config_get "$1" profile)"
+  printf '%s\n' "${p:-full}"
+}
+
+# gate_oracle <run-id> <crit-id> <confidence> <row-json> — ORACLE GATE (D1/D2). Applies
+# to a high-confidence pass whose checklist row carries
+# fixture.expect.oracleSource, or (effective profile `ship`) whose kind is
+# computed-logic|business-rule. Only `human` and `spec` can ground it; any
+# other source, or none, is refused. A low-confidence pass is the honest
+# downgrade and is always allowed. No row -> 0.11.0 behaviour.
+gate_oracle() {
+  local run_id="$1" crit_id="$2" confidence="$3" checklist_row="$4"
+  [[ "$confidence" == "high" ]] || return 0
+  [[ -z "$checklist_row" ]] && return 0
+
+  local facts kind source
+  facts="$(row_kind_and_oracle_source "$checklist_row")"
+  kind="${facts%%$'\n'*}"
+  if [[ "$facts" == *$'\n'* ]]; then source="${facts#*$'\n'}"; else source=""; fi
+
+  if [[ -z "$source" ]]; then
+    case "$kind" in
+      computed-logic|business-rule) ;;
+      *) return 0 ;;
+    esac
+    [[ "$(effective_profile "$run_id")" == "ship" ]] || return 0
+  fi
+
+  case "$source" in
+    human|spec) return 0 ;;
+  esac
+  echo "ORACLE GATE: ${crit_id} oracleSource=${source:-missing} cannot ground a high-confidence pass (allowed: human, spec)" >&2
+  return 1
+}
+
 cmd_upsert() {
   local run_id="$1" crit_id="$2" verdict="$3"
   shift 3
@@ -1259,6 +1372,13 @@ cmd_upsert() {
     # criterion with a non-empty derivation must reject, not slide into the
     # un-gated note, when --kinds is omitted entirely).
     gate_required_kinds "$run_id" "$crit_id" "$kinds_csv" || exit 1
+
+    # 0.12.0 trusted-verdict gates — each refuses a pass that is not grounded.
+    # The row is read once more here with stderr dropped: gate_required_kinds
+    # above already printed any duplicate-id note for it.
+    local pass_row
+    pass_row="$(checklist_row_for "$run_id" "$crit_id" 2>/dev/null)"
+    gate_oracle "$run_id" "$crit_id" "$confidence" "$pass_row" || exit 1
 
     if [[ -z "$kinds_csv" ]]; then
       echo "NOTE: pass recorded for criterion '${crit_id}' with no --kinds specified — evidence gate not enforced (un-gated)." >&2
