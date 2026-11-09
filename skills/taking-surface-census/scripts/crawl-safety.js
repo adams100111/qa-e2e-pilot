@@ -19,19 +19,28 @@
  *
  * UNSAFE rules (checked first — unsafe always wins over safe):
  *   - any of the element's names (accessible name, aria-label, aria-labelledby text, visible text,
- *     title, value, alt) matches UNSAFE_EN or the Arabic unsafe terms (after Arabic normalisation:
- *     tashkeel/tatweel/bidi marks stripped, alef variants folded) → `unsafe-name`
+ *     title, value, alt) matches UNSAFE_EN, UNSAFE_LOGOUT (`log out`/`sign-out` spacing) or the
+ *     Arabic unsafe terms (after Arabic normalisation: tashkeel/tatweel/bidi marks stripped, alef
+ *     variants folded, ى→ي, ة→ه, applied to terms and names alike) → `unsafe-name`.
+ *     Status-tab exception: on a [role=tab] or a[href] only, a name source that is WHOLLY a
+ *     past-tense status word with an optional count ("Accepted (3)", "المقبولة") is skipped.
  *   - effective type submit/image (a <button> with no type inside a form is a submit) → `type-submit`;
  *     type reset → `type-reset`
- *   - inside a form whose method is not GET → `inside-non-get-form`
+ *   - inside a form whose method/formmethod is not explicitly "get" (a missing method counts as
+ *     non-GET: SPA forms submit by XHR) → `inside-non-get-form`
  *   - `data-method` other than get → `non-get-method`; `data-confirm` → `data-confirm`
- *   - a link whose href names logout/sign-out/delete/destroy/remove/revoke or carries `_method=`
- *     → `unsafe-href`
+ *   - a link whose href names an unsafe verb (delete, destroy, remove, revoke, accept, approve,
+ *     reject, decline, publish, cancel, confirm, withdraw, verify, unsubscribe, impersonate,
+ *     mark-read, toggle, leave, join, log out, sign out) or carries `_method=` → `unsafe-href`
  * NOT-SAFE (but not destructive) link/state guards: `non-http-href`, `cross-origin`, `download`,
  *   `deny-pattern`, `disabled`, `not-visible`.
  * SAFE rules: same-origin `a[href]` → `same-origin-link`; `[role=tab]` → `tab`; `summary` or
  *   `[aria-expanded]` → `disclosure`; `[aria-haspopup]` → `popup-opener`; a button/menuitem whose
- *   accessible name matches SAFE_EN or the Arabic safe terms → `safe-name`.
+ *   accessible name STARTS with a SAFE_EN term or an Arabic safe term (optional leading ال) and
+ *   contains no safe-name disqualifier ("Open registration", "Next stage", "عرض النتائج" →
+ *   `not-allowlisted`) → `safe-name`.
+ * SELECTORS: the in-page walk emits a selector only when it matches exactly one element; else the
+ *   selector is blank and a would-be-safe entry becomes `ambiguous-selector`.
  */
 
 // ===== Pure, DOM-free cores (shared by the browser walk AND the node unit tests) =====
@@ -39,7 +48,17 @@ var UNSAFE_EN = /(delete|remove|destroy|archive|approve|reject|accept|decline|se
 var SAFE_EN = /^(open|view|details|show|more|edit|filter|sort|next|previous|expand|menu)\b/i;
 var UNSAFE_AR_TERMS = ['حذف', 'إزالة', 'أرشفة', 'اعتماد', 'موافقة', 'رفض', 'قبول', 'إرسال', 'حفظ', 'نشر', 'إلغاء', 'تأكيد', 'سحب', 'إعلان', 'تسجيل الخروج'];
 var SAFE_AR_TERMS = ['عرض', 'تفاصيل', 'المزيد', 'فتح', 'تعديل', 'تصفية', 'القائمة', 'التالي', 'السابق'];
-var UNSAFE_HREF = /(log-?out|sign-?out|delete|destroy|remove|revoke)|[?&]_method=/i;
+var UNSAFE_HREF = /(delete|destroy|remove|revoke|accept|approve|reject|decline|publish|cancel|confirm|withdraw|verify|unsubscribe|impersonate|mark-?read|toggle|leave|join|log\s*-?\s*out|sign\s*-?\s*out)|[?&]_method=/i;
+// Supplementary unsafe guard on names (the binding UNSAFE_EN only knows "logout" / "sign out").
+var UNSAFE_LOGOUT = /log\s*-?\s*out|sign\s*-?\s*out/i;
+// Disqualifiers that only block `safe-name` (the element becomes `not-allowlisted`): a
+// "View"/"Open"/"Next" button that names a state change ("Open registration", "Next stage").
+var SAFE_DISQUALIFY_EN = /\b(close|end|start|launch|finish|complete|lock|unlock|enable|disable|activate|deactivate|assign|invite|join|leave|register|duplicate|restore|move|mark|stage|phase|registration|voting|results|winners)/i;
+var SAFE_DISQUALIFY_AR_TERMS = ['إغلاق', 'إنهاء', 'بدء', 'إطلاق', 'تفعيل', 'تعطيل', 'تعيين', 'دعوة', 'انضمام', 'مغادرة', 'تسجيل', 'نقل', 'المرحلة', 'النتائج'];
+// Status-tab exception: a [role=tab] or a[href] whose WHOLE name is a past-tense status word (with
+// an optional count) is exempt from the unsafe-name check for that name source. Buttons never are.
+var STATUS_EN = /^(accepted|approved|rejected|archived|published|cancell?ed|submitted|confirmed|sent|advanced|declined|withdrawn)(\s*\(?\d+\)?)?$/i;
+var STATUS_AR_TERMS = ['مقبول', 'مرفوض', 'مؤرشف', 'منشور', 'ملغى', 'معتمد'];
 
 function normalizeText(s) {
   return String(s == null ? '' : s)
@@ -47,13 +66,19 @@ function normalizeText(s) {
     .replace(/[ؐ-ًؚ-ٰٟۖ-ۭ]/g, '')
     .replace(/ـ/g, '')
     .replace(/[آأإٱ]/g, 'ا')
+    .replace(/\u0649/g, '\u064A')
+    .replace(/\u0629/g, '\u0647')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 var UNSAFE_AR = new RegExp('(' + UNSAFE_AR_TERMS.map(function (t) { return escapeRe(normalizeText(t)); }).join('|') + ')');
-var SAFE_AR = new RegExp('(' + SAFE_AR_TERMS.map(function (t) { return escapeRe(normalizeText(t)); }).join('|') + ')');
+function termAlternation(terms) { return terms.map(function (t) { return escapeRe(normalizeText(t)); }).join('|'); }
+// Anchored like SAFE_EN: the name must START with a safe term (optional leading ال), then a space or end.
+var SAFE_AR = new RegExp('^(?:ال)?(?:' + termAlternation(SAFE_AR_TERMS) + ')(?:\\s|$)');
+var SAFE_DISQUALIFY_AR = new RegExp('(' + termAlternation(SAFE_DISQUALIFY_AR_TERMS) + ')');
+var STATUS_AR = new RegExp('^(?:ال)?(?:' + termAlternation(STATUS_AR_TERMS) + ')(?:ه|ات|ون|ين)?(\\s*\\(?[0-9\\u0660-\\u0669]+\\)?)?$');
 
 function accessibleName(d) {
   var candidates = [d.labelledByText, d.ariaLabel, d.text, d.title, d.value, d.alt];
@@ -66,11 +91,16 @@ function accessibleName(d) {
 
 function isUnsafeName(s) {
   var n = normalizeText(s);
-  return n !== '' && (UNSAFE_EN.test(n) || UNSAFE_AR.test(n));
+  return n !== '' && (UNSAFE_EN.test(n) || UNSAFE_AR.test(n) || UNSAFE_LOGOUT.test(n));
 }
 function isSafeName(s) {
   var n = normalizeText(s);
-  return n !== '' && (SAFE_EN.test(n) || SAFE_AR.test(n));
+  if (n === '' || !(SAFE_EN.test(n) || SAFE_AR.test(n))) return false;
+  return !(SAFE_DISQUALIFY_EN.test(n) || SAFE_DISQUALIFY_AR.test(n));
+}
+function isStatusName(s) {
+  var n = normalizeText(s);
+  return n !== '' && (STATUS_EN.test(n) || STATUS_AR.test(n));
 }
 
 function matchesDenyPattern(href, patterns) {
@@ -88,7 +118,8 @@ function matchesDenyPattern(href, patterns) {
  * classify(descriptor, opts) → { selector, label, safe, reason }
  * descriptor: { tag, type?, role?, href?, download?, text?, ariaLabel?, labelledByText?, title?,
  *   value?, alt?, ariaHaspopup?, ariaExpanded?, dataMethod?, dataConfirm?, disabled?, visible?,
- *   formMethod? (null/absent = not inside a form), selector? }
+ *   formMethod? (null/absent = not inside a form; '' = inside a form with no method, which is
+ *   non-GET — only an explicit "get" counts as GET), selector? }
  * opts: { origin?, denyPatterns? }
  */
 function classify(d, opts) {
@@ -96,14 +127,17 @@ function classify(d, opts) {
   var tag = String(d.tag || '').toLowerCase();
   var type = d.type == null ? '' : String(d.type).toLowerCase();
   var role = String(d.role || '').toLowerCase();
-  var inForm = d.formMethod != null && d.formMethod !== '';
-  var formMethod = inForm ? String(d.formMethod).toLowerCase() : null;
+  var inForm = d.formMethod != null;
+  var formMethod = inForm ? String(d.formMethod).trim().toLowerCase() : null;
+  var isLink = tag === 'a' && d.href != null && d.href !== '';
+  var statusExempt = role === 'tab' || isLink;
   var label = accessibleName(d);
   function out(safe, reason) { return { selector: d.selector || '', label: label, safe: safe, reason: reason }; }
 
   // ---- unsafe: every name source is checked, so an icon's aria-label or a title counts ----
   var names = [d.labelledByText, d.ariaLabel, d.text, d.title, d.value, d.alt];
   for (var i = 0; i < names.length; i++) {
+    if (statusExempt && isStatusName(names[i])) continue;
     if (isUnsafeName(names[i])) return out(false, 'unsafe-name');
   }
   var effectiveType = type;
@@ -114,7 +148,6 @@ function classify(d, opts) {
   if (d.dataMethod != null && d.dataMethod !== '' && String(d.dataMethod).toLowerCase() !== 'get') return out(false, 'non-get-method');
   if (d.dataConfirm != null && d.dataConfirm !== false) return out(false, 'data-confirm');
 
-  var isLink = tag === 'a' && d.href != null && d.href !== '';
   if (isLink) {
     var href = String(d.href);
     if (UNSAFE_HREF.test(href)) return out(false, 'unsafe-href');
@@ -188,7 +221,7 @@ function describe(el) {
   var img = el.querySelector ? el.querySelector('img[alt]') : null;
   var form = el.form || (el.closest ? el.closest('form') : null);
   var formMethod = null;
-  if (form) formMethod = attr('formmethod') || form.getAttribute('method') || 'get';
+  if (form) formMethod = attr('formmethod') || form.getAttribute('method') || '';
   return {
     tag: el.tagName.toLowerCase(),
     type: attr('type'),
@@ -212,6 +245,18 @@ function describe(el) {
   };
 }
 
+/**
+ * A selector is emitted only when it matches exactly one element; otherwise it is blanked and a
+ * would-be-safe entry becomes `ambiguous-selector` (an nth-child path can land on another element
+ * after a re-render). Unsafe entries keep their reason.
+ */
+function requireUniqueSelector(r) {
+  var count = 0;
+  try { count = r.selector ? document.querySelectorAll(r.selector).length : 0; } catch (e) { count = 0; }
+  if (count === 1) return r;
+  return { selector: '', label: r.label, safe: false, reason: r.safe ? 'ambiguous-selector' : r.reason };
+}
+
 function SCAN(opts) {
   opts = opts || {};
   var o = {
@@ -224,7 +269,7 @@ function SCAN(opts) {
   els.forEach(function (el) {
     if (seen.indexOf(el) !== -1) return;
     seen.push(el);
-    results.push(classify(describe(el), o));
+    results.push(requireUniqueSelector(classify(describe(el), o)));
   });
   return results;
 }
@@ -273,6 +318,7 @@ typeof document !== 'undefined'
        accessibleName: accessibleName,
        isUnsafeName: isUnsafeName,
        isSafeName: isSafeName,
+       isStatusName: isStatusName,
        SCAN: SCAN,
        pageComponent: pageComponent,
        routeMatchFor: routeMatchFor,
