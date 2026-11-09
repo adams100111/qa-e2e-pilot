@@ -14,7 +14,8 @@ adapters/census/<stack>.sh --repo <path> [--exec-prefix "<prefix>"]
 
 - `--repo` is the app root. Every command the adapter runs is run from this directory.
 - `--exec-prefix` is the project's config `exec.prefix` (string, default `""`). It is word-split and
-  prepended to every command the adapter runs, so `"ddev exec"` turns `php artisan route:list --json`
+  prepended to every command the adapter runs (whitespace split only: shell quotes, escapes and
+  operators are not interpreted, each word is one argv element), so `"ddev exec"` turns `php artisan route:list --json`
   into `ddev exec php artisan route:list --json`. Other examples: `"devenv shell --"`,
   `"docker compose exec -T app"`. File scans read `--repo` directly and never use the prefix.
 - Adapters are read-only. They never write to the repo, the database or the network.
@@ -98,9 +99,43 @@ Permission hints are the middleware entries matching `can:*`, `permission:*`, `r
 `can:<ability>`. Routes under `_ignition`, `telescope`, `horizon` and `sanctum/csrf-cookie` are
 skipped and each prefix is named once in `warnings`.
 
+## Next.js (`nextjs.sh`), Express (`express.sh`)
+
+Static scanners (no runtime tool, `--exec-prefix` accepted and unused). Every surface carries
+`"confidence":"static"` and dynamic segments are `{name}`.
+
+- Next.js: `app/**/page.{tsx,jsx,ts,js}` and `pages/**/*.{tsx,jsx}` (also under `src/`; `_app`,
+  `_document` and `api/` excluded) become `GET <route>` endpoints, because file routing names URLs, not
+  components. `app/api/**/route.*` yields one surface per exported `GET|POST|PUT|PATCH|DELETE`
+  handler. Route groups `(g)` and slots `@s` vanish; `[id]` is `{id}`, `[...x]` is `{x}`,
+  `[[...x]]` is `{x?}`.
+- Express: single-line `app.<method>('/path'` and `<name>Router|router.<method>('/path'` calls
+  (string-literal paths). `app.use('/prefix', router)` mounts are not applied; a warning says so.
+
+## Rails (`rails.sh`)
+
+Runs `<prefix> bin/rails routes` from `--repo` and parses the table. `(.:format)` is dropped,
+`(/:x)` becomes `/{x?}`, `:id` and `*rest` become `{id}` and `{rest}`. Rows without a verb
+(mounted engines) are skipped; `/rails/*` and `/cable` are skipped and named in `warnings`. A
+missing or failing `bin/rails` is `ok:false`.
+
+## Django (`django.sh`)
+
+Runs `<prefix> python manage.py show_urls` (django-extensions); every route is `GET` because that
+command reports no methods. When the command is unavailable or fails, the adapter scans `urls.py`
+files for `path(`, `re_path(` and `url(` entries (following `include('pkg.urls')` when it resolves
+inside the repo), marks surfaces `"confidence":"static"`, and names the fallback and any
+unresolved include in `warnings`. No `manage.py` and no `urls.py` is `ok:false`.
+
+## Generic (`generic.sh`)
+
+No stack knowledge: prints `{"adapter":"generic","ok":true,"surfaces":[],"warnings":["crawl-only
+census"]}`, so the census is the crawl alone.
+
 ## Adding an adapter
 
-1. Create `adapters/census/<stack>.sh` with the invocation and output above.
+1. Create `adapters/census/<stack>.sh` with the invocation and output above (the non-Laravel adapters
+   share `adapters/census/_lib.sh`: argument parsing, prefix handling, `ok:false` and the dual-engine emitter).
 2. Static scanners (no runtime tool) mark each surface `"confidence":"static"` and normalise dynamic
    segments to `{param}`.
 3. Add a fixture repo under `tests/census-adapters/fixtures/<stack>/` and cases to

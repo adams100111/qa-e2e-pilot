@@ -1,0 +1,13 @@
+                   Prefix Verb   URI Pattern                       Controller#Action
+                     root GET    /                                 home#index
+                    users GET    /users(.:format)                  users#index
+                          POST   /users(.:format)                  users#create
+                     user GET    /users/:id(.:format)              users#show
+                          PATCH  /users/:id(.:format)              users#update
+                          PUT    /users/:id(.:format)              users#update
+                          DELETE /users/:id(.:format)              users#destroy
+                  archive GET    /archive(/:locale)/*path(.:format) archive#show
+                          GET    /pages/:slug/comments/:comment_id comments#show
+                          /sidekiq                                 Sidekiq::Web
+        rails_service_blob GET    /rails/active_storage/blobs/redirect/:signed_id/*filename(.:format) active_storage/blobs/redirect#show
+                          GET    /cable                            #<ActionCable::Server::Base>
