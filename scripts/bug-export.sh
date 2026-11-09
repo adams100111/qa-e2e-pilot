@@ -7,13 +7,33 @@
 #   {id, title, severity, layer, criterionId, journeyId?, persona, steps, expected,
 #    actual, evidence:[paths], duplicateOf?})
 # and one plain-business-language <dir>/<id>.md per NEW bug (sections: What happened,
-# What should happen, Steps, Evidence). Prints {"exported":N,"duplicates":N,"skipped":N}.
+# What should happen, Steps, Evidence), plus <dir>/needs-recheck.json (always written, [] when
+# empty). Prints {"exported":N,"duplicates":N,"skipped":N,"needsRecheck":N}.
 #
 # SOURCES: <run-dir>/bug-log.json in any of its three accepted shapes (a bare array,
 # {"entries":[...]}, {"bugs":[...]} - the same set render-report.js loadBugs reads, with
 # the same field aliases) PLUS every verification.json record where the in-run verdict
 # was `pass` but the independent verifier did not agree, when no bug entry already covers
 # that criterion (and persona).
+#
+# VERIFIER OVERRIDES: only an override whose reasons show a CONTRADICTION is a bug - an
+# evidence artifact that shows match:false (the independent recompute diverged), readBack:null
+# with non-zero multiplicity (nothing persisted), ok:false (a probe did not confirm), or an
+# acting identity != the expected identity. Its title is the checklist row's `title`, else its
+# `action`; its text is plain language (no gate names). Every other override is an EVIDENCE GAP
+# (oracle-ungrounded, no-state-evidence, unbound, no-toolstream, invalid-confidence,
+# data-policy-violation, effectiveConfigMissing, identity unverified, missing artifacts, ...):
+# the step was not shown to fail, only not shown to pass, so it goes to needs-recheck.json as
+# {criterionId, persona, journeyId?, title, reasons, evidence} and never becomes a bug.
+#
+# EVIDENCE / JOURNEY FALLBACK: a bug with no evidence of its own takes the latest
+# checkpoint.json record's evidence_refs for its criterion (and persona), else the directory
+# evidence/<persona>/<criterion>/ (evidence/<criterion>/ with no persona) when it exists. A bug
+# with no journey takes the id of the first journeys.json journey listing its criterion, else
+# the checklist row's journey.id.
+#
+# STALE FILES: the <id>.md files listed in the previous <dir>/bugs.json that this export does
+# not write again are removed; no other file in <dir> is ever deleted.
 #
 # DEDUP: a bug whose `surface` (alias url|route) path equals the `surface` of an
 # `outstanding` known defect (scripts/known-defects.sh status, as of --today) gets
@@ -81,9 +101,25 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Inputs, each normalised to one JSON document (absent -> null).
 load() { if [ -f "$1" ]; then cp "$1" "$2"; else printf 'null\n' > "$2"; fi; }
+RUN="${RUN%/}"
 load "$RUN/bug-log.json" "$TMP/bl.json"
 load "$RUN/verification.json" "$TMP/ver.json"
 load "$RUN/../../config.json" "$TMP/cfg.json"
+# Context inputs (and the previous export) are optional: absent or unparseable -> null.
+json_ok() {
+  if [ "$ENGINE" = jq ]; then jq empty "$1" >/dev/null 2>&1
+  else python3 -I -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$1" >/dev/null 2>&1; fi
+}
+soft() { if [ -f "$1" ] && json_ok "$1"; then cp "$1" "$2"; else printf 'null\n' > "$2"; fi; }
+soft "$RUN/checkpoint.json" "$TMP/ck.json"
+soft "$RUN/checklist.json" "$TMP/cl.json"
+soft "$RUN/journeys.json" "$TMP/jn.json"
+soft "$OUT/bugs.json" "$TMP/prev.json"
+# Evidence directories (relative to the run, trailing slash), one per line, for the fallback.
+: > "$TMP/dirs.txt"
+if [ -d "$RUN/evidence" ]; then
+  find "$RUN/evidence" -mindepth 1 -maxdepth 2 -type d | while IFS= read -r d; do printf '%s/\n' "${d#"$RUN"/}"; done > "$TMP/dirs.txt"
+fi
 printf 'null\n' > "$TMP/reg.json"; printf 'null\n' > "$TMP/st.json"
 if [ -n "$REG" ]; then
   cp "$REG" "$TMP/reg.json"
@@ -100,8 +136,11 @@ def rd(n):
         return json.load(f)
 try:
     bl, ver, cfg, reg, st = rd("bl.json"), rd("ver.json"), rd("cfg.json"), rd("reg.json"), rd("st.json")
+    ck, cl, jn, prev = rd("ck.json"), rd("cl.json"), rd("jn.json"), rd("prev.json")
 except ValueError as e:
     sys.stderr.write("ERROR: unparseable input: %s\n" % e); sys.exit(2)
+with open(os.path.join(tmp, "dirs.txt"), encoding="utf-8") as f:
+    dirl = [x for x in f.read().split("\n") if x != ""]
 
 CTRL = re.compile("[\x01-\x08\x0b-\x1f\x7f]")
 SENS_KEY = re.compile("password|passwd|secret|token|api[_-]?key|authorization|cookie|credential", re.I)
@@ -165,6 +204,45 @@ def bug_class(b, layer, title, actual):
 def sev_for(layer):
     return "high" if re.search("route|service|migration|db", layer, re.I) else "medium"
 
+ckrows = [r for r in ck["criteria"] if isinstance(r, dict)] if isinstance(ck, dict) and isinstance(ck.get("criteria"), list) else []
+clrows = [r for r in cl if isinstance(r, dict)] if isinstance(cl, list) else []
+jrows = [j for j in jn if isinstance(j, dict)] if isinstance(jn, list) else []
+def row_of(c):
+    for r in clrows:
+        if r.get("id") == c: return r
+    return None
+def journey_of(c, own):
+    if own is not None and text(own) != "": return text(own)
+    for j in jrows:
+        if isinstance(j.get("steps"), list) and any(x == c for x in j["steps"]) and isinstance(j.get("id"), str) and j["id"] != "":
+            return j["id"]
+    r = row_of(c)
+    if r is not None and isinstance(r.get("journey"), dict) and isinstance(r["journey"].get("id"), str) and r["journey"]["id"] != "":
+        return r["journey"]["id"]
+    return None
+def ev_fb(c, p):
+    refs = None
+    for r in ckrows:
+        if r.get("criterion_id") != c: continue
+        rp = r.get("persona") if isinstance(r.get("persona"), str) else ""
+        if p != "" and rp != p: continue
+        e = [x for x in r["evidence_refs"] if isinstance(x, str)] if isinstance(r.get("evidence_refs"), list) else []
+        if e: refs = e
+    if refs is not None: return refs
+    if c == "": return []
+    d = ("evidence/%s/%s/" % (p, c)) if p != "" else ("evidence/%s/" % c)
+    return [d] if d in dirl else []
+CONTRA = [("shows match:false", "The value on screen did not match the value worked out independently from the business rules."),
+          ("shows readBack:null", "The change did not stick: reading the saved data back afterwards found nothing."),
+          ("shows ok:false", "A direct check against the server did not confirm the expected result."),
+          ("\\Aacting identity .* != expected identity", "The step ran as a different user than the one it was meant for.")]
+def contra(rs):
+    out = []
+    for x in rs:
+        for rx, msg in CONTRA:
+            if re.search(rx, x) and msg not in out: out.append(msg)
+    return out
+
 if isinstance(bl, list): raw = bl
 elif isinstance(bl, dict) and isinstance(bl.get("entries"), list): raw = bl["entries"]
 elif isinstance(bl, dict) and isinstance(bl.get("bugs"), list): raw = bl["bugs"]
@@ -180,6 +258,9 @@ for n, b in enumerate(entries, 1):
     steps = [text(x) for x in steps] if isinstance(steps, list) else ([text(steps)] if isinstance(steps, str) and steps != "" else [])
     ev = first(b.get("evidence_refs"), b.get("evidence"))
     ev = [x for x in ev if isinstance(x, str)] if isinstance(ev, list) else []
+    crit = text(first(b.get("criterion_id"), b.get("criterion"), ""))
+    per = text(first(b.get("persona"), ""))
+    if not ev: ev = red(ev_fb(crit, per))
     actual = text(b.get("actual")); expected = text(b.get("expected"))
     title = text(b.get("title"))
     if title == "":
@@ -188,13 +269,13 @@ for n, b in enumerate(entries, 1):
     sev = b.get("severity")
     sev = sev if isinstance(sev, str) and sev != "" else sev_for(layer)
     orig = text(first(b.get("bug_id"), b.get("id"), "BUG-%d" % n))
-    d = {"id": mkid(orig), "title": title, "severity": sev, "layer": layer,
-         "criterionId": text(first(b.get("criterion_id"), b.get("criterion"), ""))}
-    j = first(b.get("journey_id"), b.get("journeyId"))
-    if j is not None and text(j) != "": d["journeyId"] = text(j)
-    d.update({"persona": text(first(b.get("persona"), "")), "steps": steps, "expected": expected, "actual": actual, "evidence": ev})
+    d = {"id": mkid(orig), "title": title, "severity": sev, "layer": layer, "criterionId": crit}
+    j = journey_of(crit, first(b.get("journey_id"), b.get("journeyId")))
+    if j is not None: d["journeyId"] = j
+    d.update({"persona": per, "steps": steps, "expected": expected, "actual": actual, "evidence": ev})
     items.append((d, nsurf(text(first(b.get("surface"), b.get("url"), b.get("route"), ""))), bug_class(b, layer, title, actual)))
 
+recheck = []
 if isinstance(ver, list):
     for r in ver:
         if not isinstance(r, dict): continue
@@ -204,12 +285,24 @@ if isinstance(ver, list):
         if any(d["criterionId"] == crit and (d["persona"] == per or d["persona"] == "" or per == "") for d, _, _c in items):
             skipped += 1; continue
         rs = [text(x) for x in r["reasons"]] if isinstance(r.get("reasons"), list) else []
-        items.append(({"id": mkid("VERIFY-" + crit + ("-" + per if per else "")),
-                       "title": "A step that looked fine did not hold up when re-checked",
-                       "severity": "medium", "layer": "", "criterionId": crit, "persona": per, "steps": [],
-                       "expected": "The step should still work when it is checked again from scratch.",
-                       "actual": ("An independent re-check could not confirm this step worked. " + "; ".join(rs)).strip(),
-                       "evidence": []}, "", None))
+        row = red(row_of(crit) or {})
+        action = text(row.get("action"))
+        title = text(row.get("title")) or action or "A result did not match what was expected"
+        j = journey_of(crit, None)
+        ev = red(ev_fb(crit, per))
+        msgs = contra(rs)
+        if not msgs:
+            n = {"criterionId": crit, "persona": per}
+            if j is not None: n["journeyId"] = j
+            n.update({"title": title, "reasons": rs, "evidence": ev})
+            recheck.append(n); continue
+        d = {"id": mkid("VERIFY-" + crit + ("-" + per if per else "")), "title": title,
+             "severity": "medium", "layer": "", "criterionId": crit}
+        if j is not None: d["journeyId"] = j
+        d.update({"persona": per, "steps": [action] if action != "" else [],
+                  "expected": ("This should work: " + action) if action != "" else "The result should match what the business rules require.",
+                  "actual": " ".join(msgs), "evidence": ev})
+        items.append((d, "", None))
 
 # known-defect dedup
 rows = {}
@@ -247,12 +340,20 @@ def md(d):
 
 with open(os.path.join(out, "bugs.json"), "w", encoding="utf-8") as f:
     f.write(json.dumps(bugs, indent=2, ensure_ascii=False) + "\n")
+with open(os.path.join(out, "needs-recheck.json"), "w", encoding="utf-8") as f:
+    f.write(json.dumps(recheck, indent=2, ensure_ascii=False) + "\n")
 exported = 0
 for d in bugs:
     if "duplicateOf" in d: continue
     with open(os.path.join(out, d["id"] + ".md"), "w", encoding="utf-8") as f: f.write(md(d))
     exported += 1
-print('{"exported":%d,"duplicates":%d,"skipped":%d}' % (exported, len(bugs) - exported, skipped))
+written = set(d["id"].lower() for d in bugs if "duplicateOf" not in d)
+for x in (prev if isinstance(prev, list) else []):
+    p = x.get("id") if isinstance(x, dict) else None
+    if not isinstance(p, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", p) or p.lower() in written: continue
+    fp = os.path.join(out, p + ".md")
+    if os.path.isfile(fp) and not os.path.islink(fp): os.remove(fp)
+print('{"exported":%d,"duplicates":%d,"skipped":%d,"needsRecheck":%d}' % (exported, len(bugs) - exported, skipped, len(recheck)))
 PY
   exit 0
 fi
@@ -293,6 +394,36 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
       | reduce $rk[] as $k (.; split($k) | join("<redacted>"))
       | reduce $pats[] as $p (.; try gsub($p; "<redacted>"; "i") catch .)
     else . end);
+  ($ck[0] | if type == "object" and (.criteria | type) == "array" then [.criteria[] | select(type == "object")] else [] end) as $ckrows
+| ($cl[0] | if type == "array" then map(select(type == "object")) else [] end) as $clrows
+| ($jn[0] | if type == "array" then map(select(type == "object")) else [] end) as $jrows
+| ($dirs | split("\n") | map(select(. != ""))) as $dirl
+| def row_of($c): [$clrows[] | select(.id == $c)] | .[0];
+  def journey_of($c; $own):
+    if $own != null and ($own | text) != "" then ($own | text)
+    else ([$jrows[] | select((.steps | type) == "array" and any(.steps[]; . == $c) and (.id | type) == "string" and .id != "") | .id] | .[0]) as $j
+      | if $j != null then $j
+        else row_of($c) as $r
+          | if $r != null and ($r.journey | type) == "object" and ($r.journey.id | type) == "string" and $r.journey.id != "" then $r.journey.id else null end
+        end
+    end;
+  def ev_fb($c; $p):
+    ([$ckrows[] | select(.criterion_id == $c)
+      | select($p == "" or ((if (.persona | type) == "string" then .persona else "" end) == $p))
+      | (if (.evidence_refs | type) == "array" then [.evidence_refs[] | select(type == "string")] else [] end)
+      | select(length > 0)] | last) as $refs
+    | if $refs != null then $refs
+      elif $c == "" then []
+      else (if $p != "" then "evidence/\($p)/\($c)/" else "evidence/\($c)/" end) as $d
+        | if any($dirl[]; . == $d) then [$d] else [] end
+      end;
+  def contra:
+    . as $rs
+    | [ {rx: "shows match:false", msg: "The value on screen did not match the value worked out independently from the business rules."},
+        {rx: "shows readBack:null", msg: "The change did not stick: reading the saved data back afterwards found nothing."},
+        {rx: "shows ok:false", msg: "A direct check against the server did not confirm the expected result."},
+        {rx: "\\Aacting identity .* != expected identity", msg: "The step ran as a different user than the one it was meant for."} ] as $cs
+    | reduce ($rs[] as $x | $cs[] | select(. as $c | $x | test($c.rx)) | .msg) as $m ([]; if any(.[]; . == $m) then . else . + [$m] end);
   ($bl[0]) as $b0
 | (if ($b0 | type) == "array" then $b0
    elif ($b0 | type) == "object" and ($b0.entries | type) == "array" then $b0.entries
@@ -303,32 +434,47 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
 | [ $objs | to_entries[] | (.key + 1) as $n | (.value | red) as $b
     | (first_of([$b.suspected_layer, $b.layer, ""]) | text) as $layer
     | (first_of([$b.steps, $b.repro]) | if type == "array" then map(text) elif type == "string" and . != "" then [.] else [] end) as $steps
-    | (first_of([$b.evidence_refs, $b.evidence]) | if type == "array" then map(select(type == "string")) else [] end) as $ev
+    | (first_of([$b.criterion_id, $b.criterion, ""]) | text) as $crit
+    | (first_of([$b.persona, ""]) | text) as $per
+    | (first_of([$b.evidence_refs, $b.evidence]) | if type == "array" then map(select(type == "string")) else [] end
+       | if length == 0 then (ev_fb($crit; $per) | red) else . end) as $ev
     | ($b.actual | text) as $actual
     | (($b.title | text) | if . != "" then . else
          (if $actual != "" then ($actual | split(".")[0] | split("\n")[0] | .[0:80] | gsub("^\\s+|\\s+$"; "")) else "" end)
          | if . == "" then "Problem found while checking the feature" else . end end) as $title
     | ({id: (first_of([$b.bug_id, $b.id, "BUG-\($n)"]) | text | mkid($hm)), title: $title,
         severity: (if ($b.severity | type) == "string" and $b.severity != "" then $b.severity else ($layer | sev_for) end),
-        layer: $layer, criterionId: (first_of([$b.criterion_id, $b.criterion, ""]) | text)}
-       + (first_of([$b.journey_id, $b.journeyId]) as $j | if $j != null and ($j | text) != "" then {journeyId: ($j | text)} else {} end)
-       + {persona: (first_of([$b.persona, ""]) | text), steps: $steps, expected: ($b.expected | text), actual: $actual, evidence: $ev}
+        layer: $layer, criterionId: $crit}
+       + (journey_of($crit; first_of([$b.journey_id, $b.journeyId])) as $j | if $j != null then {journeyId: $j} else {} end)
+       + {persona: $per, steps: $steps, expected: ($b.expected | text), actual: $actual, evidence: $ev}
        | {d: ., s: (first_of([$b.surface, $b.url, $b.route, ""]) | text | nsurf), c: bug_class($b; $layer; $title; $actual),
          o: (first_of([$b.bug_id, $b.id, "BUG-\($n)"]) | text)}) ] as $logItems
 | (if ($ver[0] | type) == "array" then $ver[0] else [] end
    | map(select(type == "object" and .inRunVerdict == "pass" and (.verifierVerdict | type) == "string" and .verifierVerdict != "pass"))) as $over
-| (reduce $over[] as $r0 ({items: $logItems, skip: $skip0};
+| (reduce $over[] as $r0 ({items: $logItems, skip: $skip0, recheck: []};
     ($r0 | red) as $r
     | (first_of([$r.criterionId, ""]) | text) as $crit
     | (first_of([$r.persona, ""]) | text) as $per
     | if (.items | any(.d.criterionId == $crit and (.d.persona == $per or .d.persona == "" or $per == ""))) then .skip += 1
-      else .items += [{d: {id: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end) | mkid($hm)),
-             title: "A step that looked fine did not hold up when re-checked", severity: "medium", layer: "",
-             criterionId: $crit, persona: $per, steps: [],
-             expected: "The step should still work when it is checked again from scratch.",
-             actual: (("An independent re-check could not confirm this step worked. " + ((if ($r.reasons | type) == "array" then $r.reasons | map(text) else [] end) | join("; "))) | gsub("^\\s+|\\s+$"; "")),
-             evidence: []}, s: "", c: null,
-             o: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end))}] end)) as $acc
+      else (if ($r.reasons | type) == "array" then $r.reasons | map(text) else [] end) as $rs
+        | ((row_of($crit) // {}) | red) as $row
+        | ($row.action | text) as $action
+        | (($row.title | text) | if . != "" then . elif $action != "" then $action else "A result did not match what was expected" end) as $title
+        | journey_of($crit; null) as $j
+        | (ev_fb($crit; $per) | red) as $ev
+        | ($rs | contra) as $msgs
+        | if ($msgs | length) == 0 then
+            .recheck += [{criterionId: $crit, persona: $per} + (if $j != null then {journeyId: $j} else {} end)
+                         + {title: $title, reasons: $rs, evidence: $ev}]
+          else .items += [{d: ({id: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end) | mkid($hm)),
+               title: $title, severity: "medium", layer: "", criterionId: $crit}
+               + (if $j != null then {journeyId: $j} else {} end)
+               + {persona: $per, steps: (if $action != "" then [$action] else [] end),
+                  expected: (if $action != "" then "This should work: " + $action else "The result should match what the business rules require." end),
+                  actual: ($msgs | join(" ")), evidence: $ev}), s: "", c: null,
+               o: ("VERIFY-" + $crit + (if $per != "" then "-" + $per else "" end))}]
+          end
+      end)) as $acc
 | (($st[0] | if type == "array" then map(select(type == "object") | {key: (.id | text), value: .state}) | from_entries else {} end)) as $rows
 | ([ ($reg[0] | if type == "array" then .[] else empty end) | select(type == "object")
      | select($rows[(.id | text)] == "outstanding")
@@ -347,10 +493,11 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
             and ((.c != null and $d.criterionId != "" and .c == $d.criterionId)
                  or (.c == null and $it.c != null and .oc == $it.c))) | .id ] | .[0]) as $dup
       | .bugs += [if $dup != null then $d + {duplicateOf: $dup} else $d end])) as $fin
-| {skipped: $acc.skip, bugs: $fin.bugs, needs: ([$its[] | .o | select(test("[^\u0000-\u007f]"))] | unique)}
+| {skipped: $acc.skip, bugs: $fin.bugs, recheck: $acc.recheck, needs: ([$its[] | .o | select(test("[^\u0000-\u007f]"))] | unique)}
 JQ
 runjq() { jq -n -c --argjson hm "$1" --slurpfile bl "$TMP/bl.json" --slurpfile ver "$TMP/ver.json" --slurpfile cfg "$TMP/cfg.json" \
-  --slurpfile reg "$TMP/reg.json" --slurpfile st "$TMP/st.json" -f "$TMP/export.jq" > "$TMP/result.json" 2> "$TMP/jq.err" \
+  --slurpfile reg "$TMP/reg.json" --slurpfile st "$TMP/st.json" --slurpfile ck "$TMP/ck.json" --slurpfile cl "$TMP/cl.json" \
+  --slurpfile jn "$TMP/jn.json" --rawfile dirs "$TMP/dirs.txt" -f "$TMP/export.jq" > "$TMP/result.json" 2> "$TMP/jq.err" \
   || die "jq engine failed: $(head -c 300 "$TMP/jq.err")"; }
 sha8() { if command -v shasum >/dev/null 2>&1; then shasum -a 1; else sha1sum; fi | cut -c1-8; }
 # Pass 1 learns which original ids are non-ASCII; they are hashed here (jq has no sha1) and pass 2 uses them.
@@ -363,6 +510,7 @@ while [ "$k" -lt "$NN" ]; do
 done
 [ "$NN" -eq 0 ] || runjq "$HM"
 jq '.bugs' "$TMP/result.json" > "$OUT/bugs.json" || die "cannot write bugs.json"
+jq '.recheck' "$TMP/result.json" > "$OUT/needs-recheck.json" || die "cannot write needs-recheck.json"
 cat > "$TMP/md.jq" <<'JQ'
 .bugs[$i] as $d
 | (["# " + $d.title, "", "**Severity:** " + $d.severity]
@@ -384,4 +532,14 @@ while [ "$i" -lt "$N" ]; do
   fi
   i=$((i + 1))
 done
-printf '{"exported":%d,"duplicates":%d,"skipped":%s}\n' "$EXPORTED" "$((N - EXPORTED))" "$(jq '.skipped' "$TMP/result.json")"
+# Prune the .md files the previous export listed and this one did not write again.
+jq -r --slurpfile n "$TMP/result.json" '
+  ([$n[0].bugs[] | select(has("duplicateOf") | not) | .id | ascii_downcase]) as $w
+  | (if type == "array" then .[] else empty end) | select(type == "object") | .id
+  | select(type == "string" and test("^[A-Za-z0-9_][A-Za-z0-9._-]*$") and test("\n") == false)
+  | select(ascii_downcase as $x | any($w[]; . == $x) | not)' "$TMP/prev.json" > "$TMP/prune.txt" || die "cannot compute stale files"
+while IFS= read -r P; do
+  [ -n "$P" ] || continue
+  if [ -f "$OUT/$P.md" ] && [ ! -L "$OUT/$P.md" ]; then rm -f "$OUT/$P.md"; fi
+done < "$TMP/prune.txt"
+printf '{"exported":%d,"duplicates":%d,"skipped":%s,"needsRecheck":%s}\n' "$EXPORTED" "$((N - EXPORTED))" "$(jq '.skipped' "$TMP/result.json")" "$(jq '.recheck | length' "$TMP/result.json")"
