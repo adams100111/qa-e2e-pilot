@@ -363,7 +363,7 @@ check "form_inventory_reads_constraints: absent constraint is null" "$(inv "$FOR
 check "form_inventory_reads_constraints: textarea type" "$(inv "$FORM" 'r.fields[4].type+":"+r.fields[4].maxLength')" "textarea:2000"
 check "form_inventory_reads_constraints: select type" "$(inv "$FORM" 'r.fields[5].type')" "select"
 check "form_inventory_reads_constraints: field keys exact" "$(inv "$FORM" 'Object.keys(r.fields[0]).join(",")')" "name,type,required,maxLength,min,max,pattern"
-check "form without method defaults to GET" "$(inv '{"id":"search","fields":[]}' 'r.method')" "GET"
+check "form without method records null (not assumed GET)" "$(inv '{"id":"search","fields":[]}' 'r.method')" "null"
 
 inv_smoke() {
   node -e '
