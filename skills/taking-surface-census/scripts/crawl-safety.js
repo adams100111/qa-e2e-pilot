@@ -37,9 +37,11 @@
  * SAFE rules: same-origin `a[href]` → `same-origin-link`; `[role=tab]` → `tab`; `summary` or
  *   `[aria-expanded]` → `disclosure`; `[aria-haspopup]` → `popup-opener`; a button/menuitem whose
  *   accessible name STARTS with a SAFE_EN term or an Arabic safe term (optional leading ال) and
- *   contains no safe-name disqualifier ("Open registration", "Next stage", "عرض النتائج" →
- *   `not-allowlisted`) AND passes the object allowlist → `safe-name`. Object allowlist: the name
- *   is the bare verb (+ optional count/chevron; "Next step" counts as bare), or the word after
+ *   contains no safe-name disqualifier ("Open registration", "Show results", "عرض النتائج" →
+ *   `not-allowlisted`) AND passes the object allowlist → `safe-name`. Next/Previous (التالي/
+ *   السابق) are never safe button names — a wizard "Next" saves its step — so they are only ever
+ *   followed as links (`same-origin-link`). Object allowlist: the name
+ *   is the bare verb (+ optional count/chevron), or the word after
  *   the verb is a detail object (details, more, menu, profile, info, information, filters,
  *   options, list, page, all / التفاصيل, القائمة, المزيد, الملف, المعلومات, الخيارات, الكل,
  *   الصفحة), or the verb is edit/تعديل. "Open hackathon", "View awards", "فتح التصويت" → not.
@@ -49,14 +51,16 @@
 
 // ===== Pure, DOM-free cores (shared by the browser walk AND the node unit tests) =====
 var UNSAFE_EN = /(delete|remove|destroy|archive|approve|reject|accept|decline|send|submit|save|publish|cancel|confirm|revoke|disband|withdraw|announce|transition|advance|reset|logout|sign out)/i;
-var SAFE_EN = /^(open|view|details|show|more|edit|filter|sort|next|previous|expand|menu)\b/i;
+// next/previous/التالي/السابق are NOT safe button names: a wizard's "Next" saves the step (I11).
+// They are followed only as links (same-origin-link, navigated, never clicked).
+var SAFE_EN = /^(open|view|details|show|more|edit|filter|sort|expand|menu)\b/i;
 var UNSAFE_AR_TERMS = ['حذف', 'إزالة', 'أرشفة', 'اعتماد', 'موافقة', 'رفض', 'قبول', 'إرسال', 'حفظ', 'نشر', 'إلغاء', 'تأكيد', 'سحب', 'إعلان', 'تسجيل الخروج'];
-var SAFE_AR_TERMS = ['عرض', 'تفاصيل', 'المزيد', 'فتح', 'تعديل', 'تصفية', 'القائمة', 'التالي', 'السابق'];
+var SAFE_AR_TERMS = ['عرض', 'تفاصيل', 'المزيد', 'فتح', 'تعديل', 'تصفية', 'القائمة'];
 var UNSAFE_HREF = /(delete|destroy|remove|revoke|accept|approve|reject|decline|publish|cancel|confirm|withdraw|verify|unsubscribe|impersonate|mark-?read|toggle|leave|join|log\s*-?\s*out|sign\s*-?\s*out)|[?&]_method=/i;
 // Supplementary unsafe guard on names (the binding UNSAFE_EN only knows "logout" / "sign out").
 var UNSAFE_LOGOUT = /log\s*-?\s*out|sign\s*-?\s*out/i;
 // Disqualifiers that only block `safe-name` (the element becomes `not-allowlisted`): a
-// "View"/"Open"/"Next" button that names a state change ("Open registration", "Next stage").
+// "View"/"Open" button that names a state change ("Open registration", "Show results").
 var SAFE_DISQUALIFY_EN = /\b(close|end|start|launch|finish|complete|lock|unlock|enable|disable|activate|deactivate|assign|invite|join|leave|register|duplicate|restore|move|mark|stage|phase|registration|voting|results|winners)/i;
 var SAFE_DISQUALIFY_AR_TERMS = ['إغلاق', 'إنهاء', 'بدء', 'إطلاق', 'تفعيل', 'تعطيل', 'تعيين', 'دعوة', 'انضمام', 'مغادرة', 'تسجيل', 'نقل', 'المرحلة', 'النتائج'];
 // Status-tab exception: a [role=tab] or a[href] whose WHOLE name is a past-tense status word (with
@@ -98,12 +102,12 @@ function isUnsafeName(s) {
   return n !== '' && (UNSAFE_EN.test(n) || UNSAFE_AR.test(n) || UNSAFE_LOGOUT.test(n));
 }
 // Object allowlist (fix round 2): a safe verb is safe-name only when (a) the name is the bare
-// verb with an optional count/chevron (or "step": "Next step"), (b) the next word is a detail
+// verb with an optional count/chevron, (b) the next word is a detail
 // object, or (c) the verb is edit/تعديل. "Open hackathon", "View awards", "فتح التصويت" → not safe.
 var SAFE_EDIT_VERBS = ['edit', 'تعديل'];
 var SAFE_OBJECTS_EN = ['details', 'more', 'menu', 'profile', 'info', 'information', 'filters', 'options', 'list', 'page', 'all'];
 var SAFE_OBJECTS_AR_TERMS = ['التفاصيل', 'القائمة', 'المزيد', 'الملف', 'المعلومات', 'الخيارات', 'الكل', 'الصفحة'];
-var BARE_TAIL = /^(?:step\s*)?(?:\(?[0-9\u0660-\u0669]+\)?)?\s*[\u2039\u203A\u00AB\u00BB\u2190-\u2193\u25B4-\u25BF\u2304\u2335<>\u2026.:]*$/i;
+var BARE_TAIL = /^(?:\(?[0-9\u0660-\u0669]+\)?)?\s*[\u2039\u203A\u00AB\u00BB\u2190-\u2193\u25B4-\u25BF\u2304\u2335<>\u2026.:]*$/i;
 var SAFE_VERB_AR = new RegExp('^((?:ال)?(?:' + SAFE_AR_TERMS.map(function (t) { return escapeRe(normalizeText(t)); }).join('|') + '))(?:\\s|$)');
 
 /** safeVerbAndTail(normalizedName) → { verb, tail } or null when no safe verb leads the name. */
