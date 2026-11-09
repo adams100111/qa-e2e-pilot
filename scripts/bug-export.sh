@@ -18,7 +18,8 @@
 #
 # VERIFIER OVERRIDES: only an override whose reasons show a CONTRADICTION is a bug. Reasons
 # are matched on the exact prefixes qa-verify.sh emits, never on loose substrings:
-#   "evidence artifact '<p>' shows match:false — "                        (recompute diverged)
+#   "evidence artifact '<p>' shows match:false — "  ONLY when <run-dir>/<p> parses and holds
+#        "match": false (qa-verify emits it for a missing `match` too: that is an evidence gap)
 #   "evidence artifact '<p>' shows readBack:null with non-zero multiplicity — " (nothing persisted)
 #   "evidence artifact '<p>' shows ok:false or missing — "  ONLY when <run-dir>/<p> (under
 #        evidence/, no "..") parses and holds "ok": false — a probe artifact with no `ok`, a
@@ -119,18 +120,18 @@ soft "$RUN/checkpoint.json" "$TMP/ck.json"
 soft "$RUN/checklist.json" "$TMP/cl.json"
 soft "$RUN/journeys.json" "$TMP/jn.json"
 soft "$OUT/bugs.json" "$TMP/prev.json"
-# Probe artifacts a "shows ok:false or missing" reason names that really hold "ok": false
-# (relative to the run, one per line). qa-verify emits that one reason for both a false and
-# a missing `ok`; only the former is a contradiction.
+# Artifacts a reason names that really hold the false value it claims, one "<key><TAB><path>"
+# line each (path relative to the run): "ok" for "shows ok:false or missing", "match" for
+# "shows match:false". qa-verify emits those reasons both for a false value and for a MISSING
+# key; only an artifact that parses and holds "<key>": false is a contradiction.
 : > "$TMP/okfalse.txt"
-PROBE_RX="^evidence artifact '([^']*)' shows ok:false or missing — "
 if [ "$ENGINE" = jq ]; then
-  probe_paths() { jq -r --arg rx "$PROBE_RX" 'if type == "array" then .[] else empty end | objects
+  reason_paths() { jq -r --arg rx "$1" 'if type == "array" then .[] else empty end | objects
     | (.reasons // []) | if type == "array" then .[] else empty end | strings
     | match($rx) | .captures[0].string' "$TMP/ver.json" 2>/dev/null; }
-  ok_is_false() { jq -e 'type == "object" and has("ok") and .ok == false' "$1" >/dev/null 2>&1; }
+  key_is_false() { jq -e --arg k "$2" 'type == "object" and has($k) and .[$k] == false' "$1" >/dev/null 2>&1; }
 else
-  probe_paths() { python3 -I -c '
+  reason_paths() { python3 -I -c '
 import json, re, sys
 rx = re.compile(sys.argv[2])
 try: d = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -140,17 +141,21 @@ for r in (d if isinstance(d, list) else []):
     for x in (rs if isinstance(rs, list) else []):
         m = rx.match(x) if isinstance(x, str) else None
         if m: print(m.group(1))
-' "$TMP/ver.json" "$PROBE_RX" 2>/dev/null; }
-  ok_is_false() { python3 -I -c '
+' "$TMP/ver.json" "$1" 2>/dev/null; }
+  key_is_false() { python3 -I -c '
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
-sys.exit(0 if isinstance(d, dict) and d.get("ok") is False else 1)' "$1" >/dev/null 2>&1; }
+sys.exit(0 if isinstance(d, dict) and d.get(sys.argv[2]) is False else 1)' "$1" "$2" >/dev/null 2>&1; }
 fi
-probe_paths | LC_ALL=C sort -u | while IFS= read -r pp; do
-  case "$pp" in evidence/*) ;; *) continue ;; esac
-  case "/$pp/" in */../*) continue ;; esac
-  [ -f "$RUN/$pp" ] && ok_is_false "$RUN/$pp" && printf '%s\n' "$pp"
-done > "$TMP/okfalse.txt"
+false_paths() { # <reason regex with one path group> <key>
+  reason_paths "$1" | LC_ALL=C sort -u | while IFS= read -r pp; do
+    case "$pp" in evidence/*) ;; *) continue ;; esac
+    case "/$pp/" in */../*) continue ;; esac
+    [ -f "$RUN/$pp" ] && key_is_false "$RUN/$pp" "$2" && printf '%s\t%s\n' "$2" "$pp"
+  done
+}
+{ false_paths "^evidence artifact '([^']*)' shows ok:false or missing — " ok
+  false_paths "^evidence artifact '([^']*)' shows match:false — " match; } > "$TMP/okfalse.txt"
 # Evidence directories (relative to the run, trailing slash), one per line, for the fallback.
 : > "$TMP/dirs.txt"
 if [ -d "$RUN/evidence" ]; then
@@ -270,9 +275,9 @@ def ev_fb(c, p):
     if c == "": return []
     d = ("evidence/%s/%s/" % (p, c)) if p != "" else ("evidence/%s/" % c)
     return [d] if d in dirl else []
-CONTRA = [("\\Aevidence artifact '[^']*' shows match:false — ", "The value on screen did not match the value worked out independently from the business rules."),
+CONTRA = [("\\Aevidence artifact '(?P<match>[^']*)' shows match:false — ", "The value on screen did not match the value worked out independently from the business rules."),
           ("\\Aevidence artifact '[^']*' shows readBack:null with non-zero multiplicity — ", "The change did not stick: reading the saved data back afterwards found nothing."),
-          ("\\Aevidence artifact '(?P<p>[^']*)' shows ok:false or missing — ", "A direct check against the server did not confirm the expected result."),
+          ("\\Aevidence artifact '(?P<ok>[^']*)' shows ok:false or missing — ", "A direct check against the server did not confirm the expected result."),
           ("\\Aacting identity '.*' != expected identity '", "The step ran as a different user than the one it was meant for.")]
 def contra(rs):
     out = []
@@ -280,7 +285,7 @@ def contra(rs):
         for rx, msg in CONTRA:
             m = re.search(rx, x)
             if not m: continue
-            if "p" in m.groupdict() and m.group("p") not in okfalse: continue
+            if any(k + "\t" + v not in okfalse for k, v in m.groupdict().items()): continue
             if msg not in out: out.append(msg)
     return out
 
@@ -461,12 +466,12 @@ def sev_for: if test("route|service|migration|db"; "i") then "high" else "medium
       end;
   def contra:
     . as $rs
-    | [ {rx: "\\Aevidence artifact '[^']*' shows match:false — ", msg: "The value on screen did not match the value worked out independently from the business rules."},
+    | [ {rx: "\\Aevidence artifact '(?<p>[^']*)' shows match:false — ", msg: "The value on screen did not match the value worked out independently from the business rules.", key: "match"},
         {rx: "\\Aevidence artifact '[^']*' shows readBack:null with non-zero multiplicity — ", msg: "The change did not stick: reading the saved data back afterwards found nothing."},
-        {rx: "\\Aevidence artifact '(?<p>[^']*)' shows ok:false or missing — ", msg: "A direct check against the server did not confirm the expected result.", probe: true},
+        {rx: "\\Aevidence artifact '(?<p>[^']*)' shows ok:false or missing — ", msg: "A direct check against the server did not confirm the expected result.", key: "ok"},
         {rx: "\\Aacting identity '.*' != expected identity '", msg: "The step ran as a different user than the one it was meant for."} ] as $cs
     | reduce ($rs[] as $x | $cs[] | select(. as $c | $x | test($c.rx))
-              | select((.probe // false | not) or (. as $c | ($x | capture($c.rx).p) as $pp | any($okf[]; . == $pp)))
+              | select(.key == null or (. as $c | ($c.key + "\t" + ($x | capture($c.rx).p)) as $kp | any($okf[]; . == $kp)))
               | .msg) as $m ([]; if any(.[]; . == $m) then . else . + [$m] end);
   ($bl[0]) as $b0
 | (if ($b0 | type) == "array" then $b0
