@@ -20,6 +20,8 @@
 #   - absent dataPolicy -> {"ok":true,"policy":"none","violations":[]}, nothing enforced.
 #   - forbiddenMarkers default when unset: test, testing, qa, bot, agent, dummy, fake,
 #     lorem ipsum, automated, playwright, claude. An explicit [] disables marker checks.
+#     Any other non-array value (a string, a boolean, an object) exits 2
+#     "forbiddenMarkers must be an array" in both engines.
 #   - markers match case-insensitively. ASCII markers match WHOLE WORDS with \b...\b in both
 #     engines: "contest"/"attestation" do not match "test"; a hyphen is a boundary so
 #     "QA-ready" DOES match "qa"; underscore and digits are word chars so "qa_lead" does NOT.
@@ -32,6 +34,9 @@
 #     (case-insensitive substring, any ancestor key), or inside an object whose `name`/`field`
 #     matches it, is checked but never echoed: its `value` is "[masked]", and so is `match`
 #     unless the rule is forbidden-marker (then `match` is the marker).
+#   - The engine's record-time gates (checkpoint.sh DATA POLICY GATE, qa-verify.sh) skip
+#     password/secret/token/otp/pin fields of an action-trace before calling `check`; that
+#     skip trusts the trace's own field labels (target/field/selector/element/name, type).
 #
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (QA_ENGINE=jq|python3 forces one).
 set -uo pipefail
@@ -67,6 +72,30 @@ check)
   [ "${#POS[@]}" -eq 2 ] || die "$usage"
   CONFIG="${POS[0]}"; INPUT="${POS[1]}"
   [ -f "$CONFIG" ] || die "data-policy: config not found: $CONFIG"
+  # forbiddenMarkers must be an array when set (null = defaults). Typed here,
+  # before either engine runs, so a string or a boolean is refused the same way
+  # by both instead of being split per character or silently defaulted.
+  if [ "$ENGINE" = jq ]; then
+    fm_type="$(jq -r 'if type == "object" and (.dataPolicy | type) == "object" and (.dataPolicy | has("forbiddenMarkers"))
+                      then (.dataPolicy.forbiddenMarkers | type) else "unset" end' "$CONFIG" 2>/dev/null)"
+  else
+    fm_type="$(python3 -c '
+import json, sys
+try:
+    c = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print(""); sys.exit(0)
+p = c.get("dataPolicy") if isinstance(c, dict) else None
+if not isinstance(p, dict) or "forbiddenMarkers" not in p:
+    print("unset"); sys.exit(0)
+m = p["forbiddenMarkers"]
+print("null" if m is None else "array" if isinstance(m, list) else "other")
+' "$CONFIG" 2>/dev/null)"
+  fi
+  case "$fm_type" in
+    ""|unset|null|array) ;;
+    *) die "data-policy: forbiddenMarkers must be an array" ;;
+  esac
   MODE=text; IFILE="$TMP/empty.json"; TEXT="$INPUT"
   if [ "${INPUT#@}" != "$INPUT" ]; then
     MODE=file; IFILE="${INPUT#@}"; TEXT=""
