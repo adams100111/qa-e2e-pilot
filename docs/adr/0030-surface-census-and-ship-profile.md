@@ -98,6 +98,17 @@ rows from census × access × authz matrix, with deny rows only where permission
 excluded with a reason, when the census is empty, or when the adapter failed without
 `--accept-crawl-only`. The engine scripts stay engine-owned; qa-kit calls them by name.
 
+**H. UX rows reach the detectors (0.12.0 note).** The detectors run only on a criterion tagged
+`visual-ux`, so the generated `ux-revisit` rows also carry `visual-ux`, and rows on `#dialog:`/`#sheet:`
+surfaces carry `interaction-ux`; the generator also emits one `visual-ux` row per reached surface at the
+primary variant. Under `ship`, `coverage.sh --require-visual-ux` blocks a plan with an
+in-scope UI surface that has no `visual-ux` row. Under `ship` (or `detection.ux.objective`), the run also
+sweeps every page it visits: detector and axe output is journaled as advisory `source: "ux"` findings,
+and an objective defect on a surface outside the plan's `visual-ux` rows goes to `ux-sweep.json` (through
+`ux-sweep.sh`). The
+sweep never sets a verdict and never adds a row to the frozen plan; a sweep finding becomes `fail@FE`
+only when a `visual-ux` criterion for that surface runs.
+
 ## Consequences
 
 - New: 1 skill (18 total), 6 adapters, 4 engine scripts (`census.sh`, `profile.sh`, `journeys.sh`,

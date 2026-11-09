@@ -5,7 +5,7 @@
 # USAGE:
 #   coverage.sh <census.json> <checklist.json> [--exclusions <exclusions.json>]
 #               [--mode block|advise] [--defer-channels] [--accept-crawl-only]
-#               [--scope <regex>] [--roles <spec-roles.json|personas.json>]
+#               [--scope <regex>] [--roles <spec-roles.json|personas.json>] [--require-visual-ux]
 #
 #   Prints coverage.json on stdout (compact, sorted keys, raw UTF-8):
 #     {total, covered, functionalCovered, sweepCovered, excluded, uncovered, unscopedCovered, percent,
@@ -49,11 +49,18 @@
 # PERCENT: covered / (total - excluded) x 100, rounded half-up to one decimal (integer math, so
 #   both engines agree); 100 when nothing is left to cover. A whole value prints without ".0".
 # WARNINGS: census warnings are copied. adapterOk is false only when the census says so.
+# --require-visual-ux (the ship plan's per-surface UX check): adds `uxMissing`, the sorted surfaceIds
+#   that have at least one in-scope, non-excluded pair, were reached in the census by at least one
+#   in-scope persona (reachedBy, filtered by --roles; a surface nobody reached cannot be looked at and
+#   is already an uncovered pair), are UI surfaces (not a job:/mail:/notification: channel and not a
+#   non-GET write endpoint), match no exclusion whose personaId is "*", and that no checklist row
+#   tagged `visual-ux` names in its surfaceId. qa-kit's generate-ship-criteria.sh emits exactly one
+#   such row per reached surface, so a generated plan passes. Without the flag the output is unchanged (no `uxMissing` key).
 #
 # EXIT: 0 ok; 1 the gate blocks (only under --mode block): uncovered > 0 (including
 #   covered-unscoped and covered-sweep pairs), total - excluded == 0 (empty or uncrawled census, or everything
-#   excluded), or the census was built with a failed adapter and --accept-crawl-only was not
-#   passed; 2 usage or input error.
+#   excluded), the census was built with a failed adapter and --accept-crawl-only was not
+#   passed, or (with --require-visual-ux) uxMissing is non-empty; 2 usage or input error.
 #   --mode defaults to block (fail closed). Coverage JSON is printed even when the gate blocks.
 #
 # DEPENDENCIES: bash, coreutils, and EITHER jq >= 1.7 OR python3 (jq preferred; QA_ENGINE=jq|python3
@@ -74,13 +81,14 @@ has_jq() {
 }
 has_py() { command -v python3 >/dev/null 2>&1; }
 
-CENSUS="" CHECKLIST="" EXCLUSIONS="" MODE="block" DEFER=false ACCEPT_CRAWL=false SCOPE="" SCOPE_SET=false ROLES=""
+CENSUS="" CHECKLIST="" EXCLUSIONS="" MODE="block" DEFER=false ACCEPT_CRAWL=false SCOPE="" SCOPE_SET=false ROLES="" UXREQ=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --exclusions) [ $# -ge 2 ] || die "--exclusions needs a file"; EXCLUSIONS="$2"; shift 2 ;;
     --mode) [ $# -ge 2 ] || die "--mode needs block|advise"; MODE="$2"; shift 2 ;;
     --defer-channels) DEFER=true; shift ;;
     --accept-crawl-only) ACCEPT_CRAWL=true; shift ;;
+    --require-visual-ux) UXREQ=true; shift ;;
     --scope) [ $# -ge 2 ] || die "--scope needs a regex"; SCOPE="$2"; SCOPE_SET=true; shift 2 ;;
     --roles) [ $# -ge 2 ] || die "--roles needs a file"; ROLES="$2"; shift 2 ;;
     --*) die "unknown flag: $1" ;;
@@ -91,7 +99,7 @@ while [ $# -gt 0 ]; do
       shift ;;
   esac
 done
-[ -n "$CENSUS" ] && [ -n "$CHECKLIST" ] || die "usage: coverage.sh <census.json> <checklist.json> [--exclusions <file>] [--mode block|advise] [--defer-channels] [--accept-crawl-only] [--scope <regex>] [--roles <file>]"
+[ -n "$CENSUS" ] && [ -n "$CHECKLIST" ] || die "usage: coverage.sh <census.json> <checklist.json> [--exclusions <file>] [--mode block|advise] [--defer-channels] [--accept-crawl-only] [--scope <regex>] [--roles <file>] [--require-visual-ux]"
 case "$MODE" in block|advise) ;; *) die "unknown mode: $MODE (block|advise)" ;; esac
 [ -f "$CENSUS" ] || die "census not found: $CENSUS"
 [ -f "$CHECKLIST" ] || die "checklist not found: $CHECKLIST"
@@ -109,7 +117,7 @@ if has_jq; then
     jq -n --arg s "$SCOPE" '"" | test($s)' >/dev/null 2>&1 || die "invalid --scope regex: $SCOPE"
   fi
   OUT="$(jq -n -S -c --slurpfile cen "$CENSUS" --slurpfile chk "$CHECKLIST" --argjson exc "$EXC_JSON" \
-      --argjson defer "$DEFER" --arg deferReason "$DEFER_REASON" --arg mode "$MODE" \
+      --argjson defer "$DEFER" --arg deferReason "$DEFER_REASON" --arg mode "$MODE" --argjson uxreq "$UXREQ" \
       --argjson scope "$SCOPE_JSON" --argjson rolesIn "$ROLES_JSON" '
     def dedupe: reduce .[] as $i ([]; if any(.[]; . == $i) then . else . + [$i] end);
     def strs: if type == "array" then map(select(type == "string")) else [] end;
@@ -150,7 +158,8 @@ if has_jq; then
                    elif (.surfaceId | type) == "array" then [.surfaceId[] | select(type == "string")]
                    else [] end),
             p: (.persona // .personaId // .role // null),
-            sw: ((.tags | strs | index(["sweep"])) != null) }
+            sw: ((.tags | strs | index(["sweep"])) != null),
+            ux: ((.tags | strs | index(["visual-ux"])) != null) }
         | select((.sids | length) > 0) ] as $rows
     | [ $pairs[] as $pr
         | [ $rows[] | select(.sids | index([$pr.s])) ] as $hit
@@ -179,9 +188,19 @@ if has_jq; then
         adapterOk: (if $c.adapterOk == false then false else true end),
         warnings: ($c.warnings // []),
         rows: $out }
+      + (if $uxreq then
+           ([ $c.surfaces[] | select(type == "object" and (.surfaceId | type) == "string")
+              | select([ .reachedBy | strs | .[] | select(($roleIds == null) or (. as $x | $roleIds | index([$x]) != null)) ] | length > 0)
+              | .surfaceId ]) as $reachedS
+           | {uxMissing: ([ $out[] | select(.state != "excluded") | .surfaceId | select(. as $x | $reachedS | index([$x]) != null)
+                          | select(((startswith("job:") or startswith("mail:") or startswith("notification:")) or isWrite) | not) ]
+                        | unique
+                        | map(. as $s | select(any($excR[]; . as $e | $e.personaId == "*" and ($s | test($e.re))) | not))
+                        | map(. as $s | select(any($rows[]; .ux and (.sids | index([$s]) != null)) | not)))}
+         else {} end)
   ')" || die "could not compute coverage (see the message above)"
 elif has_py; then
-  OUT="$(EXCP="$EXCLUSIONS" DEFER="$DEFER" DEFER_REASON="$DEFER_REASON" MODE="$MODE" ROLESP="$ROLES" \
+  OUT="$(EXCP="$EXCLUSIONS" DEFER="$DEFER" UXREQ="$UXREQ" DEFER_REASON="$DEFER_REASON" MODE="$MODE" ROLESP="$ROLES" \
       SCOPE="$SCOPE" SCOPE_SET="$SCOPE_SET" python3 -c '
 import json, os, re, sys
 def fail(m):
@@ -249,7 +268,7 @@ for r in rows0:
     sids = [sid] if isinstance(sid, str) else ([x for x in sid if isinstance(x, str)] if isinstance(sid, list) else [])
     if not sids: continue
     p = next((r[k] for k in ("persona", "personaId", "role") if present(r.get(k))), None)
-    rows.append({"id": r.get("id"), "sids": sids, "p": p, "sw": "sweep" in strs(r.get("tags"))})
+    rows.append({"id": r.get("id"), "sids": sids, "p": p, "sw": "sweep" in strs(r.get("tags")), "ux": "visual-ux" in strs(r.get("tags"))})
 out = []
 for (s, p) in sorted(pairs):
     crit, uns, swp = [], [], []
@@ -281,6 +300,13 @@ res = {"total": total, "covered": cov, "functionalCovered": fnc, "sweepCovered":
        "adapterOk": c.get("adapterOk") is not False,
        "warnings": c.get("warnings") or [],
        "rows": out}
+if os.environ.get("UXREQ") == "true":
+    reached_s = set(sv["surfaceId"] for sv in c["surfaces"] if isinstance(sv, dict) and isinstance(sv.get("surfaceId"), str)
+                    and any(role_ids is None or x in role_ids for x in strs(sv.get("reachedBy"))))
+    ui = sorted(set(x["surfaceId"] for x in out if x["state"] != "excluded" and x["surfaceId"] in reached_s
+                    and not x["surfaceId"].startswith(("job:", "mail:", "notification:")) and not is_write(x["surfaceId"])))
+    ui = [sid for sid in ui if not any(e["personaId"] == "*" and rx.search(sid) for e, rx in exc_re)]
+    res["uxMissing"] = [sid for sid in ui if not any(r["ux"] and sid in r["sids"] for r in rows)]
 sys.stdout.buffer.write((json.dumps(res, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8"))
 ' "$CENSUS" "$CHECKLIST")" || die "could not compute coverage (see the message above)"
 else
@@ -291,13 +317,13 @@ printf '%s\n' "$OUT"
 
 [ "$MODE" = "block" ] || exit 0
 # Read the gate inputs back from the result with the engine (never by grepping serialized JSON):
-# "<uncovered> <adapterOk:0|1> <total-excluded>".
+# "<uncovered> <adapterOk:0|1> <total-excluded> <uxMissing count>".
 if has_jq; then
-  GATE="$(printf '%s\n' "$OUT" | jq -r '"\(.uncovered) \(if .adapterOk then 1 else 0 end) \(.total - .excluded)"')" || die "could not read the coverage result"
+  GATE="$(printf '%s\n' "$OUT" | jq -r '"\(.uncovered) \(if .adapterOk then 1 else 0 end) \(.total - .excluded) \(.uxMissing // [] | length)"')" || die "could not read the coverage result"
 else
-  GATE="$(printf '%s\n' "$OUT" | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c["uncovered"], 1 if c["adapterOk"] else 0, c["total"] - c["excluded"])')" || die "could not read the coverage result"
+  GATE="$(printf '%s\n' "$OUT" | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c["uncovered"], 1 if c["adapterOk"] else 0, c["total"] - c["excluded"], len(c.get("uxMissing") or []))')" || die "could not read the coverage result"
 fi
-read -r uncovered adapter_ok coverable <<EOF_GATE
+read -r uncovered adapter_ok coverable ux_missing <<EOF_GATE
 $GATE
 EOF_GATE
 blocked=0
@@ -311,6 +337,10 @@ if [ "$uncovered" -gt 0 ]; then
 fi
 if [ "$adapter_ok" -eq 0 ] && [ "$ACCEPT_CRAWL" != true ]; then
   echo "coverage: gate blocked: the census adapter failed, so the census is crawl-only; pass --accept-crawl-only to run on it anyway" >&2
+  blocked=1
+fi
+if [ "$ux_missing" -gt 0 ]; then
+  echo "coverage: gate blocked: $ux_missing surface(s) have no visual-ux criterion (see uxMissing); the UX detectors only run on a visual-ux row" >&2
   blocked=1
 fi
 exit "$blocked"

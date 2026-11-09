@@ -22,6 +22,8 @@ duplicate either — read them first.
 
 ## When to Use
 
+- driving-browser-qa routes here every row tagged `interaction-ux` and every row whose `surfaceId`
+  is a `#dialog:`/`#sheet:` surface (qa-kit's generator tags those rows `interaction-ux`).
 - A checklist criterion drives an overlay/sheet/drawer/modal sequence: open a panel, open a
   child overlay from inside it, submit, close.
 - Any time a write flow is UI-mediated through a stacked overlay (a "add X" form opened from

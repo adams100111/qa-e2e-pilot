@@ -81,6 +81,9 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      --mode <mode> --roles .qa/specs/<target>/spec-roles.json --defer-channels` plus
      `--scope "<regex>"` when `.qa/specs/<target>/coverage-scope.txt` exists and `--exclusions
      .qa/specs/<target>/coverage-exclusions.json` when present (globs allowed in its `surfaceId`).
+     Under `ship` also pass `--require-visual-ux`: every in-scope UI surface needs a row tagged `visual-ux`
+     (the UX detectors run only on such a row), and a surface without one is listed in `uxMissing` and
+     blocks the gate.
      `--defer-channels` is on by default until Increment 4 (mail, notification and job checks), with the
      reason "channel checks arrive in increment 4"; drop it once that increment ships. Pass
      `--accept-crawl-only` **only** when a human has explicitly said, in this session, that a census built
@@ -90,9 +93,12 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
      `functionalCovered` / `sweepCovered` / `total` and the percent, then list every `uncovered` pair
      (surface x role, or surface x `*` for a declared surface nobody reached or an unprobed write), every
      `covered-unscoped` pair (covered only by a row with no role) and every `covered-sweep` pair (covered
-     only by generated load / deny / revisit rows) — under `block` the last two count as uncovered.
+     only by generated load / deny / revisit rows) — under `block` the last two count as uncovered. List
+     every `uxMissing` surface as "no visual-ux criterion" with the remediation "add a `visual-ux` row via
+     `/qa-scenarios` (step 5c)".
    - Exit 1 means the gate blocks: uncovered pairs, an empty or uncrawled census, or a census built from a
-     failed adapter without `--accept-crawl-only`. Exit 2 is a usage or input error: under `ship` that is
+     failed adapter without `--accept-crawl-only`, or (with `--require-visual-ux`) a surface without a
+     `visual-ux` row. Exit 2 is a usage or input error: under `ship` that is
      also `BLOCKED` (report it), never a pass. Also run `journeys.sh validate` when `journeys.json` exists
      and list its errors under Coverage.
    - **Engine-only runs have no gate.** A plain `/qa-run` that skips qa-kit (no `/qa-analyze`) is not held
@@ -136,8 +142,8 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
 
    **Coverage section and BLOCKED verdict.** Fill the template's `## Coverage` section from step 4b (percent,
    counts, the uncovered pair list with a suggested remediation: add a criterion via `/qa-scenarios`
-   or record an exclusion with a reason). Under `ship` (gate mode `block`) the Verdict is **`BLOCKED`**
-   until uncovered = 0; set it from the gate's exit code (and from the fail-closed rules in step 4b: no
+   or record an exclusion with a reason, plus every `uxMissing` surface). Under `ship` (gate mode `block`)
+   the Verdict is **`BLOCKED`** until uncovered = 0 and `uxMissing` is empty; set it from the gate's exit code (and from the fail-closed rules in step 4b: no
    census, an unresolvable engine script, exit 2), never from your own count. Under `advise` the Verdict
    stays advisory. This coverage gate is the only blocking analyze check besides
    plan defects.

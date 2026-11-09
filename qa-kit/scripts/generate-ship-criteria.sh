@@ -90,8 +90,20 @@
 #                                      no locale in the title (`@<viewport>-<scheme>`) nor in `variant`.
 #                                      kind load-clean, priority = the best (lowest) priority of the
 #                                      journeys that touched the pair (absent when none has one), tags
-#                                      independent + read-only + sweep + ux-revisit, `variant` set.
+#                                      independent + read-only + sweep + ux-revisit + visual-ux (the
+#                                      visual-ux tag is what makes driving-browser-qa run
+#                                      detecting-visual-ux on the row), `variant` set.
 #                                      Needs --checklist to resolve steps.
+#   ux:<surfaceId>                     one per census surface (#tab/#dialog/#sheet included) reached by at
+#                                      least one persona in --personas: kind happy-path, tags independent +
+#                                      read-only + sweep + visual-ux (+ interaction-ux on a #dialog:/#sheet:
+#                                      surface), persona/role = the first in-scope persona in its reachedBy,
+#                                      `url` from sampleUrls, `variant` = the primary variant (first viewport,
+#                                      first locale when any, light). With these rows a generated ship plan
+#                                      passes coverage.sh --require-visual-ux; the ux revisits cover the
+#                                      other variants.
+#   UX TAGS: every load-clean / input-validation row (ux revisits included) whose surfaceId names a
+#   `#dialog:` or `#sheet:` surface also carries `interaction-ux` (runs detecting-interaction-ux).
 #   A row whose title or id is already an id or title in --checklist is never emitted. criteriaBudget
 #   is NOT applied: it is a run-time cost lever, so every row is emitted and an overflow is reported on
 #   stderr.
@@ -169,6 +181,10 @@ def target($s; $u): (if $u != null then $u else ($s.pattern | str0) + $nosample 
   + (subKind($s) as $sk | if $sk != null then ", then open the " + $sk.kind + " \"" + $sk.key + "\"" else "" end);
 def withUrl($u): if $u != null then {url: $u} else {} end;
 def tagset: unique;
+def uxTags: (if (.tags | index(["ux-revisit"])) != null then .tags += ["visual-ux"] else . end)
+  | (if (.kind == "load-clean" or .kind == "input-validation") and ((.surfaceId // "") | str0 | test("#(dialog|sheet):"))
+     then .tags += ["interaction-ux"] else . end)
+  | .tags |= unique;
 def caseExpect($c): if (["special","long-5000","past"] | index([$c]) != null) then $accrej else $mustrej end;
 def cases:
   ((.type // "text") | if type == "string" then . else "text" end) as $t
@@ -321,22 +337,37 @@ def cases:
          expected: "Renders with no 5xx, no crash and no objective UX finding at this variant"}
       + (if $pr.pr != null then {priority: $pr.pr} else {} end)
       + withUrl($u) ] as $ux
+| [ $S[] as $s
+    | [ $s.reachedBy | strs | .[] | . as $x | select($pids | index([$x]) != null) ] as $rp
+    | select(($rp | length) > 0)
+    | $rp[0] as $pp
+    | sample($s; $pp) as $u
+    | ({viewport: $vps[0], colorScheme: "light"} + (if $locs[0] != null then {locale: $locs[0]} else {} end)) as $pv
+    | mk("ux"; $s.surfaceId)
+      + {kind: "happy-path", surface: ($s.pattern | str0), surfaceId: $s.surfaceId,
+         persona: $pp, tags: (["independent", "read-only", "sweep", "visual-ux"]
+                              + (if ($s.surfaceId | test("#(dialog|sheet):")) then ["interaction-ux"] else [] end) | tagset),
+         humanAction: false, mutates: false, variant: $pv,
+         action: ("As " + $pp + ", open " + target($s; $u) + " at the primary variant (viewport " + $pv.viewport
+                  + (if $pv.locale != null then ", locale " + $pv.locale else "" end) + ", light scheme, read-only): screenshot and run the UX detectors"),
+         expected: "No objective UX finding on this surface at the primary variant (detecting-visual-ux: detectors, click-probe, adjudicated suspicions)"}
+      + withUrl($u) ] as $vis
 
 | ([ $S[] | (($acc.surfaces[.surfaceId] // null) | if type == "object" then . else {} end) as $eo
      | select(($eo | hasEvidence) | not)
      | (if (($eo.allowed // null) | type) == "array" then ($eo.allowed | strs) elif ((.allowed // null) | type) == "array" then (.allowed | strs) else [] end) as $al
      | select(any($pids[]; . as $x | $al | index([$x]) == null)) ] | length) as $skippedNoEvidence
 | ([ $acc.surfaces[] | select(type == "object" and .assumption == true) ] | length) as $assumed
-| ([$loadClean, $deny, $iso, $input, $ux] | map(unique_by(.title))) as $groups
+| ([$loadClean, $deny, $iso, $input, $ux, $vis] | map(unique_by(.title))) as $groups
 | if $h[0] == null then {titles: ($groups | add | map(.title) | unique)} else
   ($h[0]) as $H
 | ($existing | map(.id, (.title | select(type == "string")))) as $exKeys
 | def finish: map(.id = (._p + "-" + (if ._s == "" then "" else ._s + "-" end) + $H[.title]) | del(._p, ._s));
   def keep: map(select(. as $r | ($exKeys | index([$r.title]) == null) and ($exKeys | index([$r.id]) == null)));
   ($groups | map(finish)) as $G
-| ($G[0] | keep) as $LC | ($G[1] | keep) as $DN | ($G[2] | keep) as $IS | ($G[3] | keep) as $IN | ($G[4] | keep) as $UX
+| ($G[0] | keep) as $LC | ($G[1] | keep) as $DN | ($G[2] | keep) as $IS | ($G[3] | keep) as $IN | ($G[4] | keep) as $UX | ($G[5] | keep) as $VX
 | ($G | map(length) | add) as $generated
-| ($LC + $DN + $IS + $IN + $UX | map(. + {role: .persona})) as $rows
+| ($LC + $DN + $IS + $IN + $UX + $VX | map(. + {role: .persona} | uxTags)) as $rows
 | ($rows | length) as $total
 | {rows: $rows,
    notes: ((if $census.adapterOk == false then ["generate-ship-criteria: warning: the census adapter did not run (adapterOk false); rows cover crawl-observed surfaces only"] else [] end)
@@ -347,7 +378,7 @@ def cases:
          | "generate-ship-criteria: warning: " + .title + " has no readable census surface with a {" + .entity + "} route parameter; emitted without surfaceId" ]
      + (if ($getSkipped | length) > 0
         then ["generate-ship-criteria: input: \($getSkipped | length) forms with method GET skipped (search / filter forms): \($getSkipped | join(", ")) (only an explicit method get is skipped; add input criteria by hand if one of these writes)"] else [] end)
-     + ["generate-ship-criteria: \($total) rows (load-clean \($LC | length), deny \($DN | length), iso \($IS | length), input \($IN | length), ux \($UX | length)); \($generated - $total) skipped as already in the checklist"]
+     + ["generate-ship-criteria: \($total) rows (load-clean \($LC | length), deny \($DN | length), iso \($IS | length), input \($IN | length), ux \($UX | length), visual-ux \($VX | length)); \($generated - $total) skipped as already in the checklist"]
      + (if $skippedNoEvidence > 0 then ["generate-ship-criteria: deny: \($skippedNoEvidence) surfaces skipped — no permission evidence; confirm in surface-access to include"] else [] end)
      + ([ $DN[].surfaceId ] | unique | map(select((($acc.surfaces[.] // null) | if type == "object" then .confirmed else null end) != true))
         | if length > 0 then ["generate-ship-criteria: deny rows use \(length) unconfirmed surface-access entries (\([ $DN[] | select(.tags | index(["needs-confirmation"]) != null) ] | length) rows tagged needs-confirmation)"] else [] end)
@@ -674,17 +705,42 @@ for (sid, pp) in sorted(pairs):
                 if prs: r["priority"] = prs[0]
                 ux.append(with_url(r, u))
 
+vis = []
+for s in S:
+    rp = [x for x in strs(s.get("reachedBy")) if x in pids]
+    if not rp: continue
+    pp = rp[0]
+    u = sample(s, pp)
+    pv = {"viewport": vps[0], "colorScheme": "light"}
+    if locs[0] is not None: pv["locale"] = locs[0]
+    r = mk("ux", s["surfaceId"])
+    tg = ["independent", "read-only", "sweep", "visual-ux"]
+    if re.search(r"#(dialog|sheet):", s["surfaceId"]): tg.append("interaction-ux")
+    r.update({"kind": "happy-path", "surface": str0(s.get("pattern")), "surfaceId": s["surfaceId"],
+        "persona": pp, "tags": sorted(set(tg)), "humanAction": False, "mutates": False, "variant": pv,
+        "action": "As " + pp + ", open " + target(s, u) + " at the primary variant (viewport " + pv["viewport"]
+                  + (", locale " + pv["locale"] if "locale" in pv else "") + ", light scheme, read-only): screenshot and run the UX detectors",
+        "expected": "No objective UX finding on this surface at the primary variant (detecting-visual-ux: detectors, click-probe, adjudicated suspicions)"})
+    vis.append(with_url(r, u))
+
 ex_keys = set(r["id"] for r in existing) | set(r["title"] for r in existing if isinstance(r.get("title"), str))
 def uniq(rows):
     seen = {}
     for r in rows:
         if r["title"] not in seen: seen[r["title"]] = r
     return [seen[k] for k in sorted(seen)]
-groups = [uniq(g) for g in (load_clean, deny, iso, inputs, ux)]
+groups = [uniq(g) for g in (load_clean, deny, iso, inputs, ux, vis)]
 generated = sum(len(g) for g in groups)
-LC, DN, IS, IN, UX = [[r for r in g if r["title"] not in ex_keys and r["id"] not in ex_keys] for g in groups]
-rows = LC + DN + IS + IN + UX
-for r in rows: r["role"] = r["persona"]
+LC, DN, IS, IN, UX, VX = [[r for r in g if r["title"] not in ex_keys and r["id"] not in ex_keys] for g in groups]
+rows = LC + DN + IS + IN + UX + VX
+for r in rows:
+    r["role"] = r["persona"]
+    tg = set(r["tags"])
+    if "ux-revisit" in tg: tg.add("visual-ux")
+    sid = r.get("surfaceId") if isinstance(r.get("surfaceId"), str) else ""
+    if r.get("kind") in ("load-clean", "input-validation") and re.search(r"#(dialog|sheet):", sid):
+        tg.add("interaction-ux")
+    r["tags"] = sorted(tg)
 total = len(rows)
 notes = []
 if census.get("adapterOk") is False:
@@ -699,8 +755,8 @@ for r in IS:
 if get_skipped:
     notes.append("generate-ship-criteria: input: %d forms with method GET skipped (search / filter forms): %s (only an explicit method get is skipped; add input criteria by hand if one of these writes)"
                  % (len(get_skipped), ", ".join(get_skipped)))
-notes.append("generate-ship-criteria: %d rows (load-clean %d, deny %d, iso %d, input %d, ux %d); %d skipped as already in the checklist"
-             % (total, len(LC), len(DN), len(IS), len(IN), len(UX), generated - total))
+notes.append("generate-ship-criteria: %d rows (load-clean %d, deny %d, iso %d, input %d, ux %d, visual-ux %d); %d skipped as already in the checklist"
+             % (total, len(LC), len(DN), len(IS), len(IN), len(UX), len(VX), generated - total))
 def confirmed_of(sid):
     v = acc["surfaces"].get(sid)
     return v.get("confirmed") if isinstance(v, dict) else None

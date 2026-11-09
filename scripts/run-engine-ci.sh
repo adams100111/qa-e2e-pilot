@@ -17,7 +17,7 @@ SUITES=(
   portability preflight provenance qa-ci-verify qa-reconcile qa-resume qa-verify qa-verify-phase rebake render-report screenshots
   required-kinds resume-idempotency resume-supersession session-preflight session-to-toolstream skill-gate-consistency
   state-machine toolstream skillopt-pilot
-  ux-adjudicate ux-conventions ux-detectors validate-adapters validate-checklist-json vision-binding
+  ux-adjudicate ux-conventions ux-detectors ux-sweep validate-adapters validate-checklist-json vision-binding
   write-persona-config
   census-adapters census-merge profile journeys data-policy checklist-ship-schema crawl-safety
   gate-oracle gate-state gate-data-policy verify-ship-gates ship-summary bug-export adjudication

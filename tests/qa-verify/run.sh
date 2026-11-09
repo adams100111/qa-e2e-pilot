@@ -1269,4 +1269,37 @@ check "existing cases unchanged: genuine has no __run-checks__ record" "$(rc_cou
 check "existing cases unchanged: forged still has exactly 4 records" "$(jq 'length' "$(vf forged)")" "4"
 check "existing cases unchanged: forged has no __run-checks__ record" "$(rc_count "$(vf forged)")" "0"
 
+# ---------------------------------------------------------------------------
+# UX SWEEP (0.12.0): `finding_observed` events with source "ux" (the always-on
+# UX sweep: detector id, selector, never a request) never change a verdict,
+# a confidence, a run check or the exit code. Each base run is cloned twice;
+# one clone's journal gains ux findings, including hostile ones that mimic a
+# network 500 (a url, status 500, statusClass fatal, a contradicting
+# originClass). Both clones must verify identically.
+# ---------------------------------------------------------------------------
+UX1='{"event":"finding_observed","criterionId":"ux-sweep:GET /notifications#sheet:panel","source":"ux","channel":"ux-detector","method":"i18n-script-mismatch","url":"#notif-list > li:nth-child(1)","status":"","originClass":"","statusClass":"","message":"Latin text on an ar page","detailRef":""}'
+UX2='{"event":"finding_observed","criterionId":"EC10","source":"ux","channel":"axe","method":"GET","url":"https://app.test/dashboard","status":500,"originClass":"third-party","statusClass":"fatal","message":"hostile ux entry shaped like the missing 500"}'
+uxproj() { jq -c '[.[] | {criterionId, persona, inRunVerdict, verifierVerdict, confidence, runChecks}] | sort_by(.criterionId, .persona)' "$1"; }
+for ENGINE in jq python3; do
+  if [[ "$ENGINE" == python3 ]] && ! command -v python3 >/dev/null 2>&1; then continue; fi
+  for pair in "$WORK:genuine" "$WORK:forged" "$WORK2:ledgerok" "$WORK2:ledgermiss" "$WORK2:misclass"; do
+    root="${pair%%:*}"; base="${pair#*:}"
+    for v in a b; do
+      rm -rf "$root/.qa/runs/ux-$base-$v"; cp -R "$root/.qa/runs/$base" "$root/.qa/runs/ux-$base-$v"
+      rm -f "$root/.qa/runs/ux-$base-$v/verification.json"
+    done
+    jr_append "$root" "ux-$base-b" "$UX1"
+    jr_append "$root" "ux-$base-b" "$UX2"
+    ( cd "$root" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" "ux-$base-a" >/dev/null 2>&1 ); RA=$?
+    ( cd "$root" && QA_ENGINE="$ENGINE" bash "$QAVERIFY" "ux-$base-b" >/dev/null 2>&1 ); RB=$?
+    check "[$ENGINE] ux findings never flip the exit code ($base)" "$RB" "$RA"
+    check "[$ENGINE] ux findings never change a verdict, confidence or run check ($base)" \
+      "$(uxproj "$root/.qa/runs/ux-$base-b/verification.json")" "$(uxproj "$root/.qa/runs/ux-$base-a/verification.json")"
+  done
+  check "[$ENGINE] ux sweep: the missing 500 still fails the ledger (a ux entry never journals it)" \
+    "$(rc_field "$WORK2/.qa/runs/ux-ledgermiss-b/verification.json" '.runChecks.ledgerComplete')" "false"
+  check "[$ENGINE] ux sweep: the forged pass is still overridden" \
+    "$(jq -r '[.[] | select(.inRunVerdict=="pass" and .verifierVerdict!="pass")] | length > 0' "$WORK/.qa/runs/ux-forged-b/verification.json")" "true"
+done
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"; [[ "$FAIL" -eq 0 ]]

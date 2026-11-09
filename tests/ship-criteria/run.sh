@@ -89,12 +89,30 @@ run_engine() {
   check "$E input generic page form qualified by surface" "$(q "$T/o.json" "ids('input:GET /h/{slug}#page:')")" '["input:GET /h/{slug}#page:بحث:long-5000","input:GET /h/{slug}#page:بحث:special"]'
 
   # ux_revisits_skip_primary
-  check "$E ux_revisits_skip_primary count" "$(q "$T/o.json" "len(ids('ux:'))")" "21"
+  check "$E ux_revisits_skip_primary count" "$(q "$T/o.json" "len([x for x in rows if 'ux-revisit' in x['tags']])")" "21"
   check "$E ux primary combo skipped" "$(q "$T/o.json" "r('ux:$CREATE:admin@desktop-ar-light')")" "None"
   check "$E ux secondary combos present" "$(q "$T/o.json" "[i.split('@')[1] for i in ids('ux:$CREATE:admin@')]")" \
     '["desktop-ar-dark","desktop-en-dark","desktop-en-light","mobile-ar-dark","mobile-ar-light","mobile-en-dark","mobile-en-light"]'
   check "$E ux row shape" "$(q "$T/o.json" "[r('ux:$SHOW:admin@mobile-en-dark')[k] for k in ('surfaceId','persona','variant','priority')]+[sorted(r('ux:$SHOW:admin@mobile-en-dark')['tags'])]")" \
-    "[\"$SHOW\",\"admin\",{\"colorScheme\":\"dark\",\"locale\":\"en\",\"viewport\":\"mobile\"},\"P1\",[\"independent\",\"read-only\",\"sweep\",\"ux-revisit\"]]"
+    "[\"$SHOW\",\"admin\",{\"colorScheme\":\"dark\",\"locale\":\"en\",\"viewport\":\"mobile\"},\"P1\",[\"independent\",\"read-only\",\"sweep\",\"ux-revisit\",\"visual-ux\"]]"
+  # ux_revisit_rows_carry_visual_ux (driving-browser-qa runs detecting-visual-ux only on a visual-ux row)
+  check "$E ux_revisit_rows_carry_visual_ux" "$(q "$T/o.json" "[x['title'] for x in rows if 'ux-revisit' in x['tags'] and 'visual-ux' not in x['tags']]")" '[]'
+  check "$E visual-ux outside revisits only on per-surface happy-path rows" "$(q "$T/o.json" "[x['title'] for x in rows if 'visual-ux' in x['tags'] and 'ux-revisit' not in x['tags'] and x['kind']!='happy-path']")" '[]'
+  # every_reached_surface_has_visual_ux_row: one happy-path visual-ux row per surface an in-scope persona reached
+  check "$E every_reached_surface_has_visual_ux_row" "$(q "$T/o.json" "sorted(x['surfaceId'] for x in rows if x['kind']=='happy-path' and 'visual-ux' in x['tags'])")" \
+    '["GET /admin/hackathons/create","GET /admin/hackathons/{hackathon}","GET /h/{slug}","GET /ideas/{idea}","page:Admin/Hackathons/Show"]'
+  check "$E visual-ux row shape" "$(q "$T/o.json" "[r('ux:$CREATE')[k] for k in ('kind','persona','role','tags','variant','humanAction','mutates')]")" \
+    '["happy-path","admin","admin",["independent","read-only","sweep","visual-ux"],{"colorScheme":"light","locale":"ar","viewport":"desktop"},false,false]'
+  check "$E visual-ux row id token-safe" "$(q "$T/o.json" "r('ux:$CREATE')['id'][:-9]")" "ux-get-admin-hackathons-create"
+  check "$E unreached surface gets no visual-ux row" "$(q "$T/o.json" "r('ux:GET /admin/reports')")" "None"
+  # generated_plan_passes_require_visual_ux: the frozen plan + generated rows leave no surface without a visual-ux row
+  python3 -c 'import json,sys;a=json.load(open(sys.argv[1],encoding="utf-8"));b=json.load(open(sys.argv[2],encoding="utf-8"));json.dump(a+b,open(sys.argv[3],"w",encoding="utf-8"),ensure_ascii=False)' \
+    "$FX/checklist.json" "$T/o.json" "$T/merged.json"
+  QA_ENGINE=$E bash "$DIR/../../qa-kit/scripts/coverage.sh" "$FX/census.json" "$T/merged.json" --mode block --require-visual-ux \
+    --roles "$FX/personas.json" > "$T/cov.json" 2> "$T/cov.err"
+  check "$E generated_plan_passes_require_visual_ux" "$(q "$T/cov.json" "rows['uxMissing']")" '[]'
+  check "$E generated plan: no visual-ux block message" "$(grep -c 'no visual-ux criterion' "$T/cov.err")" "0"
+  check "$E no dialog/sheet surface: no interaction-ux" "$(q "$T/o.json" "[x['title'] for x in rows if 'interaction-ux' in x['tags']]")" '[]'
   # ux_revisits_every_journey (Settled matrix: every journey's surfaces, not only P1; priority = the journey's)
   check "$E ux revisits a P2 journey too" "$(q "$T/o.json" "[len(ids('ux:GET /h/{slug}:participant@')), r('ux:GET /h/{slug}:participant@mobile-en-dark')['priority']]")" '[7,"P2"]'
 
@@ -116,9 +134,9 @@ run_engine() {
   [ "$rc" -eq 0 ] || cat "$T/v.err" >&2
 
   # budget_overflow_reported_not_dropped (criteriaBudget 5, all 46 rows emitted)
-  check "$E budget_overflow all rows emitted" "$(q "$T/o.json" "len(rows)")" "53"
+  check "$E budget_overflow all rows emitted" "$(q "$T/o.json" "len(rows)")" "58"
   check "$E budget_overflow reported on stderr" "$(grep -c 'exceeds criteriaBudget 5' "$T/o.err")" "1"
-  check "$E stderr reports the row count" "$(grep -c '53 rows (load-clean 4, deny 9, iso 2, input 17, ux 21); 1 skipped' "$T/o.err")" "1"
+  check "$E stderr reports the row count" "$(grep -c '58 rows (load-clean 4, deny 9, iso 2, input 17, ux 21, visual-ux 5); 1 skipped' "$T/o.err")" "1"
 
   # deny_write_tagged_api_write_when_allowed
   gen "$E" "$FX/config-writes.json" > "$T/w.json" 2> "$T/w.err"; rc=$?
@@ -126,7 +144,8 @@ run_engine() {
   check "$E deny_write_tagged_api_write_when_allowed" "$(q "$T/w.json" "[r('deny:POST /admin/hackathons:participant')['tags'],r('deny:POST /admin/hackathons:judge')['tags']]")" '[["api-write","probe-needed","sweep"],["api-write","needs-confirmation","probe-needed","sweep"]]'
   check "$E api-write deny rows declare mutates true" "$(q "$T/w.json" "[r('deny:POST /admin/hackathons:participant')['mutates'],r('deny:POST /admin/hackathons:judge')['mutates']]")" '[true,true]'
   check "$E writes config deny statuses from ship.denyStatuses" "$(q "$T/w.json" "r('deny:$CREATE:judge')['denyStatuses']")" '[403,404]'
-  check "$E single variant -> no ux revisits" "$(q "$T/w.json" "len(ids('ux:'))")" "0"
+  check "$E single variant -> no ux revisits" "$(q "$T/w.json" "len([x for x in rows if 'ux-revisit' in x['tags']])")" "0"
+  check "$E single variant -> still one visual-ux row per reached surface" "$(q "$T/w.json" "len([x for x in rows if x['kind']=='happy-path' and 'visual-ux' in x['tags']])")" "5"
   check "$E without --checklist nothing is skipped" "$(q "$T/w.json" "r('load-clean:$HACK:admin')['kind']")" "load-clean"
   check "$E within budget: no overflow line" "$(grep -c 'criteriaBudget' "$T/w.err")" "0"
   bash "$VALIDATOR" "$T/w.json" >/dev/null 2>&1; check "$E writes output validates" "$?" "0"
@@ -228,6 +247,29 @@ J
     'As admin, open /admin/hackathons/42, then open the tab "الفرق" and let it settle'
   check "$E dialog_surface_action_opens_the_dialog" "$(q "$T/s.json" "r('load-clean:GET /ideas/{idea}#dialog:delete:participant')['action']")" \
     'As participant, open /ideas/7?tab=summary, then open the dialog "delete" and let it settle'
+  # dialog_sheet_rows_carry_interaction_ux (driving-browser-qa runs detecting-interaction-ux on these)
+  check "$E dialog_rows_carry_interaction_ux" "$(q "$T/s.json" "sorted(x['title'] for x in rows if 'interaction-ux' in x['tags'])")" \
+    '["load-clean:GET /ideas/{idea}#dialog:delete:participant","ux:GET /ideas/{idea}#dialog:delete"]'
+  check "$E dialog load-clean row tags" "$(q "$T/s.json" "r('load-clean:GET /ideas/{idea}#dialog:delete:participant')['tags']")" \
+    '["independent","interaction-ux","read-only","sweep"]'
+  check "$E tab surface: no interaction-ux" "$(q "$T/s.json" "'interaction-ux' in r('load-clean:page:Admin/Hackathons/Show#tab:الفرق:admin')['tags']")" "False"
+  # sheet surface on a journey: the ux revisit carries visual-ux AND interaction-ux; the input row interaction-ux
+  cat > "$T/c5.json" <<'J'
+{"version":1,"adapterOk":true,"surfaces":[
+ {"surfaceId":"GET /notifications#sheet:panel","kind":"sheet","pattern":"/notifications","sources":["crawl"],"reachedBy":["admin"],"allowed":null,"sampleUrls":{"admin":"/notifications"},
+  "forms":[{"formId":"notif-reply","method":"POST","fields":[{"name":"body","type":"text","required":true}]}]}],
+ "jobs":[],"mails":[],"notifications":[],"diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},"warnings":[]}
+J
+  printf '%s' '{"version":1,"surfaces":{}}' > "$T/a5.json"
+  printf '%s' '[{"id":"S5","surfaceId":"GET /notifications#sheet:panel","persona":"admin","kind":"happy-path","tags":["read-only"],"action":"Open the panel"}]' > "$T/k5.json"
+  printf '%s' '[{"id":"J5","title":"الإشعارات","priority":"P1","roles":["admin"],"steps":["S5"]}]' > "$T/j5.json"
+  printf '%s' '{"profile":"ship","locales":["ar","en"],"colorSchemes":["light"]}' > "$T/cfg5.json"
+  QA_ENGINE=$E bash "$SH" --census "$T/c5.json" --access "$T/a5.json" --matrix "$T/m3.json" --personas "$FX/personas.json" --config "$T/cfg5.json" \
+    --journeys "$T/j5.json" --checklist "$T/k5.json" > "$T/x5.json" 2> "$T/x5.err"; rc=$?
+  check "$E sheet fixture exit 0" "$rc" "0"
+  check "$E sheet ux revisit carries visual-ux + interaction-ux" "$(q "$T/x5.json" "r('ux:GET /notifications#sheet:panel:admin@default-en-light')['tags']")" \
+    '["independent","interaction-ux","read-only","sweep","ux-revisit","visual-ux"]'
+  check "$E sheet input row carries interaction-ux" "$(q "$T/x5.json" "'interaction-ux' in r('input:notif-reply:body:empty')['tags']")" "True"
   check "$E tab surface id token-safe" "$(q "$T/s.json" "r('load-clean:page:Admin/Hackathons/Show#tab:الفرق:admin')['id'][:-9]")" "load-clean-page-admin-hackathons-show-tab-admin"
   check "$E iso ignores tab/dialog subsurfaces" "$(q "$T/s.json" "r('iso:idea:participant')['surfaceId']")" "GET /ideas/{idea}"
   check "$E iso matches a catch-all {x*?} parameter" "$(q "$T/s.json" "r('iso:team:participant')['surfaceId']")" "GET /docs/{team*?}"

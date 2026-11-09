@@ -104,6 +104,20 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      governing line, applied when you author an oracle: **reject process language, never behaviour
      language.**
 
+5c. **UX rows (the UX detectors run only on them).** The engine's run invokes `detecting-visual-ux` only on a
+   row tagged `visual-ux` or `ux-revisit`, and `detecting-interaction-ux` only on a row tagged
+   `interaction-ux` or on a `#dialog:`/`#sheet:` surface; an always-on sweep finding becomes a `fail@FE`
+   only through such a row. When you author criteria by hand (not through `generate-ship-criteria.sh`):
+   - **every surface in scope gets a `visual-ux` criterion**, one per surface, the way
+     `{{SKILL_REF:analyzing-feature-ui}}` emits it (`surfaceId` set, tag `visual-ux`, plus `interaction-ux`
+     on a `#dialog:`/`#sheet:` surface);
+   - **every locale and viewport in the profile gets a `ux-revisit` row** for those surfaces: tags
+     `ux-revisit` + `visual-ux` + `read-only`, and a `variant` `{viewport, locale, colorScheme}` for each
+     non-primary combination (the generator's `ux:<surface>:<persona>@<viewport>-<locale>-<scheme>` rows
+     are the model). An Arabic page is only checked for English text by a row at locale `ar`.
+   `/qa-analyze` blocks a ship plan with a surface lacking a `visual-ux` row (`coverage.sh
+   --require-visual-ux`).
+
 6. **Alignment check (deterministic, reject on failure).** Every role referenced by any scenario/criterion
    MUST be one of `spec-roles.json`'s `roles[].id`. If a scenario introduces a role not in the snapshot,
    **reject** it — either drop the criterion or send the operator back to `/qa-spec` to add that role via
@@ -144,8 +158,12 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      ```
      It prints append-ready rows with token-safe ids (`<prefix>-<slug>-<hash>`, which the engine's
      checkpoint and evidence scripts accept) and the readable id in `title` (`load-clean:<surface>:<persona>`,
-     `deny:<surface>:<persona>`, `iso:…`, `input:…`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
-     carrying `role`, and `url` when the census sampled a concrete URL. **Append them to `checklist.json`**
+     `deny:<surface>:<persona>`, `iso:…`, `input:…`, per-surface UX checks `ux:<surface>`, UX revisits `ux:…@<viewport>-<locale>-<scheme>`), each
+     carrying `role`, and `url` when the census sampled a concrete URL. UX revisits carry `ux-revisit` +
+     `visual-ux`, and rows on a `#dialog:`/`#sheet:` surface carry `interaction-ux`, so the run sends them to
+     the UX detectors. It also emits one `visual-ux` row per surface a spec role reached (`ux:<surface>`,
+     kind `happy-path`, at the primary variant), so a generated plan passes `--require-visual-ux` without
+     hand-authoring; step 5c is for plans written by hand. **Append them to `checklist.json`**
      (merge into the existing top-level array, never a second file), then re-run the alignment check (step 6)
      and `check-fixtures.sh` (step 7) on the merged plan. Never rename the generated ids. A `deny` row tagged
      `needs-confirmation` rests on an unconfirmed access entry; list those for the operator, together with
@@ -165,7 +183,8 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      set to the pair's persona (any spec role for a `"*"` pair) and `surfaceId` set — a generated load /
      deny / revisit row (tag `sweep`) proves the surface loads or refuses, not that it works, so it never
      closes a pair under the ship gate. Re-run until `uncovered` is 0 or the operator explicitly excludes
-     the pair (with a reason). This step drafts; the blocking gate is `/qa-analyze`.
+     the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
+     for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
 
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
    check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent (functional vs sweep), uncovered pairs left, any criterion migrated to

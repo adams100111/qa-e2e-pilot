@@ -283,7 +283,42 @@ function buildModel(runDir) {
     shotCount, bugs, traceability, superseded, outOfPlan,
     distinct: new Set(criteria.map((c) => c.id)).size,
     ship: buildShip(runDir, criteria, rows, bugs, allRows, verification !== null),
+    ux: buildUx(runDir, checkpoint),
   };
+}
+
+// ---------------------------------------------------------------------------
+// UX findings (advisory). The always-on UX sweep journals every ux[]/axe entry
+// of an observe round as finding_observed {criterionId: "ux-sweep:<surfaceId>",
+// source: "ux", method: <detector>, url: <selector>}; the fold keeps one per
+// surface + detector + selector. ux-sweep.json lists the objective defects the
+// sweep saw on a surface with no visual-ux criterion in the frozen plan. Both
+// are advisory: listed, never tallied, never a verdict. Null when the run has
+// neither (so a run without a sweep renders exactly as before).
+// ---------------------------------------------------------------------------
+const UX_PREFIX = "ux-sweep:";
+function uxKey(f) { return f.surface + "\u0000" + f.detector + "\u0000" + f.selector; }
+function dedupUx(list) {
+  const seen = new Set();
+  return list.filter((f) => { const k = uxKey(f); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+function buildUx(runDir, checkpoint) {
+  const swept = dedupUx((Array.isArray(checkpoint.findings) ? checkpoint.findings : [])
+    .filter((f) => f && typeof f === "object" && f.source === "ux")
+    .map((f) => {
+      const cid = asText(f.criterionId);
+      return { surface: cid.startsWith(UX_PREFIX) ? cid.slice(UX_PREFIX.length) : cid, detector: asText(f.method),
+        selector: asText(f.url), message: asText(f.message), channel: asText(f.channel) };
+    }));
+  const raw = readJSON(path.join(runDir, "ux-sweep.json"), null);
+  const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.outsidePlan) ? raw.outsidePlan : []);
+  const outsidePlan = dedupUx(list.filter((e) => e && typeof e === "object").map((e) => ({
+    surface: asText(e.surfaceId || e.surface), detector: asText(e.detector), selector: asText(e.selector),
+    message: asText(e.message), variant: e.variant && typeof e.variant === "object"
+      ? ["viewport", "locale", "colorScheme"].map((k) => e.variant[k]).filter((v) => typeof v === "string" && v).join(" · ") : asText(e.variant),
+  })));
+  if (!swept.length && !outsidePlan.length) return null;
+  return { swept, outsidePlan };
 }
 
 
@@ -622,6 +657,34 @@ function htmlAnomalies(m) {
     + (sup ? "<details><summary>Superseded rows (" + m.superseded.length + ")</summary><ul>" + sup + "</ul></details>" : "");
 }
 
+const UX_NOTE = "Recorded by the always-on UX sweep. Advisory: never a verdict on its own and not counted in the tally; "
+  + "an objective defect becomes fail@FE only through a visual-ux criterion for its surface.";
+const OUTSIDE_NOTE = "Objective UX defects the sweep saw on a surface that has no visual-ux criterion in the frozen plan. Not counted in verdicts; add a visual-ux row for the surface to have one judged.";
+function htmlUx(m) {
+  if (!m.ux) return "";
+  const table = (list, withVariant) => '<div class="table-scroll"><table class="plain"><thead><tr><th>Surface</th><th>Detector</th><th>Selector</th><th>Message</th>'
+    + (withVariant ? "<th>Variant</th>" : "") + "</tr></thead><tbody>" + list.map((f) => "<tr><td class=\"mono\">" + esc(f.surface) + "</td><td>" + esc(f.detector)
+    + "</td><td class=\"mono\">" + esc(f.selector) + "</td><td>" + esc(f.message) + "</td>" + (withVariant ? "<td>" + esc(f.variant) + "</td>" : "") + "</tr>").join("")
+    + "</tbody></table></div>";
+  return '<h2 id="ux-findings">UX findings (advisory)</h2><p class="status-line">' + esc(UX_NOTE) + "</p>"
+    + (m.ux.swept.length ? "<details open><summary>Swept findings (" + m.ux.swept.length + ")</summary>" + table(m.ux.swept, false) + "</details>" : "")
+    + (m.ux.outsidePlan.length ? '<h3 id="ux-outside-plan">UX defects outside the plan (' + m.ux.outsidePlan.length + ')</h3><p class="status-line status-warn">'
+      + esc(OUTSIDE_NOTE) + "</p>" + table(m.ux.outsidePlan, true) : "");
+}
+
+function mdUx(m) {
+  if (!m.ux) return "";
+  const out = ["", "---", "", "## UX findings (advisory)", "", UX_NOTE, ""];
+  const table = (list, withVariant) => {
+    out.push("| Surface | Detector | Selector | Message |" + (withVariant ? " Variant |" : ""), "|---|---|---|---|" + (withVariant ? "---|" : ""));
+    for (const f of list) out.push("| `" + mdText(f.surface) + "` | " + mdText(f.detector) + " | `" + mdText(f.selector) + "` | " + mdText(f.message) + " |" + (withVariant ? " " + mdText(f.variant) + " |" : ""));
+    out.push("");
+  };
+  if (m.ux.swept.length) table(m.ux.swept, false);
+  if (m.ux.outsidePlan.length) { out.push("### UX defects outside the plan", "", OUTSIDE_NOTE, ""); table(m.ux.outsidePlan, true); }
+  return out.join("\n");
+}
+
 function verificationLine(m) {
   if (!m.verified) {
     return '<p class="status-line status-warn">Not independently verified — no verification.json. Run <code>scripts/qa-verify.sh ' + esc(m.runId) + "</code>, then re-render.</p>";
@@ -670,7 +733,7 @@ function renderHtml(m, tpl, embed) {
       '<div class="deferred-item" id="' + esc(c.anchor) + '"><b>DEFERRED — <span class="mono">' + esc(c.id) + "</span>" + (c.title ? ": " + esc(c.title) : "") + "</b>"
       + "<p>" + esc(c.lastAction || c.nonUi || "No reason recorded.") + "</p>" + htmlShots(c, embed) + "</div>").join("") : "<p><em>No criteria were deferred this run.</em></p>") + "</div>",
     "<h2>Bugs</h2>" + (m.bugs.length ? m.bugs.map(htmlBug).join("") : "<p><em>No bugs logged this run.</em></p>"),
-    htmlAnomalies(m),
+    htmlAnomalies(m) + htmlUx(m),
     htmlTraceability(m.traceability),
     '<section id="gallery-section" hidden><h2>All screenshots</h2><div class="shots" id="gallery"></div></section>',
     "<footer>Rendered by qa-e2e-pilot render-report.js from the run's own record" + (embed ? " (screenshots embedded)" : "") + ". Click a screenshot to enlarge; ← → step through, Esc closes.</footer>",
@@ -755,7 +818,7 @@ function renderMd(m, tpl) {
     CRITERIA: crit.join("\n") || "_No criteria were checkpointed._",
     DEFERRED: deferred.join("\n") || "_No criteria were deferred this run._",
     BUGS: bugs.join("\n") || "_No bugs logged this run._",
-    EXTRA: "\n---\n\n_Rendered by qa-e2e-pilot render-report.js from the run's own record. Image links are relative to this run directory._\n",
+    EXTRA: mdUx(m) + "\n---\n\n_Rendered by qa-e2e-pilot render-report.js from the run's own record. Image links are relative to this run directory._\n",
   };
   let out = tpl;
   for (const k of Object.keys(fill)) out = out.split("{{" + k + "}}").join(fill[k]);
