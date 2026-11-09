@@ -78,8 +78,8 @@ is valid — a Run with no criteria generated yet.
 |---|---|---|---|
 | `id` | string | **yes** | Non-empty. Matches the criterion's `checklist.md` block ID (e.g. `C-FOUNDERS-01`). Must be unique across the file — a duplicate `id` is a validation error. |
 | `surface` | string | **yes** | The route/sub-tab this criterion exercises (matches `checklist.md`'s Surface field). May be empty string for a criterion with no single surface (rare); still must be present and a string. |
-| `kind` | string | **yes** | One of the 12-value Kind enum (below). Matches `checklist.md`'s Kind field exactly. |
-| `tags` | array of string | **yes** | May be empty (`[]`). Matches `checklist.md`'s Tags field — `independent`, `read-only`, `race`, `cross-tenant`, `cross-role-fk-chain`, `role-sensitive`, `probe-needed`, `human-action`, or none. |
+| `kind` | string | **yes** | One of the 15-value Kind enum (below). Matches `checklist.md`'s Kind field exactly. |
+| `tags` | array of string | **yes** | May be empty (`[]`). Matches `checklist.md`'s Tags field — `independent`, `read-only`, `race`, `cross-tenant`, `cross-role-fk-chain`, `role-sensitive`, `probe-needed`, `human-action`, the ship-QA tags `ownership-isolation`, `ux-revisit`, `deny-write-deferred` (see "Ship-QA fields" below), or none. |
 | `action` | string | **yes** | One-line description of the action under test (matches `actionUnderTest` for `human-action`-tagged criteria per Step 7, or the read/observe action otherwise). |
 | `requiredKinds` | array of string | optional | **Advisory only** — see "PROPOSAL, not ground truth" above. When present, each element must be one of the four-kind evidence vocabulary: `bake`, `computed`, `probe`, `human-action` (matches `required-kinds.sh`'s vocabulary, `skills/checkpointing-qa-memory/scripts/required-kinds.sh`). May be `[]` for a criterion that requires no evidence kind (e.g. a pure-display, non-probed read). |
 | `assertedState` | object or `null` | optional | The fingerprint target for Task 4's Check 3 coverage check. `null` (or the field omitted) means the criterion asserts no specific before/after target — Check 3's back-compat aggregate-`changed` behavior applies. When present as an object, all three sub-fields below are required. |
@@ -89,12 +89,17 @@ is valid — a Run with no criteria generated yet.
 | `humanAction` | boolean | optional | Mirrors the `human-action` tag — `true` when the Act phase mutates state or drives a control through the UI (Step 7's mechanical rule). Since 0.9.0 `humanAction: true` is a structured signal `mutation-flag.sh` honors: on a row that is not tagged `read-only` (and has no `mutates` declaration) it makes the gate require the `human-action` trace, whatever verb the prose uses. `false` is descriptive. |
 | `mutates` | boolean | optional | 0.9.0 (ADR-0027). The plan's explicit write declaration. `mutation-flag.sh derive` honors it **ahead of** `humanAction` and prose verb matching (after the structured write signals `kinds`/`httpMethod`, which it can never override), as it does the `read-only` tag. Use `false` on a row that performs no write but whose instruction mentions a mutating word ("open the edit form and read it"). `mutates: false` together with `humanAction: true` or a `human-action` entry in `requiredKinds` is rejected by `validate-checklist-json.sh`. |
 
+| `surfaceId` | string or array of string | optional | Ship QA (D1). The census `surfaceId`(s) this criterion covers. A non-empty string, or a non-empty array of non-empty strings. |
+| `priority` | string | optional | Ship QA (D1). One of `P1`, `P2`, `P3`. P1 marks the mainstream bar. |
+| `journey` | object | optional | Ship QA (D1). `{id, step}`: `id` a non-empty string naming the journey in `journeys.json`, `step` an integer `>= 1` (this row's position in that journey). |
+| `variant` | object | optional | Ship QA (D1). `{viewport, locale, colorScheme}`, each key optional: `viewport` and `locale` non-empty strings (e.g. `"390x844"`, `"ar"`), `colorScheme` one of `light`, `dark`. |
+
 `tags` may also carry `api-write` (0.9.0): the act is ONE API write with no UI affordance by
 design, performed through the sanctioned recorded write probe on a disposable env only; its
 required evidence is `probe` instead of `human-action` (`required-kinds.sh`), bound by
 `--source-ref seq:<N>` to the captured write (qa-verify).
 
-## `kind` enum (exact, 12 values)
+## `kind` enum (exact, 15 values)
 
 ```
 happy-path
@@ -109,11 +114,55 @@ business-rule
 downstream-cascade
 cross-tenant
 race
+load-clean
+deny
+input-validation
 ```
 
-This is the same list as `checklist.md`'s Kind field comment and
-`required-kinds.sh`'s kind-enum regexes — keep all three in sync if the
-vocabulary ever changes.
+The first 12 are the same list as `checklist.md`'s Kind field comment and
+`required-kinds.sh`'s kind-enum regexes — keep them in sync if the
+vocabulary ever changes. The last three are the ship-QA kinds (D1, below);
+`required-kinds.sh` gives them no implicit evidence kind, so what they
+require comes from their tags and action shape.
+
+## Ship-QA fields (D1)
+
+Added for the ship profile (plan
+`docs/superpowers/plans/2026-11-09-ship-qa-increment-1-census-ship-profile.md`,
+decision D1). All four row fields are optional and `null` is treated as
+absent, so a checklist without them validates exactly as before, byte for
+byte.
+
+| Kind | What the criterion asserts |
+|---|---|
+| `load-clean` | The surface loads for the role with no server error, crash or console error. |
+| `deny` | The role is refused a surface or endpoint it must not reach (a 302 to login, a 403, a 404). |
+| `input-validation` | A form rejects an edge-case input with a validation message and persists nothing. |
+
+| Tag | Meaning |
+|---|---|
+| `ownership-isolation` | Same-role isolation: one user of a role cannot read or change another user's record. Uses kind `cross-tenant`; no separate kind exists. |
+| `ux-revisit` | A read-only revisit of a surface a journey already touched, at another `variant`. |
+| `deny-write-deferred` | A mutating-method deny probe that cannot run because writes are not allowed on this environment; generated so it is recorded as `deferred`. |
+
+```json
+{
+  "id": "S-ISO-1",
+  "surface": "/ideas/42",
+  "surfaceId": ["page:ideas.show", "endpoint:GET /ideas/{id}"],
+  "priority": "P1",
+  "kind": "cross-tenant",
+  "tags": ["ownership-isolation", "read-only"],
+  "action": "Open another participant's idea as a participant",
+  "journey": {"id": "J-SUBMIT", "step": 3},
+  "variant": {"viewport": "390x844", "locale": "ar", "colorScheme": "dark"}
+}
+```
+
+A violation of these fields names the field and the row, e.g.
+`ERROR: entry[0].priority: must be one of P1|P2|P3 (row "S-ISO-1")` or
+`ERROR: entry[0].journey.step: must be an integer >= 1 (row "S-ISO-1")`.
+The ` (row "<id>")` suffix appears whenever the row has a string `id`.
 
 ## `requiredKinds` / evidence-kind vocabulary (exact, 4 values)
 
@@ -297,7 +346,8 @@ Exits `0` iff the file is valid JSON, its top-level is an array, every entry
 matches this schema (types, enum membership, no duplicate `id`s), **and no
 entry asserts that the application failed**. Exits non-zero with an
 `ERROR: ...` line per violation, each naming the offending entry's index and
-field — e.g. `ERROR: entry[2].kind: bogus-kind: must be one of the kind enum`
+field — e.g. `ERROR: entry[2].kind: bogus-kind: must be one of the kind enum`,
+`ERROR: entry[0].variant.colorScheme: must be one of light|dark (row "C-1")`
 or
 `ERROR: entry[0].fixture.expect: page.rendersWithoutServerError may not be pinned to false — move it to known-defects.json (see qa-kit/scripts/migrate-inverted-criterion.sh)`.
 **Every** violation is reported, not just the first. It does not re-derive
