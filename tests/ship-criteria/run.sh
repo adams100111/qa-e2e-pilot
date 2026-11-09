@@ -241,6 +241,29 @@ J
     '["Either a validation message is visible, or the value is accepted and rendered escaped and intact; never a 5xx, never raw HTML injection"]'
   check "$E must_reject_oracle empty/invalid" "$(q "$T/s.json" "sorted(set(r(i)['expected'] for i in ('input:rename:title:empty','input:rename:opens_on:invalid')))")" \
     '["A validation message is visible, no 5xx, and no persisted change (bake multiplicity unchanged)"]'
+  # input_rows_locatable: an input row carries the host's sampled url for its role, and on a
+  # tab/dialog surface its action opens the parent url, then the tab/dialog, then submits.
+  cat > "$T/c4.json" <<'J'
+{"version":1,"adapterOk":true,"surfaces":[
+ {"surfaceId":"GET /admin/hackathons/{hackathon}#tab:الفرق","kind":"tab","pattern":"/admin/hackathons/{hackathon}","sources":["crawl"],"reachedBy":["admin"],"allowed":null,"sampleUrls":{"admin":"/admin/hackathons/42"},
+  "forms":[{"formId":"team-invite","method":"POST","fields":[{"name":"email","type":"email","required":true}]}]},
+ {"surfaceId":"GET /profile","kind":"endpoint","pattern":"/profile","sources":["adapter","crawl"],"reachedBy":["participant"],"allowed":null,"sampleUrls":{"participant":"/profile?section=bio"},
+  "forms":[{"formId":"profile-bio","method":"POST","fields":[{"name":"bio","type":"textarea","maxLength":3}]}]},
+ {"surfaceId":"GET /legacy/{x}","kind":"endpoint","pattern":"/legacy/{x}","sources":["adapter"],"reachedBy":[],"allowed":null,
+  "forms":[{"formId":"legacy-edit","method":"POST","fields":[{"name":"note","type":"text","required":true}]}]}],
+ "jobs":[],"mails":[],"notifications":[],"diffs":{"unreachable":[],"overreach":[],"crawlOnly":[]},"warnings":[]}
+J
+  printf '%s' '{"version":1,"surfaces":{"GET /legacy/{x}":{"allowed":["judge"],"source":"adapter","confirmed":true,"hints":[],"hintMatched":[],"reachedWithoutEvidence":[]}}}' > "$T/a4.json"
+  printf '%s' '[]' > "$T/m4.json"
+  QA_ENGINE=$E bash "$SH" --census "$T/c4.json" --access "$T/a4.json" --matrix "$T/m4.json" --personas "$FX/personas.json" --config "$FX/config.json" > "$T/i4.json" 2> "$T/i4.err"; rc=$?
+  check "$E input_rows_locatable exit 0" "$rc" "0"
+  check "$E input_rows_locatable tab url+action" "$(q "$T/i4.json" "[r('input:team-invite:email:empty')['url'], r('input:team-invite:email:empty')['action']]")" \
+    '["/admin/hackathons/42","As admin, open /admin/hackathons/42, then open the tab \"الفرق\", then submit form team-invite with field email set to the empty case"]'
+  check "$E input_rows_locatable page url+action" "$(q "$T/i4.json" "[r('input:profile-bio:bio:maxlen+1')['url'], r('input:profile-bio:bio:maxlen+1')['action']]")" \
+    '["/profile?section=bio","As participant, open /profile?section=bio, then submit form profile-bio with field bio set to the maxlen+1 case"]'
+  check "$E input_rows_locatable no sample keeps the pattern note" "$(q "$T/i4.json" "['url' in r('input:legacy-edit:note:empty'), r('input:legacy-edit:note:empty')['action']]")" \
+    '[false,"As judge, open /legacy/{x} (no sampled URL in the census: fill the route parameters with a real record), then submit form legacy-edit with field note set to the empty case"]'
+  cp "$T/i4.json" "$SHARED/i4.$E"
   # ux_persona_from_role + ux_every_journey + empty locales (single pass, no locale suffix)
   check "$E ux_persona_from_role (not every journey role)" "$(q "$T/s.json" "sorted(set(r(i)['persona'] for i in ids('ux:GET /ideas/')))")" '["participant"]'
   check "$E ux_empty_locales_titles" "$(q "$T/s.json" "[i.split('@')[1] for i in ids('ux:GET /ideas/{idea}:participant@')]")" '["desktop-dark","mobile-dark","mobile-light"]'
@@ -281,6 +304,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   check "cross-engine stderr identical" "$(cmp -s "$X/j.err" "$X/p.err" && echo same || echo diff)" "same"
   check "cross-engine sample fixture rows byte-identical" "$(cmp -s "$SHARED/s-jq.json" "$SHARED/s-python3.json" && echo same || echo diff)" "same"
   check "cross-engine sample fixture stderr identical" "$(cmp -s "$SHARED/s-jq.err" "$SHARED/s-python3.err" && echo same || echo diff)" "same"
+  check "cross-engine input_rows_locatable byte-identical" "$(cmp -s "$SHARED/i4.jq" "$SHARED/i4.python3" && echo same || echo diff)" "same"
 fi
 
 # ids_accepted_by_checkpoint (C1): every generated id is accepted as a criterion id by the engine's

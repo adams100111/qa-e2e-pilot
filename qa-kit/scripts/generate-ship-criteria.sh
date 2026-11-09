@@ -63,7 +63,11 @@
 #                                      found on several surfaces is one form (fields from the first
 #                                      surface by id). role = first (sorted) persona that reached a host
 #                                      surface, else first allowed on one; a form with neither gets no
-#                                      rows (stderr warns).
+#                                      rows (stderr warns). The row is opened on the first (sorted) host
+#                                      that role reached (else is allowed on, else the first host): `url`
+#                                      = that host's sampleUrls for the role, and the action opens it, on
+#                                      a tab / dialog / sheet host then opens that tab, dialog or sheet
+#                                      by its label, then submits the form.
 #                                      Cases: required -> empty ""; text-like (text, textarea, search,
 #                                      tel, url, email, password) -> maxlen+1 (maxLength+1 letters "ب")
 #                                      or long-5000 (5000 "ب") when no maxLength, and special
@@ -265,6 +269,10 @@ def cases:
     | ($form.hosts | unique) as $hosts
     | (([ $hosts[] | ($byId[.].reachedBy | strs | sort)[] ] + [ $hosts[] | ((($acc.surfaces[.] // {}) | if type == "object" then .allowed else null end) | strs | sort)[] ]) | .[0]) as $who
     | select($who != null)
+    | first(($hosts[] | select(($byId[.].reachedBy | strs) | index([$who]) != null)),
+            ($hosts[] | select(((($acc.surfaces[.] // {}) | if type == "object" then .allowed else null end) | strs) | index([$who]) != null)),
+            $hosts[0]) as $openHost
+    | sample($byId[$openHost]; $who) as $iu
     | $form.fields[] | select(type == "object" and (.name | type) == "string" and (.name | length) > 0) | . as $fd
     | ($fd | cases)[] as $cs
     | mk("input"; $key + ":" + $fd.name + ":" + $cs.c)
@@ -272,8 +280,10 @@ def cases:
          surface: ($byId[$hosts[0]].pattern | str0), surfaceId: ($hosts | one), formId: $key,
          tags: ["human-action"], humanAction: true,
          input: {field: $fd.name, case: $cs.c, value: $cs.v, type: (($fd.type // "text") | if type == "string" then . else "text" end)},
-         action: ("Submit form " + $key + " with field " + $fd.name + " set to the " + $cs.c + " case"),
-         expected: caseExpect($cs.c), persona: $who} ] as $input
+         action: ("As " + $who + ", open " + target($byId[$openHost]; $iu) + ", then submit form " + $key
+                  + " with field " + $fd.name + " set to the " + $cs.c + " case"),
+         expected: caseExpect($cs.c), persona: $who}
+      + withUrl($iu) ] as $input
 | ([ $fs.order[] as $key | $fs.forms[$key] as $form | ($form.hosts | unique) as $hosts
      | select(([ $hosts[] | ($byId[.].reachedBy | strs)[], ((($acc.surfaces[.] // {}) | if type == "object" then .allowed else null end) | strs)[] ] | length) == 0)
      | $key ]) as $roleless
@@ -598,6 +608,9 @@ for key in order:
     if who is None: who = next((pp for h in hosts for pp in allowed_of(h)), None)
     if who is None:
         roleless.append(key); continue
+    open_host = next((h for h in hosts if who in strs(by_id[h].get("reachedBy"))), None)
+    if open_host is None: open_host = next((h for h in hosts if who in allowed_of(h)), hosts[0])
+    iu = sample(by_id[open_host], who)
     for fd in form["fields"]:
         if not (isinstance(fd, dict) and isinstance(fd.get("name"), str) and len(fd["name"]) > 0): continue
         for c, v in cases(fd):
@@ -606,9 +619,10 @@ for key in order:
                  "surface": str0(by_id[hosts[0]].get("pattern")), "surfaceId": one(hosts), "formId": key,
                  "tags": ["human-action"], "humanAction": True,
                  "input": {"field": fd["name"], "case": c, "value": v, "type": ftype(fd)},
-                 "action": "Submit form " + key + " with field " + fd["name"] + " set to the " + c + " case",
+                 "action": "As " + who + ", open " + target(by_id[open_host], iu) + ", then submit form " + key
+                           + " with field " + fd["name"] + " set to the " + c + " case",
                  "expected": ACCREJ if c in ("special", "long-5000", "past") else MUSTREJ, "persona": who})
-            inputs.append(r)
+            inputs.append(with_url(r, iu))
 
 ex_by_id = {}
 for r in existing: ex_by_id[r["id"]] = r
