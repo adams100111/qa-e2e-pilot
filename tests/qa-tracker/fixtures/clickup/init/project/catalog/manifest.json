@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "areas": [
+    {
+      "file": "area-a.json",
+      "prefix": "A",
+      "list": "Core: Sign-in",
+      "order": 10,
+      "counts": {
+        "P1": 1,
+        "P2": 2,
+        "P3": 1,
+        "retired": 1
+      }
+    },
+    {
+      "file": "area-b.json",
+      "prefix": "B",
+      "list": "Module: Events",
+      "order": 20,
+      "counts": {
+        "P1": 1,
+        "P2": 0,
+        "P3": 1
+      }
+    }
+  ]
+}
