@@ -86,6 +86,8 @@ ev.append({"event": "criterion_started", "criterionId": "C5", "personaId": "lead
 jl("runs/r2-alpha/journal.ndjson", ev)
 w("runs/r2-alpha/run-manifest.json", {"run_id": "r2-alpha", "target_feature": "alpha", "status": "in-progress", "started_at": "2026-11-09T11:00:00Z", "ended_at": None, "criteria_total": 16, "criteria_done": 1})
 w("runs/r2-alpha/cursor.json", {"criteria_done": 4, "criteria_total": 16, "phase": "verify", "cursor": {"criterionId": "C5", "scenarioId": "leader", "subState": "pending"}})
+w("runs/r2-alpha/bug-log.json", [{"bug_id": "B7", "title": "Save button stays disabled", "severity": "medium", "criterion_id": "C2", "persona": "admin",
+                                 "suspected_layer": "FE", "observed": "Nothing saved; password=hunter2xyz", "expected": "The record saves"}])
 w("runs/r2-alpha/checkpoint.json", {"run_id": "r2-alpha", "criteria": [cp(c, "pass", "2026-11-09T11:%d0:00Z" % (k + 1), persona="admin") for k, c in enumerate(["C1", "C2", "C3", "C4"])]})
 # r3: beta, stalled two hours ago
 w("runs/r3-beta/cursor.json", {"criteria_done": 2, "criteria_total": 10, "phase": "verify", "cursor": {"criterionId": "B1", "scenarioId": "user", "subState": "arranging"}})
@@ -173,13 +175,25 @@ check "constitution" "$(q "$J" '[d["constitution"]["version"],d["constitution"][
 check "profile" "$(q "$J" '[d["config"]["profile"],d["config"]["environment"],d["config"]["gates"]]')" '["ship","staging",["coverage: block"]]'
 check "plugin version" "$(q "$J" 'd["plugin"]["version"]')" "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$ROOT/.claude-plugin/plugin.json")"
 # trend + known defects
-check "trend for alpha, oldest first" "$(q "$J" '[[p["runId"],p["pass"],p["fail"],p["bugs"]] for t in d["trends"] if t["target"]=="alpha" for p in t["points"]]')" '[["r0-alpha",1,2,1],["r1-alpha (رمضان)",3,0,2],["r2-alpha",4,0,0]]'
+check "trend for alpha, oldest first" "$(q "$J" '[[p["runId"],p["pass"],p["fail"],p["bugs"]] for t in d["trends"] if t["target"]=="alpha" for p in t["points"]]')" '[["r0-alpha",1,2,1],["r1-alpha (رمضان)",3,0,2],["r2-alpha",4,0,1]]'
 check "known defects states" "$(q "$J" '[[e["id"],e["state"]] for e in d["knownDefects"]["entries"]]')" '[["KD-1","outstanding"],["KD-2","expired"]]'
 check "known defects counts" "$(q "$J" 'd["knownDefects"]["counts"]')" '{"cleared":0,"expired":1,"outstanding":1}'
 # secrets
 for s in SUPERSECRETPW PersonaPassw0rd hunter2xyz S3cr3tLiteral abc.def.ghi; do lacks "json has no secret $s" "$J" "$s"; done
 has "redaction marker" "$J" "<redacted>"
 has "arabic title intact (json)" "$J" "$AR_TITLE"
+
+# features: each target's latest run in people's terms
+feat(){ q "$J" "[f for f in d['features'] if f['target']=='$1'][0]$2"; }
+check "features: active targets first" "$(q "$J" '[f["target"] for f in d["features"]]')" '["alpha","beta"]'
+check "feature uses the latest run" "$(feat alpha "['runId']"),$(feat beta "['runId']")" "r2-alpha,r3-beta"
+check "journeys from journeys.json steps, priority order, leftovers grouped" "$(feat alpha "[[j['id'],j['priority'],[k['id'] for k in j['checks']]] for j in f['journeys']]" 2>/dev/null || q "$J" "[[j['id'],j['priority'],[k['id'] for k in j['checks']]] for f in d['features'] if f['target']=='alpha' for j in f['journeys']]")" '[["J1","P1",["C1","C2"]],["J2","P2",["C3"]],["other","",["C4"]]]'
+check "journey counts" "$(q "$J" "[j['counts'] for f in d['features'] if f['target']=='alpha' for j in f['journeys']][0]")" '{"blocked":0,"deferred":0,"error":0,"fail":0,"pass":2,"pending":0}'
+check "no journeys.json -> checks grouped by role" "$(q "$J" "[j['name'] for f in d['features'] if f['target']=='beta' for j in f['journeys']]")" '["Checks as any role"]'
+check "feature bug tied to its journey" "$(q "$J" "[[b['id'],b['severity'],b['journey'],b['role'],b['expected']] for f in d['features'] if f['target']=='alpha' for b in f['bugs']]")" '[["B7","medium","J1","admin","The record saves"]]'
+check "readiness running" "$(feat alpha "['readiness']")" '{"facts":"1 bug is open.","headline":"In progress","level":"progress"}'
+check "readiness stalled with a failure" "$(feat beta "['readiness']['headline']"),$(feat beta "['readiness']['level']")" "Stalled,warn"
+check "check names are readable" "$(q "$J" "[k['name'] for f in d['features'] if f['target']=='alpha' for j in f['journeys'] for k in j['checks']][0]")" "C1"
 
 # ---------------------------------------------------------------------------
 # HTML
@@ -200,11 +214,41 @@ lacks "html no meta refresh by default" "$H" 'http-equiv="refresh"'
 EXT="$(printf '%s' "$H" | grep -Eio '(src|href|action)=["'"'"']?[a-z]*:?//[^"'"'"' >]*|url\([^)]*//|@import|<script[^>]*src|<link[^>]*href' | head -3)"
 check "html references nothing external" "$EXT" ""
 for s in SUPERSECRETPW PersonaPassw0rd hunter2xyz S3cr3tLiteral abc.def.ghi; do lacks "html has no secret $s" "$H" "$s"; done
+has "html journey line for main journeys" "$H" 'class="line main"'
+has "html stops link to their check" "$H" 'data-ck="ck-alpha-j1-0"'
+has "html check list item" "$H" 'id="ck-alpha-j1-0"'
+has "html readiness headline" "$H" '<p class="v-head">In progress</p>'
+has "html roles fallback" "$H" "Checks as any role"
+has "html empty bug state" "$H" "No bugs logged in this run."
+has "html bug detail" "$H" "What should happen"
+has "html bug links its check" "$H" 'href="#bug-alpha-b7"'
+has "html works without js (details)" "$H" '<details class="jr"'
+has "html filters hidden until js runs" "$H" '<div class="filters" hidden>'
+has "html generated time for local rendering" "$H" 'data-generated="2026-11-09T12:00:00.000Z"'
 dash html --project "$P" --out "$W/out/d.html" --refresh 15 >/dev/null 2>&1; rc=$?
 check "html --out exits 0" "$rc" "0"
 H2="$(cat "$W/out/d.html")"
 has "html meta refresh" "$H2" '<meta http-equiv="refresh" content="15">'
+has "html refresh only without js (state kept on reload)" "$H2" '<noscript><meta http-equiv="refresh" content="15"></noscript>'
+has "html refresh period for the script" "$H2" 'data-refresh="15"'
 has "html link relative to --out" "$H2" 'href="../proj/.qa/runs/r1-alpha%20(%D8%B1%D9%85%D8%B6%D8%A7%D9%86)/report.html"'
+
+# html --watch rewrites the page (atomically) and exits 0 on SIGTERM; --open uses the platform opener
+mkdir -p "$W/bin"
+for o in open xdg-open; do printf '#!/bin/sh\necho "$@" >> "%s/opened"\n' "$W" > "$W/bin/$o"; chmod +x "$W/bin/$o"; done
+PATH="$W/bin:$PATH" NODE_OPTIONS="--require $W/trap-auth.js" QA_DASHBOARD_NOW="$NOW" node "$JS" html --project "$P" --out "$W/w/d.html" --watch 1 --open >"$W/hw.out" 2>&1 &
+hp=$!
+m1=""; for _ in $(seq 1 40); do [ -s "$W/w/d.html" ] && { m1="$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$W/w/d.html")"; break; }; sleep 0.1; done
+m2="$m1"; for _ in $(seq 1 40); do m2="$(node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$W/w/d.html" 2>/dev/null)"; [ "$m2" != "$m1" ] && break; sleep 0.1; done
+kill -TERM "$hp" 2>/dev/null; wait "$hp"; rc=$?
+check "html --watch exits 0 on SIGTERM" "$rc" "0"
+check "html --watch rewrote the page" "$([ -n "$m1" ] && [ "$m2" != "$m1" ] && echo yes)" "yes"
+has "html --watch implies the page refresh" "$(cat "$W/w/d.html")" 'data-refresh="1"'
+check "html --watch leaves no temp file" "$(ls "$W/w" | grep -c tmp)" "0"
+has "html --open used the platform opener" "$(cat "$W/opened" 2>/dev/null)" "$W/w/d.html"
+T0="$(COLUMNS=100 dash tui --project "$P" 2>&1)"
+has "tui journeys section" "$T0" "JOURNEYS"
+has "tui journey line with legend" "$T0" "◆ failed"
 
 # ---------------------------------------------------------------------------
 # Terminal
@@ -251,8 +295,12 @@ console.log(JSON.stringify([
   d.computeEta(4, 18, 18, now),
   [d.fmtDuration(0.5), d.fmtDuration(2.25), d.fmtDuration(100)],
   d.resolveTarget("eval-x-20260101", "evaluation counters", ["eval-x", "eval"]),
+  [d.humanize("HLC-K01-create-auto-accept-hackathon"), d.humanize("C1"), d.humanize("checkout_flow-v2")],
+  d.journeySummary({ checks: [1, 2, 3], counts: { pass: 1, fail: 1, error: 0, blocked: 0, deferred: 0, pending: 1 } }),
+  d.readinessOf({ status: "complete", tally: { pass: 3, fail: 1, error: 0, blocked: 0, deferred: 0 }, ship: null },
+    { journeys: [{ priority: "P1", counts: { fail: 1, error: 0 } }, { priority: "P1", counts: { fail: 0, error: 0 } }], bugs: [{ status: "open" }, { status: "fixed" }] }),
 ]));' "$JS")"
-check "pure helpers" "$U" '["running","stalled","complete","complete","paused","unknown",2,null,{"hours":2,"at":"2026-11-09T14:00:00.000Z"},null,["30m","2h15m","4d"],"eval-x"]'
+check "pure helpers" "$U" '["running","stalled","complete","complete","paused","unknown",2,null,{"hours":2,"at":"2026-11-09T14:00:00.000Z"},null,["30m","2h15m","4d"],"eval-x",["Create auto accept hackathon","C1","Checkout flow v2"],{"text":"1 failed, 1 to go","tone":"bad"},{"level":"bad","headline":"Not ready to ship","facts":"1 check failed, touching 1 of 2 main journeys. 1 bug is open."}]'
 
 # errors
 dash json --project "$W/nowhere" >/dev/null 2>&1; check "no .qa -> exit 2" "$?" "2"

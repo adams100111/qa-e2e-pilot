@@ -193,7 +193,12 @@ and `/qa-analyze` verdict, every run with its status, progress, rate and ETA, ve
 severity, ship readiness and a link to its report, the active run's current criterion and last journal
 events, trends across runs of a target, and the known-defect registry.
 
+The page leads with each target's readiness, its journeys drawn as lines of checks (select a stop to
+see that check) and its bugs with what happened versus what should happen; the internal tables sit
+under **Records**.
+
 ```
+bash scripts/qa-dashboard.sh html --watch 60 --open  # keep .qa/dashboard.html live and open it
 bash scripts/qa-dashboard.sh html --refresh 30     # .qa/dashboard.html, self-contained, reloads every 30s
 bash scripts/qa-dashboard.sh tui --watch 10        # terminal view, redraws every 10s, Ctrl-C to quit
 bash scripts/qa-dashboard.sh json                  # the model, for other tools or agents

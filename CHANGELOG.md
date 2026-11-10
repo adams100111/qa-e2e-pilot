@@ -8,6 +8,39 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.12.2 — 2026-11-10 · "Read the dashboard like a person"
+
+**Changed**
+
+- **The `/qa-dashboard` HTML page is reorganised around three questions**: can this target ship and
+  what is in the way, where is the live run, and what exactly is broken. The internal tables (runs,
+  trends, test plans, known defects, setup) move to a folded **Records** section.
+  - **Readiness line** per target, from its latest run: `In progress`, `Stalled`, `Not ready to
+    ship`, `Every check passed` or `Ready to ship` (the ship verdict wins when the run has one), plus
+    one sentence of facts (failed checks and how many main (P1) journeys they touch, blocked checks,
+    open bugs).
+  - **Journey lines**: each journey from the spec's `journeys.json` (or `journey:<id>` tags) is a line
+    of stops, one per check in plan order, shaped and coloured by verdict (diamond = failed, square =
+    blocked, ring = low-confidence pass, hollow = not run yet, pulsing = running now). Selecting a stop
+    opens the journey's numbered checks with the last action, role, bugs and an evidence link into
+    `report.html`. A spec without journeys groups its checks by role instead.
+  - **Bugs**: most severe first, each opening to "What happened" / "What should happen", filtered by
+    severity, journey and search (`/`). Reads both bug-log key styles (`bug_id`/`criterion_id` and
+    `id`/`criterionId`).
+  - **Live run**: checks done, time left and a local finishing time, the check running now (linked
+    to its stop), a verdict bar and the latest activity in plain words.
+  - Times show in the viewer's local time; the header says how long ago the page was written and
+    warns when a page for a live run has stopped updating.
+- **Auto-refresh keeps your place**: the page reloads with a small inline script that keeps scroll
+  position, open sections and filters, and waits while you type. The meta refresh now sits in
+  `<noscript>` only.
+- **`html --watch <sec>`** keeps rewriting the page (atomically, so a reloading tab never reads half
+  a file) and sets the page's refresh to the same period; **`--open`** opens it in the default
+  browser. One command keeps a live dashboard: `qa-dashboard.sh html --watch 60 --open`.
+- **Terminal view** gains a journeys block for the lead target: one glyph per check, the readiness
+  line and a legend.
+- The JSON model adds `features[]` (per target: latest run, readiness, journeys with checks, bugs).
+
 ### v0.12.1 — 2026-11-09 · "See the whole project at a glance"
 
 **Added**
