@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
-from trackers.core import (ConfigError, WordingError, case_index, content_hash, norm,
-                           outbound)
+from trackers.core import (ConfigError, RunError, WordingError, case_index, content_hash, norm,
+                           outbound, validate_catalog)
 
 try:  # optional, only for writing pulled drafts as YAML
     import yaml  # type: ignore
@@ -42,6 +42,9 @@ GUIDE_DOC = "QA Guide"
 GUIDE_TASK_PREFIX = "Guide · "
 SIGNOFF_PREFIX = "Sign-off · "
 GUIDE_RETIRED_COMMENT = 'This guide now lives in the "QA Guide" doc.'
+INTRO_TASKS = "New to the platform? Read \"Guide · Start Here\" in the {guide_list} list first, then pick cases tagged beginner."
+INTRO_DOC = 'New to the platform? Read the "QA Guide" doc first, then pick cases tagged beginner.'
+SPACE_PARENT_TYPE = 4
 TASK_QUERY = "subtasks=true&include_closed=true&include_markdown_description=true"
 CACHE_KIND = "case"
 
@@ -82,6 +85,7 @@ class Folder:
     by_tc: Dict[str, dict] = field(default_factory=dict)
     by_name: Dict[str, dict] = field(default_factory=dict)
     list_info: Dict[str, dict] = field(default_factory=dict)  # list id -> GET /v2/list/{id}
+    dupes: Dict[str, List[str]] = field(default_factory=dict)  # TC id -> task ids, when > 1
 
 
 def load_folder(ctx, transport: Optional[Transport] = None) -> Folder:
@@ -101,14 +105,19 @@ def load_folder(ctx, transport: Optional[Transport] = None) -> Folder:
                 break
             page += 1
     by_tc: Dict[str, dict] = {}
+    seen: Dict[str, List[str]] = {}
     for t in tasks:
         m = TC_RE.match(t.get("name") or "")
-        if m and m.group(1) not in by_tc:
-            by_tc[m.group(1)] = t
+        if m:
+            ids = seen.setdefault(m.group(1), [])
+            if str(t["id"]) not in ids:
+                ids.append(str(t["id"]))
+            by_tc.setdefault(m.group(1), t)
+    dupes = {k: v for k, v in seen.items() if len(v) > 1}
     by_name = {}
     for t in tasks:
         by_name.setdefault(t.get("name"), t)
-    return Folder(lists=lists, tasks=tasks, by_tc=by_tc, by_name=by_name)
+    return Folder(lists=lists, tasks=tasks, by_tc=by_tc, by_name=by_name, dupes=dupes)
 
 
 # ---------------------------------------------------------------- text (verbatim from sync_clickup.py)
@@ -144,7 +153,7 @@ def stale(t: dict, desc: str) -> bool:
     return norm(t.get("markdown_description")) != norm(desc) or "**" in (t.get("description") or "")
 
 
-def intro_body(intro: dict, guide_list: str) -> str:
+def intro_body(intro: dict, guide_list: str, guide_as: str = "tasks") -> str:
     def bullets(v):
         return "\n".join(f"- {x}" for x in (v if isinstance(v, list) else [v]))
     parts = [intro["what"]]
@@ -156,7 +165,7 @@ def intro_body(intro: dict, guide_list: str) -> str:
         parts.append(f"**Run order:**\n{bullets(intro['run_order'])}")
     if intro.get("manual"):
         parts.append(f"**User Manual:** {intro['manual']} (admin sidebar → User Manual).")
-    parts.append(f"New to the platform? Read \"Guide · Start Here\" in the {guide_list} list first, then pick cases tagged beginner.")
+    parts.append(INTRO_DOC if guide_as == "doc" else INTRO_TASKS.format(guide_list=guide_list))
     return "\n\n".join(parts)
 
 
@@ -232,13 +241,18 @@ class _Sync:
         self.tr.request("POST", f"/v2/task/{task_id}/comment", {"comment_text": text, "notify_all": False})
 
     def update_fn(self, t: dict, body: dict, comment: Optional[str], cache_key: Optional[str] = None,
-                  pushed: Optional[str] = None) -> Callable[[], Any]:
+                  pushed: Optional[str] = None, label: str = "") -> Callable[[], Any]:
         def go():
             self.tr.request("PUT", f"/v2/task/{t['id']}", body)
             if cache_key and pushed is not None:
                 self.ctx.cache.put(CACHE_KIND, cache_key, t["id"], content_hash(pushed))
             if comment:
-                self.comment(t["id"], comment)
+                try:
+                    self.comment(t["id"], comment)
+                except ApiError as err:
+                    if err.status in (401, 403):
+                        raise
+                    self.log.skip("comment-failed", f"{label or t['id']}: HTTP {err.status}")
             return True
         return go
 
@@ -246,7 +260,15 @@ class _Sync:
         def go():
             r = self.tr.request("POST", f"/v2/list/{lid}/task", body)
             if cache_key and r and r.get("id"):
-                self.ctx.cache.put(CACHE_KIND, cache_key, r["id"], content_hash(body["markdown_content"]))
+                md = body["markdown_content"]
+                self.ctx.cache.put(CACHE_KIND, cache_key, r["id"], content_hash(md))
+                # record it, so a second occurrence in this run is an update check, not a create
+                self.folder.by_tc[cache_key] = {
+                    "id": r["id"], "name": body["name"], "markdown_description": md,
+                    "description": md.replace("**", ""), "status": {"status": body.get("status")},
+                    "priority": {"id": str(body["priority"])} if body.get("priority") else None,
+                    "tags": [{"name": x} for x in body.get("tags", [])],
+                    "list": {"id": lid, "name": next((k for k, v in self.lists.items() if v == lid), "")}}
             return r
         return go
 
@@ -256,20 +278,27 @@ class _Sync:
         self.write("move", detail, lambda: self.tr.request(
             "PUT", f"/v3/workspaces/{self.ws}/tasks/{t['id']}/home_list/{lid}"))
 
-    def retire(self, t: dict, label: str, detail: str, comment_text: str) -> None:
-        """Tag `retired` + one comment (once), then status `skipped` when the list has it."""
+    def retire(self, t: dict, label: str, detail: str, comment_text: str,
+               description: Optional[str] = None) -> None:
+        """Once: (description), comment, then tag `retired` (the tag marks it done, so a partial
+        failure is redone next run). Then status `skipped` when the list has it.
+
+        A wording hit in the comment skips only the comment; the tag and status still go.
+        """
         tagged = any(x.get("name") == TAG_RETIRED for x in t.get("tags") or [])
         if not tagged:
             text = self.text(label, comment_text, source="generated")
-            if text is None:
-                return
-            def go(t=t, text=text):
+            desc = self.text(label, description, source="generated") if description is not None else None
+            def go(t=t, text=text, desc=desc):
+                if desc is not None and norm(t.get("markdown_description")) != norm(desc):
+                    self.tr.request("PUT", f"/v2/task/{t['id']}", {"markdown_content": desc})
+                if text is not None:
+                    self.comment(t["id"], text)
                 self.tr.request("POST", f"/v2/task/{t['id']}/tag/{TAG_RETIRED}")
-                self.comment(t["id"], text)
             self.write("retire", detail, go)
         if (t.get("status") or {}).get("status") != STATUS_RETIRED:
             if STATUS_RETIRED in self.list_statuses(str(t["list"]["id"])):
-                self.write("skip", label, lambda t=t: self.tr.request(
+                self.write("status-skipped", label, lambda t=t: self.tr.request(
                     "PUT", f"/v2/task/{t['id']}", {"status": STATUS_RETIRED}))
             else:
                 self.log.act("skip-pending", f"{label} (list has no '{STATUS_RETIRED}' status yet)")
@@ -291,10 +320,20 @@ class _Sync:
         if self.log.apply and not stale(t, desc):
             self.ctx.cache.put(CACHE_KIND, case_id, t["id"], content_hash(desc))
 
+    def duplicate(self, cid: str) -> bool:
+        ids = self.folder.dupes.get(cid)
+        if ids:
+            self.log.skip("duplicate", f"{cid}: {', '.join(ids)}")
+            return True
+        return False
+
     # -- areas
 
     def sync_intro(self, lid: str, list_name: str, intro: dict) -> None:
-        body = self.text(f"intro {list_name}", intro_body(intro, self.guide_list))
+        if lid.startswith("<") and self.log.apply:
+            return
+        body = self.text(f"intro {list_name}",
+                         intro_body(intro, self.guide_list, self.cfg.get("guideAs") or "tasks"))
         if body is None:
             return
         current = "" if lid.startswith("<") else self.get_list(lid).get("content", "") or ""
@@ -302,30 +341,38 @@ class _Sync:
             self.write("intro", list_name, lambda: self.tr.request(
                 "PUT", f"/v2/list/{lid}", {"markdown_content": body}))
 
-    def sync_case(self, area, lid: str, case: dict) -> None:
+    def sync_retired(self, area, lid: str, case: dict, name: Optional[str], desc: Optional[str]) -> None:
         cid = case["id"]
-        name = self.text(cid, f"{cid} · {case['title']}")
-        desc = self.text(cid, describe(case)) if name is not None else None
-        if name is None or desc is None:
-            return
-        want_tags = case_tags(case)
         t = self.folder.by_tc.get(cid)
-        if case.get("retired"):
-            if not t:
-                return
-            if str(t["list"]["id"]) != lid:
-                self.move(t, lid, f"{cid}: {t['list'].get('name')} → {area.list}")
+        if not t:
+            return
+        if str(t["list"]["id"]) != lid:
+            self.move(t, lid, f"{cid}: {t['list'].get('name')} → {area.list}")
+        if name is not None and desc is not None:
             if stale(t, desc) or t["name"] != name:
                 if self.is_drift(cid, t, desc):
                     self.log.act("drift", cid)
                 else:
                     self.write("update", f"{cid} [retired content]",
-                               self.update_fn(t, {"name": name, "markdown_content": desc}, None, cid, desc))
+                               self.update_fn(t, {"name": name, "markdown_content": desc}, None, cid, desc, cid))
             else:
                 self.remember(cid, t, desc)
-            self.retire(t, cid, f"{cid} ({area.list})",
-                        f"Retired from the catalog on {self.today}: {case.get('retired_reason', '')}")
+        self.retire(t, cid, f"{cid} ({area.list})",
+                    f"Retired from the catalog on {self.today}: {case.get('retired_reason', '')}")
+
+    def sync_case(self, area, lid: str, case: dict) -> None:
+        cid = case["id"]
+        if self.duplicate(cid):
             return
+        name = self.text(cid, f"{cid} · {case['title']}")
+        desc = self.text(cid, describe(case)) if name is not None else None
+        if case.get("retired"):
+            self.sync_retired(area, lid, case, name, desc)
+            return
+        if name is None or desc is None:
+            return
+        want_tags = case_tags(case)
+        t = self.folder.by_tc.get(cid)
         if not t:
             if lid.startswith("<skipped"):
                 return
@@ -360,7 +407,8 @@ class _Sync:
                                     source="generated")
                 if comment is None:
                     return
-            self.write("update", f"{cid} [{','.join(changed)}]", self.update_fn(t, body, comment, cid, desc))
+            self.write("update", f"{cid} [{','.join(changed)}]",
+                       self.update_fn(t, body, comment, cid, desc, cid))
         else:
             self.remember(cid, t, desc)
         have_tags = {x["name"] for x in t.get("tags") or []} & MANAGED_TAGS
@@ -384,13 +432,23 @@ class _Sync:
                 if isinstance(case, dict) and isinstance(case.get("id"), str):
                     self.sync_case(area, lid, case)
 
-    def retire_orphans(self, catalog) -> None:
+    def retire_orphans(self, catalog, catalog_ok: bool = True) -> None:
+        """Retire TC tasks the catalog no longer lists, but only ones we pushed before (cache)
+        or already tagged retired. Anything else may be a tester's new case: report it."""
+        if not catalog_ok:
+            self.log.skip("orphan-retirement", "skipped: catalog has errors")
+            return
         known = case_index(catalog)
         for cid in sorted(self.folder.by_tc):
-            if cid in known:
+            if cid in known or self.duplicate(cid):
                 continue
             t = self.folder.by_tc[cid]
-            self.retire(t, cid, f"{cid} (orphan, {t['list'].get('name')})",
+            lname = t["list"].get("name")
+            tagged = any(x.get("name") == TAG_RETIRED for x in t.get("tags") or [])
+            if not tagged and not self.ctx.cache.get(CACHE_KIND, cid):
+                self.log.act("orphan", f"{cid} ({lname})")
+                continue
+            self.retire(t, cid, f"{cid} (orphan, {lname})",
                         f"Retired on {self.today}: this case is no longer part of the test plan; "
                         f"the feature it covered was replaced.")
 
@@ -424,7 +482,8 @@ class _Sync:
             if not t:
                 self.write("create", name, self.create_fn(glid, {"name": name, "markdown_content": sec}))
             elif t["name"] != name or stale(t, sec):
-                self.write("update", name, self.update_fn(t, {"name": name, "markdown_content": sec}, None))
+                self.write("update", name, self.update_fn(t, {"name": name, "markdown_content": sec}, None,
+                                                          label=name))
 
     def sync_guide_tasks(self) -> None:
         files = self.guide_files()
@@ -446,22 +505,26 @@ class _Sync:
             if not t:
                 self.write("create", name, self.create_fn(glid, {"name": name, "markdown_content": safe}))
             elif stale(t, safe):
-                self.write("update", name, self.update_fn(t, {"markdown_content": safe}, None))
+                self.write("update", name, self.update_fn(t, {"markdown_content": safe}, None, label=name))
 
-    def find_doc(self) -> Optional[dict]:
-        """The `QA Guide` Doc in the folder's space, by name (v3 Search for Docs, paginated)."""
+    def find_docs(self) -> List[dict]:
+        """Every `QA Guide` Doc whose parent is the folder's space (v3 Search for Docs, paginated)."""
+        found, seen = [], set()
         cursor = None
         while True:
             q = "deleted=false&archived=false&limit=100" + (f"&cursor={urllib.parse.quote(cursor)}" if cursor else "")
             r = self.tr.request("GET", f"/v3/workspaces/{self.ws}/docs?{q}")
             for d in r.get("docs") or []:
                 parent = d.get("parent") or {}
-                in_space = not self.space or not parent.get("id") or str(parent.get("id")) == self.space
-                if d.get("name") == GUIDE_DOC and in_space and not d.get("deleted") and not d.get("archived"):
-                    return d
+                if (d.get("name") == GUIDE_DOC and str(parent.get("id")) == self.space
+                        and str(parent.get("type")) == str(SPACE_PARENT_TYPE)
+                        and not d.get("deleted") and not d.get("archived")
+                        and str(d.get("id")) not in {str(x["id"]) for x in found}):
+                    found.append(d)
             cursor = r.get("next_cursor")
-            if not cursor:
-                return None
+            if not cursor or cursor in seen:
+                return found
+            seen.add(cursor)
 
     def doc_pages(self, doc_id: str) -> Dict[str, dict]:
         r = self.tr.request("GET", f"/v3/workspaces/{self.ws}/docs/{doc_id}/pages"
@@ -482,60 +545,80 @@ class _Sync:
             return
         if not self.space:
             raise ConfigError("ids.space must be set when guideAs is doc")
-        doc = self.find_doc()
+        docs = self.find_docs()
+        if len(docs) > 1:
+            self.log.skip("doc-ambiguous", ", ".join(str(d["id"]) for d in docs))
+        else:
+            self.sync_doc_pages(files, docs[0] if docs else None)
+        for fname, _h1, body in files:
+            if fname.startswith("07"):
+                glid = self.ensure_list(self.guide_list)
+                if not glid.startswith("<skipped"):
+                    self.sync_signoff(glid, body)
+
+    def sync_doc_pages(self, files, doc: Optional[dict]) -> None:
         doc_id = str(doc["id"]) if doc else None
         pages = self.doc_pages(doc_id) if doc_id else {}
         if not doc_id:
             r = self.write("doc-create", GUIDE_DOC, lambda: self.tr.request(
                 "POST", f"/v3/workspaces/{self.ws}/docs",
-                {"name": GUIDE_DOC, "parent": {"id": self.space, "type": 4}}))
+                {"name": GUIDE_DOC, "parent": {"id": self.space, "type": SPACE_PARENT_TYPE}}))
             doc_id = str(r["id"]) if r and r.get("id") else None
-        pushed: set = set()
-        glid = None
+            if self.log.apply and not doc_id:
+                return  # no Doc: no pages and no guide-task retirement
+        complete = True  # every guide page is in the Doc (or, in a dry run, planned)
         for fname, h1, body in files:
             if fname.startswith("07"):
-                glid = self.ensure_list(self.guide_list)
-                if not glid.startswith("<skipped"):
-                    self.sync_signoff(glid, body)
                 continue
             name = self.text(f"guide {fname}", h1)
             content = self.text(f"guide {fname}", body) if name is not None else None
             if name is None or content is None:
+                complete = False
                 continue
-            pushed.add(h1)
             page = pages.get(name)
             if page is None:
-                if self.log.apply and not doc_id:
-                    self.log.skip("api-error", f"page {name}: the doc was not created")
-                    continue
-                self.write("page-create", name, lambda name=name, content=content: self.tr.request(
+                r = self.write("page-create", name, lambda name=name, content=content: self.tr.request(
                     "POST", f"/v3/workspaces/{self.ws}/docs/{doc_id}/pages",
                     {"name": name, "content": content, "content_format": "text/md"}))
+                if self.log.apply and not (r and r.get("id")):
+                    complete = False
             elif norm(page.get("content")) != norm(content):
                 self.write("page-update", name, lambda page=page, name=name, content=content: self.tr.request(
                     "PUT", f"/v3/workspaces/{self.ws}/docs/{doc_id}/pages/{page['id']}",
                     {"name": name, "content": content, "content_format": "text/md",
                      "content_edit_mode": "replace"}))
-        # retire the old `Guide · …` tasks whose page is in the Doc (or being put there now)
+        if not complete:
+            return
         for t in self.folder.tasks:
             tname = t.get("name") or ""
-            if not tname.startswith(GUIDE_TASK_PREFIX):
-                continue
-            if tname[len(GUIDE_TASK_PREFIX):] not in pushed:
-                continue
-            self.retire(t, tname, tname, GUIDE_RETIRED_COMMENT)
+            if tname.startswith(GUIDE_TASK_PREFIX):
+                self.retire(t, tname, tname, GUIDE_RETIRED_COMMENT, description=GUIDE_RETIRED_COMMENT)
 
 
 _FAILED = object()
 
 
+def _catalog_ok(ctx) -> bool:
+    """Print every validation error. Under --apply any error refuses the push before a write."""
+    errors = validate_catalog(ctx.catalog)
+    for e in errors:
+        where = e.get("file") or "catalog"
+        if e.get("id"):
+            where += f" {e['id']}"
+        ctx.log.out.write(f"ERROR\tcatalog\t{where}: {e.get('reason')}\n")
+    if errors and ctx.log.apply:
+        raise RunError(f"catalog has {len(errors)} validation error(s); fix them before push-plan --apply")
+    return not errors
+
+
 def _push(ctx, folder: Optional[Folder] = None) -> "_Sync":
     if ctx.catalog is None:
         raise ConfigError("this verb needs a catalog")
+    ok = _catalog_ok(ctx)
     s = _Sync(ctx, folder)
     s.sync_areas(ctx.catalog)
     if not s.only:
-        s.retire_orphans(ctx.catalog)
+        s.retire_orphans(ctx.catalog, ok)
         if ctx.cfg.get("guideAs") == "doc":
             s.sync_guide_doc()
         else:
@@ -595,6 +678,8 @@ def _pull(ctx, folder: Folder, report_drift: bool = True) -> Dict[str, List[dict
     drafts: Dict[str, List[dict]] = {}
     for cid in sorted(folder.by_tc):
         t = folder.by_tc[cid]
+        if cid in folder.dupes:
+            continue  # push-plan/status report it as SKIP duplicate
         if cid in known:
             if not report_drift:
                 continue

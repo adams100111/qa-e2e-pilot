@@ -32,8 +32,8 @@ def _replay(name: str):
 class FolderFake(Transport):
     """An in-memory ClickUp folder seeded from the replay fixtures that reflects every write.
 
-    `fail_once` = {(METHOD, path_regex)}: that write is applied, then raises ApiError(500) once
-    (a request the server accepted but whose answer was lost).
+    `fail_once` = {(METHOD, path_regex[, status])}: with a 5xx status (default 500) the write is
+    applied, then raises once (accepted, answer lost); with a 4xx it is rejected and not applied.
     """
 
     def __init__(self, empty: bool = False, fail_once=()):
@@ -70,11 +70,15 @@ class FolderFake(Transport):
         method = method.upper()
         if method != "GET":
             self.calls.append((method, path, copy.deepcopy(body)))
+        hit = next((k for k in self.fail_once if k[0] == method and re.search(k[1], path)), None)
+        status = hit[2] if hit is not None and len(hit) > 2 else 500
+        if hit is not None and status < 500:
+            self.fail_once.discard(hit)
+            raise ApiError(method, path, status, "rejected")
         out = self._handle(method, path, body or {})
-        for key in list(self.fail_once):
-            if key[0] == method and re.search(key[1], path):
-                self.fail_once.discard(key)
-                raise ApiError(method, path, 500, "gateway timeout")
+        if hit is not None:
+            self.fail_once.discard(hit)
+            raise ApiError(method, path, status, "gateway timeout")
         return out
 
     def _handle(self, method, path, body):
@@ -122,6 +126,8 @@ class FolderFake(Transport):
                 t["priority"] = {"id": str(body["priority"])}
             if "status" in body:
                 t["status"] = {"status": body["status"]}
+            if "description" in body:
+                t["markdown_description"] = t["description"] = body["description"]
             return {}
         m = re.fullmatch(r"/v2/task/(\w+)/comment", p)
         if m:
@@ -145,7 +151,7 @@ class FolderFake(Transport):
             if method == "GET":
                 return {"docs": copy.deepcopy(list(self.docs.values())), "next_cursor": None}
             did = self._id("d")
-            self.docs[did] = {"id": did, "name": body["name"], "parent": body["parent"]}
+            self.docs[did] = {"id": did, "name": body["name"], "parent": dict(body["parent"])}
             self.pages[did] = []
             return {"id": did}
         m = re.fullmatch(rf"/v3/workspaces/{WS}/docs/(\w+)/pages(?:/(\w+))?", p)
@@ -188,19 +194,29 @@ class PlanTestBase(unittest.TestCase):
                 c.update(kw)
         p.write_text(json.dumps(data))
 
+    def seed_cache(self, *ids):
+        cache = core.MapCache(self.tmp)
+        for cid in ids:
+            cache.put("case", cid, "t?", "1" * 40)
+        cache.save()
+
     def run_verb(self, transport, verb="push_plan", apply=False, only=(), overwrite=()):
         cfg = core.load_config(self.tmp)
         out = io.StringIO()
         ctx = Ctx(project=self.tmp, cfg=cfg, catalog=core.load_catalog(self.tmp, cfg),
                   log=core.ActionLog(apply=apply, out=out), cache=core.MapCache(self.tmp),
                   args=argparse.Namespace(only=list(only), overwrite=list(overwrite), transport=transport))
-        getattr(clickup, verb)(ctx)
+        try:
+            getattr(clickup, verb)(ctx)
+        finally:
+            self.last_out = out.getvalue()
         lines = [ln for ln in out.getvalue().splitlines() if ln]
         return lines, ctx.log.summary()
 
 
 class PushPlanTests(PlanTestBase):
     def test_dry_run_matches_expected_actions(self):
+        self.seed_cache("TC-A-009")
         fake = FakeTransport(REPLAY)
         lines, summary = self.run_verb(fake)
         self.assertEqual(lines, [
@@ -209,12 +225,13 @@ class PushPlanTests(PlanTestBase):
             "DRY\ttag+\tTC-B-001 technical",
             "DRY\tcreate\tTC-B-002 → Module: Events",
             "DRY\tretire\tTC-A-009 (orphan, Core: Sign-in)",
-            "DRY\tskip\tTC-A-009",
+            "DRY\tstatus-skipped\tTC-A-009",
         ])
-        self.assertEqual(summary, 'SUMMARY {"create": 1, "move": 1, "retire": 1, "skip": 1, "tag+": 1, "update": 1} dry-run')
+        self.assertEqual(summary, 'SUMMARY {"create": 1, "move": 1, "retire": 1, "status-skipped": 1, "tag+": 1, "update": 1} dry-run')
         self.assertEqual(fake.calls, [])
 
     def test_apply_writes_exact_requests(self):
+        self.seed_cache("TC-A-009")
         fake = FolderFake()
         self.run_verb(fake, apply=True)
         create = fake.writes("POST", r"/v2/list/902/task$")[0][2]
@@ -231,6 +248,9 @@ class PushPlanTests(PlanTestBase):
         self.assertEqual(fake.tasks["t5"]["status"]["status"], "skipped")
         self.assertNotIn("t2", fake.comments)  # A-002 is still "to test": no re-verify comment
         self.assertEqual(fake.writes("DELETE"), [])
+        # comment before tag: the tag is the "done" marker
+        t5 = [c[1] for c in fake.writes(None, r"/v2/task/t5")]
+        self.assertEqual(t5, ["/v2/task/t5/comment", "/v2/task/t5/tag/retired", "/v2/task/t5"])
 
     def test_update_comment_when_not_to_test(self):
         self.edit_case("area-a.json", "TC-A-003", title="Email verification blocks the home page")
@@ -242,6 +262,7 @@ class PushPlanTests(PlanTestBase):
         self.assertEqual(fake.tasks["t3"]["status"]["status"], "passed")  # never touched
 
     def test_second_run_after_apply_is_empty(self):
+        self.seed_cache("TC-A-009")
         fake = FolderFake()
         self.run_verb(fake, apply=True)
         _, summary = self.run_verb(fake)
@@ -261,13 +282,84 @@ class PushPlanTests(PlanTestBase):
         self.assertEqual(created, ["TC-A-001", "TC-A-003", "TC-B-001", "TC-B-002"])
         self.assertIn('"skip": 1', summary)
 
-    def test_wording_hit_in_comment_skips_only_that_retirement(self):
+    def test_wording_hit_in_comment_still_retires_without_comment(self):
+        self.seed_cache("TC-A-009")
         self.set_cfg(wording={"forbidden": ["replaced"], "allow": [], "patterns": []})
         fake = FolderFake()
         lines, _ = self.run_verb(fake, apply=True)
         self.assertIn("SKIP\twording\tTC-A-009: replaced", lines)
         self.assertNotIn("t5", fake.comments)
+        self.assertIn("retired", [x["name"] for x in fake.tasks["t5"]["tags"]])
+        self.assertEqual(fake.tasks["t5"]["status"]["status"], "skipped")
         self.assertTrue(fake.writes("POST", r"/v2/list/902/task$"))  # the rest still ran
+
+    def test_orphan_not_in_cache_is_never_retired(self):
+        fake = FolderFake()
+        lines, summary = self.run_verb(fake, apply=True)
+        self.assertIn("APPLY\torphan\tTC-A-009 (Core: Sign-in)", lines)
+        self.assertEqual(fake.writes(None, r"/v2/task/t5"), [])
+        lines, _ = self.run_verb(fake, verb="pull_plan")
+        self.assertIn("DRY\tdraft\tTC-A-009 → area-a.yaml", lines)
+
+    def test_catalog_errors_refuse_apply_with_no_writes(self):
+        self.seed_cache("TC-A-009")
+        (self.tmp / "catalog" / "area-b.json").unlink()
+        fake = FolderFake()
+        with self.assertRaises(core.RunError):
+            self.run_verb(fake, apply=True)
+        self.assertEqual(fake.calls, [])
+        self.assertIn("ERROR\tcatalog\tarea-b.json: missing file listed in the manifest", self.last_out)
+
+    def test_catalog_errors_dry_run_prints_and_skips_orphans(self):
+        self.seed_cache("TC-A-009")
+        (self.tmp / "catalog" / "area-b.json").unlink()
+        fake = FolderFake()
+        lines, _ = self.run_verb(fake)
+        self.assertEqual(lines[0], "ERROR\tcatalog\tarea-b.json: missing file listed in the manifest")
+        self.assertIn("SKIP\torphan-retirement\tskipped: catalog has errors", lines)
+        self.assertFalse([ln for ln in lines if "TC-A-009" in ln])
+        self.assertIn("DRY\tupdate\tTC-A-002 [description]", lines)  # the plan still shows
+
+    def test_duplicate_live_tc_is_left_alone(self):
+        fake = FolderFake()
+        dup = copy.deepcopy(fake.tasks["t2"])
+        dup["id"] = "t2b"
+        fake.tasks["t2b"] = dup
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertIn("SKIP\tduplicate\tTC-A-002: t2, t2b", lines)
+        self.assertEqual(fake.writes(None, r"/v2/task/t2"), [])
+        lines, _ = self.run_verb(fake, verb="status")
+        self.assertIn("SKIP\tduplicate\tTC-A-002: t2, t2b", lines)
+
+    def test_created_case_is_recorded_so_it_is_not_created_twice(self):
+        p = self.tmp / "catalog" / "area-b.json"
+        data = json.loads(p.read_text())
+        data["cases"].append(copy.deepcopy(data["cases"][1]))
+        p.write_text(json.dumps(data))
+        fake = FolderFake()
+        with mock.patch.object(clickup, "validate_catalog", return_value=[]):
+            self.run_verb(fake, apply=True)
+        self.assertEqual(len(fake.writes("POST", r"^/v2/list/902/task$")), 1)
+        self.assertTrue(core.MapCache(self.tmp).get("case", "TC-B-002"))
+
+    def test_retired_case_with_wording_hit_is_still_retired(self):
+        fake = FolderFake()
+        fake.tasks["t9"] = {"id": "t9", "name": "TC-A-004 · Sign in with a one-time code",
+                            "markdown_description": "old", "description": "old",
+                            "status": {"status": "passed"}, "priority": {"id": "3"}, "tags": [],
+                            "list": {"id": "901", "name": "Core: Sign-in"}}
+        self.edit_case("area-a.json", "TC-A-004", steps=["See deploy/otp.env."])
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertIn("SKIP\twording\tTC-A-004: deploy/otp.env", lines)
+        self.assertEqual(fake.writes("PUT", r"^/v2/task/t9$")[0][2], {"status": "skipped"})
+        self.assertIn("retired", [x["name"] for x in fake.tasks["t9"]["tags"]])
+
+    def test_comment_failure_is_logged_after_update(self):
+        self.edit_case("area-a.json", "TC-A-003", title="Email verification blocks the home page")
+        fake = FolderFake(fail_once={("POST", r"^/v2/task/t3/comment$", 400)})
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertTrue(any(ln.startswith("SKIP\tcomment-failed\tTC-A-003") for ln in lines), lines)
+        self.assertEqual(fake.tasks["t3"]["name"], "TC-A-003 · Email verification blocks the home page")
 
     def test_human_edit_is_drift_not_overwrite(self):
         cache = core.MapCache(self.tmp)
@@ -318,6 +410,7 @@ class PushPlanTests(PlanTestBase):
         self.assertEqual(fake.tasks["t9"]["list"]["id"], "901")
 
     def test_post_500_that_landed_is_found_by_name_next_run(self):
+        self.seed_cache("TC-A-009")
         fake = FolderFake(fail_once={("POST", r"^/v2/list/902/task$")})
         lines, _ = self.run_verb(fake, apply=True)
         self.assertTrue(any(ln.startswith("SKIP\tapi-error\tTC-B-002") for ln in lines), lines)
@@ -334,6 +427,7 @@ class PushPlanTests(PlanTestBase):
         self.assertIn("APPLY\tcreate-list\tModule: Events", lines)
         new = [l for l in fake.lists.values() if l["name"] == "Module: Events"][0]["id"]
         self.assertEqual(len(fake.writes("POST", rf"^/v2/list/{new}/task$")), 2)
+        self.assertFalse([c for c in fake.calls if "<" in c[1]])
         _, summary = self.run_verb(fake)
         self.assertEqual(summary, "SUMMARY {} dry-run")
 
@@ -344,6 +438,7 @@ class GuideDocTests(PlanTestBase):
         self.set_cfg(guideAs="doc")
 
     def test_guide_doc_created_and_tasks_retired(self):
+        self.seed_cache("TC-A-009")
         fake = FolderFake()
         lines, _ = self.run_verb(fake, apply=True)
         docs = fake.writes("POST", rf"^/v3/workspaces/{WS}/docs$")
@@ -353,6 +448,10 @@ class GuideDocTests(PlanTestBase):
                          [("Start Here", "text/md"), ("Environment", "text/md")])
         for tid in ("t6", "t7"):
             self.assertEqual(fake.comments[tid], ['This guide now lives in the "QA Guide" doc.'])
+            self.assertEqual(fake.tasks[tid]["markdown_description"], 'This guide now lives in the "QA Guide" doc.')
+            self.assertEqual([c[1] for c in fake.writes(None, rf"/v2/task/{tid}")],
+                             [f"/v2/task/{tid}", f"/v2/task/{tid}/comment", f"/v2/task/{tid}/tag/retired",
+                              f"/v2/task/{tid}"])
             self.assertEqual(fake.tasks[tid]["status"]["status"], "skipped")
             self.assertIn("retired", [x["name"] for x in fake.tasks[tid]["tags"]])
         self.assertNotIn("t8", fake.comments)  # sign-off stays a task, untouched
@@ -382,8 +481,41 @@ class GuideDocTests(PlanTestBase):
         self.assertIn("SKIP\twording\tguide 01-environment.md: deploy/staging.env", lines)
         pages = fake.writes("POST", rf"^/v3/workspaces/{WS}/docs/\w+/pages$")
         self.assertEqual([c[2]["name"] for c in pages], ["Start Here"])
-        self.assertNotIn("t7", fake.comments)  # its guide task is kept until the page can go up
-        self.assertEqual(fake.tasks["t7"]["status"]["status"], "to test")
+        # guide tasks are kept until every page is in the Doc
+        for tid in ("t6", "t7"):
+            self.assertEqual(fake.writes(None, rf"/v2/task/{tid}"), [])
+
+    def test_doc_post_rejected_retires_no_guide_task(self):
+        fake = FolderFake(fail_once={("POST", rf"^/v3/workspaces/{WS}/docs$", 400)})
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertTrue(any(ln.startswith("SKIP\tapi-error\tQA Guide") for ln in lines), lines)
+        self.assertEqual(fake.writes(None, r"/v2/task/t[67]"), [])
+        self.assertEqual(fake.writes("POST", r"/pages$"), [])
+
+    def test_two_docs_named_qa_guide_is_ambiguous(self):
+        fake = FolderFake()
+        for did in ("d1", "d2"):
+            fake.docs[did] = {"id": did, "name": "QA Guide", "parent": {"id": SPACE, "type": 4}}
+            fake.pages[did] = []
+        fake.docs["d3"] = {"id": "d3", "name": "QA Guide", "parent": {"id": "other", "type": 4}}
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertIn("SKIP\tdoc-ambiguous\td1, d2", lines)
+        self.assertEqual(fake.writes(None, r"^/v3/workspaces/\w+/docs"), [])
+        self.assertEqual(fake.writes(None, r"/v2/task/t[67]"), [])
+
+    def test_doc_in_other_space_is_not_ours(self):
+        fake = FolderFake()
+        fake.docs["d3"] = {"id": "d3", "name": "QA Guide", "parent": {"id": "other", "type": 4}}
+        fake.pages["d3"] = []
+        lines, _ = self.run_verb(fake)
+        self.assertIn("DRY\tdoc-create\tQA Guide", lines)
+
+    def test_intro_points_at_doc(self):
+        fake = FolderFake()
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertIn("APPLY\tintro\tCore: Sign-in", lines)
+        put = fake.writes("PUT", r"^/v2/list/901$")[0][2]["markdown_content"]
+        self.assertTrue(put.endswith('New to the platform? Read the "QA Guide" doc first, then pick cases tagged beginner.'))
 
     def test_dry_run_with_no_doc_plans_create(self):
         fake = FolderFake()
