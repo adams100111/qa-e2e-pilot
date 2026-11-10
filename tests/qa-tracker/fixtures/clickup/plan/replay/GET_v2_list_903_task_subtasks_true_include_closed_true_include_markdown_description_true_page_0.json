@@ -1,0 +1,49 @@
+{
+  "tasks": [
+    {
+      "id": "t6",
+      "name": "Guide · Start Here",
+      "markdown_description": "Welcome to the QA folder. Pick a list, then a case tagged beginner.",
+      "description": "Welcome to the QA folder. Pick a list, then a case tagged beginner.",
+      "status": {
+        "status": "to test"
+      },
+      "priority": null,
+      "tags": [],
+      "list": {
+        "id": "903",
+        "name": "00 – Guide & Sign-off"
+      }
+    },
+    {
+      "id": "t7",
+      "name": "Guide · Environment",
+      "markdown_description": "Use the staging site and the Arabic interface first.",
+      "description": "Use the staging site and the Arabic interface first.",
+      "status": {
+        "status": "to test"
+      },
+      "priority": null,
+      "tags": [],
+      "list": {
+        "id": "903",
+        "name": "00 – Guide & Sign-off"
+      }
+    },
+    {
+      "id": "t8",
+      "name": "Sign-off · Criterion 1: All P1 cases passed",
+      "markdown_description": "Every urgent case is passed.",
+      "description": "Every urgent case is passed.",
+      "status": {
+        "status": "to test"
+      },
+      "priority": null,
+      "tags": [],
+      "list": {
+        "id": "903",
+        "name": "00 – Guide & Sign-off"
+      }
+    }
+  ]
+}
