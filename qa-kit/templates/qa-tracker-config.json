@@ -1,0 +1,52 @@
+{
+  "backend": "local",
+  "catalog": ".qa/catalog",
+  "guideDir": ".qa/guide",
+  "guideAs": "tasks",
+  "ids": {
+    "workspace": null,
+    "space": null,
+    "folder": null
+  },
+  "lists": {},
+  "statuses": {
+    "case": [
+      "to test",
+      "testing",
+      "failed",
+      "blocked",
+      "passed",
+      "skipped"
+    ],
+    "bug": [
+      "open",
+      "triaged",
+      "fixing",
+      "retest",
+      "closed"
+    ]
+  },
+  "fields": {},
+  "statusCeiling": "none",
+  "secrets": [
+    "sharedPassword"
+  ],
+  "wording": {
+    "forbidden": [
+      "AI",
+      "agent",
+      "agents",
+      "automated",
+      "automation",
+      "Claude",
+      "Playwright",
+      "bot"
+    ],
+    "allow": [],
+    "patterns": [
+      "(?:^|\\s)(?:\\.{0,2}/)?[\\w.-]+/[\\w./-]+\\.\\w{1,5}\\b",
+      "\\b(?:feat|fix|docs|chore)/[\\w.-]+",
+      "\\bPR ?#\\d+\\b"
+    ]
+  }
+}
