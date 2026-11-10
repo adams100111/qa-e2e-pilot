@@ -1,6 +1,6 @@
 # QA tracker: test cases, runs and bugs in local files, GitHub or ClickUp
 
-Date: 2026-11-10 · Status: proposed · Plugins: qa-kit (owner), qa-e2e-pilot (unchanged contracts)
+Date: 2026-11-10 · Status: accepted · Plugins: qa-kit (owner), qa-e2e-pilot (unchanged contracts)
 
 ## Why
 
@@ -222,9 +222,12 @@ by path.
   0.35 s between writes.
 - How tests record API responses, as long as no test calls a live tracker.
 
-## Open questions for the owner
+## Owner decisions (2026-11-11)
 
-- Should Innovation's 1,065 cases move under qa-kit's default `.qa/catalog/`, or stay in
-  `docs/qa/catalog/`? This design assumes they stay, through the `catalog` setting.
-- Should the guides stay as tasks in the guide list, or move to a ClickUp Doc? The audit
-  recommends a Doc, because guide tasks show up in status counts.
+- **Innovation's catalog stays in `docs/qa/catalog/`.** It is reviewed with the code it describes, and
+  its integrity test runs in the app's suite. `catalog` in tracker.json points there; `.qa/catalog/`
+  stays the default for new projects.
+- **Guides move to one ClickUp Doc** (`guideAs: doc`), one page per `guide/*.md` file, so they stop
+  counting as test work. **Sign-off criteria stay as tasks** in the guide list: they are pass/fail
+  items someone marks at release time. The old `Guide · …` tasks are retired (tag, comment,
+  `skipped`), never deleted, and their description points at the Doc.
