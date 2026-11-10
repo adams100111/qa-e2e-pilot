@@ -75,7 +75,7 @@ Why: per-criterion checkpoints are transient run state that gets skipped on resu
 
 **Position is `fold(journal)`, never agent memory:** `journal.ndjson` is the append-only source of truth for a Run's state; `checkpoint.json` and `cursor.json` are computed by replaying it (`scripts/fold.sh`) — never re-derived from the agent's own recollection. This is what makes resume reliable across a context compaction, which is a silent partial restart from the agent's point of view.
 
-**Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` and `bug-log.json` remain agent-authored; the fold never writes them, and no future change should wire a fold overwrite of either file.
+**Fold ownership:** `scripts/fold.sh` OWNS `checkpoint.json`, `cursor.json`, and `fold-anomalies.json` — it recomputes and overwrites all three on every call. `run-manifest.json` stays agent-authored and `bug-log.json` is written only through `scripts/bug-log.sh`; the fold never writes either, and no future change should wire a fold overwrite of either file.
 
 **Expected `fold-anomalies.json` entries (not errors):** the orchestrator now emits `plan_frozen`/`plan_amended` (Generate→Verify boundary), `criterion_started` (per-criterion, at Verify's start), and `act_intent`/`act_committed` (bracketing a mutating criterion's act) via `journal-emit.sh` — see the Scripts Reference below — so a clean run normally shows NO `verdict-without-started` anomalies. If a caller writes a verdict via `checkpoint.sh` without ever having called `journal-emit.sh started` for that tuple (e.g. a script or fixture driving `checkpoint.sh` directly, bypassing the orchestrator prose), the fold still records the verdict and flags it with a benign `verdict-without-started` anomaly rather than rejecting it — the "record-the-verdict + flag" rule, never a suppressed verdict. Genuine problems are the other rules (`unparseable-line`, `seq-gap`, `cross-child-duplicate`, `fsync-unavailable`, `act-committed-no-intent`). **Two of them are now load-bearing outside the fold:** `unparseable-line` and `seq-gap` mean the run's own *record* is damaged, so `report-to-junit.sh` marks such a run run-level `UNVERIFIED` and fails the build (see [running-in-ci.md](../../docs/running-in-ci.md)). Every other rule — including the findings-ledger pair `finding-url-oversize` and `finding-detail-missing` — is surfaced as a **count only** on the report's `qa.foldAnomalies` property and never reddens a run. **What is new is only the visibility**, not the anomaly: `fold-anomalies.json` has always recorded these, and `report-to-junit.sh` now prints their counts. Note the tuple that decides `verdict-without-started`: `checkpoint.sh` derives the verdict's `scenarioId` as the persona id (or `__shared__` when no persona is given), which is the same convention `journal-emit.sh started` and the freeze use, so an orchestrator-driven run's `criterion_started` matches its verdict and the anomaly stays at zero. The fold also decides it from the started flag **as of the kept verdict**, so a `criterion_started` arriving *after* that verdict does not retroactively erase it.
 
@@ -236,7 +236,7 @@ Four honesty fast-follows ride on the Plan H2 core; all logic is in `scripts/`/`
 1. Generate a run-id: `<YYYYMMDDTHHMMSS>-<slug>` where slug is a short kebab-case feature label (e.g. `20241115T143022-founder-cap-table`).
 2. Create `.qa/runs/<run-id>/`.
 3. Copy `templates/run-manifest.md` into `.qa/runs/<run-id>/run-manifest.json` and fill every `{{TOKEN}}` — set `{{COST_SUMMARY_OR_NULL}}` to `null` (no cost telemetry exists yet; Step 2 populates it as the run progresses).
-4. Copy `templates/bug-log.md` into `.qa/runs/<run-id>/bug-log.json` and set `entries: []`.
+4. Leave `bug-log.json` absent: the first `scripts/bug-log.sh add` creates it.
 5. If spec-kit artifacts (spec, constitution, tasks files) exist in the project, also copy `templates/traceability.md` → `traceability.json` and populate the criterion rows from the checklist. Skip this file entirely if no spec-kit artifacts exist.
 6. Set `run-manifest.status` to `in-progress`.
 
@@ -253,7 +253,7 @@ After completing each criterion (any verdict: pass/fail/blocked/deferred/error):
 1. Call `scripts/checkpoint.sh <run-id> <criterion-id> <verdict>` to upsert the checkpoint record.
 2. Set `evidence_refs` to relative paths of any files written under `evidence/<criterion-id>/`.
 3. Set `last_action` to a one-line description of the final action taken.
-4. If verdict is `fail` or `error`: append a new entry to `bug-log.json` (copy the entry shape from `templates/bug-log.md`). Fill `title`, `steps`, `expected`, `actual`, `severity`, `suspected_layer`, `fix`.
+4. If verdict is `fail` or `error`: write the entry to a temp file and run `scripts/bug-log.sh add .qa/runs/<run-id> <entry.json>` — never edit `bug-log.json` by hand. The entry's fields are the ones in `templates/bug-log.md`: `bug_id`, `criterion_id`, `title`, `severity` (`critical|high|medium|low`), `suspected_layer`, `expected`, `actual` are required, plus `persona`, `steps`, `evidence_refs`, `fix`, `logged_at`. The script refuses a missing field, an unknown severity or a repeated `bug_id` (exit 1, nothing written); fix the entry and run it again. A log written before this script existed can be rewritten in place with `scripts/bug-log.sh normalize .qa/runs/<run-id>` (old key styles such as `criterionId`/`suspectedLayer`/`observed` are mapped; the original is kept as `bug-log.pre-normalize.json`).
 5. If `traceability.json` exists: update the row for this criterion with `verdict` and `confidence`.
 6. Update `run-manifest.json` — increment `criteria_done`, update `status` if all criteria are resolved.
 7. **Cost telemetry (audit-2 W4-3):** run `bash scripts/cost-summary.sh <run-id>` and copy its printed
@@ -426,7 +426,8 @@ Only when spec-kit artifacts exist (spec doc, constitution, tasks file):
 |---|---|
 | `templates/run-manifest.md` | Step 1: copy → `run-manifest.json` |
 | `templates/checkpoint.md` | Reference shape; `checkpoint.sh` writes the live file |
-| `templates/bug-log.md` | Step 1: copy → `bug-log.json`; Step 2: append entries |
+| `templates/bug-log.md` | The fields of one entry; `scripts/bug-log.sh add` writes it |
+| `scripts/bug-log.sh` | `add` / `normalize` / `validate` — the only writer of `bug-log.json` |
 | `templates/traceability.md` | Step 1 (spec-kit only): copy → `traceability.json` |
 
 ## Scripts Reference

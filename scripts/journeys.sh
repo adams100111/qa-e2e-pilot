@@ -23,6 +23,11 @@
 #       suffixed the same. <viewport> is the responsiveMatrix entry's id (e.g. "mobile") when
 #       --viewport-id is given -- the same convention as qa-kit's ux:* revisit rows -- else the
 #       legacy WxH. Exactly one of the two. Unknown journey, missing step row or bad flag -> exit 1.
+#   journeys.sh migrate <journeys.json>
+#       Prints the file in the current shape. Runs before 0.12 wrote {"journeys":[{id, name,
+#       priority, criteria:[...]}]}; each entry becomes {id, priority, steps, ...other fields}
+#       (criteria -> steps). An array already in the current shape prints unchanged. Any other
+#       shape -> exit 1. validate/status refuse the old shape and point here.
 #
 # DEPENDENCIES: bash, coreutils, EITHER jq OR python3 (jq preferred; QA_ENGINE=jq|python3
 #   forces one). Both engines produce byte-identical output. No node/perl/grep -P.
@@ -38,7 +43,7 @@ has_jq() {
 }
 has_py() { command -v python3 >/dev/null 2>&1; }
 
-usage="usage: journeys.sh validate <journeys.json> <checklist.json> | status <run-dir> | expand-variant <journeys.json> <checklist.json> --journey <id> (--viewport-id <id> | --viewport <WxH>) --locale <code> [--color-scheme light|dark]"
+usage="usage: journeys.sh validate <journeys.json> <checklist.json> | status <run-dir> | migrate <journeys.json> | expand-variant <journeys.json> <checklist.json> --journey <id> (--viewport-id <id> | --viewport <WxH>) --locale <code> [--color-scheme light|dark]"
 [ "$#" -ge 1 ] || die "$usage"
 CMD="$1"; shift
 if has_jq; then ENGINE=jq; elif has_py; then ENGINE=py; else die "journeys.sh needs either 'jq' or 'python3'."; fi
@@ -53,7 +58,7 @@ case "$CMD" in
       out="$(jq -n -S --slurpfile j "$J" --slurpfile c "$C" '
         def s: if type == "string" then . else tojson end;
         ($j[0]) as $js | ($c[0]) as $cl
-        | if ($js|type) != "array" then error("journeys must be a JSON array") else . end
+        | if ($js|type) != "array" then error(if ($js|type) == "object" and ($js.journeys|type) == "array" then "journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>" else "journeys must be a JSON array" end) else . end
         | if ($cl|type) != "array" then error("checklist must be a JSON array") else . end
         | ([ $cl[] | select((.id|type) == "string") | {key: .id, value: .} ] | from_entries) as $byid
         | [ range(0; $js|length) as $i
@@ -84,6 +89,7 @@ case "$CMD" in
 import json, sys
 def s(v): return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
 js = json.load(open(sys.argv[1], encoding="utf-8")); cl = json.load(open(sys.argv[2], encoding="utf-8"))
+if isinstance(js, dict) and isinstance(js.get("journeys"), list): sys.exit("ERROR: journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>")
 if not isinstance(js, list): sys.exit("ERROR: journeys must be a JSON array")
 if not isinstance(cl, list): sys.exit("ERROR: checklist must be a JSON array")
 byid = {}
@@ -130,7 +136,7 @@ PY
     if [ "$ENGINE" = jq ]; then
       jq -n -S --slurpfile j "$R/journeys.json" --slurpfile k "$R/checkpoint.json" '
         ($j[0]) as $js | ($k[0].criteria // []) as $rows
-        | if ($js|type) != "array" then error("journeys must be a JSON array") else . end
+        | if ($js|type) != "array" then error(if ($js|type) == "object" and ($js.journeys|type) == "array" then "journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>" else "journeys must be a JSON array" end) else . end
         | def stepv($id):
             [ $rows[] | select(.criterion_id == $id) ] as $mine
             | [ $mine[] | select((.persona // "") != "") ] as $pr
@@ -153,6 +159,7 @@ PY
       python3 - "$R/journeys.json" "$R/checkpoint.json" <<'PY' || die "journeys: status failed"
 import json, sys
 js = json.load(open(sys.argv[1], encoding="utf-8")); ck = json.load(open(sys.argv[2], encoding="utf-8"))
+if isinstance(js, dict) and isinstance(js.get("journeys"), list): sys.exit("ERROR: journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>")
 if not isinstance(js, list): sys.exit("ERROR: journeys must be a JSON array")
 rows = ck.get("criteria") or []
 def stepv(cid):
@@ -171,6 +178,34 @@ for jn in js:
     elif st and all(x["verdict"] == "pass" for x in st): v = "pass"
     else: v = "incomplete"
     out.append({"id": jn.get("id"), "priority": jn.get("priority"), "steps": st, "verdict": v})
+print(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
+PY
+    fi
+    ;;
+
+  migrate)
+    [ "$#" -eq 1 ] || die "$usage"
+    J="$1"
+    [ -f "$J" ] || die "journeys: file not found: $J"
+    if [ "$ENGINE" = jq ]; then
+      jq -S '
+        if type == "array" then .
+        elif type == "object" and (.journeys|type) == "array" then
+          [ .journeys[] | if type == "object" and (has("steps") | not) and (.criteria|type) == "array"
+                          then (.steps = .criteria | del(.criteria)) else . end ]
+        else error("journeys: unrecognised shape (want an array, or {journeys:[...]})") end' "$J" || exit 1
+    else
+      python3 - "$J" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+if isinstance(d, list): out = d
+elif isinstance(d, dict) and isinstance(d.get("journeys"), list):
+    out = []
+    for j in d["journeys"]:
+        if isinstance(j, dict) and "steps" not in j and isinstance(j.get("criteria"), list):
+            j = dict(j); j["steps"] = j.pop("criteria")
+        out.append(j)
+else: sys.exit("ERROR: journeys: unrecognised shape (want an array, or {journeys:[...]})")
 print(json.dumps(out, indent=2, sort_keys=True, ensure_ascii=False))
 PY
     fi
@@ -209,7 +244,7 @@ PY
       jq -n -S --slurpfile j "$J" --slurpfile c "$C" --arg jid "$JID" --arg suf "$SUF" \
          --arg vp "$VP" --arg loc "$LOC" --arg sch "$SCH" '
         ($j[0]) as $js | ($c[0]) as $cl
-        | if ($js|type) != "array" then error("journeys must be a JSON array") else . end
+        | if ($js|type) != "array" then error(if ($js|type) == "object" and ($js.journeys|type) == "array" then "journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>" else "journeys must be a JSON array" end) else . end
         | if ($cl|type) != "array" then error("checklist must be a JSON array") else . end
         | ([ $js[] | select(.id == $jid) ][0]) as $jn
         | if $jn == null then error("unknown journey: \($jid)") else . end
@@ -227,6 +262,7 @@ PY
 import json, sys
 js = json.load(open(sys.argv[1], encoding="utf-8")); cl = json.load(open(sys.argv[2], encoding="utf-8"))
 jid, suf, vp, loc, sch = sys.argv[3:8]
+if isinstance(js, dict) and isinstance(js.get("journeys"), list): sys.exit("ERROR: journeys.json has the pre-0.12 {journeys:[...]} shape; convert it with: journeys.sh migrate <file>")
 if not isinstance(js, list): sys.exit("ERROR: journeys must be a JSON array")
 if not isinstance(cl, list): sys.exit("ERROR: checklist must be a JSON array")
 jn = next((x for x in js if x.get("id") == jid), None)

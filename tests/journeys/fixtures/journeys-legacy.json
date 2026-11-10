@@ -1,0 +1,4 @@
+{"journeys": [
+  {"id": "J-SUBMIT", "name": "Submit an idea", "priority": "P1", "criteria": ["J1-S1", "J1-S2", "J1-S3"]},
+  {"id": "J-KEEP", "priority": "P2", "steps": ["J1-S1"]}
+]}
