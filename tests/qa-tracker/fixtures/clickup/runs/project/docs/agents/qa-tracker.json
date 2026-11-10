@@ -1,0 +1,34 @@
+{
+  "backend": "clickup",
+  "catalog": "catalog",
+  "guideDir": "guide",
+  "guideAs": "tasks",
+  "ids": {
+    "workspace": "9001",
+    "space": "9002",
+    "folder": "9003"
+  },
+  "listIds": {
+    "Core: Sign-in": "901",
+    "Module: Events": "902",
+    "Runs": "904",
+    "Bugs": "905"
+  },
+  "fields": {
+    "Core: Sign-in/Last check result": "f-a-result",
+    "Core: Sign-in/Last check run": "f-a-run",
+    "Module: Events/Last check result": "f-b-result",
+    "Module: Events/Last check run": "f-b-run",
+    "Runs/Build": "f-build",
+    "Runs/Environment": "f-env",
+    "Runs/Language": "f-lang",
+    "Runs/Passed": "f-passed",
+    "Runs/Failed": "f-failed",
+    "Runs/Blocked": "f-blocked",
+    "Bugs/Severity": "f-sev",
+    "Bugs/Case": "f-case",
+    "Bugs/Found in run": "f-found",
+    "Bugs/Retest result": "f-retest",
+    "Bugs/Ref": "f-ref"
+  }
+}

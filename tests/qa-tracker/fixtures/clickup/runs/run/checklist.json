@@ -1,0 +1,7 @@
+[
+  {"id": "C1", "title": "Sign in opens the dashboard", "catalogRef": "TC-A-001"},
+  {"id": "C2", "title": "Wrong password shows an error", "catalogRef": ["TC-A-002"]},
+  {"id": "C3", "title": "Remember me keeps the session", "tags": ["case:TC-A-003"]},
+  {"id": "C4", "title": "Event list loads", "catalogRef": "TC-B-001"},
+  {"id": "C5", "title": "Footer links open", "catalogRef": null}
+]

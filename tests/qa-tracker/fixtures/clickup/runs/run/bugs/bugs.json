@@ -1,0 +1,38 @@
+[
+  {
+    "id": "BUG-1",
+    "title": "Wrong password shows no error message",
+    "severity": "high",
+    "layer": "FE/route (sign-in form)",
+    "criterionId": "C2",
+    "persona": "user",
+    "steps": ["Open the sign-in page.", "Enter a wrong password and submit."],
+    "expected": "A red message says the password is wrong.",
+    "actual": "The page reloads with no message.",
+    "evidence": ["evidence/user/C2/screenshot.png"]
+  },
+  {
+    "id": "BUG-2",
+    "title": "Footer privacy link opens a not found page",
+    "severity": "critical",
+    "layer": "BE",
+    "criterionId": "C5",
+    "persona": "user",
+    "steps": [],
+    "expected": "The privacy policy opens.",
+    "actual": "A not found page opens.",
+    "evidence": []
+  },
+  {
+    "id": "BUG-3",
+    "title": "Sign-in button stays disabled",
+    "severity": "low",
+    "layer": "FE",
+    "criterionId": "C2",
+    "persona": "user",
+    "steps": ["Open the sign-in page."],
+    "expected": "The button is enabled.",
+    "actual": "The automated check saw the button stay disabled.",
+    "evidence": []
+  }
+]
