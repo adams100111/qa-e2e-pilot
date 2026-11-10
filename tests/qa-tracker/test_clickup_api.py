@@ -84,6 +84,105 @@ class HttpTransportTests(unittest.TestCase):
         self.assertNotIn(token, repr(t))
 
 
+class RetryContractTests(unittest.TestCase):
+    def _t(self, fn, sleeps=None):
+        return api.HttpTransport("tok-secret", opener=fn, sleep=(sleeps.append if sleeps is not None else lambda s: None))
+
+    def test_post_5xx_not_retried(self):
+        calls = []
+
+        def op(req, timeout=None):
+            calls.append(1)
+            raise _http_error(502)
+
+        with self.assertRaises(api.ApiError) as cm:
+            self._t(op).request("POST", "/v2/x", {})
+        self.assertEqual((len(calls), cm.exception.status), (1, 502))
+
+    def test_get_network_error_retried_then_ok(self):
+        calls = []
+
+        def op(req, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ConnectionResetError("reset")
+            return _Resp({"ok": 1})
+
+        self.assertEqual(self._t(op).request("GET", "/v2/x"), {"ok": 1})
+        self.assertEqual(len(calls), 2)
+
+    def test_post_urlerror_status_zero_one_attempt(self):
+        calls = []
+
+        def op(req, timeout=None):
+            calls.append(1)
+            raise urllib.error.URLError("down")
+
+        with self.assertRaises(api.ApiError) as cm:
+            self._t(op).request("POST", "/v2/x", {})
+        self.assertEqual((len(calls), cm.exception.status), (1, 0))
+
+    def test_post_429_retried(self):
+        calls = []
+
+        def op(req, timeout=None):
+            calls.append(1)
+            if len(calls) == 1:
+                raise _http_error(429)
+            return _Resp({})
+
+        self._t(op).request("POST", "/v2/x", {})
+        self.assertEqual(len(calls), 2)
+
+    def test_4xx_not_retried(self):
+        calls = []
+
+        def op(req, timeout=None):
+            calls.append(1)
+            raise _http_error(404)
+
+        with self.assertRaises(api.ApiError):
+            self._t(op).request("GET", "/v2/x")
+        self.assertEqual(len(calls), 1)
+
+    def test_backoff_sequence(self):
+        sleeps = []
+
+        def op(req, timeout=None):
+            raise _http_error(503)
+
+        with self.assertRaises(api.ApiError):
+            self._t(op, sleeps).request("GET", "/v2/x")
+        self.assertEqual(sleeps, [15, 30, 45, 60])
+
+    def test_bad_json_is_api_error(self):
+        class Bad(_Resp):
+            def read(self):
+                return b"<html>"
+
+        with self.assertRaises(api.ApiError) as cm:
+            self._t(lambda r, timeout=None: Bad({})).request("POST", "/v2/x", {})
+        self.assertEqual(cm.exception.status, 0)
+
+    def test_non_pk_token_redacted(self):
+        def op(req, timeout=None):
+            raise _http_error(401, b"invalid tok-secret")
+
+        with self.assertRaises(api.ApiError) as cm:
+            self._t(op).request("GET", "/v2/x")
+        self.assertNotIn("tok-secret", str(cm.exception))
+
+    def test_failed_post_still_pauses(self):
+        sleeps = []
+
+        def op(req, timeout=None):
+            raise _http_error(400)
+
+        with self.assertRaises(api.ApiError):
+            self._t(op, sleeps).request("POST", "/v2/x", {})
+        self.assertEqual(sleeps, [0.35])
+
+
 class FakeTransportTests(unittest.TestCase):
     def test_fake_records_writes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -92,6 +191,15 @@ class FakeTransportTests(unittest.TestCase):
             self.assertEqual(f.request("GET", "/v2/list/1/task"), {"tasks": []})
             f.request("POST", "/v2/list/1/task", {"name": "n"})
             self.assertEqual(f.calls, [("POST", "/v2/list/1/task", {"name": "n"})])
+
+    def test_write_returns_fixture_and_sanitizes_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "POST_v2_list_1_task.json").write_text('{"id": "9"}')
+            (Path(d) / "GET_v2_task_q_a_1_b_2.json").write_text('{"k": 1}')
+            f = api.FakeTransport(d)
+            self.assertEqual(f.request("POST", "/v2/list/1/task", {}), {"id": "9"})
+            self.assertEqual(len(f.calls), 1)
+            self.assertEqual(f.request("GET", "/v2/task/q?a=1&b=2"), {"k": 1})
 
     def test_unknown_get_raises(self):
         with tempfile.TemporaryDirectory() as d:

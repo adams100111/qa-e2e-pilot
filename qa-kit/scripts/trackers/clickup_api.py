@@ -22,11 +22,18 @@ class ConfigError(Exception):
 
 
 class ApiError(Exception):
+    """A failed API call.
+
+    status 0 means a network or decode failure. Contract: a non-GET ApiError with
+    status >= 500 or 0 may have landed; callers re-read by name before retrying a create.
+    """
+
     def __init__(self, method: str, path: str, status: int, body: Any = None):
         self.method = method
         self.path = path
         self.status = status
-        self.body = _TOKEN_RE.sub("[redacted]", body if isinstance(body, str) else json.dumps(body)) if body is not None else ""
+        text = "" if body is None else (body if isinstance(body, str) else json.dumps(body))
+        self.body = _TOKEN_RE.sub("[redacted]", text)
         super().__init__("%s %s -> HTTP %s %s" % (method, path, status, self.body[:300]))
 
 
@@ -45,14 +52,17 @@ class HttpTransport(Transport):
     def __repr__(self) -> str:
         return "HttpTransport()"
 
+    def _clean(self, text: str) -> str:
+        return text.replace(self._token, "[redacted]") if self._token else text
+
     def request(self, method: str, path: str, body: Optional[dict] = None) -> dict:
         method = method.upper()
         data = json.dumps(body).encode() if body is not None else None
-        last_status, last_body = 0, ""
         for n in range(1, MAX_TRIES + 1):
             req = urllib.request.Request(BASE_URL + path, data=data, method=method)
             req.add_header("Authorization", self._token)
             req.add_header("Content-Type", "application/json")
+            status, text = 0, ""
             try:
                 with self._open(req, timeout=60) as resp:
                     raw = resp.read()
@@ -61,16 +71,22 @@ class HttpTransport(Transport):
                     self._sleep(WRITE_PAUSE)
                 return result
             except urllib.error.HTTPError as e:
-                last_status = e.code
+                status = e.code
                 try:
-                    last_body = e.read().decode("utf-8", "replace")
+                    text = e.read().decode("utf-8", "replace")
                 except Exception:
-                    last_body = ""
-                if (e.code == 429 or e.code >= 500) and n < MAX_TRIES:
-                    self._sleep(RETRY_STEP * n)
-                    continue
-                raise ApiError(method, path, e.code, last_body.replace(self._token, "[redacted]"))
-        raise ApiError(method, path, last_status, last_body.replace(self._token, "[redacted]"))
+                    text = ""
+                finally:
+                    e.close()
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                text = "%s: %s" % (type(e).__name__, e)
+            if method != "GET":
+                self._sleep(WRITE_PAUSE)
+            retryable = (status == 429 or status >= 500 or status == 0) if method == "GET" else status == 429
+            if not retryable or n == MAX_TRIES:
+                raise ApiError(method, path, status, self._clean(text))
+            self._sleep(RETRY_STEP * n)
+        raise AssertionError("unreachable")
 
 
 class FakeTransport(Transport):
@@ -82,9 +98,10 @@ class FakeTransport(Transport):
         method = method.upper()
         if method != "GET":
             self.calls.append((method, path, body))
-            return {}
-        name = "%s_%s.json" % (method, path.strip("/").replace("/", "_"))
+        name = "%s_%s.json" % (method, re.sub(r"[/?&=]", "_", path.strip("/")))
         f = self.dir / name
+        if method != "GET":
+            return json.loads(f.read_text()) if f.is_file() else {}
         if not f.is_file():
             raise ApiError(method, path, 404, "no fixture %s" % name)
         return json.loads(f.read_text())
