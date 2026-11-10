@@ -76,6 +76,12 @@ def main(argv=None) -> int:
         _print_json({"errors": errors, "ok": not errors})
         return 0 if not errors else 1
 
+    if args.verb in ("push-bug", "update-retest") and cfg.get("bugsTo") == "issue-tracker":
+        log = core.ActionLog(apply=args.apply)
+        log.skip("bugs-elsewhere", "bugs are tracked in the project's issue tracker (docs/agents/issue-tracker.md)")
+        sys.stdout.write(log.summary() + "\n")
+        return 0
+
     backend_name = cfg["backend"]
     module = load_backend(backend_name)
     handler = getattr(module, args.verb.replace("-", "_"), None) if module else None

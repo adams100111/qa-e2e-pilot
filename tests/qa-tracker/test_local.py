@@ -164,6 +164,89 @@ class LocalBackendTests(LocalProject):
         self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L9")
         self.assertEqual(f.read_text().count("Retest on L9"), 1)
 
+    def _ref(self) -> str:
+        return core.fingerprint("TC-A-001", "user", "Sidebar shows the wrong name after sign in")
+
+    def _bug(self, name: str, status: str, found_in: str = "L0", extra: str = "", bom: bool = False,
+             case: str = "TC-A-001") -> Path:
+        d = self.tracker() / "bugs"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        text = ("\ufeff" if bom else "") + f"---  \nstatus: {status}\nseverity: high\ncase: {case}\n" \
+            f"ref: {self._ref()}\nfound_in: {found_in}\n---  \n# Sidebar\n{extra}"
+        f.write_text(text, encoding="utf-8")
+        return f
+
+    def test_front_matter_tolerance_closed_variants(self) -> None:
+        f = self._bug("001-sidebar.md", "Closed", bom=True)
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L2")
+        self.assertEqual(len(list((self.tracker() / "bugs").glob("*.md"))), 2)
+        self.assertNotIn("Still happens", f.read_text(encoding="utf-8"))
+
+    def test_front_matter_tolerance_quoted_retest(self) -> None:
+        f = self._bug("001-sidebar.md", '"retest"', bom=True)
+        self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L5")
+        self.assertIn("- Retest on L5: still failing", f.read_text(encoding="utf-8"))
+        self.assertIn('status: "retest"', f.read_text(encoding="utf-8"))
+
+    def test_still_happens_dedupe_is_exact_not_substring(self) -> None:
+        f = self._bug("001-sidebar.md", "open", found_in="L10", extra="- Still happens on L10\n")
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        text = f.read_text(encoding="utf-8")
+        self.assertIn("- Still happens on L1\n", text)
+        self.assertEqual(len(list((self.tracker() / "bugs").glob("*.md"))), 1)
+
+    def test_dry_run_same_ref_twice_logs_one_create(self) -> None:
+        run = self.tmp / ".qa" / "runs" / "r1" / "bugs" / "bugs.json"
+        rows = json.loads(run.read_text())
+        run.write_text(json.dumps(rows + rows))
+        _, out, _ = self.run_cli("push-bug", "--run", "r1")
+        self.assertEqual(out.count("DRY\tcreate"), 1)
+        self.assertNotIn("DRY\tupdate", out)
+
+    def test_same_ref_twice_in_apply_makes_one_file(self) -> None:
+        run = self.tmp / ".qa" / "runs" / "r1" / "bugs" / "bugs.json"
+        rows = json.loads(run.read_text())
+        run.write_text(json.dumps(rows + rows))
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        files = list((self.tracker() / "bugs").glob("*.md"))
+        self.assertEqual(len(files), 1)
+        self.assertNotIn("Still happens", files[0].read_text(encoding="utf-8"))
+
+    def test_malformed_bugs_json_is_a_clean_error(self) -> None:
+        (self.tmp / ".qa" / "runs" / "r1" / "bugs" / "bugs.json").write_text("{not json")
+        rc, _, err = self.run_cli("push-bug", "--apply", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("bugs.json", err)
+        self.assertNotIn("Traceback", err)
+
+    def test_create_collision_fails_loudly(self) -> None:
+        from trackers import local
+        p = self.tmp / "x.md"
+        p.write_text("a")
+        with self.assertRaises(FileExistsError):
+            local._create(p, "b")
+        self.assertEqual(p.read_text(), "a")
+
+    def test_bugs_to_issue_tracker_skips_bug_verbs(self) -> None:
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({"bugsTo": "issue-tracker"}))
+        for verb in ("push-bug", "update-retest"):
+            rc, out, _ = self.run_cli(verb, "--apply", "--run", "r1")
+            self.assertEqual(rc, 0)
+            self.assertIn("SKIP\tbugs-elsewhere\tbugs are tracked in the project's issue tracker "
+                          "(docs/agents/issue-tracker.md)", out)
+        self.assertFalse((self.tracker() / "bugs").exists())
+
+    def test_bugs_to_invalid_value_is_config_error(self) -> None:
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({"bugsTo": "nowhere"}))
+        rc, _, err = self.run_cli("push-bug", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("bugsTo", err)
+
 
 if __name__ == "__main__":
     unittest.main()
