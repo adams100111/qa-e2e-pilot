@@ -33,6 +33,7 @@ MAP_REL = Path(".qa") / "tracker-map.json"
 BACKENDS = ("local", "clickup", "github", "other")
 STATUS_CEILINGS = ("none", "testing")
 GUIDE_AS = ("tasks", "doc")
+BUGS_TO = ("same", "issue-tracker")
 
 # P4: worst verdict wins. Unknown verdicts rank as "error" so they never hide behind a pass.
 VERDICT_RANK = {"pass": 0, "deferred": 1, "blocked": 2, "error": 3, "fail": 4}
@@ -115,6 +116,8 @@ def load_config(project: Path) -> Config:
         problems.append(f"statusCeiling must be one of {', '.join(STATUS_CEILINGS)}")
     if merged.get("guideAs") not in GUIDE_AS:
         problems.append(f"guideAs must be one of {', '.join(GUIDE_AS)}")
+    if merged.get("bugsTo") not in BUGS_TO:
+        problems.append(f"bugsTo must be one of {', '.join(BUGS_TO)}")
     if not isinstance(merged.get("secrets"), list):
         problems.append("secrets must be a list")
     wording = merged.get("wording")
