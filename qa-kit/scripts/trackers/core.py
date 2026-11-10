@@ -40,6 +40,11 @@ CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
 
 SHARED_PASSWORD_TEXT = "the shared QA password"
 TOKEN_RE = re.compile(r"pk_[A-Za-z0-9_]{20,}")
+# Copied verbatim from scripts/bug-export.sh (DEFAULT_PATTERNS, AUTH_PATTERNS); matched case-insensitively.
+DEFAULT_PATTERNS = ["(password|passwd|secret|token|api[_-]?key|apikey|authorization|bearer|access[_-]?key|private[_-]?key|client[_-]?secret)\\s*[=:]\\s*\\S+"]
+AUTH_PATTERNS = ["authorization\\s*[=:]\\s*((bearer|basic)\\s+)?\\S+", "bearer\\s+[A-Za-z0-9._~+/=-]+", "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*"]
+SECRET_RES = [re.compile(p, re.IGNORECASE) for p in AUTH_PATTERNS + DEFAULT_PATTERNS]
+OUTBOUND_SOURCES = ("generated", "catalog")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
@@ -114,8 +119,8 @@ def load_config(project: Path) -> Config:
         problems.append("secrets must be a list")
     wording = merged.get("wording")
     if not isinstance(wording, dict) or not isinstance(wording.get("forbidden"), list) \
-            or not isinstance(wording.get("patterns"), list):
-        problems.append("wording.forbidden and wording.patterns must be lists")
+            or not isinstance(wording.get("patterns"), list) or not isinstance(wording.get("allow"), list):
+        problems.append("wording.forbidden, wording.allow and wording.patterns must be lists")
     else:
         for p in wording["patterns"]:
             try:
@@ -323,10 +328,12 @@ def validate_catalog(cat: Catalog) -> List[dict]:
                 continue
             if case.get("retired") is True:
                 retired += 1
-            elif case.get("priority") in tally:
+            if case.get("priority") in tally:
                 tally[case["priority"]] += 1
         if area.counts is not None:
             for key in rules["priority"] + ["retired"]:
+                if key == "retired" and key not in area.counts:
+                    continue
                 want = area.counts.get(key, 0)
                 got = retired if key == "retired" else tally[key]
                 if want != got:
@@ -451,6 +458,15 @@ def case_results(run_dir: Path) -> Dict[str, dict]:
         cid = _cid(row)
         if cid:
             latest[(cid, str(row.get("persona") or ""))] = row
+    # A persona-less row is superseded by a strictly later persona-scoped row for the same
+    # criterion (scripts/qa-verify.sh list_pass_records); a timestamp tie keeps both.
+    for (cid, persona), row in list(latest.items()):
+        if persona:
+            continue
+        at = str(row.get("checkpointed_at") or "")
+        if any(c == cid and p and str(r.get("checkpointed_at") or "") > at
+               for (c, p), r in latest.items()):
+            del latest[(cid, persona)]
 
     out: Dict[str, dict] = {}
     for (cid, persona), row in latest.items():
@@ -460,12 +476,16 @@ def case_results(run_dir: Path) -> Dict[str, dict]:
                 cases.append(r)
         if not cases:
             continue
-        verdict = str(row.get("verdict") or "error")
+        raw = str(row.get("verdict") or "").lower()
+        verdict = raw if raw in VERDICT_RANK else "error"
         confidence = row.get("confidence")
         ov = overrides.get((cid, persona))
-        if ov is not None:
-            verdict = ov["verifierVerdict"]
-            confidence = ov.get("confidence", confidence)
+        # scripts/render-report.js: the verifier row applies only when it checked this verdict.
+        if ov is not None and ov.get("inRunVerdict") == verdict:
+            if ov["verifierVerdict"] in VERDICT_RANK:
+                verdict = ov["verifierVerdict"]
+            if ov.get("confidence"):
+                confidence = ov["confidence"]
         for case_id in cases:
             entry = out.setdefault(case_id, {"verdict": None, "criteria": [], "confidence": None, "_conf": []})
             entry["criteria"].append({"id": cid, "verdict": verdict, "persona": persona})
@@ -521,6 +541,9 @@ SECRET_REPLACEMENTS: Dict[str, str] = {
 
 def redact(text: str, cfg: dict) -> str:
     out = text or ""
+    # bug-export patterns first, so they never consume the guide-value replacement text
+    for rx in SECRET_RES:
+        out = rx.sub("[redacted]", out)
     for key in cfg.get("secrets") or []:
         resolver = SECRET_RESOLVERS.get(key)
         if resolver is None:
@@ -531,13 +554,26 @@ def redact(text: str, cfg: dict) -> str:
     return TOKEN_RE.sub("[redacted]", out)
 
 
-def outbound(text: str, cfg: dict) -> str:
-    """Redact, then refuse the text if it holds a forbidden word or pattern."""
+def outbound(text: str, cfg: dict, source: str = "generated") -> str:
+    """Redact, then refuse the text if it holds a forbidden word or pattern.
+
+    `source="catalog"` is human-authored case, intro or guide text: redaction and the regex
+    patterns apply, the forbidden-word list does not. `source="generated"` (comments, run and
+    result text, bug text from the engine export) runs every check. Phrases in
+    `wording.allow` are exempt from the forbidden-word check.
+    """
+    if source not in OUTBOUND_SOURCES:
+        raise ValueError(f"source must be one of {', '.join(OUTBOUND_SOURCES)}")
     out = redact(text, cfg)
     wording = cfg.get("wording") or {}
-    for word in wording.get("forbidden") or []:
-        if re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", out, flags=re.IGNORECASE):
-            raise WordingError(word)
+    if source == "generated":
+        probe = out
+        for phrase in wording.get("allow") or []:
+            if phrase:
+                probe = re.sub(re.escape(phrase), " ", probe, flags=re.IGNORECASE)
+        for word in wording.get("forbidden") or []:
+            if re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", probe, flags=re.IGNORECASE):
+                raise WordingError(word)
     for pattern in wording.get("patterns") or []:
         m = re.search(pattern, out)
         if m:
@@ -555,10 +591,19 @@ class MapCache:
         self.path = Path(project) / MAP_REL
         self.data: Dict[str, Any] = {"version": 1}
         if self.path.is_file():
-            loaded = _read_json(self.path, ConfigError)
+            try:
+                with open(self.path, encoding="utf-8") as fh:
+                    loaded = json.load(fh)
+            except (OSError, ValueError) as exc:
+                loaded = None
+                reason = str(exc)
+            else:
+                reason = "not a JSON object"
             if isinstance(loaded, dict):
                 self.data = loaded
                 self.data.setdefault("version", 1)
+            else:
+                sys.stderr.write(f"warning: {self.path}: {reason}; starting with an empty cache\n")
 
     def get(self, kind: str, key: str) -> Optional[dict]:
         bucket = self.data.get(kind)

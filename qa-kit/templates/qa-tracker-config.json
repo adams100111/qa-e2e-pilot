@@ -42,6 +42,7 @@
       "Playwright",
       "bot"
     ],
+    "allow": [],
     "patterns": [
       "(?:^|\\s)(?:\\.{0,2}/)?[\\w.-]+/[\\w./-]+\\.\\w{1,5}\\b",
       "\\b(?:feat|fix|docs|chore)/[\\w.-]+",

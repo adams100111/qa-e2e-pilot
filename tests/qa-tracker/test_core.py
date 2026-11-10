@@ -106,6 +106,16 @@ class CatalogTests(TempProject):
         for e in errors:
             self.assertEqual(set(e), {"file", "id", "reason"})
 
+    def test_counts_include_retired_cases(self) -> None:
+        dest = self.copy_catalog()
+        man = json.loads((dest / "manifest.json").read_text())
+        man["areas"][0]["counts"] = {"P1": 1, "P2": 1, "P3": 0, "retired": 1}
+        man["areas"][1]["counts"]["retired"] = 1
+        (dest / "manifest.json").write_text(json.dumps(man))
+        errors = core.validate_catalog(core.load_catalog(self.tmp, self.cfg()))
+        reasons = sorted(e["reason"] for e in errors)
+        self.assertEqual(reasons, ["counts P2: manifest 1, catalog 2", "counts retired: manifest 1, catalog 0"])
+
     def test_validate_reports_missing_and_unlisted_files(self) -> None:
         dest = self.copy_catalog()
         (dest / "area-b.json").rename(dest / "extra.json")
@@ -207,6 +217,43 @@ class ResultsTests(TempProject):
         res = core.case_results(RUN_R1)
         self.assertEqual(sorted(res), ["TC-A-001", "TC-A-002", "TC-A-003", "TC-B-001"])
 
+    def test_override_needs_matching_in_run_verdict(self) -> None:
+        # C4's verification row says inRunVerdict "fail" but the checkpoint says "pass": stale, not applied
+        res = core.case_results(RUN_R1)
+        c4 = [c for c in res["TC-A-003"]["criteria"] if c["id"] == "C4"][0]
+        self.assertEqual(c4["verdict"], "pass")
+
+    def test_override_ignores_unknown_verifier_verdict(self) -> None:
+        run = self.tmp / "r1"
+        shutil.copytree(str(RUN_R1), str(run))
+        rows = json.loads((run / "verification.json").read_text())
+        for r in rows:
+            if r["criterionId"] == "C3":
+                r["verifierVerdict"] = "maybe"
+        (run / "verification.json").write_text(json.dumps(rows))
+        self.assertEqual(core.case_results(run)["TC-A-002"]["verdict"], "pass")
+
+    def test_superseded_personaless_row_is_dropped(self) -> None:
+        run = self.tmp / "r1"
+        shutil.copytree(str(RUN_R1), str(run))
+        cl = json.loads((run / "checklist.json").read_text())
+        cl.append({"id": "C7", "title": "Event page direction", "catalogRef": ["TC-B-002"]})
+        cl.append({"id": "C8", "title": "Event page fonts", "catalogRef": ["TC-B-002"]})
+        (run / "checklist.json").write_text(json.dumps(cl))
+        cp = json.loads((run / "checkpoint.json").read_text())
+        cp["criteria"] += [
+            {"criterion_id": "C7", "persona": "", "verdict": "fail", "checkpointed_at": "2026-11-11T08:00:00Z"},
+            {"criterion_id": "C7", "persona": "user", "verdict": "pass", "checkpointed_at": "2026-11-11T09:00:00Z"},
+            {"criterion_id": "C8", "persona": "", "verdict": "blocked", "checkpointed_at": "2026-11-11T09:00:00Z"},
+            {"criterion_id": "C8", "persona": "user", "verdict": "pass", "checkpointed_at": "2026-11-11T09:00:00Z"},
+        ]
+        (run / "checkpoint.json").write_text(json.dumps(cp))
+        crit = core.case_results(run)["TC-B-002"]["criteria"]
+        self.assertEqual(
+            sorted((c["id"], c["persona"], c["verdict"]) for c in crit),
+            [("C7", "user", "pass"), ("C8", "", "blocked"), ("C8", "user", "pass")],
+        )
+
     def test_missing_verification_is_not_an_error(self) -> None:
         run = self.tmp / "r1"
         shutil.copytree(str(RUN_R1), str(run))
@@ -240,7 +287,36 @@ class OutboundTests(TempProject):
         cfg = self.cfg()
         out = core.redact("Sign in with qa.user and S3cret!x.", cfg)
         self.assertEqual(out, "Sign in with qa.user and the shared QA password.")
-        self.assertEqual(core.outbound("Password: S3cret!x", cfg), "Password: the shared QA password")
+        self.assertEqual(core.outbound("Use S3cret!x on qa.admin too", cfg), "Use the shared QA password on qa.admin too")
+        self.assertEqual(core.redact("Password: S3cret!x", cfg), "[redacted]")
+
+    def test_catalog_source_skips_forbidden_words_but_not_patterns(self) -> None:
+        cfg = self.cfg()
+        self.assertEqual(core.outbound("AI Assistant answers", cfg, source="catalog"), "AI Assistant answers")
+        with self.assertRaises(core.WordingError):
+            core.outbound("AI Assistant answers", cfg, source="generated")
+        with self.assertRaises(core.WordingError):
+            core.outbound("AI Assistant answers", cfg)
+        with self.assertRaises(core.WordingError):
+            core.outbound("see app/Http/X.php", cfg, source="catalog")
+        with self.assertRaises(ValueError):
+            core.outbound("x", cfg, source="other")
+
+    def test_allow_phrases_are_exempt(self) -> None:
+        cfg = self.cfg()
+        self.assertEqual(cfg["wording"]["allow"], [])
+        cfg["wording"]["allow"] = ["AI Screening"]
+        text = "The ai screening score is missing"
+        self.assertEqual(core.outbound(text, cfg), text)
+        with self.assertRaises(core.WordingError) as ctx:
+            core.outbound("AI Screening ran but the AI agent stopped", cfg)
+        self.assertIn(ctx.exception.word, ("AI", "agent"))
+
+    def test_redact_bug_export_patterns(self) -> None:
+        cfg = self.cfg()
+        self.assertEqual(core.redact("password: hunter2", cfg), "[redacted]")
+        self.assertEqual(core.redact("send Bearer abc.def now", cfg), "send [redacted] now")
+        self.assertNotIn("hunter2", core.redact("Token=hunter2 and more", cfg))
 
     def test_redact_pk_token(self) -> None:
         cfg = self.cfg()
@@ -261,6 +337,25 @@ class MapCacheTests(TempProject):
         self.assertEqual(again.get("case", "TC-A-001"), {"id": "86abc", "hash": "h1"})
         self.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith("tracker-map")],
                          ["tracker-map.json"])
+
+
+    def test_corrupt_cache_is_empty_with_warning(self) -> None:
+        path = self.tmp / ".qa" / "tracker-map.json"
+        path.parent.mkdir(parents=True)
+        for body in ("{broken", "[1, 2]"):
+            path.write_text(body)
+            err = io.StringIO()
+            old, sys.stderr = sys.stderr, err
+            try:
+                cache = core.MapCache(self.tmp)
+            finally:
+                sys.stderr = old
+            self.assertIsNone(cache.get("case", "TC-A-001"))
+            self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
+            self.assertIn(str(path), err.getvalue())
+        cache.put("case", "TC-A-001", "86abc", "h1")
+        cache.save()
+        self.assertEqual(core.MapCache(self.tmp).get("case", "TC-A-001"), {"id": "86abc", "hash": "h1"})
 
 
 class ActionLogTests(unittest.TestCase):
