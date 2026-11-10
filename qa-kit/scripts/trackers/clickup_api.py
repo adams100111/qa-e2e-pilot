@@ -10,15 +10,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from trackers.core import ConfigError  # noqa: F401  (re-exported: one ConfigError class)
+
 BASE_URL = "https://api.clickup.com/api"
 MAX_TRIES = 5
 RETRY_STEP = 15
 WRITE_PAUSE = 0.35
 _TOKEN_RE = re.compile(r"pk_[A-Za-z0-9_]+")
-
-
-class ConfigError(Exception):
-    """Local stand-in; a later integration aliases it to core.ConfigError."""
 
 
 class ApiError(Exception):
