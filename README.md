@@ -193,9 +193,10 @@ and `/qa-analyze` verdict, every run with its status, progress, rate and ETA, ve
 severity, ship readiness and a link to its report, the active run's current criterion and last journal
 events, trends across runs of a target, and the known-defect registry.
 
-The page leads with each target's readiness, its journeys drawn as lines of checks (select a stop to
-see that check) and its bugs with what happened versus what should happen; the internal tables sit
-under **Records**.
+The page is a QA console: a sidebar of test targets and project views; per target a run dial (one
+tick per check, grouped by journey), the readiness facts and where it fails, the live run, journey
+cards with a ring per journey, and bugs with what happened versus what should happen, opening in a
+side panel.
 
 ```
 bash scripts/qa-dashboard.sh html --watch 60 --open  # keep .qa/dashboard.html live and open it

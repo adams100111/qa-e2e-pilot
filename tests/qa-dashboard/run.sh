@@ -195,6 +195,11 @@ check "readiness running" "$(feat alpha "['readiness']")" '{"facts":"1 bug is op
 check "readiness stalled with a failure" "$(feat beta "['readiness']['headline']"),$(feat beta "['readiness']['level']")" "Stalled,warn"
 check "check names are readable" "$(q "$J" "[k['name'] for f in d['features'] if f['target']=='alpha' for j in f['journeys'] for k in j['checks']][0]")" "C1"
 
+# a long check drives the browser without journal events: tool-stream activity keeps the run "running"
+mkdir -p "$W/projT/.qa"; cp -R "$P/.qa/runs" "$P/.qa/specs" "$W/projT/.qa/"; : > "$W/projT/.qa/runs/r3-beta/toolstream.jsonl"; setm "$W/projT/.qa/runs/r3-beta/toolstream.jsonl" 3
+JT="$(dash json --project "$W/projT" 2>/dev/null)"
+check "tool stream counts as activity (not stalled)" "$(q "$JT" "[r['status'] for r in d['runs'] if r['id']=='r3-beta'][0]")" "running"
+
 # ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------
@@ -206,7 +211,7 @@ has "html doctype" "$H" "<!DOCTYPE html>"
 has "html dark mode" "$H" "prefers-color-scheme:dark"
 has "html dir=auto on user text" "$H" 'dir="auto"'
 has "html arabic title intact" "$H" "$AR_TITLE"
-has "html stalled warning" "$H" "Stalled: no journal activity"
+has "html stalled warning" "$H" "Stalled: no activity for"
 has "html trend svg" "$H" '<svg class="trend"'
 has "html ship-less runs show a dash" "$H" "Ship"
 has "html report link relative to .qa/dashboard.html" "$H" 'href="runs/r1-alpha%20(%D8%B1%D9%85%D8%B6%D8%A7%D9%86)/report.html"'
@@ -214,16 +219,19 @@ lacks "html no meta refresh by default" "$H" 'http-equiv="refresh"'
 EXT="$(printf '%s' "$H" | grep -Eio '(src|href|action)=["'"'"']?[a-z]*:?//[^"'"'"' >]*|url\([^)]*//|@import|<script[^>]*src|<link[^>]*href' | head -3)"
 check "html references nothing external" "$EXT" ""
 for s in SUPERSECRETPW PersonaPassw0rd hunter2xyz S3cr3tLiteral abc.def.ghi; do lacks "html has no secret $s" "$H" "$s"; done
-has "html journey line for main journeys" "$H" 'class="line main"'
-has "html stops link to their check" "$H" 'data-ck="ck-alpha-j1-0"'
+has "html journey card for main journeys" "$H" '<details class="jc p1"'
+has "html checks carry an anchor" "$H" 'data-ck="ck-alpha-j1-0"'
 has "html check list item" "$H" 'id="ck-alpha-j1-0"'
-has "html readiness headline" "$H" '<p class="v-head">In progress</p>'
+has "html readiness pill" "$H" 'class="pill l-progress live">In progress<'
 has "html roles fallback" "$H" "Checks as any role"
 has "html empty bug state" "$H" "No bugs logged in this run."
 has "html bug detail" "$H" "What should happen"
 has "html bug links its check" "$H" 'href="#bug-alpha-b7"'
-has "html works without js (details)" "$H" '<details class="jr"'
-has "html filters hidden until js runs" "$H" '<div class="filters" hidden>'
+has "html works without js (details)" "$H" '<details class="bug"'
+has "html filters hidden until js runs" "$H" '<div class="tools" hidden>'
+has "html run dial" "$H" '<svg class="dial"'
+has "html side panel" "$H" 'id="sheet"'
+has "html project views" "$H" '<section class="view" id="runs">'
 has "html generated time for local rendering" "$H" 'data-generated="2026-11-09T12:00:00.000Z"'
 dash html --project "$P" --out "$W/out/d.html" --refresh 15 >/dev/null 2>&1; rc=$?
 check "html --out exits 0" "$rc" "0"

@@ -31,20 +31,21 @@ or pass `--project <dir>`.
 
 ## What it shows
 
-The HTML page leads with each target's **latest run in people's terms**: a readiness line
-(`In progress`, `Stalled`, `Not ready to ship`, `Every check passed`, or the ship verdict when the run
-has one) with one sentence of facts; the live run's checks done, time left and the check running now;
-**journeys** from the spec's `journeys.json` (or checks grouped by role when there are none), each a
-line of stops shaped and coloured by verdict that opens to its numbered checks; and **bugs**, most
-severe first, each opening to what happened and what should happen, filterable by severity, journey
-and text. Other targets fold below it. Everything else sits under **Records**:
+The HTML page is a QA console. A sidebar lists the test targets and the project views. Each target
+leads with its **latest run in people's terms**: a readiness pill (`In progress`, `Stalled`, `Not
+ready to ship`, `Every check passed`, or the ship verdict when the run has one), a run dial with one
+tick per check grouped by journey, the facts and a "Where it fails" list, the check running now and
+the live activity; then a stat rail, **journey cards** from the spec's `journeys.json` (checks grouped
+by role when there are none) whose rings show each check's verdict, and **bugs**, most severe first,
+each opening to what happened and what should happen, filterable by severity, journey and text.
+Cards and bugs open in a side panel. The project views hold:
 
 - **Header**: constitution version and role count, profile/environment/gates from `.qa/config.json`,
   plugin version.
 - **Specs** (`.qa/specs/<target>/`): criteria, P1/P2 journeys, oracle sources
   (`human`/`spec`/`llm-suggested`), the `/qa-analyze` verdict (`BLOCKED`/`OK`, stale when older than
   the checklist), coverage %, run count, role drift against the constitution.
-- **Runs** (newest first): status — `running` (criteria left and the journal moved in the last 30
+- **Runs** (newest first): status — `running` (criteria left and the journal or tool stream moved in the last 30
   minutes, `--stall-minutes` to change), `stalled` (criteria left, journal idle longer), `paused`
   (the manifest says so), `complete` — progress, rate per hour and ETA for a running run, verdict
   counts and low-confidence passes, bugs by severity, verified, ship readiness and a link to

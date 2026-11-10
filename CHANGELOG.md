@@ -12,18 +12,23 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 **Changed**
 
-- **The `/qa-dashboard` HTML page is reorganised around three questions**: can this target ship and
-  what is in the way, where is the live run, and what exactly is broken. The internal tables (runs,
-  trends, test plans, known defects, setup) move to a folded **Records** section.
+- **The `/qa-dashboard` HTML page is now a QA console** organised around three questions: can this
+  target ship and what is in the way, where is the live run, and what exactly is broken. A sidebar
+  lists every test target (status dot, progress) and the project views (runs, trends, test plans,
+  known defects, setup). Each target opens on a hero with the **run dial** (one tick per check of the
+  run, grouped by journey, coloured by verdict, the running check pulsing), the readiness facts with a
+  "Where it fails" list, the check running now and the live activity feed; then a stat rail (passed,
+  failed, bugs, finishing time), journey cards with a segmented ring per journey, and the bug list.
+  Journey cards and bugs open in a side panel (Esc closes it). Without JavaScript the views stack and
+  cards and bugs expand in place.
   - **Readiness line** per target, from its latest run: `In progress`, `Stalled`, `Not ready to
     ship`, `Every check passed` or `Ready to ship` (the ship verdict wins when the run has one), plus
     one sentence of facts (failed checks and how many main (P1) journeys they touch, blocked checks,
     open bugs).
-  - **Journey lines**: each journey from the spec's `journeys.json` (or `journey:<id>` tags) is a line
-    of stops, one per check in plan order, shaped and coloured by verdict (diamond = failed, square =
-    blocked, ring = low-confidence pass, hollow = not run yet, pulsing = running now). Selecting a stop
-    opens the journey's numbered checks with the last action, role, bugs and an evidence link into
-    `report.html`. A spec without journeys groups its checks by role instead.
+  - **Journeys**: each journey from the spec's `journeys.json` (or `journey:<id>` tags) is a card whose
+    ring has one segment per check in plan order, coloured by verdict; it opens to the numbered checks
+    with the last action, role, bugs and an evidence link into `report.html`. Filter to main journeys
+    or journeys with failures. A spec without journeys groups its checks by role instead.
   - **Bugs**: most severe first, each opening to "What happened" / "What should happen", filtered by
     severity, journey and search (`/`). Reads both bug-log key styles (`bug_id`/`criterion_id` and
     `id`/`criterionId`).
@@ -37,6 +42,9 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 - **`html --watch <sec>`** keeps rewriting the page (atomically, so a reloading tab never reads half
   a file) and sets the page's refresh to the same period; **`--open`** opens it in the default
   browser. One command keeps a live dashboard: `qa-dashboard.sh html --watch 60 --open`.
+- **A long check no longer reads as stalled**: activity is the newest of `journal.ndjson` and
+  `toolstream.jsonl`, so a check that drives the browser for many minutes without a journal event
+  stays `running`.
 - **Terminal view** gains a journeys block for the lead target: one glyph per check, the readiness
   line and a legend.
 - The JSON model adds `features[]` (per target: latest run, readiness, journeys with checks, bugs).

@@ -424,7 +424,11 @@ function runInfo(qa, runId, specNames, ctx) {
   const total = num(cur.criteria_total, man.criteria_total, model ? model.distinct : undefined);
   const firstT = journal && journal.length ? parseTime(journal[0].t) : null;
   const startedMs = parseTime(man.started_at) || firstT;
-  const lastActivityMs = mtimeMs(path.join(dir, "journal.ndjson")) || mtimeMs(path.join(dir, "cursor.json")) || mtimeMs(path.join(dir, "checkpoint.json"));
+  // Activity = the newest of the journal and the tool stream: a long check
+  // drives the browser for many minutes without a journal event, and that is
+  // work, not a stall. Falls back to cursor / checkpoint for older runs.
+  const moved = [mtimeMs(path.join(dir, "journal.ndjson")), mtimeMs(path.join(dir, "toolstream.jsonl"))].filter((v) => v !== null);
+  const lastActivityMs = moved.length ? Math.max(...moved) : (mtimeMs(path.join(dir, "cursor.json")) || mtimeMs(path.join(dir, "checkpoint.json")));
   const manifestStatus = str(man.status);
   const status = runStatus({ manifestStatus, done, total, lastActivityMs, nowMs: ctx.nowMs, stallMs: ctx.stallMs });
 
@@ -604,211 +608,257 @@ function svgTrend(tr) {
     + '<line class="axis" x1="0" y1="' + h + '" x2="' + width + '" y2="' + h + '"></line>' + bars + "</svg>";
 }
 
-// Design: the page answers three questions in order: can this ship and what
-// is in the way, where is the live run, what exactly is broken. The one
-// strong visual is the journey line: one stop per check in plan order,
-// coloured and shaped by verdict (shape carries meaning without colour).
-// Everything else stays quiet. Works without JavaScript (details/summary);
-// the inline script only adds local times, filters, freshness, and keeps
-// scroll, open sections and filters across auto-refresh.
+// Design: an app console. A sidebar of test targets and project records; per
+// target a top bar with the readiness pill, a hero whose run dial draws every
+// check of the run as one tick (grouped by journey, coloured by verdict, the
+// running one pulsing), a single stat rail, journey cards that repeat the
+// dial in miniature, and a bug list. Cards and bugs open a side panel. Works
+// without JavaScript: views stack, cards and bugs expand in place.
 const CSS = `
 :root{color-scheme:light dark;
---page:#edf0f3;--surface:#fff;--ink:#16212e;--soft:#4e5a69;--faint:#768190;--rule:#d5dbe2;--wash:#f5f7f9;
---pass:#1f7a4d;--fail:#c33a2e;--error:#6e44c2;--blocked:#b4761a;--deferred:#8b95a3;--pending:#b3bcc7;--now:#2456c6;
---good-bg:#e5f2ea;--bad-bg:#fbe8e5;--warn-bg:#fbf0de;--progress-bg:#e7edfa;--link:#2456c6;
---sans:"Avenir Next",Avenir,"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Geeza Pro","Noto Sans Arabic",Tahoma,sans-serif;
+--bg:#f3f5fa;--side:#e9edf5;--panel:#ffffff;--raised:#f7f9fc;--line:#dfe4ee;--line2:#c9d1df;--ink:#111a2c;--muted:#5b667c;--faint:#8a94a8;
+--accent:#4b5cf0;--accent-soft:#e6e9ff;--pass:#18a058;--fail:#e5484d;--blocked:#d9930d;--deferred:#8a94a8;--error:#9b5de5;--pending:#cfd6e3;
+--pass-soft:#e3f5ea;--fail-soft:#fde8e8;--blocked-soft:#fdf1dc;--shadow:0 1px 2px rgba(17,26,44,.06),0 8px 24px -12px rgba(17,26,44,.18);
+--ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",system-ui,"Geeza Pro","Noto Sans Arabic",Tahoma,sans-serif;
+--num:"Avenir Next Condensed","Bahnschrift SemiCondensed","Bahnschrift","Roboto Condensed","Arial Narrow",var(--ui);
 --code:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
-@media (prefers-color-scheme:dark){:root{--page:#0e131a;--surface:#151c25;--ink:#e4e9ef;--soft:#a6b0bd;--faint:#7d8896;--rule:#27313d;--wash:#1a222c;
---pass:#45b07b;--fail:#ef6a5c;--error:#a688f2;--blocked:#e2a23f;--deferred:#7f8996;--pending:#4a5563;--now:#7ea3ff;
---good-bg:#132a1e;--bad-bg:#35191a;--warn-bg:#2f2513;--progress-bg:#17223a;--link:#8fb0ff}}
+@media (prefers-color-scheme:dark){:root{
+--bg:#0f1522;--side:#0c111c;--panel:#151c2b;--raised:#1b2436;--line:#232d42;--line2:#33405b;--ink:#e9edf5;--muted:#9aa4ba;--faint:#6c7790;
+--accent:#8692ff;--accent-soft:#232a52;--pass:#3ccf8e;--fail:#ff5d6c;--blocked:#f5b544;--deferred:#7a859c;--error:#c48cff;--pending:#2c364d;
+--pass-soft:#12301f;--fail-soft:#3a1820;--blocked-soft:#352812;--shadow:0 1px 0 rgba(255,255,255,.03) inset,0 12px 32px -16px rgba(0,0,0,.7)}}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--page);color:var(--ink);font:15px/1.55 var(--sans);font-variant-numeric:tabular-nums}
-a{color:var(--link);text-underline-offset:2px}
-:focus-visible{outline:2px solid var(--now);outline-offset:2px;border-radius:3px}
-code,.code{font-family:var(--code);font-size:.85em;overflow-wrap:anywhere}
-body{overflow-wrap:break-word}
-.low-note{color:var(--faint);display:inline-flex;align-items:center;gap:4px}
-.low-note .stop{width:10px;height:10px;cursor:default}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--ui);font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+code,.code{font-family:var(--code);font-size:.86em;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
 [hidden]{display:none!important}
-.wrap{max-width:1180px;margin:0 auto;padding:0 16px 72px}
-.top{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:4px 24px;padding:18px 0 14px;border-bottom:1px solid var(--rule)}
-.top h1{font-size:1rem;font-weight:600;margin:0}
-.top h1 span{color:var(--faint);font-weight:500}
-.fresh{margin:0;color:var(--soft);font-size:.88rem}
-.stale{margin:12px 0 0;padding:10px 14px;border-radius:8px;background:var(--warn-bg);color:var(--ink);font-size:.9rem}
-.feature{padding:28px 0 8px}
-.f-title{font-size:clamp(1.75rem,3.2vw,2.45rem);line-height:1.1;font-weight:650;letter-spacing:-.015em;margin:0}
-.f-run{margin:8px 0 0;color:var(--soft);font-size:.9rem}
-.verdict{margin:20px 0 0;padding:14px 18px;border-radius:10px;border-inline-start:5px solid var(--faint);background:var(--wash)}
-.verdict p{margin:0}
-.v-head{font-size:1.3rem;font-weight:650;line-height:1.25}
-.v-facts{margin-top:4px!important;color:var(--soft);max-width:72ch}
-.lv-good{border-color:var(--pass);background:var(--good-bg)}.lv-bad{border-color:var(--fail);background:var(--bad-bg)}
-.lv-warn{border-color:var(--blocked);background:var(--warn-bg)}.lv-progress{border-color:var(--now);background:var(--progress-bg)}
-.live{margin:16px 0 0;display:grid;gap:14px 32px;grid-template-columns:minmax(0,1fr)}
-@media (min-width:900px){.live{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}}
-.live p{margin:0}
-.count{font-size:1.05rem}.count b{font-size:1.6rem;font-weight:650;margin-inline-end:4px}
-.eta,.doing{color:var(--soft);margin-top:4px!important}
-.doing a{font-weight:600}
-.tally{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--wash);margin:10px 0 8px;box-shadow:inset 0 0 0 1px var(--rule)}
-.tally i{display:block;height:100%}
-.legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;padding:0;list-style:none;font-size:.86rem;color:var(--soft)}
-.legend li{display:flex;align-items:center;gap:6px}
-.legend li>i{display:inline-block;border-radius:2px}
-.legend b{color:var(--ink);font-weight:600}
-.warnbox{margin-top:12px!important;padding:10px 14px;border-radius:8px;background:var(--warn-bg);font-weight:600}
-.activity{margin:0;padding:0;list-style:none;font-size:.86rem;border-inline-start:2px solid var(--rule)}
-.activity li{padding:3px 0 3px 12px;color:var(--soft);overflow-wrap:anywhere}
-.activity li:first-child{color:var(--ink)}
-.activity time{display:inline-block;min-width:3.6em;color:var(--faint);margin-inline-end:6px}
-.sec{font-size:1.15rem;font-weight:650;margin:36px 0 2px}
-.sec-note{margin:0 0 10px;color:var(--soft);font-size:.9rem}
-.grp{font-size:.92rem;font-weight:600;color:var(--soft);margin:18px 0 0;padding-bottom:6px}
-.journeys{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:2px 16px}
-.grp + .journeys{margin-top:0}
-details.jr + details.jr{border-top:1px solid var(--rule)}
-details.jr>summary{list-style:none;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name sum" "line line";gap:8px 16px;align-items:center;padding:12px 2px;cursor:pointer}
-@media (min-width:860px){details.jr>summary{grid-template-columns:minmax(220px,300px) minmax(0,1fr) 150px;grid-template-areas:"name line sum"}}
-details.jr>summary::-webkit-details-marker{display:none}
-.jr-name{grid-area:name;font-weight:600;line-height:1.3}
-.jr-name small{display:block;font-weight:500;color:var(--faint);font-size:.78rem;margin-bottom:1px}
-.jr-sum{grid-area:sum;text-align:end;font-size:.88rem;color:var(--soft)}
-.jr-sum.t-bad{color:var(--fail);font-weight:600}.jr-sum.t-warn{color:var(--blocked);font-weight:600}.jr-sum.t-good{color:var(--pass)}
-.line{grid-area:line;display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:100%;justify-self:start;
-background-image:linear-gradient(to bottom,transparent 5px,var(--rule) 5px,var(--rule) 7px,transparent 7px);background-size:100% 18px}
-.line.main{background-image:linear-gradient(to bottom,transparent 4.5px,var(--soft) 4.5px,var(--soft) 7.5px,transparent 7.5px)}
-.stop{display:block;width:12px;height:12px;border-radius:50%;background:var(--pass);flex:none;cursor:pointer}
-.stop.v-fail,.stop.v-error{background:var(--fail);border-radius:0;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);transform:scale(1.25)}
-.stop.v-error{background:var(--error)}
-.stop.v-blocked{background:var(--blocked);border-radius:2px}
-.stop.v-deferred{background:var(--surface);box-shadow:inset 0 0 0 3px var(--deferred)}
-.stop.v-pending{background:var(--surface);box-shadow:inset 0 0 0 2px var(--pending)}
-.stop.low{background:radial-gradient(circle,var(--surface) 0 2px,var(--pass) 2.5px)}
-.stop.now{background:var(--surface);box-shadow:inset 0 0 0 3px var(--now);animation:pulse 1.8s ease-out infinite}
-@keyframes pulse{0%{box-shadow:inset 0 0 0 3px var(--now),0 0 0 0 color-mix(in srgb,var(--now) 55%,transparent)}100%{box-shadow:inset 0 0 0 3px var(--now),0 0 0 9px transparent}}
-@media (prefers-reduced-motion:reduce){.stop.now{animation:none}.flash{animation:none!important}}
-ol.checks{margin:0 0 14px;padding:0 0 0 2px;list-style:none;counter-reset:ck}
-ol.checks>li{counter-increment:ck;display:grid;grid-template-columns:2.2em 7.2em minmax(0,1fr);gap:2px 10px;padding:8px 6px;border-radius:8px;align-items:start}
-ol.checks>li::before{content:counter(ck);color:var(--faint);font-size:.82rem;text-align:end;padding-top:2px}
-ol.checks>li.v-fail,ol.checks>li.v-error{background:var(--bad-bg)}
-ol.checks>li.v-blocked{background:var(--warn-bg)}
-ol.checks>li.now{box-shadow:inset 0 0 0 2px var(--now)}
+.app{display:grid;grid-template-columns:252px minmax(0,1fr);min-height:100vh}
+.side{background:var(--side);border-inline-end:1px solid var(--line);padding:18px 12px;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column;gap:18px}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px}
+.brand svg{flex:none}
+.brand b{display:block;font-size:.95rem;letter-spacing:-.01em}
+.brand span{display:block;color:var(--muted);font-size:.8rem}
+.nav h2{font-size:.75rem;font-weight:600;color:var(--faint);margin:0 8px 6px}
+.nav a{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;padding:7px 8px;border-radius:8px;color:var(--ink);text-decoration:none}
+.nav a:hover{background:var(--raised)}
+.nav a[aria-current="true"]{background:var(--panel);box-shadow:var(--shadow)}
+.nav a small{color:var(--muted);font-size:.78rem}
+.nav .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--deferred)}
+.dot.s-running{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}.dot.s-good{background:var(--pass)}.dot.s-bad{background:var(--fail)}.dot.s-warn{background:var(--blocked)}
+.side-foot{margin-top:auto;padding:10px 8px 0;border-top:1px solid var(--line);color:var(--muted);font-size:.8rem}
+.side-foot b{color:var(--ink);font-weight:600}
+.main{min-width:0;padding:0 32px 64px}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:20px 0 18px;border-bottom:1px solid var(--line)}
+.crumb{color:var(--muted);font-size:.85rem;width:100%}
+.top h1{margin:0;font:600 1.6rem/1.15 var(--ui);letter-spacing:-.02em}
+.pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:3px 11px 3px 9px;font-size:.82rem;font-weight:600;background:var(--raised);border:1px solid var(--line)}
+.pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.pill.l-progress{color:var(--accent);background:var(--accent-soft);border-color:transparent}
+.pill.l-good{color:var(--pass);background:var(--pass-soft);border-color:transparent}
+.pill.l-bad{color:var(--fail);background:var(--fail-soft);border-color:transparent}
+.pill.l-warn{color:var(--blocked);background:var(--blocked-soft);border-color:transparent}
+.pill.live::before{animation:beat 1.6s ease-in-out infinite}
+@keyframes beat{50%{opacity:.35}}
+.top .acts{margin-inline-start:auto;display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);background:var(--panel);border-radius:8px;padding:6px 12px;font-size:.85rem;font-weight:500;color:var(--ink);cursor:pointer;text-decoration:none}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.stale{margin:16px 0 0;padding:10px 14px;border-radius:10px;background:var(--blocked-soft);font-size:.88rem}
+.hero{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;margin-top:22px}
+@media (min-width:1100px){.hero{grid-template-columns:auto minmax(0,1fr) minmax(280px,360px)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.dialwrap{padding:18px 22px;display:grid;place-items:center;position:relative;min-width:272px}
+.dial{display:block;width:232px;height:232px}
+.dial .tk{stroke-linecap:round}
+.v-pass{stroke:var(--pass);color:var(--pass)}.v-fail{stroke:var(--fail);color:var(--fail)}.v-error{stroke:var(--error);color:var(--error)}
+.v-blocked{stroke:var(--blocked);color:var(--blocked)}.v-deferred{stroke:var(--deferred);color:var(--deferred)}.v-pending{stroke:var(--pending);color:var(--faint)}
+.tk.low{stroke-opacity:.5}
+.mini .tk.now{stroke:var(--accent)}
+.tk.now{stroke:var(--accent);animation:beat 1.4s ease-in-out infinite}
+.dialc{position:absolute;inset:0;display:grid;place-content:center;text-align:center;pointer-events:none}
+.dialc b{font:600 3rem/1 var(--num);letter-spacing:-.02em}
+.dialc span{color:var(--muted);font-size:.82rem}
+.state{padding:20px 22px;display:flex;flex-direction:column;gap:10px}
+.state h2{margin:0;font:600 1.3rem/1.3 var(--ui);letter-spacing:-.015em;max-width:40ch}
+.state p{margin:0;color:var(--muted)}
+.state .facts{color:var(--ink);font-size:.98rem;max-width:62ch}
+.hot small,.now-box small{display:block;color:var(--faint);font-size:.76rem;margin-bottom:4px}
+.hot ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.hot li{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line);font-size:.9rem}
+.hot li:last-child{border-bottom:0}
+.hot li a{min-width:0}
+.hot li>span{color:var(--fail);font-size:.82rem;white-space:nowrap;flex:none}
+.now-box{margin-top:auto;padding:12px 14px;border-radius:10px;background:var(--raised);border:1px solid var(--line)}
+.now-box small{display:block;color:var(--faint);font-size:.76rem}
+.now-box a{font-weight:600}
+.warnbox{padding:10px 14px;border-radius:10px;background:var(--blocked-soft);color:var(--ink)!important;font-size:.88rem}
+.feed{padding:16px 18px;display:flex;flex-direction:column;min-width:0}
+.feed h3,.sechead h3{margin:0;font-size:.95rem;font-weight:600}
+.feed ol{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+.feed li{display:grid;grid-template-columns:3.2em minmax(0,1fr);gap:10px;padding:5px 0;font-size:.85rem;color:var(--muted);border-bottom:1px dashed var(--line)}
+.feed li:last-child{border-bottom:0}
+.feed li:first-child{color:var(--ink)}
+.feed time{color:var(--faint)}
+.rail{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:20px}
+.rail>div{padding:14px 20px;border-inline-start:1px solid var(--line)}
+.rail>div:first-child{border-inline-start:0}
+.rail small{display:block;color:var(--muted);font-size:.8rem}
+.rail b{display:block;font:600 2.1rem/1.1 var(--num);letter-spacing:-.01em;margin-top:2px}
+.rail em{font-style:normal;color:var(--faint);font-size:.8rem}
+.rail .r-pass b{color:var(--pass)}.rail .r-fail b{color:var(--fail)}.rail .r-bugs b{color:var(--ink)}
+.bar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--pending);margin-top:10px}
+.bar i{display:block;height:100%}
+.bar .b-pass{background:var(--pass)}.bar .b-fail{background:var(--fail)}.bar .b-error{background:var(--error)}.bar .b-blocked{background:var(--blocked)}.bar .b-deferred{background:var(--deferred)}
+.sechead{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:34px 0 12px}
+.sechead p{margin:0;color:var(--muted);font-size:.85rem}
+.seg{display:inline-flex;flex-wrap:wrap;background:var(--raised);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px;margin-inline-start:auto}
+.seg button{border:0;background:transparent;padding:5px 11px;border-radius:7px;font-size:.82rem;cursor:pointer;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.seg button span{margin-inline-start:5px;color:var(--faint)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+details.jc{background:var(--panel);border:1px solid var(--line);border-radius:14px;transition:border-color .15s}
+details.jc:hover{border-color:var(--line2)}
+details.jc>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:14px 16px;align-items:center}
+details.jc>summary::-webkit-details-marker{display:none}
+.jc .jid{color:var(--faint);font-size:.76rem;font-weight:600}
+.jc .jn{font-weight:600;line-height:1.3;margin-top:2px}
+.jc .js{font-size:.82rem;margin-top:6px;color:var(--muted)}
+.jc .js.t-bad{color:var(--fail);font-weight:600}.jc .js.t-warn{color:var(--blocked);font-weight:600}.jc .js.t-good{color:var(--pass)}
+.mini{position:relative;width:58px;height:58px;grid-row:span 3;align-self:center}
+.mini svg{width:58px;height:58px;display:block}
+.mini b{position:absolute;inset:0;display:grid;place-content:center;font:600 .95rem/1 var(--num)}
+.jc.p1{border-top:3px solid var(--accent)}
+.jc .detail{padding:0 16px 14px}
+ol.checks{list-style:none;margin:0;padding:0;counter-reset:ck}
+ol.checks>li{counter-increment:ck;display:grid;grid-template-columns:1.8em minmax(0,1fr);gap:2px 10px;padding:10px 8px;border-radius:10px}
+ol.checks>li+li{border-top:1px solid var(--line)}
+ol.checks>li::before{content:counter(ck);color:var(--faint);font-size:.8rem;text-align:end;padding-top:2px}
+ol.checks>li.v-fail,ol.checks>li.v-error{background:var(--fail-soft);border-top-color:transparent}
+ol.checks>li.v-blocked{background:var(--blocked-soft)}
+ol.checks>li.now{box-shadow:inset 0 0 0 2px var(--accent)}
+.ckh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
+.ckn{font-weight:600}
+.vl{font-size:.76rem;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.vl::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.vl.v-pending::before,.vl.v-deferred::before{background:transparent;box-shadow:inset 0 0 0 1.5px currentColor}
+.ckm{font-size:.8rem;color:var(--muted);grid-column:2}
+.ckm>*+*::before{content:"";display:inline-block;width:3px;height:3px;border-radius:50%;background:var(--faint);margin:0 8px;vertical-align:middle}
+.ckt{font-size:.85rem;color:var(--muted);grid-column:2;margin:3px 0 0;overflow-wrap:anywhere}
 .flash{animation:flash 1.6s ease-out}
-@keyframes flash{0%{background:color-mix(in srgb,var(--now) 30%,transparent)}100%{background:transparent}}
-.mark{font-size:.82rem;font-weight:600;padding-top:2px;display:flex;align-items:center;gap:6px}
-.mark::before{content:"";width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}
-.mark.v-pass{color:var(--pass)}.mark.v-fail{color:var(--fail)}.mark.v-error{color:var(--error)}.mark.v-blocked{color:var(--blocked)}
-.mark.v-deferred,.mark.v-pending{color:var(--faint)}
-.mark.v-fail::before,.mark.v-error::before{border-radius:0;clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);width:11px;height:11px}
-.mark.v-blocked::before{border-radius:2px}
-.mark.v-pending::before,.mark.v-deferred::before{background:transparent;box-shadow:inset 0 0 0 2px currentColor}
-.ck-body{min-width:0}
-.ck-body p{margin:0}
-.ck-name{font-weight:600}
-.ck-meta{font-size:.84rem;color:var(--soft)}
-.ck-meta>*+*::before{content:"/";color:var(--rule);margin:0 8px}
-.ck-note{font-size:.88rem;color:var(--soft);margin-top:3px!important;max-width:90ch;overflow-wrap:anywhere}
-.filters{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin:4px 0 12px}
-.seg{display:inline-flex;flex-wrap:wrap;max-width:100%;border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--surface)}
-.seg button{font:inherit;font-size:.86rem;border:0;background:transparent;color:var(--ink);padding:6px 12px;cursor:pointer}
-.seg button+button{border-inline-start:1px solid var(--rule)}
-.seg button[aria-pressed="true"]{background:var(--ink);color:var(--surface)}
-.seg button span{color:inherit;opacity:.7;margin-inline-start:4px}
-.filters input,.filters select{font:inherit;font-size:.88rem;color:var(--ink);background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:6px 10px;min-width:0}
-.filters input{flex:1 1 220px;max-width:360px}
-.filters select{max-width:100%}
-.shown{font-size:.86rem;color:var(--soft)}
-.linkbtn{font:inherit;font-size:.86rem;background:none;border:0;color:var(--link);text-decoration:underline;cursor:pointer;padding:0}
-.buglist{background:var(--surface);border:1px solid var(--rule);border-radius:12px}
-details.bug+details.bug{border-top:1px solid var(--rule)}
-details.bug>summary{list-style:none;display:grid;grid-template-columns:5.4em minmax(0,1fr);gap:2px 12px;padding:12px 16px;cursor:pointer}
+@keyframes flash{0%{background:var(--accent-soft)}100%{background:transparent}}
+.tools{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin:0 0 10px}
+.tools input,.tools select{font:inherit;font-size:.85rem;background:var(--panel);color:var(--ink);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;min-width:0}
+.tools input{flex:1 1 220px;max-width:340px}
+.tools .seg{margin-inline-start:0}
+.shown{font-size:.82rem;color:var(--muted)}
+.linkbtn{background:none;border:0;color:var(--accent);cursor:pointer;padding:0;text-decoration:underline}
+.bugs-list{overflow:hidden}
+details.bug+details.bug{border-top:1px solid var(--line)}
+details.bug>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:86px minmax(0,1fr) minmax(0,220px);gap:4px 16px;padding:12px 16px;align-items:center}
 details.bug>summary::-webkit-details-marker{display:none}
-details.bug[open]>summary{background:var(--wash)}
-.sev{font-size:.82rem;font-weight:650;padding-top:2px}
-.sev-critical,.sev-high{color:var(--fail)}.sev-medium{color:var(--blocked)}.sev-low,.sev-unrated{color:var(--faint)}
-.bug-title{font-weight:600;line-height:1.35}
-.bug-where{grid-column:2;font-size:.84rem;color:var(--soft)}
-.bug-body{padding:4px 16px 16px calc(5.4em + 28px)}
-.bug-body dl{display:grid;gap:12px 28px;margin:0;grid-template-columns:minmax(0,1fr)}
-@media (min-width:860px){.bug-body dl{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-.bug-body dt{font-size:.82rem;font-weight:650;color:var(--soft)}
-.bug-body dd{margin:2px 0 0;overflow-wrap:anywhere}
-.bug-body .more{margin:12px 0 0;font-size:.86rem;color:var(--soft)}
-@media (max-width:640px){details.bug>summary{grid-template-columns:minmax(0,1fr)}.bug-where{grid-column:1}.bug-body{padding-inline-start:16px}}
-.empty{padding:16px;color:var(--soft);margin:0}
-.others{margin-top:40px;border-top:1px solid var(--rule)}
-details.fold{border-bottom:1px solid var(--rule)}
-details.fold>summary{list-style:none;cursor:pointer;padding:14px 2px;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
-details.fold>summary::-webkit-details-marker{display:none}
-details.fold>summary::before{content:"";width:7px;height:7px;border-inline-end:2px solid var(--faint);border-bottom:2px solid var(--faint);transform:rotate(-45deg);align-self:center;transition:transform .15s}
-[dir=rtl] details.fold>summary::before{transform:rotate(135deg)}
-details.fold[open]>summary::before{transform:rotate(45deg)}
-.fold-title{font-weight:650}
-.fold-meta{color:var(--soft);font-size:.88rem}
-details.fold .feature{padding-top:4px}
-details.fold .f-title{font-size:1.5rem}
-.records{margin-top:44px}
-.records>h2{font-size:1.15rem;margin:0 0 4px}
-.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:10px;margin-bottom:16px}
-table{border-collapse:collapse;width:100%;font-size:.86rem}
-th,td{text-align:start;padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
-th{color:var(--soft);font-weight:600;background:var(--wash);white-space:nowrap}
+details.bug>summary:hover{background:var(--raised)}
+.sev{display:inline-flex;justify-self:start;align-items:center;gap:6px;font-size:.76rem;font-weight:650;padding:2px 9px;border-radius:999px;background:var(--raised);color:var(--muted)}
+.sev-critical,.sev-high{background:var(--fail-soft);color:var(--fail)}.sev-medium{background:var(--blocked-soft);color:var(--blocked)}
+.bt{font-weight:600;line-height:1.35}
+.bw{font-size:.8rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:760px){details.bug>summary{grid-template-columns:minmax(0,1fr)}.bw{white-space:normal}}
+.bd{padding:2px 16px 16px}
+.bd dl{display:grid;gap:14px;margin:0}
+.bd dt{font-size:.78rem;font-weight:600;color:var(--muted)}
+.bd dd{margin:3px 0 0;overflow-wrap:anywhere}
+.bd .meta{margin:14px 0 0;font-size:.82rem;color:var(--muted)}
+.empty{padding:18px;color:var(--muted);margin:0}
+.view+.view{margin-top:56px}
+.js .view{display:none}.js .view.on{display:block}.js .view+.view{margin-top:0}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th,td{text-align:start;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.78rem;white-space:nowrap;background:var(--raised)}
 tr:last-child td{border-bottom:0}
-.st{display:inline-block;border-radius:999px;padding:0 9px;font-size:.78rem;font-weight:600;color:#fff;background:var(--deferred);white-space:nowrap}
-.st-running{background:var(--now)}.st-stalled{background:var(--blocked)}.st-paused{background:var(--deferred)}.st-complete{background:var(--pass)}
-.st-BLOCKED,.st-NOT-SHIP-READY,.st-expired{background:var(--fail)}.st-OK,.st-SHIP-READY,.st-cleared{background:var(--pass)}.st-outstanding{background:var(--blocked)}
-.bar{height:6px;background:var(--wash);border-radius:3px;overflow:hidden;min-width:80px;margin-top:4px}
-.bar i{display:block;height:100%;background:var(--now)}
-.warn{background:var(--bad-bg);border-radius:8px;padding:8px 12px;margin:8px 0;font-weight:600}
-.muted{color:var(--soft)}
-.trends{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:16px}
-.panel{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:12px 14px}
-.panel h3{font-size:.95rem;margin:0 0 6px}
-svg.trend{max-width:100%;height:auto;display:block;margin-top:6px}
-svg .b-pass{fill:var(--pass)}svg .b-fail{fill:var(--fail)}svg .b-blocked{fill:var(--blocked)}svg .b-bugs{fill:var(--error)}svg .axis{stroke:var(--rule)}
-.setup{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 18px;margin:0 0 16px;font-size:.9rem}
-.setup dt{color:var(--soft)}.setup dd{margin:0}
-footer{margin-top:36px;color:var(--faint);font-size:.8rem}
+.st{display:inline-block;border-radius:999px;padding:1px 9px;font-size:.76rem;font-weight:600;background:var(--raised);color:var(--muted);white-space:nowrap}
+.st-running{background:var(--accent-soft);color:var(--accent)}.st-stalled,.st-outstanding{background:var(--blocked-soft);color:var(--blocked)}.st-complete,.st-OK,.st-SHIP-READY,.st-cleared{background:var(--pass-soft);color:var(--pass)}
+.st-BLOCKED,.st-NOT-SHIP-READY,.st-expired{background:var(--fail-soft);color:var(--fail)}
+.pbar{height:4px;background:var(--pending);border-radius:2px;overflow:hidden;min-width:80px;margin-top:5px}.pbar i{display:block;height:100%;background:var(--accent)}
+.muted{color:var(--muted)}
+.trends{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.trends .card{padding:14px 16px}
+.trends h3{margin:0 0 6px;font-size:.9rem}
+svg.trend{max-width:100%;height:auto;display:block}
+svg .b-pass{fill:var(--pass)}svg .b-fail{fill:var(--fail)}svg .b-blocked{fill:var(--blocked)}svg .b-bugs{fill:var(--error)}svg .axis{stroke:var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:8px 0 0;padding:0;list-style:none;font-size:.78rem;color:var(--muted)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-inline-end:5px;vertical-align:-1px}
+.setup{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 22px;margin:0;padding:18px 20px}
+.setup dt{color:var(--muted)}.setup dd{margin:0}
+.warn{background:var(--fail-soft);border-radius:10px;padding:10px 14px;margin:0 0 12px;font-weight:600}
+.scrim{position:fixed;inset:0;background:rgba(8,12,20,.45);z-index:20}
+.sheet{position:fixed;inset-block:0;inset-inline-end:0;width:min(600px,100vw);background:var(--panel);border-inline-start:1px solid var(--line);box-shadow:-24px 0 48px -24px rgba(0,0,0,.45);z-index:21;display:flex;flex-direction:column;animation:slide .18s ease-out}
+@keyframes slide{from{transform:translateX(24px);opacity:0}}
+[dir=rtl] .sheet{animation-name:none}
+.sheet header{display:flex;align-items:flex-start;gap:12px;padding:18px 20px;border-bottom:1px solid var(--line)}
+.sheet header h2{margin:0;font-size:1.1rem;line-height:1.3;flex:1}
+.sheet .sheet-body{overflow-y:auto;padding:16px 20px 28px}
+.sheet .detail,.sheet .bd{padding:0}
+footer{margin-top:48px;color:var(--faint);font-size:.78rem}
+@media (max-width:900px){.app{grid-template-columns:minmax(0,1fr)}.side{position:static;height:auto;border-inline-end:0;border-bottom:1px solid var(--line);padding:12px}
+.side{min-width:0}.nav{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0;max-width:100%}.nav h2,.side-foot{display:none}.nav a{white-space:nowrap;grid-template-columns:auto auto auto;flex:none}.nav .nm{overflow:visible}.brand{display:none}
+.main{padding:0 16px 48px}.rail>div{border-inline-start:0;border-top:1px solid var(--line)}.rail>div:first-child{border-top:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `;
 
 const JS = `
 (function(){
-var B=document.body,gen=Date.parse(B.getAttribute("data-generated")),refresh=Number(B.getAttribute("data-refresh"))||0,live=B.getAttribute("data-live")==="1";
+var D=document,B=D.body,root=D.documentElement;root.classList.add("js");
+var gen=Date.parse(B.getAttribute("data-generated")),refresh=Number(B.getAttribute("data-refresh"))||0,live=B.getAttribute("data-live")==="1";
 var KEY="qa-dashboard:"+location.pathname;
 function store(v){try{if(v===undefined)return JSON.parse(sessionStorage.getItem(KEY)||"null");sessionStorage.setItem(KEY,JSON.stringify(v));}catch(e){return null;}}
 function two(n){return(n<10?"0":"")+n;}
 function clock(d){return two(d.getHours())+":"+two(d.getMinutes());}
 function stamp(d){var n=new Date();return(d.toDateString()===n.toDateString()?"":d.toLocaleDateString([],{month:"short",day:"numeric"})+" ")+clock(d);}
 function ago(ms){var m=Math.round(ms/60000);if(m<1)return"just now";if(m<60)return m+" min ago";var h=Math.floor(m/60);if(h<48)return h+" h "+(m%60?m%60+" min ":"")+"ago";return Math.round(h/24)+" days ago";}
-[].forEach.call(document.querySelectorAll("time[data-t]"),function(el){var d=new Date(el.getAttribute("datetime"));if(!isNaN(d))el.textContent=el.getAttribute("data-t")==="clock"?clock(d):stamp(d);});
-var agoEl=document.getElementById("ago"),staleEl=document.getElementById("stale");
+function each(sel,fn,ctx){[].forEach.call((ctx||D).querySelectorAll(sel),fn);}
+each("time[data-t]",function(el){var d=new Date(el.getAttribute("datetime"));if(!isNaN(d))el.textContent=el.getAttribute("data-t")==="clock"?clock(d):stamp(d);});
+var agoEl=D.getElementById("ago"),staleEl=D.getElementById("stale");
 function tick(){var age=Date.now()-gen;if(agoEl)agoEl.textContent=ago(age);if(staleEl){var limit=refresh?refresh*3000+30000:3600000;staleEl.hidden=!(live&&age>limit);}}
 tick();setInterval(tick,30000);
 var st=store()||{},filt=st.filt||{};
-if(st.open){[].forEach.call(document.querySelectorAll("details[data-key]"),function(d){d.open=st.open.indexOf(d.getAttribute("data-key"))>=0;});}
-[].forEach.call(document.querySelectorAll(".bugs[data-key]"),function(box){
-var k=box.getAttribute("data-key"),f=filt[k]||(filt[k]={sev:"all",q:"",j:""});
-var bar=box.querySelector(".filters"),btns=box.querySelectorAll("button[data-sev]"),q=box.querySelector("input[type=search]"),sel=box.querySelector("select"),items=box.querySelectorAll("details.bug"),empty=box.querySelector(".empty"),shown=box.querySelector(".shown");
+var views=D.querySelectorAll(".view"),first=views[0]&&views[0].id;
+function route(){var id=decodeURIComponent(location.hash.slice(1)),v=id&&D.getElementById(id);
+if(!v||!v.classList.contains("view")){var inner=v&&v.closest&&v.closest(".view");v=inner||D.getElementById(st.view)||D.getElementById(first);}
+if(!v)return;each(".view",function(x){x.classList.toggle("on",x===v);});
+each(".nav a",function(a){a.setAttribute("aria-current",String(a.getAttribute("href")==="#"+v.id));});st.view=v.id;}
+window.addEventListener("hashchange",function(){route();window.scrollTo(0,0);});route();
+each(".bugs[data-key]",function(box){var k=box.getAttribute("data-key"),f=filt[k]||(filt[k]={sev:"all",q:"",j:""});
+var bar=box.querySelector(".tools"),btns=box.querySelectorAll("button[data-sev]"),q=box.querySelector("input[type=search]"),sel=box.querySelector("select"),items=box.querySelectorAll("details.bug"),empty=box.querySelector(".empty"),shown=box.querySelector(".shown");
 if(bar)bar.hidden=false;
 function apply(){var n=0;[].forEach.call(items,function(it){var ok=(f.sev==="all"||it.getAttribute("data-sev")===f.sev)&&(!f.j||it.getAttribute("data-j")===f.j)&&(!f.q||it.getAttribute("data-text").indexOf(f.q.toLowerCase())>=0);it.hidden=!ok;if(ok)n++;});
-[].forEach.call(btns,function(b){b.setAttribute("aria-pressed",String(b.getAttribute("data-sev")===f.sev));});
-if(empty)empty.hidden=n>0;if(shown)shown.textContent=n===items.length?"":n+" of "+items.length+" shown";}
+[].forEach.call(btns,function(b){b.setAttribute("aria-pressed",String(b.getAttribute("data-sev")===f.sev));});if(empty)empty.hidden=n>0;if(shown)shown.textContent=n===items.length?"":n+" of "+items.length+" shown";}
 [].forEach.call(btns,function(b){b.addEventListener("click",function(){f.sev=b.getAttribute("data-sev");apply();});});
 if(q){q.value=f.q;q.addEventListener("input",function(){f.q=q.value.trim();apply();});}
 if(sel){sel.value=f.j;sel.addEventListener("change",function(){f.j=sel.value;apply();});}
-[].forEach.call(box.querySelectorAll("[data-clear]"),function(c){c.addEventListener("click",function(){f.sev="all";f.q="";f.j="";if(q)q.value="";if(sel)sel.value="";apply();});});
-apply();});
-function openTo(el){for(var p=el;p;p=p.parentElement)if(p.tagName==="DETAILS")p.open=true;}
-function show(el){openTo(el);var rm=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;el.scrollIntoView({block:"center",behavior:rm?"auto":"smooth"});el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash");}
-document.addEventListener("click",function(e){var s=e.target.closest&&e.target.closest(".stop[data-ck]");if(s){e.preventDefault();var li=document.getElementById(s.getAttribute("data-ck"));if(li)show(li);return;}
-var a=e.target.closest&&e.target.closest("a[href^='#']");if(a){var t=document.getElementById(decodeURIComponent(a.getAttribute("href").slice(1)));if(t){e.preventDefault();show(t);}}});
-document.addEventListener("keydown",function(e){if(e.key==="/"&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){var s=document.querySelector(".bugs:not([hidden]) input[type=search]");if(s&&s.offsetParent){e.preventDefault();s.focus();}}});
-function save(){store({y:window.scrollY,open:[].map.call(document.querySelectorAll("details[open][data-key]"),function(d){return d.getAttribute("data-key");}),filt:filt});}
+each("[data-clear]",function(c){c.addEventListener("click",function(){f.sev="all";f.q="";f.j="";if(q)q.value="";if(sel)sel.value="";apply();});},box);apply();});
+each(".grid[data-key]",function(g){var k=g.getAttribute("data-key"),f=filt[k]||(filt[k]={jf:"all"}),btns=D.querySelectorAll("button[data-jf][data-for='"+k+"']");
+function apply(){each("details.jc",function(c){c.hidden=!(f.jf==="all"||(f.jf==="main"&&c.classList.contains("p1"))||(f.jf==="bad"&&c.getAttribute("data-bad")==="1"));},g);[].forEach.call(btns,function(b){b.setAttribute("aria-pressed",String(b.getAttribute("data-jf")===f.jf));});}
+[].forEach.call(btns,function(b){b.hidden=false;b.parentNode.hidden=false;b.addEventListener("click",function(){f.jf=b.getAttribute("data-jf");apply();});});apply();});
+var scrim=D.getElementById("scrim"),sheet=D.getElementById("sheet"),sTitle=D.getElementById("sheet-title"),sBody=D.getElementById("sheet-body"),opener=null;
+function openSheet(det,focusId){var body=det.querySelector(".detail,.bd");if(!body)return;opener=det;sTitle.textContent=det.getAttribute("data-title")||"";
+sBody.innerHTML=body.innerHTML;scrim.hidden=false;sheet.hidden=false;st.sheet=det.id;D.getElementById("sheet-close").focus();
+if(focusId){var el=sBody.querySelector("[data-ck='"+focusId+"']");if(el){el.scrollIntoView({block:"center"});el.classList.add("flash");}}}
+function closeSheet(){scrim.hidden=true;sheet.hidden=true;st.sheet="";if(opener){var s=opener.querySelector("summary");if(s)s.focus();}}
+D.addEventListener("click",function(e){var t=e.target;if(!t.closest)return;
+var sum=t.closest("details.jc>summary,details.bug>summary");if(sum){e.preventDefault();openSheet(sum.parentNode);return;}
+if(t.closest("#sheet-close")||t===scrim){closeSheet();return;}
+var a=t.closest("a[href^='#']");if(a){var id=decodeURIComponent(a.getAttribute("href").slice(1)),el=D.getElementById(id);
+if(el&&el.matches("details.jc,details.bug")){e.preventDefault();var v=el.closest(".view");if(v&&!v.classList.contains("on")){location.hash=v.id;}openSheet(el);return;}
+var ck=D.querySelector("[data-ck='"+id+"']");if(ck){e.preventDefault();var jc=ck.closest("details.jc");if(jc)openSheet(jc,id);}}});
+D.addEventListener("keydown",function(e){if(e.key==="Escape"&&!sheet.hidden){closeSheet();return;}
+if(e.key==="/"&&!/INPUT|SELECT|TEXTAREA/.test(D.activeElement.tagName)){var s=D.querySelector(".view.on .bugs input[type=search]");if(s){e.preventDefault();s.focus();}}});
+if(st.sheet){var d=D.getElementById(st.sheet);if(d)openSheet(d);}
+function save(){st.y=window.scrollY;st.filt=filt;store(st);}
 window.addEventListener("pagehide",save);
 if(st.y)window.scrollTo(0,st.y);
-if(refresh){var reload=function(){var a=document.activeElement;if(a&&/INPUT|SELECT/.test(a.tagName)){setTimeout(reload,5000);return;}save();location.reload();};setTimeout(reload,refresh*1000);}
+if(refresh){var reload=function(){var a=D.activeElement;if(a&&/INPUT|SELECT/.test(a.tagName)){setTimeout(reload,5000);return;}save();location.reload();};setTimeout(reload,refresh*1000);}
 })();
 `;
 
@@ -824,11 +874,11 @@ function eventText(e) {
   const name = e.criterionId ? humanize(e.criterionId) : "";
   const as = e.persona ? ", as " + e.persona : "";
   switch (e.event) {
-    case "criterion_started": return "Started: " + name + as;
+    case "criterion_started": return "Started " + name + as;
     case "criterion_verdict": return (VERDICT_LABEL[e.verdict] || e.verdict || "Verdict") + ": " + name + as + (e.confidence === "low" ? " (low confidence)" : "");
-    case "act_intent": return "Acting on: " + name;
-    case "act_committed": return "Action saved: " + name;
-    case "bug_logged": return "Bug logged: " + (e.title || "untitled");
+    case "act_intent": return "Acting on " + name;
+    case "act_committed": return "Saved the action for " + name;
+    case "bug_logged": return "Logged a bug: " + (e.title || "untitled");
     case "phase_entered": return "Entered the " + (e.phase || "next") + " phase";
     default: return e.text;
   }
@@ -845,144 +895,201 @@ function journeySummary(j) {
   return { text: parts.join(", "), tone: bad ? "bad" : (c.blocked ? "warn" : "") };
 }
 
-function renderJourney(f, j, key) {
-  const main = j.priority === "P1";
-  const sum = journeySummary(j);
-  const ckId = (k, i) => "ck-" + slug(f.target) + "-" + slug(j.id) + "-" + i;
-  const stops = j.checks.map((k, i) => '<i class="stop v-' + esc(k.verdict) + (k.lowConfidence ? " low" : "") + (k.current ? " now" : "")
-    + '" data-ck="' + esc(ckId(k, i)) + '" title="' + esc(k.name + ": " + (k.current ? "running now" : VERDICT_LABEL[k.verdict] || k.verdict) + (k.role ? ", as " + k.role : "")) + '"></i>').join("");
-  const items = j.checks.map((k, i) => {
+// One radial tick per check. groups: [[{verdict, low, now, title}]]; a gap
+// of two tick slots separates groups when there is more than one.
+function dialSvg(groups, size, inner, outer, label, cls) {
+  const n = groups.reduce((a, g) => a + g.length, 0);
+  if (!n) return "";
+  const gap = groups.length > 1 ? 2 : 0;
+  const slots = n + gap * groups.length;
+  const c = size / 2, circ = 2 * Math.PI * ((inner + outer) / 2);
+  const width = Math.max(1.2, Math.min(7, (circ / slots) * 0.62));
+  let i = 0, out = "";
+  for (const g of groups) {
+    for (const k of g) {
+      const a = (-90 + ((i + 0.5) / slots) * 360) * Math.PI / 180;
+      const ro = k.now ? outer + 5 : outer;
+      const p = (r) => (c + r * Math.cos(a)).toFixed(2) + " " + (c + r * Math.sin(a)).toFixed(2);
+      out += '<path class="tk v-' + esc(k.verdict) + (k.low ? " low" : "") + (k.now ? " now" : "") + '" d="M' + p(inner) + "L" + p(ro) + '" stroke-width="' + width.toFixed(2) + '">'
+        + (k.title ? "<title>" + esc(k.title) + "</title>" : "") + "</path>";
+      i++;
+    }
+    i += gap;
+  }
+  return '<svg class="' + (cls || "dial") + '" viewBox="0 0 ' + size + " " + size + '" role="img" aria-label="' + esc(label) + '">' + out + "</svg>";
+}
+
+// A segmented ring: one arc per check with a hairline gap, for the small
+// journey rings where radial ticks would read as scattered dashes.
+function ringSvg(checks, size, r, w, label) {
+  const n = checks.length;
+  if (!n) return "";
+  const c = size / 2, gapDeg = n > 1 ? Math.min(6, 120 / n) : 0;
+  const pt = (deg) => { const a = (deg - 90) * Math.PI / 180; return (c + r * Math.cos(a)).toFixed(2) + " " + (c + r * Math.sin(a)).toFixed(2); };
+  let out = '<circle cx="' + c + '" cy="' + c + '" r="' + r + '" fill="none" stroke="var(--pending)" stroke-width="' + w + '" opacity=".35"/>';
+  checks.forEach((k, i) => {
+    const a0 = (i / n) * 360 + gapDeg / 2, a1 = ((i + 1) / n) * 360 - gapDeg / 2;
+    if (n === 1) { out += '<circle class="tk v-' + esc(k.verdict) + '" cx="' + c + '" cy="' + c + '" r="' + r + '" fill="none" stroke-width="' + w + '"/>'; return; }
+    out += '<path class="tk v-' + esc(k.verdict) + (k.low ? " low" : "") + (k.now ? " now" : "") + '" d="M' + pt(a0) + " A" + r + " " + r + " 0 " + (a1 - a0 > 180 ? 1 : 0) + " 1 " + pt(a1)
+      + '" fill="none" stroke-width="' + w + '" stroke-linecap="butt"><title>' + esc(k.title) + "</title></path>";
+  });
+  return '<svg viewBox="0 0 ' + size + " " + size + '" role="img" aria-label="' + esc(label) + '">' + out + "</svg>";
+}
+
+function tick(k) { return { verdict: k.verdict, low: k.lowConfidence, now: k.current, title: k.name + ": " + (k.current ? "running now" : VERDICT_LABEL[k.verdict]) }; }
+
+function checkList(f, j) {
+  return '<ol class="checks">' + j.checks.map((k, i) => {
+    const id = "ck-" + slug(f.target) + "-" + slug(j.id) + "-" + i;
     const meta = [k.role ? "<span>as " + t(k.role) + "</span>" : "", k.lowConfidence ? "<span>low confidence</span>" : "",
       k.bugs.length ? "<span>" + k.bugs.map((b) => '<a href="#bug-' + esc(slug(f.target) + "-" + slug(b)) + '">bug ' + esc(b) + "</a>").join(", ") + "</span>" : "",
       k.link ? '<span><a href="' + esc(k.link) + '">evidence</a></span>' : ""].filter(Boolean).join("");
-    return '<li id="' + esc(ckId(k, i)) + '" class="v-' + esc(k.verdict) + (k.current ? " now" : "") + '"><span class="mark v-' + esc(k.verdict) + '">'
-      + esc(k.current ? "Running now" : (VERDICT_LABEL[k.verdict] || k.verdict)) + '</span><div class="ck-body"><p class="ck-name">' + t(k.name) + "</p>"
-      + (meta ? '<p class="ck-meta">' + meta + "</p>" : "") + (k.note ? '<p class="ck-note">' + t(k.note) + "</p>" : "") + "</div></li>";
-  }).join("");
-  return '<details class="jr" data-key="' + esc(key) + '"><summary><span class="jr-name">' + (j.priority || /^role:|^other$/.test(j.id) ? "" : "")
-    + (/^role:|^other$/.test(j.id) ? "" : "<small>" + esc(j.id) + "</small>") + t(j.name) + "</span>"
-    + '<span class="line' + (main ? " main" : "") + '" aria-hidden="true">' + stops + "</span>"
-    + '<span class="jr-sum' + (sum.tone ? " t-" + sum.tone : "") + '">' + esc(sum.text) + "</span></summary>"
-    + '<ol class="checks" aria-label="' + esc("Checks in " + j.name) + '">' + items + "</ol></details>";
+    return '<li id="' + esc(id) + '" data-ck="' + esc(id) + '" class="v-' + esc(k.verdict) + (k.current ? " now" : "") + '"><div class="ckh"><span class="ckn">' + t(k.name) + '</span><span class="vl v-' + esc(k.verdict) + '">'
+      + esc(k.current ? "Running now" : VERDICT_LABEL[k.verdict] || k.verdict) + "</span></div>" + (meta ? '<div class="ckm">' + meta + "</div>" : "")
+      + (k.note ? '<p class="ckt">' + t(k.note) + "</p>" : "") + "</li>";
+  }).join("") + "</ol>";
 }
 
-function renderBugs(f) {
+function journeyCard(f, j) {
+  const sum = journeySummary(j);
+  const pct = j.checks.length ? Math.round((j.counts.pass / j.checks.length) * 100) : 0;
+  const named = !/^role:|^other$/.test(j.id);
+  return '<details class="jc' + (j.priority === "P1" ? " p1" : "") + '" id="j-' + esc(slug(f.target) + "-" + slug(j.id)) + '" data-title="' + esc(j.name) + '" data-bad="' + (j.counts.fail + j.counts.error ? 1 : 0) + '">'
+    + '<summary><div><div class="jid">' + esc(named ? j.id : j.checks.length + " checks") + '</div><div class="jn">' + t(j.name) + '</div><div class="js' + (sum.tone ? " t-" + sum.tone : "") + '">' + esc(sum.text)
+    + "</div></div>"
+    + '<div class="mini">' + ringSvg(j.checks.map(tick), 58, 24, 5, j.name + ": " + sum.text) + "<b>" + pct + "</b></div></summary>"
+    + '<div class="detail">' + checkList(f, j) + "</div></details>";
+}
+
+function bugsBlock(f) {
   const key = "bugs:" + f.target;
-  if (!f.bugs.length) return '<h3 class="sec">Bugs</h3><p class="sec-note">No bugs logged in this run.</p>';
+  if (!f.bugs.length) return '<div class="sechead"><h3>Bugs</h3></div><div class="card"><p class="empty">No bugs logged in this run.</p></div>';
   const sevs = ["critical", "high", "medium", "low", "unrated"].filter((s) => f.bugs.some((b) => b.severity === s));
   const journeys = [];
   for (const b of f.bugs) if (b.journey && !journeys.some((x) => x[0] === b.journey)) journeys.push([b.journey, b.journeyName]);
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-  const bar = '<div class="filters" hidden><div class="seg" role="group" aria-label="Severity"><button type="button" data-sev="all" aria-pressed="true">All<span>' + f.bugs.length + "</span></button>"
+  const tools = '<div class="tools" hidden><div class="seg" role="group" aria-label="Severity"><button type="button" data-sev="all" aria-pressed="true">All<span>' + f.bugs.length + "</span></button>"
     + sevs.map((s) => '<button type="button" data-sev="' + s + '" aria-pressed="false">' + cap(s) + "<span>" + f.bugs.filter((b) => b.severity === s).length + "</span></button>").join("") + "</div>"
     + (journeys.length > 1 ? '<select aria-label="Journey"><option value="">Every journey</option>' + journeys.map((x) => '<option value="' + esc(x[0]) + '">' + esc(x[1]) + "</option>").join("") + "</select>" : "")
-    + '<input type="search" placeholder="Search bugs  ( / )" aria-label="Search bugs"><span class="shown" aria-live="polite"></span></div>';
-  const items = f.bugs.map((b, i) => {
-    const where = [b.journeyName, b.role ? "as " + b.role : "", b.layer ? "likely " + b.layer : ""].filter(Boolean).join(", ");
-    const id = "bug-" + slug(f.target) + "-" + slug(b.id || "n" + i);
-    return '<details class="bug" id="' + esc(id) + '" data-key="' + esc(key + ":" + (b.id || i)) + '" data-sev="' + esc(b.severity) + '" data-j="' + esc(b.journey)
-      + '" data-text="' + esc([b.title, b.id, b.criterionId, b.observed, b.expected, b.journeyName, b.role].join(" ").toLowerCase()) + '">'
-      + '<summary><span class="sev sev-' + esc(b.severity) + '">' + esc(cap(b.severity)) + '</span><span class="bug-title">' + t(b.title || b.id) + "</span>"
-      + (where ? '<span class="bug-where">' + t(where) + "</span>" : "") + "</summary>"
-      + '<div class="bug-body"><dl>' + (b.observed ? "<div><dt>What happened</dt><dd>" + t(b.observed) + "</dd></div>" : "")
-      + (b.expected ? "<div><dt>What should happen</dt><dd>" + t(b.expected) + "</dd></div>" : "") + "</dl>"
-      + '<p class="more">' + [b.id ? "Bug " + esc(b.id) : "", b.status ? "status " + esc(b.status) : "", b.criterionId ? "found by " + t(b.criterionId) : "",
-        b.link ? '<a href="' + esc(b.link) + '">open the evidence in the run report</a>' : ""].filter(Boolean).join(", ") + "</p></div></details>";
+    + '<input type="search" placeholder="Search bugs   /" aria-label="Search bugs"><span class="shown" aria-live="polite"></span></div>';
+  const rows = f.bugs.map((b, i) => {
+    const where = [b.journeyName, b.role ? "as " + b.role : ""].filter(Boolean).join(", ");
+    return '<details class="bug" id="' + esc("bug-" + slug(f.target) + "-" + slug(b.id || "n" + i)) + '" data-title="' + esc(b.title || b.id) + '" data-sev="' + esc(b.severity) + '" data-j="' + esc(b.journey)
+      + '" data-text="' + esc([b.title, b.id, b.criterionId, b.observed, b.expected, b.journeyName, b.role, b.layer].join(" ").toLowerCase()) + '">'
+      + '<summary><span class="sev sev-' + esc(b.severity) + '">' + esc(cap(b.severity)) + '</span><span class="bt">' + t(b.title || b.id) + '</span><span class="bw">' + t(where) + "</span></summary>"
+      + '<div class="bd"><dl>' + (b.observed ? "<div><dt>What happened</dt><dd>" + t(b.observed) + "</dd></div>" : "")
+      + (b.expected ? "<div><dt>What should happen</dt><dd>" + t(b.expected) + "</dd></div>" : "")
+      + (b.layer ? "<div><dt>Likely layer</dt><dd>" + t(b.layer) + "</dd></div>" : "") + "</dl>"
+      + '<p class="meta">' + [b.id ? "Bug " + esc(b.id) : "", b.status ? "status " + esc(b.status) : "", b.criterionId ? "found by " + t(humanize(b.criterionId)) : "",
+        b.link ? '<a href="' + esc(b.link) + '">open the evidence</a>' : ""].filter(Boolean).join(", ") + "</p></div></details>";
   }).join("");
-  return '<h3 class="sec">Bugs</h3><p class="sec-note">Most severe first. Open one to see what happened and what should happen.</p>'
-    + '<div class="bugs" data-key="' + esc(key) + '">' + bar + '<div class="buglist">' + items
+  return '<div class="sechead"><h3>Bugs</h3><p>' + f.bugs.length + " logged, most severe first</p></div>"
+    + '<div class="bugs" data-key="' + esc(key) + '">' + tools + '<div class="card bugs-list">' + rows
     + '<p class="empty" hidden>No bug matches these filters. <button type="button" class="linkbtn" data-clear>Clear filters</button></p></div></div>';
 }
 
-function renderFeature(m, f, run) {
-  const r = f.readiness;
-  let html = '<h2 class="f-title">' + t(f.title) + "</h2>"
-    + '<p class="f-run">Latest run <code>' + t(run.id) + "</code>" + (run.started ? ", started " + timeTag(run.started) : "")
-    + (run.report ? ', <a href="' + esc(run.report.rel) + '">full run report</a>' : "") + (f.runs > 1 ? ", " + f.runs + " runs in total" : "") + "</p>"
-    + '<div class="verdict lv-' + esc(r.level) + '"><p class="v-head">' + esc(r.headline) + "</p>" + (r.facts ? '<p class="v-facts">' + esc(r.facts) + "</p>" : "") + "</div>";
-
-  const counts = emptyCounts(), seenCk = new Set();
+function targetView(m, f, run) {
+  const r = f.readiness, slugT = slug(f.target);
+  const liveRun = run.status === "running";
+  const counts = emptyCounts();
   if (run.tally) {
     for (const v of VERDICTS) counts[v] = run.tally[v] || 0;
     const done = VERDICTS.reduce((a, v) => a + counts[v], 0);
     counts.pending = Number.isFinite(run.progress.total) ? Math.max(0, run.progress.total - done) : 0;
-  } else for (const j of f.journeys) for (const k of j.checks) if (!seenCk.has(k.id)) { seenCk.add(k.id); counts[k.verdict] += 1; }
-  const lowPass = run.lowPasses || 0;
-  const n = TALLY_ORDER.reduce((a, v) => a + counts[v], 0);
-  const color = { pass: "--pass", fail: "--fail", error: "--error", blocked: "--blocked", deferred: "--deferred", pending: "--pending" };
-  const tally = n ? '<div class="tally" role="img" aria-label="' + esc(TALLY_ORDER.filter((v) => counts[v]).map((v) => counts[v] + " " + VERDICT_LABEL[v].toLowerCase()).join(", ")) + '">'
-    + TALLY_ORDER.filter((v) => counts[v]).map((v) => '<i style="width:' + (counts[v] / n * 100).toFixed(2) + "%;background:var(" + color[v] + ')"></i>').join("") + "</div>"
-    + '<ul class="legend">' + TALLY_ORDER.filter((v) => counts[v]).map((v) => '<li><span class="mark v-' + v + '" aria-hidden="true"></span><b>' + counts[v] + "</b> " + VERDICT_LABEL[v].toLowerCase()
-      + (v === "pass" && lowPass ? ' <span class="low-note">(<i class="stop low" aria-hidden="true"></i>' + lowPass + " with low confidence)</span>" : "") + "</li>").join("") + "</ul>" : "";
+  }
+  const total = TALLY_ORDER.reduce((a, v) => a + counts[v], 0);
+  const passPct = total ? Math.round((counts.pass / total) * 100) : 0;
+  const seen = new Set();
+  const groups = f.journeys.map((j) => j.checks.filter((k) => !seen.has(k.id) && seen.add(k.id)).map((k) => Object.assign(tick(k), { low: false }))).filter((g) => g.length);
+  const hot = f.journeys.filter((j) => j.counts.fail + j.counts.error + j.counts.blocked > 0)
+    .sort((a, b) => (b.priority === "P1") - (a.priority === "P1") || (b.counts.fail + b.counts.error) - (a.counts.fail + a.counts.error)).slice(0, 5);
+  const sevCount = (s) => f.bugs.filter((b) => b.severity === s).length;
 
-  let live = "";
-  if (run.active) {
-    const a = run.active, p = run.progress;
-    let now = "";
-    if (a.criterion) {
-      let anchor = "";
-      f.journeys.forEach((j) => j.checks.forEach((k, i) => { if (!anchor && k.id === a.criterion) anchor = "ck-" + slug(f.target) + "-" + slug(j.id) + "-" + i; }));
-      now = '<p class="doing">Now checking ' + (anchor ? '<a href="#' + esc(anchor) + '">' + t(humanize(a.criterion)) + "</a>" : t(humanize(a.criterion))) + (a.persona ? " as " + t(a.persona) : "") + "</p>";
-    }
-    live = '<div class="live"><div>'
-      + (Number.isFinite(p.done) && Number.isFinite(p.total) ? '<p class="count"><b>' + p.done + "</b>of " + p.total + " checks done</p>" : "")
-      + (run.eta ? '<p class="eta">About ' + esc(fmtDuration(run.eta.hours).replace(/h/, " h ").replace(/m$/, " min").trim()) + " left at " + esc(run.ratePerHour) + " checks an hour, finishing around " + timeTag(run.eta.at, "clock") + "</p>" : "")
-      + now + tally
-      + (run.status === "stalled" ? '<p class="warnbox">Stalled: no journal activity for ' + esc(fmtDuration(run.idleMinutes / 60)) + " (threshold " + m.stallMinutes + " min). Resume it with <code>/qa-resume " + t(run.id) + "</code>.</p>" : "")
-      + "</div><div><ol class=\"activity\" aria-label=\"Latest activity\">" + a.events.slice(0, 7).map((e) => "<li>" + timeTag(e.t, "clock") + t(eventText(e)) + "</li>").join("") + "</ol></div></div>";
-  } else if (tally) live = '<div class="live"><div>' + tally + "</div></div>";
+  let html = '<header class="top"><div class="crumb">' + t(m.project.name) + " / test targets</div><h1>" + t(f.title) + "</h1>"
+    + '<span class="pill l-' + esc(r.level) + (liveRun ? " live" : "") + '">' + esc(r.headline) + "</span>"
+    + '<div class="acts">' + (run.report ? '<a class="btn" href="' + esc(run.report.rel) + '">Open run report</a>' : "") + "</div></header>";
 
-  const groups = [["Main journeys", f.journeys.filter((j) => j.priority === "P1")],
-    ["Other journeys", f.journeys.filter((j) => j.priority && j.priority !== "P1")],
-    [f.journeys.some((j) => j.priority) ? "Outside the journeys" : "", f.journeys.filter((j) => !j.priority)]];
-  const jHtml = f.journeys.length ? '<h3 class="sec">' + (f.journeys.some((j) => j.priority) ? "Journeys" : "Checks by role") + "</h3>"
-    + '<p class="sec-note">Each stop is one check, in plan order. Select a row or a stop to see the checks.</p>'
-    + groups.filter((g) => g[1].length).map((g) => (g[0] ? '<h4 class="grp">' + esc(g[0]) + "</h4>" : "") + '<div class="journeys">'
-      + g[1].map((j) => renderJourney(f, j, "j:" + f.target + ":" + j.id)).join("") + "</div>").join("") : "";
-  return html + live + jHtml + renderBugs(f);
+  // hero: dial, state, feed
+  const dial = groups.length ? '<div class="card dialwrap">' + dialSvg(groups, 232, 84, 108, "Every check in the run, grouped by journey: " + TALLY_ORDER.filter((v) => counts[v]).map((v) => counts[v] + " " + VERDICT_LABEL[v].toLowerCase()).join(", "))
+    + '<div class="dialc"><b>' + (Number.isFinite(run.progress.percent) ? Math.floor(run.progress.percent) : passPct) + '%</b><span>' + (Number.isFinite(run.progress.done) ? run.progress.done + " of " + run.progress.total + " checked" : "checked") + "</span></div></div>" : "";
+  let now = "";
+  if (run.active && run.active.criterion) {
+    let anchor = "";
+    f.journeys.forEach((j) => j.checks.forEach((k, i) => { if (!anchor && k.id === run.active.criterion) anchor = "ck-" + slugT + "-" + slug(j.id) + "-" + i; }));
+    now = '<div class="now-box"><small>Checking now</small>' + (anchor ? '<a href="#' + esc(anchor) + '">' + t(humanize(run.active.criterion)) + "</a>" : t(humanize(run.active.criterion)))
+      + (run.active.persona ? " as " + t(run.active.persona) : "") + "</div>";
+  }
+  const state = '<div class="card state"><h2>' + esc(r.facts || r.headline) + "</h2>"
+    + "<p>Latest run <code>" + t(run.id) + "</code>" + (run.started ? ", started " + timeTag(run.started) : "") + (f.runs > 1 ? ", " + f.runs + " runs in total" : "") + "</p>"
+    + (run.status === "stalled" ? '<p class="warnbox">Stalled: no activity for ' + esc(fmtDuration(run.idleMinutes / 60)) + " (threshold " + m.stallMinutes + " min). Resume it with <code>/qa-resume " + t(run.id) + "</code>.</p>" : "")
+    + (hot.length ? '<div class="hot"><small>Where it fails</small><ul>' + hot.map((j) => '<li><a href="#j-' + esc(slugT + "-" + slug(j.id)) + '">' + t(j.name) + "</a><span>"
+      + esc([j.counts.fail + j.counts.error ? j.counts.fail + j.counts.error + " failed" : "", j.counts.blocked ? j.counts.blocked + " blocked" : ""].filter(Boolean).join(", ")) + (j.priority === "P1" ? " · main" : "") + "</span></li>").join("") + "</ul></div>" : "")
+    + now + "</div>";
+  const feed = run.active ? '<div class="card feed"><h3>Live activity</h3><ol>' + run.active.events.slice(0, 8).map((e) => "<li>" + timeTag(e.t, "clock") + "<span>" + t(eventText(e)) + "</span></li>").join("") + "</ol></div>" : "";
+  html += '<section class="hero">' + dial + state + feed + "</section>";
+
+  // stat rail
+  const seg = (v) => counts[v] ? '<i class="b-' + v + '" style="width:' + (counts[v] / total * 100).toFixed(2) + '%"></i>' : "";
+  html += '<section class="card rail">'
+    + '<div class="r-pass"><small>Passed</small><b>' + counts.pass + "</b><em>" + (run.lowPasses ? run.lowPasses + " with low confidence" : "of " + total + " checks") + "</em></div>"
+    + '<div class="r-fail"><small>Failed</small><b>' + (counts.fail + counts.error) + "</b><em>" + (counts.blocked ? counts.blocked + " blocked, " : "") + (counts.deferred ? counts.deferred + " deferred" : "nothing deferred") + "</em></div>"
+    + '<div class="r-bugs"><small>Bugs</small><b>' + f.bugs.length + "</b><em>" + (["critical", "high", "medium"].filter(sevCount).map((s) => sevCount(s) + " " + s).join(", ") || "none above low") + "</em></div>"
+    + "<div><small>" + (run.eta ? "Finishes around" : "Not run yet") + "</small><b>" + (run.eta ? timeTag(run.eta.at, "clock") : counts.pending) + "</b><em>"
+    + (run.eta ? esc(fmtDuration(run.eta.hours)) + " left at " + esc(run.ratePerHour) + " an hour" : (counts.pending ? "checks left" : "every check ran")) + "</em>"
+    + '<div class="bar" aria-hidden="true">' + TALLY_ORDER.filter((v) => v !== "pending").map(seg).join("") + "</div></div></section>";
+
+  // journeys
+  if (f.journeys.length) {
+    const named = f.journeys.some((j) => j.priority);
+    const gk = "jg:" + f.target;
+    html += '<div class="sechead"><h3>' + (named ? "Journeys" : "Checks by role") + "</h3><p>" + f.journeys.length + (named ? " journeys" : " roles") + ", one tick per check</p>"
+      + (named ? '<div class="seg" role="group" aria-label="Show journeys" hidden><button type="button" data-for="' + esc(gk) + '" data-jf="all" aria-pressed="true" hidden>All</button><button type="button" data-for="' + esc(gk) + '" data-jf="main" aria-pressed="false" hidden>Main</button><button type="button" data-for="' + esc(gk) + '" data-jf="bad" aria-pressed="false" hidden>With failures</button></div>' : "")
+      + '</div><div class="grid" data-key="' + esc(gk) + '">' + f.journeys.map((j) => journeyCard(f, j)).join("") + "</div>";
+  }
+  return '<section class="view" id="t-' + esc(slugT) + '">' + html + bugsBlock(f) + "</section>";
 }
 
 function renderHtml(m, opts) {
   const runs = m.runs, byId = new Map(runs.map((r) => [r.id, r]));
   const c = m.constitution, cfg = m.config;
   const live = runs.some((r) => r.status === "running");
-  const head = '<header class="top"><h1>' + t(m.project.name) + " <span>QA</span></h1>"
-    + '<p class="fresh">Updated <span id="ago">' + timeTag(m.generatedAt) + "</span>" + (opts.refresh ? ", refreshes every " + esc(opts.refresh) + " s" : "") + "</p></header>"
-    + '<p class="stale" id="stale" hidden>This page has stopped updating while a run is still going. Keep it live with <code>qa-dashboard.sh html --watch 60</code>.</p>';
-
   const feats = m.features || [];
-  const lead = feats[0];
-  let body = "";
-  if (!lead) body += '<section class="feature"><h2 class="f-title">No runs yet</h2><p class="f-run">Start one with <code>/qa-run</code>; this page fills in as it goes.</p></section>';
-  else body += '<section class="feature" id="f-' + esc(slug(lead.target)) + '">' + renderFeature(m, lead, byId.get(lead.runId)) + "</section>";
-  if (feats.length > 1) {
-    body += '<section class="others"><h2 class="sec">Other test targets</h2><p class="sec-note">Their latest run each. Open one for its journeys and bugs.</p>'
-      + feats.slice(1).map((f) => {
-        const run = byId.get(f.runId);
-        return '<details class="fold" data-key="' + esc("f:" + f.target) + '"><summary><span class="fold-title">' + t(f.title) + '</span><span class="fold-meta">'
-          + esc(f.readiness.headline) + (f.readiness.facts ? ". " + esc(f.readiness.facts.replace(/\.$/, "")) : "") + (f.started ? ", " : "") + timeTag(f.started) + "</span></summary>"
-          + '<section class="feature" id="f-' + esc(slug(f.target)) + '">' + renderFeature(m, f, run) + "</section></details>";
-      }).join("") + "</section>";
-  }
+  const lvl = (f) => (f.readiness.level === "progress" ? "running" : f.readiness.level);
+  const pctOf = (f) => { const r = byId.get(f.runId); return r && Number.isFinite(r.progress.percent) ? Math.floor(r.progress.percent) + "%" : ""; };
 
+  const side = '<aside class="side"><div class="brand"><svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">'
+    + Array.from({ length: 12 }, (_, i) => { const a = (i / 12) * 2 * Math.PI - Math.PI / 2; return '<path d="M' + (13 + 7 * Math.cos(a)).toFixed(1) + " " + (13 + 7 * Math.sin(a)).toFixed(1) + "L" + (13 + 12 * Math.cos(a)).toFixed(1) + " " + (13 + 12 * Math.sin(a)).toFixed(1) + '" stroke="' + (i < 9 ? "var(--pass)" : i < 10 ? "var(--fail)" : "var(--pending)") + '" stroke-width="2.2" stroke-linecap="round"/>'; }).join("")
+    + "</svg><div><b>QA console</b><span>" + t(m.project.name) + "</span></div></div>"
+    + '<nav class="nav" aria-label="Test targets"><h2>Test targets</h2>' + (feats.length ? feats.map((f) => '<a href="#t-' + esc(slug(f.target)) + '"><span class="dot s-' + esc(lvl(f)) + '"></span><span class="nm">' + t(f.title) + "</span><small>" + esc(pctOf(f)) + "</small></a>").join("") : '<span class="muted" style="padding:0 8px">None yet</span>') + "</nav>"
+    + '<nav class="nav" aria-label="Project"><h2>Project</h2><a href="#runs"><span class="dot"></span><span class="nm">Runs</span><small>' + runs.length + "</small></a>"
+    + '<a href="#trends"><span class="dot"></span><span class="nm">Trends</span><small>' + m.trends.length + "</small></a>"
+    + '<a href="#plans"><span class="dot"></span><span class="nm">Test plans</span><small>' + m.specs.length + "</small></a>"
+    + '<a href="#defects"><span class="dot' + (m.knownDefects.present && m.knownDefects.counts.expired ? " s-bad" : "") + '"></span><span class="nm">Known defects</span><small>' + (m.knownDefects.present ? m.knownDefects.counts.outstanding : 0) + "</small></a>"
+    + '<a href="#setup"><span class="dot"></span><span class="nm">Setup</span><small></small></a></nav>'
+    + '<div class="side-foot">Updated <b id="ago">' + timeTag(m.generatedAt) + "</b>" + (opts.refresh ? "<br>Refreshes every " + esc(opts.refresh) + " s" : "") + "</div></aside>";
+
+  let views = feats.map((f) => targetView(m, f, byId.get(f.runId))).join("");
+  if (!feats.length) views += '<section class="view" id="t-none"><header class="top"><h1>No runs yet</h1></header><p class="muted">Start one with <code>/qa-run</code>; this console fills in as it goes.</p></section>';
+
+  const head = (title, sub) => '<header class="top"><div class="crumb">' + t(m.project.name) + " / project</div><h1>" + esc(title) + "</h1>" + (sub ? '<span class="pill">' + esc(sub) + "</span>" : "") + "</header>";
   const runRows = runs.map((r) => {
     const pct = r.progress.percent !== null ? Math.min(100, r.progress.percent) : 0;
     return "<tr><td class=\"code\">" + t(r.id) + "</td><td>" + t(r.target) + "</td><td>" + timeTag(r.started) + "</td>"
       + "<td>" + badge(r.status) + (r.manifestStatus && r.status === "paused" ? '<div class="muted">' + t(r.manifestStatus) + "</div>" : "")
       + (r.status === "complete" && !r.closed ? '<div class="muted">not closed</div>' : "") + "</td>"
-      + "<td>" + esc(progText(r)) + '<div class="bar"><i style="width:' + pct + '%"></i></div>'
+      + "<td>" + esc(progText(r)) + '<div class="pbar"><i style="width:' + pct + '%"></i></div>'
       + (r.ratePerHour !== null ? '<div class="muted">' + esc(r.ratePerHour) + "/h" + (r.eta ? ", ETA " + esc(fmtDuration(r.eta.hours)) : "") + "</div>" : "") + "</td>"
       + "<td>" + esc(tallyText(r)) + (r.superseded || r.outOfPlan ? '<div class="muted">' + esc([r.superseded ? r.superseded + " superseded" : "", r.outOfPlan ? r.outOfPlan + " out-of-plan" : ""].filter(Boolean).join(", ")) + "</div>" : "") + "</td>"
       + "<td>" + esc(sevText(r.bugs.bySeverity)) + "</td><td>" + (r.verified ? "yes" : "no") + "</td>"
       + "<td>" + (r.ship ? '<span class="st st-' + esc(r.ship.verdict.replace(/ /g, "-")) + '" title="' + esc(r.ship.conditions.join("; ")) + '">' + esc(r.ship.verdict) + "</span>" : '<span class="muted">—</span>') + "</td>"
       + "<td>" + (r.report ? '<a href="' + esc(r.report.rel) + '">report</a>' : '<span class="muted">—</span>') + "</td></tr>";
   }).join("");
-  const runsTable = runs.length ? '<div class="scroll"><table><thead><tr><th>Run</th><th>Target</th><th>Started</th><th>Status</th><th>Progress</th><th>Verdicts</th><th>Bugs</th><th>Verified</th><th>Ship</th><th>Report</th></tr></thead><tbody>'
-    + runRows + "</tbody></table></div>" : '<p class="muted">No runs yet.</p>';
+  views += '<section class="view" id="runs">' + head("Runs", runs.length + " runs") + '<div class="card tablewrap" style="margin-top:22px">'
+    + (runs.length ? "<table><thead><tr><th>Run</th><th>Target</th><th>Started</th><th>Status</th><th>Progress</th><th>Verdicts</th><th>Bugs</th><th>Verified</th><th>Ship</th><th>Report</th></tr></thead><tbody>" + runRows + "</tbody></table>" : '<p class="empty">No runs yet.</p>') + "</div></section>";
 
-  const trends = m.trends.length ? '<div class="trends">' + m.trends.map((tr) => '<div class="panel"><h3>' + t(humanize(tr.target)) + "</h3>" + svgTrend(tr)
-    + '<ul class="legend"><li><i style="width:10px;height:10px;background:var(--pass)"></i>pass</li><li><i style="width:10px;height:10px;background:var(--fail)"></i>fail or error</li><li><i style="width:10px;height:10px;background:var(--blocked)"></i>blocked</li><li><i style="width:10px;height:10px;background:var(--error)"></i>bugs</li></ul>'
-    + '<p class="muted" style="font-size:.8rem;margin:4px 0 0">' + tr.points.length + " runs, oldest first</p></div>").join("") + "</div>" : '<p class="muted">Trends appear once a target has two runs.</p>';
+  views += '<section class="view" id="trends">' + head("Trends", "") + '<div style="margin-top:22px">' + (m.trends.length ? '<div class="trends">' + m.trends.map((tr) => '<div class="card"><h3>' + t(humanize(tr.target)) + "</h3>" + svgTrend(tr)
+    + '<ul class="legend"><li><i style="background:var(--pass)"></i>pass</li><li><i style="background:var(--fail)"></i>fail or error</li><li><i style="background:var(--blocked)"></i>blocked</li><li><i style="background:var(--error)"></i>bugs</li></ul>'
+    + '<p class="muted" style="font-size:.78rem;margin:6px 0 0">' + tr.points.length + " runs, oldest first</p></div>").join("") + "</div>" : '<div class="card"><p class="empty">Trends appear once a target has two runs.</p></div>') + "</div></section>";
 
   const specRows = m.specs.map((s) => "<tr><td>" + t(s.target) + "</td><td>" + (s.hasChecklist ? s.criteria : '<span class="muted">no checklist</span>') + "</td>"
     + "<td>" + (s.journeys ? "P1 " + s.journeys.P1 + ", P2 " + s.journeys.P2 + (s.journeys.P3 ? ", P3 " + s.journeys.P3 : "") : '<span class="muted">—</span>') + "</td>"
@@ -991,37 +1098,32 @@ function renderHtml(m, opts) {
     + "<td>" + (s.coverage ? esc(s.coverage.percent + "%") + (s.coverage.uncovered ? '<div class="muted">' + s.coverage.uncovered + " uncovered</div>" : "") : '<span class="muted">—</span>') + "</td>"
     + "<td>" + s.runs + (s.latestRun ? '<div class="muted">latest ' + esc(s.latestRun.status) + "</div>" : "") + "</td>"
     + "<td>" + (s.drift ? "out of date" : "in sync") + "</td></tr>").join("");
-  const specsTable = m.specs.length ? '<div class="scroll"><table><thead><tr><th>Target</th><th>Checks</th><th>Journeys</th><th>Expected results from</th><th>Analysis</th><th>Coverage</th><th>Runs</th><th>Roles</th></tr></thead><tbody>'
-    + specRows + "</tbody></table></div>" : '<p class="muted">No test plans under .qa/specs/.</p>';
+  views += '<section class="view" id="plans">' + head("Test plans", m.specs.length + " plans") + '<div class="card tablewrap" style="margin-top:22px">'
+    + (m.specs.length ? "<table><thead><tr><th>Target</th><th>Checks</th><th>Journeys</th><th>Expected results from</th><th>Analysis</th><th>Coverage</th><th>Runs</th><th>Roles</th></tr></thead><tbody>" + specRows + "</tbody></table>" : '<p class="empty">No test plans under .qa/specs/.</p>') + "</div></section>";
 
   const kd = m.knownDefects;
-  const kdHtml = !kd.present ? '<p class="muted">No known-defect registry (.qa/known-defects.json).</p>'
-    : (kd.error ? '<div class="warn">' + esc(kd.error) + "</div>" : "") + (!kd.valid ? '<div class="warn">The registry does not validate (scripts/known-defects.sh validate).</div>' : "")
-      + (kd.entries.length ? '<div class="scroll"><table><thead><tr><th>Id</th><th>Title</th><th>Severity</th><th>Ticket</th><th>Expiry</th><th>State</th></tr></thead><tbody>'
-        + kd.entries.map((e) => "<tr><td class=\"code\">" + t(e.id) + "</td><td>" + t(e.title) + "</td><td>" + esc(e.severity) + "</td><td>" + t(e.ticket) + "</td><td>" + esc(e.expiry) + "</td><td>" + badge(e.state) + "</td></tr>").join("")
-        + "</tbody></table></div>" : '<p class="muted">The registry is empty.</p>');
+  views += '<section class="view" id="defects">' + head("Known defects", kd.present ? kd.counts.outstanding + " outstanding, " + kd.counts.expired + " expired" : "no registry") + '<div style="margin-top:22px">'
+    + (!kd.present ? '<div class="card"><p class="empty">No known-defect registry (.qa/known-defects.json).</p></div>'
+      : (kd.error ? '<div class="warn">' + esc(kd.error) + "</div>" : "") + (!kd.valid ? '<div class="warn">The registry does not validate (scripts/known-defects.sh validate).</div>' : "")
+        + '<div class="card tablewrap">' + (kd.entries.length ? "<table><thead><tr><th>Id</th><th>Title</th><th>Severity</th><th>Ticket</th><th>Expiry</th><th>State</th></tr></thead><tbody>"
+          + kd.entries.map((e) => "<tr><td class=\"code\">" + t(e.id) + "</td><td>" + t(e.title) + "</td><td>" + esc(e.severity) + "</td><td>" + t(e.ticket) + "</td><td>" + esc(e.expiry) + "</td><td>" + badge(e.state) + "</td></tr>").join("")
+          + "</tbody></table>" : '<p class="empty">The registry is empty.</p>') + "</div>") + "</div></section>";
 
-  const setup = '<dl class="setup"><dt>Plugin</dt><dd>' + esc(m.plugin.name + " " + m.plugin.version) + "</dd>"
+  views += '<section class="view" id="setup">' + head("Setup", "") + '<div class="card" style="margin-top:22px"><dl class="setup"><dt>Plugin</dt><dd>' + esc(m.plugin.name + " " + m.plugin.version) + "</dd>"
     + "<dt>Roles</dt><dd>" + (c.present ? c.roles + " roles, constitution <code>" + esc(c.version || "unversioned") + "</code>" : "no constitution yet") + "</dd>"
     + "<dt>Profile</dt><dd>" + (cfg.present ? esc(cfg.profile) + (cfg.environment ? ", environment " + t(cfg.environment) : "") : "no .qa/config.json") + "</dd>"
     + (cfg.present ? "<dt>Gates</dt><dd>" + (cfg.gates.length ? esc(cfg.gates.join(", ")) : "none") + "</dd><dt>Parallel checks</dt><dd>" + (cfg.maxParallel !== null ? esc(cfg.maxParallel) : "default") + "</dd><dt>API writes</dt><dd>" + (cfg.allowApiWrites ? "allowed" : "not allowed") + "</dd>" : "")
-    + "</dl>";
+    + "</dl></div></section>";
 
-  const fold = (key, title, meta, inner) => '<details class="fold" data-key="' + esc(key) + '"><summary><span class="fold-title">' + esc(title) + '</span><span class="fold-meta">' + meta + "</span></summary>" + inner + "</details>";
-  const records = '<section class="records"><h2>Records</h2>'
-    + fold("rec:runs", "Every run", esc(runs.length + " runs, " + runs.filter((r) => r.status === "running").length + " running, " + runs.filter((r) => r.status === "stalled").length + " stalled"), runsTable)
-    + fold("rec:trends", "Trends", esc(m.trends.length + " targets with history"), trends)
-    + fold("rec:specs", "Test plans", esc(m.specs.length + " plans"), specsTable)
-    + fold("rec:kd", "Known defects", kd.present ? esc(kd.counts.outstanding + " outstanding, " + kd.counts.expired + " expired, " + kd.counts.cleared + " cleared") : "no registry", kdHtml)
-    + fold("rec:setup", "Setup", esc(cfg.present ? cfg.profile + " profile" : "no config"), setup) + "</section>";
-
-  const doc = head + body + records
-    + "<footer>Written by " + esc(m.plugin.name) + " qa-dashboard from this project's .qa/ folder. Read-only; credentials are never read or shown.</footer>";
+  const lead = feats[0];
+  const main = '<main class="main"><p class="stale" id="stale" hidden>This page has stopped updating while a run is still going. Keep it live with <code>qa-dashboard.sh html --watch 60</code>.</p>' + views
+    + "<footer>Written by " + esc(m.plugin.name) + " qa-dashboard from this project's .qa/ folder. Read-only; credentials are never read or shown.</footer></main>";
+  const sheet = '<div class="scrim" id="scrim" hidden></div><aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden><header><h2 id="sheet-title"></h2><button type="button" class="btn" id="sheet-close">Close</button></header><div class="sheet-body" id="sheet-body"></div></aside>';
   return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
     + (opts.refresh ? '<noscript><meta http-equiv="refresh" content="' + opts.refresh + '"></noscript>\n' : "")
-    + '<meta name="generator" content="qa-e2e-pilot qa-dashboard.js">\n<title>' + esc((lead ? lead.title + ": " + lead.readiness.headline : "QA") + " | " + m.project.name) + "</title>\n<style>" + CSS + "</style>\n</head>\n"
-    + '<body data-generated="' + esc(m.generatedAt) + '" data-refresh="' + esc(opts.refresh || 0) + '" data-live="' + (live ? "1" : "0") + '"><div class="wrap">\n'
-    + doc + "\n</div>\n<script>" + JS + "</script>\n</body>\n</html>\n";
+    + '<meta name="generator" content="qa-e2e-pilot qa-dashboard.js">\n<title>' + esc((lead ? lead.title + ": " + lead.readiness.headline : "QA console") + " | " + m.project.name) + "</title>\n<style>" + CSS + "</style>\n</head>\n"
+    + '<body data-generated="' + esc(m.generatedAt) + '" data-refresh="' + esc(opts.refresh || 0) + '" data-live="' + (live ? "1" : "0") + '"><div class="app">\n'
+    + side + main + "\n</div>" + sheet + "\n<script>" + JS + "</script>\n</body>\n</html>\n";
 }
 
 // ---------------------------------------------------------------------------
