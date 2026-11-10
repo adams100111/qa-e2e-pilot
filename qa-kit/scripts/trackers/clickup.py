@@ -13,7 +13,9 @@ The transport comes from `transport_for(ctx)`: `ctx.transport` or `ctx.args.tran
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -21,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
-from trackers.core import (ConfigError, RunError, WordingError, case_index, content_hash, norm,
+from trackers.core import (CONFIG_REL, ConfigError, RunError, WordingError, case_index, content_hash, norm,
                            outbound, validate_catalog)
 
 try:  # optional, only for writing pulled drafts as YAML
@@ -742,3 +744,162 @@ def status(ctx) -> None:
     ctx.log.apply = False
     s = _push(ctx)
     _pull(ctx, s.folder, report_drift=False)
+
+
+# ---------------------------------------------------------------- init
+
+
+RUNS_LIST = "Runs"
+BUGS_LIST = "Bugs"
+LEVEL_OPTIONS = "/".join(LEVELS.values())
+# (field name, how a person adds it in ClickUp)
+AREA_FIELDS = [
+    ("Role", "labels"),
+    ("Level", f"drop down: {LEVEL_OPTIONS}"),
+    ("Last check result", "drop down: pass/fail/blocked/deferred/error"),
+    ("Last check run", "short text"),
+    ("Linked bugs", f'relationship to the "{BUGS_LIST}" list'),
+]
+BUG_FIELDS = [
+    ("Severity", "drop down: critical/high/medium/low"),
+    ("Case", "relationship to tasks"),
+    ("Found in run", "short text"),
+    ("Retest result", "drop down: passed/still failing"),
+    ("Ref", "short text"),
+]
+RUN_FIELDS = [
+    ("Build", "short text"), ("Environment", "short text"), ("Language", "short text"),
+    ("Passed", "number"), ("Failed", "number"), ("Blocked", "number"),
+]
+# (view name, grouping): "status" / "priority" / ("field", <field name>) / None
+AREA_VIEWS = [("By status", "status"), ("By priority", "priority"), ("By level", ("field", "Level"))]
+RUN_VIEWS = [("Results by run", None)]
+BUG_VIEWS = [("Open by severity", ("field", "Severity")), ("By case", ("field", "Case"))]
+
+
+def field_key(list_name: str, field_name: str) -> str:
+    """Key of a custom field id in the config's `fields` map: `<list name>/<field name>`."""
+    return f"{list_name}/{field_name}"
+
+
+def _real(lid: str) -> bool:
+    return not lid.startswith("<")
+
+
+def _save_ids(ctx, lists: Dict[str, str], fields: Dict[str, str]) -> None:
+    """Merge found ids into docs/agents/qa-tracker.json (all other keys kept), atomically."""
+    path = Path(ctx.project) / CONFIG_REL
+    data: dict = {}
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ConfigError(f"{path}: {exc}") from exc
+    new_lists = dict(data.get("lists") or {})
+    new_fields = dict(data.get("fields") or {})
+    new_lists.update(lists)
+    new_fields.update(fields)
+    if new_lists == (data.get("lists") or {}) and new_fields == (data.get("fields") or {}):
+        return
+    data["lists"], data["fields"] = new_lists, new_fields
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".qa-tracker.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+class _Init(_Sync):
+    def __init__(self, ctx):
+        tr = transport_for(ctx)
+        _, _, folder_id = _ids(ctx)
+        r = tr.request("GET", f"/v2/folder/{folder_id}")
+        lists = {l["name"]: str(l["id"]) for l in r.get("lists") or []}
+        super().__init__(ctx, Folder(lists=lists, tasks=[]))
+        self.tr = tr
+        self.manual = 0
+        self.found_lists: Dict[str, str] = {}
+        self.found_fields: Dict[str, str] = {}
+
+    def say(self, line: str) -> None:
+        self.log.out.write(line + "\n")
+
+    def need_manual(self, list_name: str, what: str) -> None:
+        self.manual += 1
+        self.log.counts["manual"] = self.manual
+        self.say(f'MANUAL\t{self.manual}. In list "{list_name}": {what}')
+
+    def check_list(self, name: str, fields, views) -> None:
+        lid = self.ensure_list(name)
+        if lid.startswith("<skipped"):
+            return
+        exists = _real(lid)
+        if exists:
+            self.found_lists[name] = lid
+        # fields: GET /v2/list/{id}/field; a list that does not exist yet has none
+        have: Dict[str, str] = {}
+        if exists:
+            for f in self.tr.request("GET", f"/v2/list/{lid}/field").get("fields") or []:
+                have.setdefault(norm(f.get("name")), str(f["id"]))
+        ids: Dict[str, str] = {}
+        for fname, how in fields:
+            fid = have.get(norm(fname))
+            if fid:
+                ids[fname] = fid
+                self.found_fields[field_key(name, fname)] = fid
+            else:
+                self.need_manual(name, f'add custom field "{fname}" ({how})')
+        # statuses: only checked on a list that exists
+        if exists and name not in (self.runs_list, self.guide_list):
+            want = self.cfg["statuses"]["bug" if name == self.bugs_list else "case"]
+            live = {norm(st) for st in self.list_statuses(lid)}
+            for st in want:
+                if norm(st) not in live:
+                    self.need_manual(name, f'add status "{st}"')
+        # views: looked up by name in freshly read state
+        existing = set()
+        if exists:
+            existing = {norm(v.get("name")) for v in self.tr.request("GET", f"/v2/list/{lid}/view").get("views") or []}
+        for vname, grouping in views:
+            if norm(vname) in existing:
+                continue
+            body = {"name": vname, "type": "list"}
+            if isinstance(grouping, tuple):
+                fid = ids.get(grouping[1])
+                if not fid:
+                    self.say(f"pending\t{name}: {vname} (needs field {grouping[1]})")
+                    continue
+                body["grouping"] = {"field": f"cf_{fid}", "dir": 1, "collapsed": [], "ignore": False}
+            elif grouping:
+                body["grouping"] = {"field": grouping, "dir": 1, "collapsed": [], "ignore": False}
+            if not exists and self.log.apply:
+                continue
+            self.write("create-view", f"{name}: {vname}",
+                       lambda lid=lid, body=body: self.tr.request("POST", f"/v2/list/{lid}/view", body))
+
+    def run(self) -> None:
+        lists_cfg = self.cfg.get("lists") or {}
+        self.runs_list = lists_cfg.get("runs") or RUNS_LIST
+        self.bugs_list = lists_cfg.get("bugs") or BUGS_LIST
+        if self.ctx.catalog is not None:
+            for area in self.ctx.catalog.areas:
+                if not area.missing:
+                    self.check_list(area.list, AREA_FIELDS, AREA_VIEWS)
+        self.check_list(self.guide_list, [], [])
+        self.check_list(self.runs_list, RUN_FIELDS, RUN_VIEWS)
+        self.check_list(self.bugs_list, BUG_FIELDS, BUG_VIEWS)
+
+
+def init(ctx) -> None:
+    """Build the folder structure (lists, views), check fields and statuses, print the manual
+    click steps, and write the ids found back into docs/agents/qa-tracker.json (only --apply)."""
+    s = _Init(ctx)
+    s.run()
+    if ctx.log.apply:
+        _save_ids(ctx, s.found_lists, s.found_fields)
