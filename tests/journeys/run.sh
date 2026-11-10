@@ -30,6 +30,21 @@ run_engine() {
   check "$E validate_bad exit" "$rc" "1"
   check "$E validate_bad reasons" "$(q "$out" '[e["reason"] for e in d["errors"]]')" '["invalid priority: \"P0\"","step J1-S2: journey.step is 2, expected 1","step J1-S1: journey.step is 1, expected 2","duplicate step id: J1-S1"]'
 
+  # pre-0.12 {journeys:[{criteria}]} shape: validate/status refuse it with a pointer; migrate converts it.
+  QA_ENGINE=$E bash "$SH" validate "$FX/journeys-legacy.json" "$FX/checklist.json" >/dev/null 2>"$T/legacy.err"; rc=$?
+  check "$E validate_legacy exit" "$rc" "1"
+  check "$E validate_legacy hint" "$(grep -c 'journeys.sh migrate' "$T/legacy.err")" "1"
+  out="$(QA_ENGINE=$E bash "$SH" migrate "$FX/journeys-legacy.json")"; rc=$?
+  check "$E migrate_legacy exit" "$rc" "0"
+  check "$E migrate_legacy body" "$(q "$out" '[[j["id"],j["priority"],j["steps"],sorted(j)] for j in d]')" '[["J-SUBMIT","P1",["J1-S1","J1-S2","J1-S3"],["id","name","priority","steps"]],["J-KEEP","P2",["J1-S1"],["id","priority","steps"]]]'
+  printf '%s' "$out" > "$T/migrated.json"
+  out="$(QA_ENGINE=$E bash "$SH" validate "$T/migrated.json" "$FX/checklist.json")"
+  check "$E migrated validates past shape" "$(q "$out" '[e["reason"] for e in d["errors"] if "journey" in e["reason"] and "pre-0.12" in e["reason"]]')" '[]'
+  out="$(QA_ENGINE=$E bash "$SH" migrate "$FX/journeys.json")"
+  check "$E migrate_current unchanged" "$(q "$out" 'd')" "$(q "$(cat "$FX/journeys.json")" 'd')"
+  echo '{"x":1}' > "$T/odd.json"
+  QA_ENGINE=$E bash "$SH" migrate "$T/odd.json" >/dev/null 2>&1; check "$E migrate_unknown_shape exit" "$?" "1"
+
   out="$(QA_ENGINE=$E bash "$SH" status "$FX/run-all-pass")"; rc=$?
   check "$E status_all_pass" "$(jv "$out")" '["pass",["pass","pass","pass"]]'
   check "$E status_all_pass shape" "$(q "$out" '[d[0]["id"],d[0]["priority"],d[0]["steps"][0]["criterionId"]]')" '["J-SUBMIT","P1","J1-S1"]'
@@ -82,6 +97,7 @@ if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     "validate $FX/journeys.json $FX/checklist.json" \
     "validate $FX/journeys-missing-step.json $FX/checklist.json" \
     "validate $FX/journeys-bad.json $FX/checklist.json" \
+    "migrate $FX/journeys-legacy.json" "migrate $FX/journeys.json" \
     "status $FX/run-all-pass" "status $FX/run-one-fail" "status $FX/run-incomplete" \
     "status $FX/run-superseded" "status $FX/run-multi-persona" "status $FX/run-deferred" \
     "expand-variant $FX/journeys.json $FX/checklist.json --journey J-SUBMIT --viewport 390x844 --locale ar --color-scheme dark" \

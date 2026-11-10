@@ -8,6 +8,27 @@ and **qa-kit** (the step-gated process shell). Releases are git tags `{plugin-na
 
 ## qa-e2e-pilot (engine)
 
+### v0.12.2 — 2026-11-10 · "Bugs and journeys from real runs export cleanly"
+
+**Fixed**
+
+- **Bug export read empty fields from real runs.** `bug-log.json` was hand-copied from a markdown
+  template, so runs drifted into other key styles (`criterionId`, `suspectedLayer`, `observed`). The
+  bug export read those as empty: on the hackathons v3 run all 40+ bugs came out with no criterion,
+  layer or observed result. New `skills/checkpointing-qa-memory/scripts/bug-log.sh`:
+  - `add <run-dir> <entry.json|->` is now the only writer. It maps the known aliases to the
+    canonical keys, requires `bug_id`, `criterion_id`, `title`, `severity`
+    (`critical|high|medium|low`), `suspected_layer`, `expected` and `actual`, refuses a repeated
+    `bug_id`, and writes atomically.
+  - `normalize <run-dir>` rewrites an older log in place and keeps the original once as
+    `bug-log.pre-normalize.json`. It lists entries that still miss a field and never fills one in.
+  - `validate <run-dir>` checks a log.
+  - Dual-engine, byte parity. The checkpointing skill now calls it instead of hand-editing.
+- **`journeys.sh` rejected journeys files from pre-0.12 runs** with a bare "must be a JSON array".
+  `validate` and `status` now name the old `{journeys:[{criteria}]}` shape and point at the new
+  `journeys.sh migrate <file>`, which prints the file in the current shape (`criteria` → `steps`,
+  other fields kept; a current file prints unchanged).
+
 ### v0.12.1 — 2026-11-09 · "See the whole project at a glance"
 
 **Added**
