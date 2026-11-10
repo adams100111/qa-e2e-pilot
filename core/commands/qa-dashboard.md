@@ -1,6 +1,6 @@
 ---
 description: Show the project's QA state in one place — constitution, specs, every run's progress, verdicts, bugs and ship readiness, the active run's live cursor and the known-defect registry — as an HTML page, a terminal view or JSON. Read-only.
-argument-hint: [html|tui|json] [--out <file>] [--refresh <sec>] [--watch <sec>]
+argument-hint: [html|tui|json] [--out <file>] [--refresh <sec>] [--watch <sec>] [--open]
 disable-model-invocation: false
 ---
 
@@ -14,9 +14,12 @@ or pass `--project <dir>`.
 ## What to do
 
 1. Pick the mode from `$ARGUMENTS`: `html` (default), `tui` or `json`. Pass the remaining flags through.
-   - `html [--out <file>] [--refresh <sec>]` writes one self-contained page (default
-     `.qa/dashboard.html`): no external requests, light and dark, opens from `file://`. `--refresh`
-     adds a meta refresh so an open tab follows a live run.
+   - `html [--out <file>] [--refresh <sec>] [--watch <sec>] [--open]` writes one self-contained page
+     (default `.qa/dashboard.html`): no external requests, light and dark, opens from `file://`.
+     `--refresh` makes an open tab reload on that period, keeping its scroll, open sections and
+     filters. `--watch` keeps rewriting the page every N seconds until Ctrl-C (it implies the same
+     `--refresh`); like `tui --watch`, only suggest it for the user's own terminal, never run it inside
+     this session. `--open` opens the page in the default browser.
    - `tui [--watch <sec>]` prints the terminal view. `--watch` redraws every N seconds until Ctrl-C;
      only suggest it when the user runs the command in their own terminal, never inside this session.
    - `json` prints the model for another tool or agent.
@@ -28,12 +31,21 @@ or pass `--project <dir>`.
 
 ## What it shows
 
+The HTML page is a QA console. A sidebar lists the test targets and the project views. Each target
+leads with its **latest run in people's terms**: a readiness pill (`In progress`, `Stalled`, `Not
+ready to ship`, `Every check passed`, or the ship verdict when the run has one), a run dial with one
+tick per check grouped by journey, the facts and a "Where it fails" list, the check running now and
+the live activity; then a stat rail, **journey cards** from the spec's `journeys.json` (checks grouped
+by role when there are none) whose rings show each check's verdict, and **bugs**, most severe first,
+each opening to what happened and what should happen, filterable by severity, journey and text.
+Cards and bugs open in a side panel. The project views hold:
+
 - **Header**: constitution version and role count, profile/environment/gates from `.qa/config.json`,
   plugin version.
 - **Specs** (`.qa/specs/<target>/`): criteria, P1/P2 journeys, oracle sources
   (`human`/`spec`/`llm-suggested`), the `/qa-analyze` verdict (`BLOCKED`/`OK`, stale when older than
   the checklist), coverage %, run count, role drift against the constitution.
-- **Runs** (newest first): status — `running` (criteria left and the journal moved in the last 30
+- **Runs** (newest first): status — `running` (criteria left and the journal or tool stream moved in the last 30
   minutes, `--stall-minutes` to change), `stalled` (criteria left, journal idle longer), `paused`
   (the manifest says so), `complete` — progress, rate per hour and ETA for a running run, verdict
   counts and low-confidence passes, bugs by severity, verified, ship readiness and a link to

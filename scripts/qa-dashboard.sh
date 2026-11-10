@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# qa-dashboard.sh — the project-level QA state dashboard (engine 0.12.1). A thin
+# qa-dashboard.sh — the project-level QA state dashboard (engine 0.12.2). A thin
 # wrapper over qa-dashboard.js (the one implementation), so every harness and the
 # docs invoke it the same way:
 #
-#   bash scripts/qa-dashboard.sh html [--project <dir>] [--out <file>] [--refresh <sec>]
+#   bash scripts/qa-dashboard.sh html [--project <dir>] [--out <file>] [--refresh <sec>] [--watch <sec>] [--open]
 #   bash scripts/qa-dashboard.sh tui  [--project <dir>] [--watch <sec>]
 #   bash scripts/qa-dashboard.sh json [--project <dir>]
 #
