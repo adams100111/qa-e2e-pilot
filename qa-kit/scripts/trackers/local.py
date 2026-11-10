@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -17,8 +19,24 @@ def _tracker(ctx: Ctx) -> Path:
 
 
 def _write(path: Path, text: str) -> None:
+    """Atomic: temp file in the same directory, then os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(prefix=".tracker.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _create(path: Path, text: str) -> None:
+    """Create a new file; an existing one raises FileExistsError instead of being overwritten."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path), "x", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 def _cell(text: str) -> str:
@@ -92,15 +110,20 @@ push_results = push_run
 
 
 def _split(text: str) -> Tuple[Dict[str, str], str]:
-    """Front matter dict and the body of a bug file."""
-    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.DOTALL)
+    """Front matter dict and the body of a bug file. Tolerates a BOM, CRLF and trailing spaces."""
+    text = text.lstrip("\ufeff").replace("\r\n", "\n")
+    m = re.match(r"^---[ \t]*\n(.*?)\n---[ \t]*(?:\n(.*))?$", text, re.DOTALL)
     if not m:
         return {}, text
     meta = {}
     for line in m.group(1).splitlines():
         k, _, v = line.partition(":")
         meta[k.strip()] = v.strip()
-    return meta, m.group(2)
+    return meta, m.group(2) or ""
+
+
+def _status(meta: Dict[str, str]) -> str:
+    return meta.get("status", "").strip().strip("\"'").lower()
 
 
 def _bug_files(ctx: Ctx) -> List[Tuple[Path, Dict[str, str]]]:
@@ -116,7 +139,18 @@ def _append(path: Path, line: str) -> None:
     text = path.read_text(encoding="utf-8")
     if not text.endswith("\n"):
         text += "\n"
-    path.write_text(text + line + "\n", encoding="utf-8")
+    _write(path, text + line + "\n")
+
+
+def _next_number(ctx: Ctx, reserved: List[int]) -> int:
+    numbers = list(reserved)
+    d = _tracker(ctx) / "bugs"
+    if d.is_dir():
+        for f in d.glob("*.md"):
+            m = re.match(r"^(\d+)-", f.name)
+            if m:
+                numbers.append(int(m.group(1)))
+    return max(numbers) + 1 if numbers else 1
 
 
 def _case_of(results: Dict[str, dict], criterion: Optional[str]) -> str:
@@ -148,57 +182,56 @@ def push_bug(ctx: Ctx) -> None:
     if not bugs_json.is_file():
         ctx.log.act("info", "no bugs to push")
         return
-    with open(bugs_json, encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        with open(bugs_json, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise core.RunError(f"{bugs_json}: cannot read bugs ({exc})") from exc
     rows = data if isinstance(data, list) else (data.get("bugs") or []) if isinstance(data, dict) else []
     results = core.case_results(run_dir)
     existing = _bug_files(ctx)
-    numbers = []
-    for f, _ in existing:
-        m = re.match(r"^(\d+)-", f.name)
-        if m:
-            numbers.append(int(m.group(1)))
-    next_no = max(numbers) + 1 if numbers else 1
-    seen_new: Dict[str, Path] = {}
+    created: set = set()
+    reserved: List[int] = []
+    line = f"- Still happens on {label}"
     for row in rows:
         if not isinstance(row, dict):
             continue
         case_id = _case_of(results, row.get("criterionId") or row.get("criterion_id"))
         key = case_id or str(row.get("criterionId") or row.get("criterion_id") or row.get("id") or "")
         ref = core.fingerprint(key, str(row.get("persona") or ""), str(row.get("title") or ""))
+        if ref in created:
+            continue
         try:
             text = _bug_text(row, ctx)
         except core.WordingError as exc:
             ctx.log.skip("wording", f"{ref}: {exc.word}")
             continue
-        open_match = next((f for f, m in existing if m.get("ref") == ref and m.get("status") != "closed"), None)
-        open_match = open_match or seen_new.get(ref)
-        line = f"- Still happens on {label}"
-        if open_match is not None:
-            if open_match.is_file() and line in open_match.read_text(encoding="utf-8").splitlines():
+        match = next((f for f, m in existing if m.get("ref") == ref and _status(m) != "closed"), None)
+        if match is not None:
+            content = match.read_text(encoding="utf-8")
+            meta, body = _split(content)
+            if meta.get("found_in") == label or line in [l.strip() for l in body.splitlines()]:
                 continue
-            if open_match.is_file() and f"found_in: {label}" in open_match.read_text(encoding="utf-8"):
-                continue
-            ctx.log.act("update", f"{open_match.name} {line[2:]}", lambda p=open_match: _append(p, line))
+            ctx.log.act("update", f"{match.name} {line[2:]}", lambda p=match: _append(p, line))
             continue
-        name = f"{next_no:03d}-{_slug(str(text['title']))}.md"
-        next_no += 1
+        number = _next_number(ctx, reserved)
+        reserved.append(number)
+        name = f"{number:03d}-{_slug(str(text['title']))}.md"
         path = _tracker(ctx) / "bugs" / name
-        body = [
+        body_lines = [
             "---", "status: open", f"severity: {row.get('severity') or ''}", f"case: {case_id}",
             f"ref: {ref}", f"found_in: {label}", "---", f"# {text['title']}", "",
         ]
         if text["steps"]:
-            body.append("Steps:")
-            body += [f"{i}. {s}" for i, s in enumerate(text["steps"], 1)]
-            body.append("")
+            body_lines.append("Steps:")
+            body_lines += [f"{i}. {s}" for i, s in enumerate(text["steps"], 1)]
+            body_lines.append("")
         if text["expected"]:
-            body += [f"Expected: {text['expected']}", ""]
+            body_lines += [f"Expected: {text['expected']}", ""]
         if text["actual"]:
-            body += [f"Actual: {text['actual']}", ""]
-        content = "\n".join(body)
-        seen_new[ref] = path
-        ctx.log.act("create", name, lambda p=path, c=content: _write(p, c))
+            body_lines += [f"Actual: {text['actual']}", ""]
+        created.add(ref)
+        ctx.log.act("create", name, lambda p=path, c="\n".join(body_lines): _create(p, c))
 
 
 def update_retest(ctx: Ctx) -> None:
@@ -207,10 +240,10 @@ def update_retest(ctx: Ctx) -> None:
     results = core.case_results(run_dir)
     for path, meta in _bug_files(ctx):
         case_id = meta.get("case", "")
-        if meta.get("status") != "retest" or case_id not in results:
+        if _status(meta) != "retest" or case_id not in results:
             continue
         outcome = "passed" if results[case_id]["verdict"] == "pass" else "still failing"
         line = f"- Retest on {label}: {outcome}"
-        if line in path.read_text(encoding="utf-8").splitlines():
+        if line in [l.strip() for l in _split(path.read_text(encoding="utf-8"))[1].splitlines()]:
             continue
         ctx.log.act("update", f"{path.name} {line[2:]}", lambda p=path, l=line: _append(p, l))

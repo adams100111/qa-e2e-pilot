@@ -47,6 +47,10 @@ answer before the next question.
 - The issue tracker the project already uses. If `docs/agents/issue-tracker.md` exists, read it and
   offer that tracker by name.
 
+Record the answer as `bugsTo` in `docs/agents/qa-tracker.json`: `same` for the same tracker,
+`issue-tracker` for the project's issue tracker. With `issue-tracker`, `push-bug` and `update-retest`
+do nothing and say so.
+
 **Question 3. "Keep the default statuses?"**
 Recommended: yes.
 - Case statuses: `to test`, `testing`, `failed`, `blocked`, `passed`, `skipped`.

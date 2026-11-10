@@ -3,6 +3,7 @@
   "catalog": ".qa/catalog",
   "guideDir": ".qa/guide",
   "guideAs": "tasks",
+  "bugsTo": "same",
   "ids": {
     "workspace": null,
     "space": null,
