@@ -433,8 +433,8 @@ class _Sync:
                     self.sync_case(area, lid, case)
 
     def retire_orphans(self, catalog, catalog_ok: bool = True) -> None:
-        """Retire TC tasks the catalog no longer lists, but only ones we pushed before (cache)
-        or already tagged retired. Anything else may be a tester's new case: report it."""
+        """Retire TC tasks the catalog no longer lists, but only ones we pushed before (cache
+        entry with this very task id) or already tagged retired. Anything else may be a tester's new case: report it."""
         if not catalog_ok:
             self.log.skip("orphan-retirement", "skipped: catalog has errors")
             return
@@ -445,7 +445,9 @@ class _Sync:
             t = self.folder.by_tc[cid]
             lname = t["list"].get("name")
             tagged = any(x.get("name") == TAG_RETIRED for x in t.get("tags") or [])
-            if not tagged and not self.ctx.cache.get(CACHE_KIND, cid):
+            entry = self.ctx.cache.get(CACHE_KIND, cid)
+            pushed_by_us = bool(entry) and str(entry.get("id")) == str(t["id"])
+            if not tagged and not pushed_by_us:
                 self.log.act("orphan", f"{cid} ({lname})")
                 continue
             self.retire(t, cid, f"{cid} (orphan, {lname})",
@@ -567,6 +569,7 @@ class _Sync:
             if self.log.apply and not doc_id:
                 return  # no Doc: no pages and no guide-task retirement
         complete = True  # every guide page is in the Doc (or, in a dry run, planned)
+        headings = set()
         for fname, h1, body in files:
             if fname.startswith("07"):
                 continue
@@ -575,6 +578,7 @@ class _Sync:
             if name is None or content is None:
                 complete = False
                 continue
+            headings.add(h1)
             page = pages.get(name)
             if page is None:
                 r = self.write("page-create", name, lambda name=name, content=content: self.tr.request(
@@ -591,7 +595,7 @@ class _Sync:
             return
         for t in self.folder.tasks:
             tname = t.get("name") or ""
-            if tname.startswith(GUIDE_TASK_PREFIX):
+            if tname.startswith(GUIDE_TASK_PREFIX) and tname[len(GUIDE_TASK_PREFIX):] in headings:
                 self.retire(t, tname, tname, GUIDE_RETIRED_COMMENT, description=GUIDE_RETIRED_COMMENT)
 
 

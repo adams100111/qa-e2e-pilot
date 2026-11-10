@@ -194,10 +194,13 @@ class PlanTestBase(unittest.TestCase):
                 c.update(kw)
         p.write_text(json.dumps(data))
 
-    def seed_cache(self, *ids):
+    LIVE_IDS = {"TC-A-009": "t5"}
+
+    def seed_cache(self, *ids, remote=None):
+        """Mark cases as pushed before, with their real live task id (or `remote`)."""
         cache = core.MapCache(self.tmp)
         for cid in ids:
-            cache.put("case", cid, "t?", "1" * 40)
+            cache.put("case", cid, remote or self.LIVE_IDS[cid], "1" * 40)
         cache.save()
 
     def run_verb(self, transport, verb="push_plan", apply=False, only=(), overwrite=()):
@@ -300,6 +303,13 @@ class PushPlanTests(PlanTestBase):
         self.assertEqual(fake.writes(None, r"/v2/task/t5"), [])
         lines, _ = self.run_verb(fake, verb="pull_plan")
         self.assertIn("DRY\tdraft\tTC-A-009 → area-a.yaml", lines)
+
+    def test_orphan_cached_under_another_remote_id_is_not_retired(self):
+        self.seed_cache("TC-A-009", remote="t-other")
+        fake = FolderFake()
+        lines, _ = self.run_verb(fake, apply=True)
+        self.assertIn("APPLY\torphan\tTC-A-009 (Core: Sign-in)", lines)
+        self.assertEqual(fake.writes(None, r"/v2/task/t5"), [])
 
     def test_catalog_errors_refuse_apply_with_no_writes(self):
         self.seed_cache("TC-A-009")
@@ -440,6 +450,9 @@ class GuideDocTests(PlanTestBase):
     def test_guide_doc_created_and_tasks_retired(self):
         self.seed_cache("TC-A-009")
         fake = FolderFake()
+        fake.tasks["t10"] = {"id": "t10", "name": "Guide · Release checklist notes", "markdown_description": "x",
+                             "description": "x", "status": {"status": "to test"}, "priority": None, "tags": [],
+                             "list": {"id": "903", "name": "00 – Guide & Sign-off"}}
         lines, _ = self.run_verb(fake, apply=True)
         docs = fake.writes("POST", rf"^/v3/workspaces/{WS}/docs$")
         self.assertEqual([c[2] for c in docs], [{"name": "QA Guide", "parent": {"id": SPACE, "type": 4}}])
@@ -455,6 +468,7 @@ class GuideDocTests(PlanTestBase):
             self.assertEqual(fake.tasks[tid]["status"]["status"], "skipped")
             self.assertIn("retired", [x["name"] for x in fake.tasks[tid]["tags"]])
         self.assertNotIn("t8", fake.comments)  # sign-off stays a task, untouched
+        self.assertEqual(fake.writes(None, r"/v2/task/t10"), [])  # no matching guide file: left alone
         self.assertEqual(fake.writes(None, r"/v2/task/t8"), [])
         # found by name next time: no second doc, no new pages, no second retirement
         lines, summary = self.run_verb(fake)
