@@ -1,0 +1,66 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "name": "TC-A-001 · Sign in with a valid account",
+      "markdown_description": "**Level:** Beginner\n\n**Preconditions:** Signed out, on the sign-in page.\n\n**Steps:**\n1. Enter the email of faisal.alharbi.\n2. Enter the password.\n3. Press Sign in.\n\n**Expected results:**\n- The dashboard opens.\n- Your name shows in the sidebar.\n\n**Evidence:**\n- [ ] Screenshot / recording attached (or n/a)",
+      "description": "Level: Beginner\n\nPreconditions: Signed out, on the sign-in page.\n\nSteps:\n1. Enter the email of faisal.alharbi.\n2. Enter the password.\n3. Press Sign in.\n\nExpected results:\n- The dashboard opens.\n- Your name shows in the sidebar.\n\nEvidence:\n- [ ] Screenshot / recording attached (or n/a)",
+      "status": {
+        "status": "to test"
+      },
+      "priority": {
+        "id": "1",
+        "priority": "urgent"
+      },
+      "tags": [
+        {
+          "name": "beginner"
+        }
+      ],
+      "list": {
+        "id": "901",
+        "name": "Core: Sign-in"
+      }
+    },
+    {
+      "id": "t2",
+      "name": "TC-A-002 · Sign in fails with a wrong password",
+      "markdown_description": "**Level:** Beginner\n\n**Preconditions:** Signed out, on the sign-in page.\n\n**Steps:**\n1. Enter the email of faisal.alharbi.\n2. Enter a wrong password.\n3. Press Sign in.\n\n**Expected results:**\n- An error shows.\n\n**Evidence:**\n- [ ] Screenshot / recording attached (or n/a)",
+      "description": "Level: Beginner\n\nPreconditions: Signed out, on the sign-in page.\n\nSteps:\n1. Enter the email of faisal.alharbi.\n2. Enter a wrong password.\n3. Press Sign in.\n\nExpected results:\n- An error shows.\n\nEvidence:\n- [ ] Screenshot / recording attached (or n/a)",
+      "status": {
+        "status": "to test"
+      },
+      "priority": {
+        "id": "2",
+        "priority": "high"
+      },
+      "tags": [
+        {
+          "name": "beginner"
+        }
+      ],
+      "list": {
+        "id": "901",
+        "name": "Core: Sign-in"
+      }
+    },
+    {
+      "id": "t5",
+      "name": "TC-A-009 · Sign in with a security key",
+      "markdown_description": "**Preconditions:** A key.",
+      "description": "Preconditions: A key.",
+      "status": {
+        "status": "to test"
+      },
+      "priority": {
+        "id": "3",
+        "priority": "normal"
+      },
+      "tags": [],
+      "list": {
+        "id": "901",
+        "name": "Core: Sign-in"
+      }
+    }
+  ]
+}

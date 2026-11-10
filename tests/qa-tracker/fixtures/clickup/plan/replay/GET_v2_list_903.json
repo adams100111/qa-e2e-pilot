@@ -1,0 +1,25 @@
+{
+  "id": "903",
+  "name": "00 – Guide & Sign-off",
+  "content": "",
+  "statuses": [
+    {
+      "status": "to test"
+    },
+    {
+      "status": "testing"
+    },
+    {
+      "status": "failed"
+    },
+    {
+      "status": "blocked"
+    },
+    {
+      "status": "passed"
+    },
+    {
+      "status": "skipped"
+    }
+  ]
+}

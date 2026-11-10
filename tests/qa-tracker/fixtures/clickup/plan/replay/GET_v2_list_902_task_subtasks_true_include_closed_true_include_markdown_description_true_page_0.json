@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "t3",
+      "name": "TC-A-003 · Email verification blocks the dashboard",
+      "markdown_description": "**Level:** Needs setup\n\n**Preconditions:** A new account that has not verified its email.\n\n**Steps:**\n1. Sign in with the new account.\n\n**Expected results:**\n- A page asks you to verify your email.\n\n**Evidence:**\n- [ ] Screenshot / recording attached (or n/a)",
+      "description": "Level: Needs setup\n\nPreconditions: A new account that has not verified its email.\n\nSteps:\n1. Sign in with the new account.\n\nExpected results:\n- A page asks you to verify your email.\n\nEvidence:\n- [ ] Screenshot / recording attached (or n/a)",
+      "status": {
+        "status": "passed"
+      },
+      "priority": {
+        "id": "2",
+        "priority": "high"
+      },
+      "tags": [
+        {
+          "name": "needs setup"
+        }
+      ],
+      "list": {
+        "id": "902",
+        "name": "Module: Events"
+      }
+    },
+    {
+      "id": "t4",
+      "name": "TC-B-001 · Publish an event",
+      "markdown_description": "**Level:** Technical\n\n**Preconditions:** Signed in as an event manager.\n\n**Steps:**\n1. Open Events.\n2. Create an event for Riyadh Season.\n3. Press Publish.\n\n**Expected results:**\n- The event shows on the public calendar.\n\n**Evidence:**\n- [ ] Screenshot / recording attached (or n/a)",
+      "description": "Level: Technical\n\nPreconditions: Signed in as an event manager.\n\nSteps:\n1. Open Events.\n2. Create an event for Riyadh Season.\n3. Press Publish.\n\nExpected results:\n- The event shows on the public calendar.\n\nEvidence:\n- [ ] Screenshot / recording attached (or n/a)",
+      "status": {
+        "status": "to test"
+      },
+      "priority": {
+        "id": "1",
+        "priority": "urgent"
+      },
+      "tags": [],
+      "list": {
+        "id": "902",
+        "name": "Module: Events"
+      }
+    }
+  ]
+}

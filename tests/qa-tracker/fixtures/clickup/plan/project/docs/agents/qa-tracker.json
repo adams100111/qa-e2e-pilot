@@ -1,0 +1,11 @@
+{
+  "backend": "clickup",
+  "catalog": "catalog",
+  "guideDir": "guide",
+  "guideAs": "tasks",
+  "ids": {
+    "workspace": "9001",
+    "space": "9002",
+    "folder": "9003"
+  }
+}
