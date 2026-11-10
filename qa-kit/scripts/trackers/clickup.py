@@ -787,27 +787,37 @@ def _real(lid: str) -> bool:
 
 
 def _save_ids(ctx, lists: Dict[str, str], fields: Dict[str, str]) -> None:
-    """Merge found ids into docs/agents/qa-tracker.json (all other keys kept), atomically."""
+    """Merge found ids into docs/agents/qa-tracker.json (all other keys kept), atomically.
+
+    List ids go to `listIds` (`<list name>` -> id), kept apart from the name-valued `lists`
+    settings; field ids go to `fields` (`<list name>/<field name>` -> id). The file keeps its mode.
+    """
     path = Path(ctx.project) / CONFIG_REL
     data: dict = {}
+    mode = None
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise ConfigError(f"{path}: {exc}") from exc
-    new_lists = dict(data.get("lists") or {})
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path}: expected a JSON object")
+        mode = path.stat().st_mode & 0o7777
+    new_lists = dict(data.get("listIds") or {})
     new_fields = dict(data.get("fields") or {})
     new_lists.update(lists)
     new_fields.update(fields)
-    if new_lists == (data.get("lists") or {}) and new_fields == (data.get("fields") or {}):
+    if new_lists == (data.get("listIds") or {}) and new_fields == (data.get("fields") or {}):
         return
-    data["lists"], data["fields"] = new_lists, new_fields
+    data["listIds"], data["fields"] = new_lists, new_fields
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".qa-tracker.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -838,6 +848,9 @@ class _Init(_Sync):
     def check_list(self, name: str, fields, views) -> None:
         lid = self.ensure_list(name)
         if lid.startswith("<skipped"):
+            return
+        if self.log.apply and lid.startswith("<new"):
+            self.log.skip("list-missing", name)  # its create failed: no field or view steps yet
             return
         exists = _real(lid)
         if exists:
