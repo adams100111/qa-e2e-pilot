@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qa-kit/templates/catalog-schema.json",
+  "title": "qa-kit test case catalog",
+  "description": "One catalog area file, or the catalog manifest (manifest.yaml / manifest.json).",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/area"
+    },
+    {
+      "$ref": "#/$defs/manifest"
+    }
+  ],
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "priority",
+        "preconditions",
+        "steps",
+        "expected"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^TC-[A-Z]+-\\d{3}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "enum": [
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "preconditions": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "type": {
+          "type": "string"
+        },
+        "level": {
+          "enum": [
+            "beginner",
+            "needs-setup",
+            "technical"
+          ]
+        },
+        "audience": {
+          "type": "string"
+        },
+        "run_last": {
+          "type": "boolean"
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Code pointers. Never pushed to a tracker."
+        },
+        "retired": {
+          "type": "boolean"
+        },
+        "retired_reason": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "Pulled from a tracker; a person must confirm the expected result before a run uses it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "intro": {
+      "type": "object",
+      "properties": {
+        "what": {
+          "type": "string"
+        },
+        "accounts": {
+          "type": "string"
+        },
+        "before_you_start": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "run_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "area": {
+      "type": "object",
+      "required": [
+        "cases"
+      ],
+      "properties": {
+        "area": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string",
+          "pattern": "^[A-Z]+$"
+        },
+        "intro": {
+          "$ref": "#/$defs/intro"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/case"
+          }
+        }
+      }
+    },
+    "manifestArea": {
+      "type": "object",
+      "required": [
+        "file",
+        "prefix",
+        "list",
+        "order"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string",
+          "pattern": "^[A-Z]+$"
+        },
+        "also_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]+$"
+          }
+        },
+        "list": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number"
+        },
+        "counts": {
+          "type": "object",
+          "description": "Per-priority count of non-retired cases, plus the retired count.",
+          "properties": {
+            "P1": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "P2": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "P3": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retired": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "areas"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "areas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/manifestArea"
+          }
+        }
+      }
+    }
+  }
+}

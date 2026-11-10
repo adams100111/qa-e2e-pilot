@@ -1,0 +1,32 @@
+{
+  "area": "Module: Events",
+  "prefix": "B",
+  "intro": {
+    "what": "Creating and joining events.",
+    "accounts": "qa.admin and qa.participant2."
+  },
+  "cases": [
+    {
+      "id": "TC-B-001",
+      "title": "Create an event for Riyadh Season",
+      "priority": "P1",
+      "type": "functional",
+      "level": "needs-setup",
+      "roles": ["admin"],
+      "preconditions": "Signed in as qa.admin.",
+      "steps": ["Open Events.", "Press Create event.", "Fill in the title and the date, then save."],
+      "expected": ["The event shows in the list with the date you entered."],
+      "run_last": true
+    },
+    {
+      "id": "TC-B-002",
+      "title": "The event page reads right to left in Arabic",
+      "priority": "P3",
+      "type": "rtl-i18n",
+      "level": "beginner",
+      "preconditions": "Any event exists. The site is in Arabic.",
+      "steps": ["Open the event page."],
+      "expected": ["Headings and buttons line up on the right."]
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "area": "Core: Sign-in",
+  "prefix": "A",
+  "intro": {
+    "what": "Signing in and out of the platform.",
+    "accounts": "qa.user and qa.admin, both on the shared QA password.",
+    "before_you_start": ["Use a private window."],
+    "run_order": ["Run TC-A-001 first."]
+  },
+  "cases": [
+    {
+      "id": "TC-A-001",
+      "title": "Sign in with a valid account",
+      "priority": "P1",
+      "type": "functional",
+      "audience": "any",
+      "level": "beginner",
+      "roles": ["user"],
+      "preconditions": "Signed out, on the sign-in page.",
+      "steps": ["Enter the email of qa.user.", "Enter the password.", "Press Sign in."],
+      "expected": ["The dashboard opens.", "Your name shows in the sidebar."],
+      "refs": ["app/Http/Controllers/Auth/LoginController.php"]
+    },
+    {
+      "id": "TC-A-002",
+      "title": "Sign in fails with a wrong password",
+      "priority": "P2",
+      "type": "functional",
+      "level": "beginner",
+      "roles": ["user"],
+      "preconditions": "Signed out, on the sign-in page.",
+      "steps": ["Enter the email of qa.user.", "Enter a wrong password.", "Press Sign in."],
+      "expected": ["An error says the details are wrong.", "You stay on the sign-in page."]
+    },
+    {
+      "id": "TC-A-003",
+      "title": "Email verification blocks the dashboard",
+      "priority": "P2",
+      "type": "functional",
+      "level": "needs-setup",
+      "preconditions": "A new account that has not verified its email.",
+      "steps": ["Sign in with the new account."],
+      "expected": ["A page asks you to verify your email."],
+      "retired": true,
+      "retired_reason": "Email verification is not enforced on this platform."
+    }
+  ]
+}
