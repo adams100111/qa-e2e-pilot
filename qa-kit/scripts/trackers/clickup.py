@@ -23,8 +23,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
-from trackers.core import (CONFIG_REL, ConfigError, RunError, WordingError, case_index, content_hash, norm,
-                           outbound, validate_catalog)
+from trackers.core import (CONFIG_REL, VERDICT_RANK, ConfigError, RunError, WordingError, case_index, case_results,
+                           content_hash, fingerprint, norm, outbound, validate_catalog)
+from trackers.ctx import _manifest, run_dir_for, run_label
 
 try:  # optional, only for writing pulled drafts as YAML
     import yaml  # type: ignore
@@ -787,27 +788,37 @@ def _real(lid: str) -> bool:
 
 
 def _save_ids(ctx, lists: Dict[str, str], fields: Dict[str, str]) -> None:
-    """Merge found ids into docs/agents/qa-tracker.json (all other keys kept), atomically."""
+    """Merge found ids into docs/agents/qa-tracker.json (all other keys kept), atomically.
+
+    List ids go to `listIds` (`<list name>` -> id), kept apart from the name-valued `lists`
+    settings; field ids go to `fields` (`<list name>/<field name>` -> id). The file keeps its mode.
+    """
     path = Path(ctx.project) / CONFIG_REL
     data: dict = {}
+    mode = None
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise ConfigError(f"{path}: {exc}") from exc
-    new_lists = dict(data.get("lists") or {})
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path}: expected a JSON object")
+        mode = path.stat().st_mode & 0o7777
+    new_lists = dict(data.get("listIds") or {})
     new_fields = dict(data.get("fields") or {})
     new_lists.update(lists)
     new_fields.update(fields)
-    if new_lists == (data.get("lists") or {}) and new_fields == (data.get("fields") or {}):
+    if new_lists == (data.get("listIds") or {}) and new_fields == (data.get("fields") or {}):
         return
-    data["lists"], data["fields"] = new_lists, new_fields
+    data["listIds"], data["fields"] = new_lists, new_fields
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".qa-tracker.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -838,6 +849,9 @@ class _Init(_Sync):
     def check_list(self, name: str, fields, views) -> None:
         lid = self.ensure_list(name)
         if lid.startswith("<skipped"):
+            return
+        if self.log.apply and lid.startswith("<new"):
+            self.log.skip("list-missing", name)  # its create failed: no field or view steps yet
             return
         exists = _real(lid)
         if exists:
@@ -903,3 +917,443 @@ def init(ctx) -> None:
     s.run()
     if ctx.log.apply:
         _save_ids(ctx, s.found_lists, s.found_fields)
+
+
+# ---------------------------------------------------------------- runs, results, bugs, retest
+
+
+SEVERITY_PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # P6
+VERDICTS = ("pass", "fail", "blocked", "deferred", "error")
+BUG_OPEN = "open"
+BUG_CLOSED = "closed"
+BUG_RETEST = "retest"
+CASE_TO_TEST = "to test"
+CASE_TESTING = "testing"
+RETEST_PASSED = "passed"
+RETEST_FAILING = "still failing"
+# run-manifest.json keys per Runs field; the first non-empty one wins, none means left empty
+MANIFEST_KEYS = {
+    "Build": ("build", "build_id", "buildId", "version"),
+    "Environment": ("environment", "env", "baseUrl", "base_url"),
+    "Language": ("language", "locale", "lang"),
+}
+
+
+def _status_of(t: dict) -> str:
+    return str((t.get("status") or {}).get("status") or "").strip().lower()
+
+
+def _is_closed(t: dict) -> bool:
+    st = t.get("status") or {}
+    return _status_of(t) == BUG_CLOSED or st.get("type") == "closed"
+
+
+def _bug_rows(run_dir: Path) -> List[dict]:
+    path = Path(run_dir) / "bugs" / "bugs.json"
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RunError(f"{path}: cannot read bugs ({exc})") from exc
+    rows = data if isinstance(data, list) else (data.get("bugs") or []) if isinstance(data, dict) else []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _case_of(results: Dict[str, dict], criterion: Optional[str]) -> str:
+    for case_id, entry in results.items():
+        if any(c["id"] == criterion for c in entry["criteria"]):
+            return case_id
+    return ""
+
+
+def bug_description(actual: str, expected: str, steps: List[str], note: Optional[str] = None) -> str:
+    """Plain markdown: What happened / What should happen / Steps. No layer, evidence or ids (D7)."""
+    parts = [note] if note else []
+    parts.append(f"**What happened**\n{actual or 'Not recorded.'}")
+    parts.append(f"**What should happen**\n{expected or 'Not recorded.'}")
+    if steps:
+        parts.append("**Steps**\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+    return "\n\n".join(parts)
+
+
+class _Mirror(_Sync):
+    """push-run / push-results / push-bug / update-retest: mirror one run into the folder.
+
+    Writes go through `write` (dry run logs only). Every string goes through `outbound` with
+    source="generated". Bug statuses are never changed; a case status only moves `to test` →
+    `testing`, and only with statusCeiling "testing". Nothing is deleted.
+    """
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self.run_dir = run_dir_for(ctx.project, getattr(ctx.args, "run", None))
+        self.label = run_label(self.run_dir, ctx.args)
+        self.results = case_results(self.run_dir)
+        lists_cfg = self.cfg.get("lists") or {}
+        self.runs_list = lists_cfg.get("runs") or RUNS_LIST
+        self.bugs_list = lists_cfg.get("bugs") or BUGS_LIST
+        self.field_defs: Dict[str, List[dict]] = {}
+        self.missing_fields: set = set()
+        self.by_id = {str(t["id"]): t for t in self.folder.tasks}
+
+    # -- ids
+
+    def list_id(self, name: str) -> Optional[str]:
+        """The list id from cfg listIds (written by init), else the live folder by name."""
+        lid = (self.cfg.get("listIds") or {}).get(name) or self.lists.get(name)
+        if not lid:
+            self.log.skip("list-missing", f"{name}: run tracker.sh init")
+            return None
+        return str(lid)
+
+    def field_id(self, list_name: str, field_name: str) -> Optional[str]:
+        key = field_key(list_name, field_name)
+        fid = (self.cfg.get("fields") or {}).get(key)
+        if not fid:
+            if key not in self.missing_fields:
+                self.missing_fields.add(key)
+                self.log.skip("field-missing", f"{key}: run tracker.sh init")
+            return None
+        return str(fid)
+
+    def option_id(self, lid: str, fid: str, name: str) -> Optional[str]:
+        if lid not in self.field_defs:
+            self.field_defs[lid] = self.tr.request("GET", f"/v2/list/{lid}/field").get("fields") or []
+        for f in self.field_defs[lid]:
+            if str(f.get("id")) == fid:
+                for o in (f.get("type_config") or {}).get("options") or []:
+                    if norm(o.get("name")) == norm(name):
+                        return str(o["id"])
+        self.log.skip("option-missing", f"{fid}: no option {name!r}")
+        return None
+
+    @staticmethod
+    def live_field(t: dict, fid: str) -> Any:
+        """The task's current value of field `fid`: an option id for a dropdown, task ids for a
+        relationship, else the raw value."""
+        for f in t.get("custom_fields") or []:
+            if str(f.get("id")) != fid:
+                continue
+            v = f.get("value")
+            if f.get("type") == "drop_down" and v is not None:
+                for o in (f.get("type_config") or {}).get("options") or []:
+                    if str(o.get("orderindex")) == str(v) or str(o.get("id")) == str(v):
+                        return str(o["id"])
+                return str(v)
+            if isinstance(v, list):
+                return [str(x.get("id")) if isinstance(x, dict) else str(x) for x in v]
+            return v
+        return None
+
+    def set_field(self, t: dict, fid: str, value: Any, detail: str) -> bool:
+        """POST /v2/task/{id}/field/{fid}; a no-op when the live value already matches."""
+        live = self.live_field(t, fid)
+        if isinstance(value, dict) and "add" in value:
+            if set(value["add"]) <= set(live or []):
+                return False
+        elif live is not None and str(live) == str(value):
+            return False
+        self.write("set-field", detail, lambda: self.tr.request(
+            "POST", f"/v2/task/{t['id']}/field/{fid}", {"value": value}))
+        return True
+
+    def comments(self, task_id: str) -> List[str]:
+        if task_id.startswith("<"):
+            return []
+        r = self.tr.request("GET", f"/v2/task/{task_id}/comment")
+        return [str(c.get("comment_text") or "").strip() for c in r.get("comments") or []]
+
+    def say_comment(self, t: dict, text: str, detail: str) -> None:
+        self.write("comment", detail, lambda: self.comment(t["id"], text))
+
+    def tasks_in(self, lid: str) -> List[dict]:
+        return [t for t in self.folder.tasks if str((t.get("list") or {}).get("id")) == lid]
+
+    def reread(self, lid: str) -> List[dict]:
+        """Fresh read of one list (closed included), for reconciling a create that may have landed."""
+        out: List[dict] = []
+        page = 0
+        while True:
+            got = self.tr.request("GET", f"/v2/list/{lid}/task?{TASK_QUERY}&page={page}").get("tasks") or []
+            out += got
+            if len(got) < 100:
+                return out
+            page += 1
+
+    def safe_create(self, lid: str, body: dict, find: Callable[[List[dict]], Optional[dict]]) -> Callable[[], Any]:
+        """A create that is never blindly retried: on a 5xx/network error it re-reads the list by
+        visible identity and adopts the task if the create landed, else lets the error skip it."""
+        def go():
+            try:
+                return self.tr.request("POST", f"/v2/list/{lid}/task", body)
+            except ApiError as err:
+                if not _maybe_landed(err):
+                    raise
+                found = find(self.reread(lid))
+                if found is None:
+                    raise
+                self.log.act("reconciled", f"{body.get('name')}: the create had landed")
+                return found
+        return go
+
+    def checked(self, kind: str, key: str, live: Optional[dict]) -> Optional[dict]:
+        """Verify the cache against the live item: live wins; a stale cache id is reported."""
+        entry = self.ctx.cache.get(kind, key)
+        if entry and entry.get("id") and (live is None or str(entry["id"]) != str(live["id"])):
+            self.log.act("stale-cache", f"{kind} {key}")
+        return live
+
+    def gen(self, item: str, value: str) -> Optional[str]:
+        return self.text(item, value, source="generated")
+
+
+# -- push-run
+
+
+def _manifest_value(manifest: dict, field_name: str) -> Optional[str]:
+    for k in MANIFEST_KEYS[field_name]:
+        v = manifest.get(k)
+        if isinstance(v, (str, int, float)) and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def push_run(ctx) -> None:
+    m = _Mirror(ctx)
+    rid = m.list_id(m.runs_list)
+    if rid is None:
+        return
+    name = m.gen(f"run {m.label}", f"Run {m.label}")
+    if name is None:
+        return
+    matches = [t for t in m.tasks_in(rid) if t.get("name") == name]
+    if len(matches) > 1:
+        m.log.skip("duplicate", f"{name}: {', '.join(str(t['id']) for t in matches)}")
+        return
+    t = m.checked("run", m.label, matches[0] if matches else None)
+    if t is None:
+        r = m.write("create", f"{name} → {m.runs_list}", m.safe_create(
+            rid, {"name": name}, lambda ts: next((x for x in ts if x.get("name") == name), None)))
+        if ctx.log.apply and not (r and r.get("id")):
+            ctx.cache.save()
+            return
+        t = {"id": str(r["id"]) if r and r.get("id") else f"<new:{name}>", "name": name, "custom_fields": r.get("custom_fields") if r else []}
+    if ctx.log.apply and not str(t["id"]).startswith("<"):
+        ctx.cache.put("run", m.label, str(t["id"]), None)
+    manifest = _manifest(m.run_dir)
+    verdicts = [e["verdict"] for e in m.results.values()]
+    values: List[Tuple[str, Any]] = []
+    for fname in ("Build", "Environment", "Language"):
+        v = _manifest_value(manifest, fname)
+        if v is not None:
+            values.append((fname, v))
+    values += [("Passed", verdicts.count("pass")), ("Failed", verdicts.count("fail")),
+               ("Blocked", verdicts.count("blocked"))]
+    texts = []
+    for fname, v in values:
+        if isinstance(v, str):
+            v = m.gen(f"{name} {fname}", v)
+            if v is None:
+                continue
+        texts.append((fname, v))
+    for fname, v in texts:
+        fid = m.field_id(m.runs_list, fname)
+        if fid:
+            m.set_field(t, fid, v, f"{name}: {fname} = {v}")
+    if ctx.log.apply:
+        ctx.cache.save()
+
+
+# -- push-results
+
+
+def push_results(ctx) -> None:
+    m = _Mirror(ctx)
+    ceiling = ctx.cfg.get("statusCeiling") == "testing"
+    run_text = m.gen(f"run {m.label}", m.label)
+    if run_text is None:
+        return
+    list_names = {v: k for k, v in m.lists.items()}
+    for cid in sorted(m.results):
+        entry = m.results[cid]
+        verdict = entry["verdict"]
+        if m.duplicate(cid):
+            continue
+        t = m.folder.by_tc.get(cid)
+        if t is None:
+            m.log.skip("no-task", f"{cid}: not in the folder yet (run push-plan)")
+            continue
+        lname = (t.get("list") or {}).get("name") or list_names.get(str((t.get("list") or {}).get("id")), "")
+        lid = str((t.get("list") or {}).get("id"))
+        n = len(entry["criteria"])
+        comment = m.gen(cid, f"Checked on {m.label}: {verdict} ({n} checks).")
+        if comment is None:
+            continue
+        rfid = m.field_id(lname, "Last check result")
+        runfid = m.field_id(lname, "Last check run")
+        opt = m.option_id(lid, rfid, verdict) if rfid else None
+        already = (opt is not None and m.live_field(t, rfid) == opt
+                   and runfid is not None and m.live_field(t, runfid) == run_text)
+        cached = ctx.cache.get("result", cid)
+        changed = not (cached and cached.get("hash") == verdict) and not already
+        if opt:
+            m.set_field(t, rfid, opt, f"{cid}: Last check result = {verdict}")
+        if runfid:
+            m.set_field(t, runfid, run_text, f"{cid}: Last check run = {m.label}")
+        if changed:
+            m.say_comment(t, comment, f"{cid}: {verdict} ({n} checks)")
+        if ceiling and _status_of(t) == CASE_TO_TEST:
+            m.write("status", f"{cid}: {CASE_TO_TEST} → {CASE_TESTING}", lambda t=t: m.tr.request(
+                "PUT", f"/v2/task/{t['id']}", {"status": CASE_TESTING}))
+        if ctx.log.apply:
+            ctx.cache.put("result", cid, str(t["id"]), verdict)
+    if ctx.log.apply:
+        ctx.cache.save()
+
+
+# -- push-bug
+
+
+def push_bug(ctx) -> None:
+    m = _Mirror(ctx)
+    rows = _bug_rows(m.run_dir)
+    if not rows:
+        m.log.act("info", "no bugs to push")
+        return
+    bid = m.list_id(m.bugs_list)
+    if bid is None:
+        return
+    ref_fid = m.field_id(m.bugs_list, "Ref")
+    if ref_fid is None:
+        m.log.skip("bugs", "without the Ref field a bug cannot be found again; nothing pushed")
+        return
+    sev_fid = m.field_id(m.bugs_list, "Severity")
+    run_fid = m.field_id(m.bugs_list, "Found in run")
+    case_fid = m.field_id(m.bugs_list, "Case")
+    run_text = m.gen(f"run {m.label}", m.label)
+    if run_text is None:
+        return
+    bugs = m.tasks_in(bid)
+    done: set = set()
+    for row in rows:
+        criterion = str(row.get("criterionId") or row.get("criterion_id") or "")
+        case_id = _case_of(m.results, criterion)
+        ref = fingerprint(case_id or criterion or str(row.get("id") or ""),
+                          str(row.get("persona") or ""), str(row.get("title") or ""))
+        if ref in done:
+            continue
+        done.add(ref)
+        title = m.gen(ref, str(row.get("title") or "").strip())
+        actual = m.gen(ref, str(row.get("actual") or "").strip()) if title else None
+        expected = m.gen(ref, str(row.get("expected") or "").strip()) if actual is not None else None
+        steps = []
+        if expected is not None:
+            for s in row.get("steps") or []:
+                s = m.gen(ref, str(s))
+                if s is None:
+                    steps = None
+                    break
+                steps.append(s)
+        if not title or actual is None or expected is None or steps is None:
+            continue
+        matches = [t for t in bugs if str(m.live_field(t, ref_fid) or "") == ref]
+        live_open = [t for t in matches if not _is_closed(t)]
+        m.checked("bug", ref, live_open[0] if live_open else None)
+        if live_open:
+            t = live_open[0]
+            if ctx.log.apply:
+                ctx.cache.put("bug", ref, str(t["id"]), None)
+            if run_fid and m.live_field(t, run_fid) == run_text:
+                continue  # found in this very run
+            text = m.gen(ref, f"Still happens on {m.label}.")
+            if text is not None and text not in m.comments(str(t["id"])):
+                m.say_comment(t, text, f"{ref}: still happens ({t.get('name')})")
+            continue
+        note = None
+        if matches:
+            note = m.gen(ref, f"Seen again after it was closed: {matches[0].get('name')}.")
+            if note is None:
+                continue
+        desc = bug_description(actual, expected, steps, note)
+        body: Dict[str, Any] = {"name": title, "markdown_content": desc, "status": BUG_OPEN}
+        pri = SEVERITY_PRIORITY.get(str(row.get("severity") or "").lower())
+        if pri:
+            body["priority"] = pri
+        # identity fields ride on the create itself, so a create that landed is findable by Ref
+        fields = [{"id": ref_fid, "value": ref}]
+        if run_fid:
+            fields.append({"id": run_fid, "value": run_text})
+        if sev_fid and row.get("severity"):
+            opt = m.option_id(bid, sev_fid, str(row["severity"]).lower())
+            if opt:
+                fields.append({"id": sev_fid, "value": opt})
+        body["custom_fields"] = fields
+
+        def find(ts, ref=ref):
+            return next((x for x in ts if str(m.live_field(x, ref_fid) or "") == ref and not _is_closed(x)), None)
+        kind = "create-again" if note else "create"
+        r = m.write(kind, f"{ref}: {title}", m.safe_create(bid, body, find))
+        if ctx.log.apply and not (r and r.get("id")):
+            continue
+        new = {"id": str(r["id"]) if r and r.get("id") else f"<new:{ref}>", "name": title,
+               "custom_fields": r.get("custom_fields") if r else []}
+        if ctx.log.apply:
+            ctx.cache.put("bug", ref, new["id"], None)
+        case_task = m.folder.by_tc.get(case_id) if case_id else None
+        if case_task is None:
+            m.log.skip("case-link", f"{ref}: no case task for {case_id or 'this check'}")
+        elif case_fid:
+            m.set_field(new, case_fid, {"add": [str(case_task["id"])], "rem": []},
+                        f"{ref}: Case = {case_id}")
+    if ctx.log.apply:
+        ctx.cache.save()
+
+
+# -- update-retest
+
+
+def update_retest(ctx) -> None:
+    m = _Mirror(ctx)
+    bid = m.list_id(m.bugs_list)
+    if bid is None:
+        return
+    case_fid = (ctx.cfg.get("fields") or {}).get(field_key(m.bugs_list, "Case"))
+    retest_fid = m.field_id(m.bugs_list, "Retest result")
+    for t in m.tasks_in(bid):
+        if _status_of(t) != BUG_RETEST:
+            continue
+        linked: List[str] = []
+        for f in t.get("custom_fields") or []:
+            if (case_fid and str(f.get("id")) == str(case_fid)) or (not case_fid and f.get("name") == "Case"):
+                linked = [str(x.get("id")) if isinstance(x, dict) else str(x) for x in f.get("value") or []]
+        cases = []
+        for tid in linked:
+            mt = TC_RE.match((m.by_id.get(tid) or {}).get("name") or "")
+            if mt and mt.group(1) in m.results:
+                cases.append(mt.group(1))
+        if not cases:
+            continue
+        verdict = _worst_of([m.results[c]["verdict"] for c in cases])
+        name = t.get("name") or t["id"]
+        if verdict == "pass":
+            outcome = RETEST_PASSED
+        elif verdict in ("fail", "error"):
+            outcome = RETEST_FAILING
+        else:
+            m.log.skip("retest-inconclusive", f"{name}: {', '.join(cases)} {verdict}")
+            continue
+        text = m.gen(str(t["id"]), f"Retest on {m.label}: {outcome}.")
+        if text is None:
+            continue
+        if retest_fid:
+            opt = m.option_id(bid, retest_fid, outcome)
+            if opt:
+                m.set_field(t, retest_fid, opt, f"{name}: Retest result = {outcome}")
+        if text not in m.comments(str(t["id"])):
+            m.say_comment(t, text, f"{name}: {outcome}")
+
+
+
+def _worst_of(verdicts: List[str]) -> str:
+    return max(verdicts, key=lambda v: VERDICT_RANK.get(v, VERDICT_RANK["error"]))

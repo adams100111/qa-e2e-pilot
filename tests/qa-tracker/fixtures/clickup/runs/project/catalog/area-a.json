@@ -1,0 +1,83 @@
+{
+  "area": "Core: Sign-in",
+  "prefix": "A",
+  "intro": {
+    "what": "Signing in and out of the platform.",
+    "accounts": "faisal.alharbi and noura.alqahtani, both on the shared QA password.",
+    "before_you_start": [
+      "Use a private window."
+    ],
+    "run_order": [
+      "Run TC-A-001 first."
+    ]
+  },
+  "cases": [
+    {
+      "id": "TC-A-001",
+      "title": "Sign in with a valid account",
+      "priority": "P1",
+      "type": "functional",
+      "level": "beginner",
+      "preconditions": "Signed out, on the sign-in page.",
+      "steps": [
+        "Enter the email of faisal.alharbi.",
+        "Enter the password.",
+        "Press Sign in."
+      ],
+      "expected": [
+        "The dashboard opens.",
+        "Your name shows in the sidebar."
+      ],
+      "refs": [
+        "app/Http/Controllers/Auth/LoginController.php"
+      ]
+    },
+    {
+      "id": "TC-A-002",
+      "title": "Sign in fails with a wrong password",
+      "priority": "P2",
+      "type": "functional",
+      "level": "beginner",
+      "preconditions": "Signed out, on the sign-in page.",
+      "steps": [
+        "Enter the email of faisal.alharbi.",
+        "Enter a wrong password.",
+        "Press Sign in."
+      ],
+      "expected": [
+        "An error says the details are wrong.",
+        "You stay on the sign-in page."
+      ]
+    },
+    {
+      "id": "TC-A-003",
+      "title": "Email verification blocks the dashboard",
+      "priority": "P2",
+      "type": "functional",
+      "level": "needs-setup",
+      "preconditions": "A new account that has not verified its email.",
+      "steps": [
+        "Sign in with the new account."
+      ],
+      "expected": [
+        "A page asks you to verify your email."
+      ]
+    },
+    {
+      "id": "TC-A-004",
+      "title": "Sign in with a one-time code",
+      "priority": "P3",
+      "type": "functional",
+      "level": "beginner",
+      "preconditions": "Signed out.",
+      "steps": [
+        "Ask for a code."
+      ],
+      "expected": [
+        "A code arrives by SMS."
+      ],
+      "retired": true,
+      "retired_reason": "Replaced by single sign-on."
+    }
+  ]
+}

@@ -149,7 +149,8 @@ class InitTests(InitBase):
         before = json.loads(self.cfg_path.read_text())
         self.run_init(fake, apply=True)
         data = json.loads(self.cfg_path.read_text())
-        self.assertEqual(data["lists"], {"Core: Sign-in": "901", "Module: Events": "902",
+        self.assertNotIn("lists", data)  # name-valued settings stay apart from ids
+        self.assertEqual(data["listIds"], {"Core: Sign-in": "901", "Module: Events": "902",
                                          "00 – Guide & Sign-off": "903", "Runs": "904", "Bugs": "905"})
         self.assertEqual(data["fields"]["Core: Sign-in/Level"], "cf-901-1")
         self.assertEqual(data["fields"]["Bugs/Case"], "cf-905-1")
@@ -191,6 +192,55 @@ class InitTests(InitBase):
         data = json.loads(self.cfg_path.read_text())
         self.assertEqual(data["fields"]["Bugs/Case"], "cf-case")
         self.assertEqual(data["fields"]["Bugs/Severity"], "cf-sev")
+
+    def test_list_ids_never_collide_with_list_settings(self):
+        fake = InitFake()
+        self.seed_complete(fake)
+        data = json.loads(self.cfg_path.read_text())
+        data["lists"] = {"runs": "Runs", "bugs": "Bugs"}
+        self.cfg_path.write_text(json.dumps(data, indent=2) + "\n")
+        self.run_init(fake, apply=True)
+        data = json.loads(self.cfg_path.read_text())
+        self.assertEqual(data["lists"], {"runs": "Runs", "bugs": "Bugs"})
+        self.assertEqual(data["listIds"]["Runs"], "904")
+        self.assertEqual(data["listIds"]["Bugs"], "905")
+
+    def test_save_keeps_file_mode(self):
+        import os
+        import stat
+        fake = InitFake()
+        self.seed_complete(fake)
+        os.chmod(self.cfg_path, 0o640)
+        self.run_init(fake, apply=True)
+        self.assertEqual(stat.S_IMODE(self.cfg_path.stat().st_mode), 0o640)
+        self.assertIn("listIds", json.loads(self.cfg_path.read_text()))
+
+    def test_save_refuses_non_object_config(self):
+        fake = InitFake()
+        self.seed_complete(fake)
+        cfg = core.load_config(self.tmp)
+        self.cfg_path.write_text("[1, 2]\n")
+        ctx = Ctx(project=self.tmp, cfg=cfg, catalog=core.load_catalog(self.tmp, cfg),
+                  log=core.ActionLog(apply=True, out=io.StringIO()), cache=core.MapCache(self.tmp),
+                  args=argparse.Namespace(only=[], overwrite=[], transport=fake))
+        with self.assertRaises(core.ConfigError):
+            clickup.init(ctx)
+        self.assertEqual(self.cfg_path.read_text(), "[1, 2]\n")
+
+    def test_failed_list_create_prints_list_missing_not_manual(self):
+        class FailRuns(InitFake):
+            def request(self, method, path, body=None):
+                if method == "POST" and path.endswith("/list") and body["name"] == "Runs":
+                    self.calls.append((method, path, body))
+                    raise ApiError(method, path, 400, "bad")
+                return super().request(method, path, body)
+        fake = FailRuns()
+        self.seed_complete(fake)
+        del fake.lists["904"]
+        lines = self.run_init(fake, apply=True)
+        self.assertIn("SKIP\tlist-missing\tRuns", lines)
+        self.assertEqual([ln for ln in lines if ln.startswith("MANUAL") and '"Runs"' in ln], [])
+        self.assertNotIn("Runs", json.loads(self.cfg_path.read_text())["listIds"])
 
 
 if __name__ == "__main__":
