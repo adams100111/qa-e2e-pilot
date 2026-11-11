@@ -44,6 +44,28 @@ Run them as `bash <qa-kit>/scripts/tracker.sh <verb>`. Each verb is a dry run un
 - `validate`: checks the catalog against the schema. Exit 0 only when it is clean.
 - `results`: prints each case's result for a run, as JSON.
 
+## Config keys and flags
+
+Flags, added after the verb:
+
+- `--run <run-id>`: the run under `.qa/runs/` to send. Default: the newest run with a checkpoint.
+- `--label <text>`: the run's name in ClickUp. Default: the run date plus the build version.
+- `--only <area file> ...`: `push-plan` sends only these catalog areas, and retires nothing.
+- `--overwrite <case id> ...`: `push-plan` replaces these cases' descriptions even when someone
+  edited them in ClickUp.
+
+Keys in `docs/agents/qa-tracker.json`:
+
+- `statusCeiling`: `none` (the default) never moves a case. `testing` lets `push-results` move a
+  case from `to test` to `testing`, and no further.
+- `lists.guide`, `lists.runs`, `lists.bugs`: list names, when you want something other than
+  "00 – Guide & Sign-off", "Runs" and "Bugs".
+- `wording.allow`: phrases the forbidden-word check lets through. "AI" is a forbidden word in
+  generated text (run names, results, comments and bugs), so a product named "AI …" must be listed
+  here, or every item that names it is skipped.
+- `bugsTo`: `same` (the default) files bugs in the Bugs list. `issue-tracker` leaves bugs to the
+  project's issue tracker, and `push-bug` and `update-retest` do nothing.
+
 ## Rules
 
 - Text sent to ClickUp is read by testers and customers. It is checked against the forbidden words in

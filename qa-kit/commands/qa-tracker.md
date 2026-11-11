@@ -37,9 +37,21 @@ answer before the next question.
   written as Markdown files under `.qa/tracker/`.
 - GitHub: recommended when the remote is GitHub. Not yet available in this version: the rules are
   written and the config is saved, but the scripts exit 2 until the adapter ships. Say so plainly.
-- ClickUp: ask for the workspace, and for the folder if one already exists. You may list them
-  through the ClickUp API with the token in `CLICKUP_API_TOKEN`. Never ask the user to paste the
-  token, and never write it into any file.
+- ClickUp: ask these follow-ups one at a time. You may list workspaces, spaces and folders through
+  the ClickUp API with the token in `CLICKUP_API_TOKEN`. Never ask the user to paste the token, and
+  never write it into any file.
+  1. The workspace.
+  2. The space in that workspace.
+  3. The folder in that space. If there is no folder for QA yet, offer to create one and say the
+     name you would use. Create it with `POST /v2/space/{space_id}/folder` and the body
+     `{"name": "<folder name>"}` only after the user says yes. If they say no, tell them how to make
+     it by hand: open the space in ClickUp, choose "+ New Folder", name it, then tell you the name so you can look up its id.
+  4. **"Keep the guides as tasks, or move them into one "QA Guide" doc?"** Recommended: doc. With
+     doc, each guide file is a page of one "QA Guide" doc in the space; sign-off criteria stay as
+     tasks.
+
+  Record `ids.workspace`, `ids.space` and `ids.folder` in `docs/agents/qa-tracker.json`, and the
+  guide answer as `guideAs`: `doc` or `tasks`.
 - Other: ask the user to describe the workflow in one paragraph. Record it as prose.
 
 **Question 2. "Where do bugs go?"**
@@ -56,7 +68,10 @@ Recommended: yes.
 - Case statuses: `to test`, `testing`, `failed`, `blocked`, `passed`, `skipped`.
 - Bug statuses: `open`, `triaged`, `fixing`, `retest`, `closed`.
 
-If the user says no, collect the project's own names for each list so nothing is created twice.
+If the user says no, collect the project's own name for each status so nothing is created twice.
+The tool reads the names by position, so keep this order and give exactly one name per status: six
+for cases (to test, testing, failed, blocked, passed, skipped) and five for bugs (open, triaged,
+fixing, retest, closed).
 
 ## 4. Draft and confirm
 
@@ -69,7 +84,7 @@ Show the user the draft of each file below. Let them edit it. Write only after t
    statuses). For "Other", write only this file, with the user's prose in place of the seed.
 2. `docs/agents/qa-tracker.json`: start from `${CLAUDE_PLUGIN_ROOT}/templates/qa-tracker-config.json` and set
    `backend` (`local`, `clickup`, `github` or `other`), `catalog` if it is not the default, the
-   statuses if the user changed them, and `ids` if you have them. Keep every other key. For "Other",
+   statuses if the user changed them, `ids` and `guideAs` for ClickUp. Keep every other key. For "Other",
    write `backend: "other"` and nothing else beyond the template defaults. Every verb then exits 2.
    Never put the ClickUp token, or any other secret, in this file.
 3. The pointer in `CLAUDE.md` if it exists, else `AGENTS.md` if it exists, else ask which to create.

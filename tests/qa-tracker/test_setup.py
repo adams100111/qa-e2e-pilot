@@ -33,6 +33,26 @@ class SetupTests(unittest.TestCase):
             self.assertGreater(idx, pos, f"{q!r} missing or out of order")
             pos = idx
 
+    def test_clickup_branch_asks_space_folder_and_guide_form(self):
+        text = (QA_KIT / "core" / "commands" / "qa-tracker.md").read_text()
+        q1, q2 = text.index("Where do test cases, runs and bugs live?"), text.index("Where do bugs go?")
+        branch = text[q1:q2]
+        for needle in ("space", "folder", "POST /v2/space/{space_id}/folder", "ids.workspace", "ids.space",
+                       "ids.folder", 'Keep the guides as tasks, or move them into one "QA Guide" doc?',
+                       "guideAs"):
+            self.assertIn(needle, branch)
+        self.assertLess(branch.index("space"), branch.index('Keep the guides as tasks'))
+
+    def test_seeds_explain_config_keys_and_flags(self):
+        for backend in ("clickup", "local"):
+            text = (QA_KIT / "templates" / "trackers" / f"{backend}.md").read_text()
+            self.assertIn("## Config keys and flags", text, backend)
+            section = text.split("## Config keys and flags", 1)[1].split("\n## ", 1)[0]
+            for word in ("--run", "--label", "--only", "--overwrite", "statusCeiling", "lists.guide",
+                         "lists.runs", "lists.bugs", "wording.allow", "bugsTo"):
+                self.assertIn(f"`{word}", section, f"{backend}.md lacks {word}")
+            self.assertIn('"AI', section)
+
     def test_rule_seeds_describe_every_verb(self):
         for backend in ("local", "clickup", "github", "other"):
             text = (QA_KIT / "templates" / "trackers" / f"{backend}.md").read_text()
