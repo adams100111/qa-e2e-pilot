@@ -19,6 +19,7 @@ import re
 import tempfile
 import time
 import urllib.parse
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -76,6 +77,17 @@ def _arg(ctx, name: str, default: Any) -> Any:
 
 def _maybe_landed(err: ApiError) -> bool:
     return err.status == 0 or err.status >= 500
+
+
+@contextmanager
+def _keep_cache(ctx):
+    """Under --apply, save the remote-id cache however the verb ends, so ids learned before a
+    failure (an expired token mid-run, say) are not lost."""
+    try:
+        yield
+    finally:
+        if ctx.log.apply:
+            ctx.cache.save()
 
 
 # ---------------------------------------------------------------- live state
@@ -643,9 +655,8 @@ def _push(ctx, folder: Optional[Folder] = None) -> "_Sync":
 
 
 def push_plan(ctx) -> None:
-    _push(ctx)
-    if ctx.log.apply:
-        ctx.cache.save()
+    with _keep_cache(ctx):
+        _push(ctx)
 
 
 # ---------------------------------------------------------------- pull
@@ -923,9 +934,12 @@ def init(ctx) -> None:
     """Build the folder structure (lists, views), check fields and statuses, print the manual
     click steps, and write the ids found back into docs/agents/qa-tracker.json (only --apply)."""
     s = _Init(ctx)
-    s.run()
-    if ctx.log.apply:
-        _save_ids(ctx, s.found_lists, s.found_fields)
+    with _keep_cache(ctx):
+        try:
+            s.run()
+        finally:
+            if ctx.log.apply:
+                _save_ids(ctx, s.found_lists, s.found_fields)
 
 
 # ---------------------------------------------------------------- runs, results, bugs, retest
@@ -1131,6 +1145,11 @@ def _manifest_value(manifest: dict, field_name: str) -> Optional[str]:
 
 
 def push_run(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_run(ctx)
+
+
+def _push_run(ctx) -> None:
     m = _Mirror(ctx)
     rid = m.list_id(m.runs_list)
     if rid is None:
@@ -1147,7 +1166,6 @@ def push_run(ctx) -> None:
         r = m.write("create", f"{name} → {m.runs_list}", m.safe_create(
             rid, {"name": name}, lambda ts: next((x for x in ts if x.get("name") == name), None)))
         if ctx.log.apply and not (r and r.get("id")):
-            ctx.cache.save()
             return
         t = {"id": str(r["id"]) if r and r.get("id") else f"<new:{name}>", "name": name, "custom_fields": r.get("custom_fields") if r else []}
     if ctx.log.apply and not str(t["id"]).startswith("<"):
@@ -1172,14 +1190,17 @@ def push_run(ctx) -> None:
         fid = m.field_id(m.runs_list, fname)
         if fid:
             m.set_field(t, fid, v, f"{name}: {fname} = {v}")
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- push-results
 
 
 def push_results(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_results(ctx)
+
+
+def _push_results(ctx) -> None:
     m = _Mirror(ctx)
     ceiling = ctx.cfg.get("statusCeiling") == "testing"
     run_text = m.gen(f"run {m.label}", m.label)
@@ -1224,14 +1245,17 @@ def push_results(ctx) -> None:
                 "PUT", f"/v2/task/{t['id']}", {"status": m.case_testing}))
         if ctx.log.apply and commented:  # a failed comment is retried next run
             ctx.cache.put("result", cid, str(t["id"]), verdict)
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- push-bug
 
 
 def push_bug(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_bug(ctx)
+
+
+def _push_bug(ctx) -> None:
     m = _Mirror(ctx)
     rows = _bug_rows(m.run_dir)
     if not rows:
@@ -1333,14 +1357,17 @@ def push_bug(ctx) -> None:
         elif case_fid:
             m.set_field(new, case_fid, {"add": [str(case_task["id"])], "rem": []},
                         f"{ref}: Case = {case_id}")
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- update-retest
 
 
 def update_retest(ctx) -> None:
+    with _keep_cache(ctx):
+        _update_retest(ctx)
+
+
+def _update_retest(ctx) -> None:
     """Bugs in `retest`: when every linked case has a result in this run, set Retest result to
     passed (all pass) or still failing (any fail) and comment. Never changes a status."""
     m = _Mirror(ctx)
