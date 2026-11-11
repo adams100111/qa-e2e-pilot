@@ -660,6 +660,16 @@ The headline release: the engine now tells the truth about its own accuracy.
 
 ## qa-kit (process shell)
 
+### v0.4.1 — 2026-11-11 · "Leave tester instructions alone"
+
+**Fixed**
+
+- **Masking ate tester instructions.** The bug export's generic `key: value` secret patterns ran on
+  hand-written catalog text too, so "password: see the test-accounts guide" became "[redacted] the
+  test-accounts guide" and 117 Innovation cases would have been rewritten. Catalog text (cases,
+  intros, guides) now gets only exact-value masking: the shared password and personal tokens.
+  Generated text keeps every pattern.
+
 ### v0.4.0 — 2026-11-11 · "Track QA where your team works"
 
 **Added**

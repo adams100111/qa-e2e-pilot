@@ -563,11 +563,15 @@ SECRET_REPLACEMENTS: Dict[str, str] = {
 }
 
 
-def redact(text: str, cfg: dict) -> str:
+def redact(text: str, cfg: dict, generic: bool = True) -> str:
+    """Mask secrets. `generic` adds the bug export's `key: value` patterns; they suit captured
+    evidence, but on human-written case text they eat phrases like "password: see the guide",
+    so catalog text gets only the exact shared values and personal tokens."""
     out = text or ""
     # bug-export patterns first, so they never consume the guide-value replacement text
-    for rx in SECRET_RES:
-        out = rx.sub("[redacted]", out)
+    if generic:
+        for rx in SECRET_RES:
+            out = rx.sub("[redacted]", out)
     for key in cfg.get("secrets") or []:
         resolver = SECRET_RESOLVERS.get(key)
         if resolver is None:
@@ -588,7 +592,7 @@ def outbound(text: str, cfg: dict, source: str = "generated") -> str:
     """
     if source not in OUTBOUND_SOURCES:
         raise ValueError(f"source must be one of {', '.join(OUTBOUND_SOURCES)}")
-    out = redact(text, cfg)
+    out = redact(text, cfg, generic=(source == "generated"))
     wording = cfg.get("wording") or {}
     if source == "generated":
         probe = out

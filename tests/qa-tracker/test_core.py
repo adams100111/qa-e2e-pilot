@@ -343,6 +343,19 @@ class OutboundTests(TempProject):
         self.assertEqual(core.redact("send Bearer abc.def now", cfg), "send [redacted] now")
         self.assertNotIn("hunter2", core.redact("Token=hunter2 and more", cfg))
 
+    def test_catalog_text_keeps_password_instructions_but_masks_the_value(self) -> None:
+        guide = self.tmp / ".qa" / "guide"
+        guide.mkdir(parents=True)
+        (guide / "02-test-accounts.md").write_text(
+            "# Test accounts\n\nEvery QA account uses the **same password**:\n\n```\nS3cret!x\n```\n"
+        )
+        cfg = self.cfg()
+        text = "Log in as qa.user (password: see the test-accounts guide)."
+        self.assertEqual(core.outbound(text, cfg, source="catalog"), text)
+        self.assertEqual(core.outbound("Use S3cret!x", cfg, source="catalog"), "Use the shared QA password")
+        self.assertEqual(core.outbound("pk_live_ABCDEFGHIJKLMNOPQRSTUV", cfg, source="catalog"), "[redacted]")
+        self.assertEqual(core.outbound("password: hunter2", cfg, source="generated"), "[redacted]")
+
     def test_redact_pk_token(self) -> None:
         cfg = self.cfg()
         out = core.redact("token pk_live_ABCDEFGHIJKLMNOPQRSTUV end", cfg)
