@@ -60,6 +60,26 @@ def _run_date(run_dir: Path, manifest: dict) -> str:
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else name
 
 
+BUILD_KEYS = ("build", "build_id", "buildId", "version")
+
+
+def build_token(value: Any) -> str:
+    """Only the leading version token of a manifest build value: build ids often carry a branch,
+    commit or note ("v1.4.46 (next@beb2492a7) - ...") that must not reach a tracker."""
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return ""
+    return re.split(r"[\s(@/]", str(value).strip(), 1)[0]
+
+
+def manifest_build(manifest: dict) -> str:
+    """The build token from the first non-empty build key of run-manifest.json, else ""."""
+    for key in BUILD_KEYS:
+        build = build_token(manifest.get(key))
+        if build:
+            return build
+    return ""
+
+
 def run_label(run_dir: Path, args: Any = None) -> str:
     """`--label`, else `<YYYY-MM-DD> <build>` from run-manifest.json, else `<YYYY-MM-DD>`."""
     label = getattr(args, "label", None)
@@ -67,11 +87,5 @@ def run_label(run_dir: Path, args: Any = None) -> str:
         return str(label)
     manifest = _manifest(run_dir)
     date = _run_date(run_dir, manifest)
-    for key in ("build", "build_id", "buildId", "version"):
-        v = manifest.get(key)
-        # Only the leading version token: build ids often carry a branch, commit or note
-        # ("v1.4.46 (next@beb2492a7) - ...") that must not reach a tracker.
-        build = re.split(r"[\s(@/]", str(v).strip(), 1)[0] if isinstance(v, (str, int)) else ""
-        if build:
-            return f"{date} {build}"
-    return date
+    build = manifest_build(manifest)
+    return f"{date} {build}" if build else date
