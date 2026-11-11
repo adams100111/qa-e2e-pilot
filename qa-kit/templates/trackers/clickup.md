@@ -15,11 +15,16 @@ the source of truth for cases.
 
 ## Who owns what
 
-- The status of a case belongs to the tester. The tool never sets or changes it.
+- The status of a case belongs to the tester. The tool changes it in two cases only:
+  `push-results` moves a case from `to test` to `testing` when `statusCeiling` is `testing`, and
+  `push-plan` sets retired or orphaned cases, and guide tasks retired into the doc, to `skipped`.
+  With your own status names, the first and second case statuses and the last one play those roles.
 - The tool writes only its own fields, "Last check result" and "Last check run", and adds comments.
-- Bugs are created in `open`. The tool never moves or closes a bug. The team owns bug status.
-- If a person edits a case description in ClickUp, the tool reports it and skips that case until
-  someone copies the edit into the catalog or asks for an overwrite.
+- Bugs are created in `open` (the first bug status). The tool never moves or closes a bug. The
+  team owns bug status.
+- If a person edits a case description in ClickUp, the tool reports it as drift and skips that case
+  until someone copies the edit into the catalog or passes `--overwrite`. Drift detection works on a
+  machine that holds the last-pushed cache (`.qa/tracker-map.json`); without it, the catalog wins.
 - Nothing is ever deleted. A case the catalog no longer lists is tagged `retired`, gets a comment,
   and is set to `skipped`.
 
@@ -31,7 +36,8 @@ Run them as `bash <qa-kit>/scripts/tracker.sh <verb>`. Each verb is a dry run un
   Bugs list. Prints the clicks it cannot do itself.
 - `push-plan`: sends the catalog to ClickUp. Creates missing cases and updates the ones whose content
   changed.
-- `pull-plan`: reads cases added in ClickUp back into the catalog as drafts. Edits are reported, not
+- `pull-plan`: reads cases added in ClickUp and writes them as drafts to `.qa/tracker/pulled/`,
+  never into the catalog. Copy what you want into the catalog by hand. Edits are reported, not
   merged.
 - `push-run`: creates the run record with its build, environment and counts.
 - `push-results`: writes each case's result into "Last check result" and "Last check run" and adds

@@ -85,7 +85,8 @@ Show the user the draft of each file below. Let them edit it. Write only after t
 2. `docs/agents/qa-tracker.json`: start from `${CLAUDE_PLUGIN_ROOT}/templates/qa-tracker-config.json` and set
    `backend` (`local`, `clickup`, `github` or `other`), `catalog` if it is not the default, the
    statuses if the user changed them, `ids` and `guideAs` for ClickUp. Keep every other key. For "Other",
-   write `backend: "other"` and nothing else beyond the template defaults. Every verb then exits 2.
+   write `backend: "other"` and nothing else beyond the template defaults. `validate` and
+   `results` still work (they need no tracker); every other verb exits 2.
    Never put the ClickUp token, or any other secret, in this file.
 3. The pointer in `CLAUDE.md` if it exists, else `AGENTS.md` if it exists, else ask which to create.
    Never create one when the other exists. Add or update this under `## Agent skills`:

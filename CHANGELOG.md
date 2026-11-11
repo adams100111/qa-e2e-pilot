@@ -689,9 +689,13 @@ The headline release: the engine now tells the truth about its own accuracy.
 **Safety**
 
 - Nothing is ever deleted.
-- The tool never changes a bug's status, and moves a case only from `to test` to `testing`, and
-  only when `statusCeiling` allows it.
-- A tester's edit to a case is reported as drift, not overwritten.
+- The tool never changes a bug's status. It changes a case's status in two cases only:
+  `push-results` moves it from `to test` to `testing` when `statusCeiling` is `testing`, and
+  `push-plan` sets retired or orphaned cases, and guide tasks retired into the doc, to `skipped`.
+- Custom status names are read by position (six for cases, five for bugs); a list of the wrong
+  length is a config error.
+- A tester's edit to a case is reported as drift, not overwritten. Drift detection works on a
+  machine that holds the last-pushed cache (`.qa/tracker-map.json`).
 - `push-plan --apply` refuses to run while the catalog has errors.
 - Only cases the tool itself pushed can be retired as orphans. Two Docs with the same name, or
   duplicate case tasks, block the affected writes.
@@ -700,7 +704,10 @@ The headline release: the engine now tells the truth about its own accuracy.
 - Every string sent to a tracker is redacted, including the shared password from the accounts
   guide and the bug export's secret patterns.
 - Generated text is also checked for AI, agent and automation wording, file paths, branches and PR
-  references. Run labels keep only the version.
+  references. Run labels keep only a build value that looks like a version.
+- A ClickUp API failure prints the status, method and path with a hint (token or ids), never the
+  token, and the remote-id cache built before the failure is kept.
+- `validate` and `results` work for every backend; the other verbs exit 2 for `github` and `other`.
 
 ### v0.3.1 — 2026-11-09 · "Point to the dashboard"
 

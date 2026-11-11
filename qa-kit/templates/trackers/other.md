@@ -10,8 +10,9 @@ each status.>
 
 ## Commands
 
-With `backend: "other"` nothing runs automatically. Every verb below exits 2 with "other does not
-support <verb>", and the work is done by hand following the prose above.
+With `backend: "other"` nothing is sent anywhere. `validate` and `results` work for every backend,
+because they read only the catalog and the run. Every other verb exits 2 with "other does not
+support <verb>", and that work is done by hand following the prose above.
 
 - `init`: exits 2.
 - `push-plan`: exits 2.
@@ -21,8 +22,8 @@ support <verb>", and the work is done by hand following the prose above.
 - `push-bug`: exits 2.
 - `update-retest`: exits 2.
 - `status`: exits 2.
-- `validate`: exits 2.
-- `results`: exits 2.
+- `validate`: checks the catalog against the schema. Exit 0 only when it is clean.
+- `results`: prints each case's result for a run, as JSON.
 
 ## Rules
 
