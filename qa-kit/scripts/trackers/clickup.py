@@ -1,7 +1,8 @@
 """ClickUp backend: push the catalog (and guide) into the QA folder, pull drafts back.
 
 A generalised port of Innovation's `docs/qa/sync_clickup.py`. Dry run unless `--apply`.
-Never deletes anything. Case status is only ever set to `skipped`, for retired or orphaned cases.
+Never deletes anything. push-plan sets a case status only to the project's `skipped` status (the
+sixth name in `statuses.case`), for retired or orphaned cases and retired guide tasks.
 
 Remote identity is what a person sees (P2): a case is found by the `TC-… · ` prefix of its task
 name, a list by name, the guide Doc by name, a page by name. `.qa/tracker-map.json` only caches
@@ -18,13 +19,15 @@ import re
 import tempfile
 import time
 import urllib.parse
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
 from trackers.core import (CONFIG_REL, ConfigError, RunError, WordingError, case_index, case_results,
-                           content_hash, fingerprint, norm, outbound, validate_catalog)
+                           content_hash, fingerprint, norm, outbound, same_status, status_name,
+                           validate_catalog)
 from trackers.ctx import _manifest, manifest_build, run_dir_for, run_label
 
 try:  # optional, only for writing pulled drafts as YAML
@@ -35,8 +38,6 @@ except Exception:  # pragma: no cover
 TC_RE = re.compile(r"^(TC-[A-Z]+-\d+) · ")
 PRIORITY = {"P1": 1, "P2": 2, "P3": 3}  # urgent / high / normal
 PRIORITY_BACK = {v: k for k, v in PRIORITY.items()}
-STATUS_RETIRED = "skipped"
-STATUS_NEW = "to test"
 TAG_RETIRED = "retired"
 LEVELS = {"beginner": "Beginner", "needs-setup": "Needs setup", "technical": "Technical"}
 MANAGED_TAGS = {"beginner", "needs setup", "technical", "run last"}
@@ -76,6 +77,17 @@ def _arg(ctx, name: str, default: Any) -> Any:
 
 def _maybe_landed(err: ApiError) -> bool:
     return err.status == 0 or err.status >= 500
+
+
+@contextmanager
+def _keep_cache(ctx):
+    """Under --apply, save the remote-id cache however the verb ends, so ids learned before a
+    failure (an expired token mid-run, say) are not lost."""
+    try:
+        yield
+    finally:
+        if ctx.log.apply:
+            ctx.cache.save()
 
 
 # ---------------------------------------------------------------- live state
@@ -190,6 +202,13 @@ class _Sync:
         self.overwrite = set(_arg(ctx, "overwrite", []) or [])
         self.guide_list = (self.cfg.get("lists") or {}).get("guide") or DEFAULT_GUIDE_LIST
         self.today = today()
+        # the project's status names for the roles this tool reads or writes
+        self.case_new = status_name(self.cfg, "case", "to_test")
+        self.case_testing = status_name(self.cfg, "case", "testing")
+        self.case_skipped = status_name(self.cfg, "case", "skipped")
+        self.bug_open = status_name(self.cfg, "bug", "open")
+        self.bug_retest = status_name(self.cfg, "bug", "retest")
+        self.bug_closed = status_name(self.cfg, "bug", "closed")
 
     # -- transport helpers
 
@@ -299,12 +318,14 @@ class _Sync:
                     self.comment(t["id"], text)
                 self.tr.request("POST", f"/v2/task/{t['id']}/tag/{TAG_RETIRED}")
             self.write("retire", detail, go)
-        if (t.get("status") or {}).get("status") != STATUS_RETIRED:
-            if STATUS_RETIRED in self.list_statuses(str(t["list"]["id"])):
-                self.write("status-skipped", label, lambda t=t: self.tr.request(
-                    "PUT", f"/v2/task/{t['id']}", {"status": STATUS_RETIRED}))
+        if not same_status(_status_of(t), self.case_skipped):
+            live = next((x for x in self.list_statuses(str(t["list"]["id"]))
+                         if same_status(x, self.case_skipped)), None)
+            if live is not None:
+                self.write("status-skipped", label, lambda t=t, live=live: self.tr.request(
+                    "PUT", f"/v2/task/{t['id']}", {"status": live}))
             else:
-                self.log.act("skip-pending", f"{label} (list has no '{STATUS_RETIRED}' status yet)")
+                self.log.act("skip-pending", f"{label} (list has no '{self.case_skipped}' status yet)")
 
     # -- drift (D5)
 
@@ -380,7 +401,7 @@ class _Sync:
             if lid.startswith("<skipped"):
                 return
             body = {"name": name, "markdown_content": desc, "priority": PRIORITY[case["priority"]],
-                    "status": STATUS_NEW, "tags": sorted(want_tags)}
+                    "status": self.case_new, "tags": sorted(want_tags)}
             if lid.startswith("<") and self.log.apply:
                 self.log.skip("api-error", f"{cid}: list {area.list} was not created")
                 return
@@ -405,7 +426,7 @@ class _Sync:
             changed.append("priority")
         if body:
             comment = None
-            if {"title", "description"} & set(changed) and (t.get("status") or {}).get("status") != STATUS_NEW:
+            if {"title", "description"} & set(changed) and not same_status(_status_of(t), self.case_new):
                 comment = self.text(cid, f"Updated from the catalog on {self.today} — re-verify if already passed.",
                                     source="generated")
                 if comment is None:
@@ -634,9 +655,8 @@ def _push(ctx, folder: Optional[Folder] = None) -> "_Sync":
 
 
 def push_plan(ctx) -> None:
-    _push(ctx)
-    if ctx.log.apply:
-        ctx.cache.save()
+    with _keep_cache(ctx):
+        _push(ctx)
 
 
 # ---------------------------------------------------------------- pull
@@ -914,20 +934,18 @@ def init(ctx) -> None:
     """Build the folder structure (lists, views), check fields and statuses, print the manual
     click steps, and write the ids found back into docs/agents/qa-tracker.json (only --apply)."""
     s = _Init(ctx)
-    s.run()
-    if ctx.log.apply:
-        _save_ids(ctx, s.found_lists, s.found_fields)
+    with _keep_cache(ctx):
+        try:
+            s.run()
+        finally:
+            if ctx.log.apply:
+                _save_ids(ctx, s.found_lists, s.found_fields)
 
 
 # ---------------------------------------------------------------- runs, results, bugs, retest
 
 
 SEVERITY_PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # P6
-BUG_OPEN = "open"
-BUG_CLOSED = "closed"
-BUG_RETEST = "retest"
-CASE_TO_TEST = "to test"
-CASE_TESTING = "testing"
 RETEST_PASSED = "passed"
 RETEST_FAILING = "still failing"
 # run-manifest.json keys per Runs field; the first non-empty one wins, none means left empty
@@ -942,9 +960,9 @@ def _status_of(t: dict) -> str:
     return str((t.get("status") or {}).get("status") or "").strip().lower()
 
 
-def _is_closed(t: dict) -> bool:
-    st = t.get("status") or {}
-    return _status_of(t) == BUG_CLOSED or st.get("type") == "closed"
+def _is_closed(t: dict, closed: str) -> bool:
+    """The bug is in the project's closed status, or in any status of ClickUp's closed type."""
+    return same_status(_status_of(t), closed) or (t.get("status") or {}).get("type") == "closed"
 
 
 def _bug_rows(run_dir: Path) -> List[dict]:
@@ -1127,6 +1145,11 @@ def _manifest_value(manifest: dict, field_name: str) -> Optional[str]:
 
 
 def push_run(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_run(ctx)
+
+
+def _push_run(ctx) -> None:
     m = _Mirror(ctx)
     rid = m.list_id(m.runs_list)
     if rid is None:
@@ -1143,7 +1166,6 @@ def push_run(ctx) -> None:
         r = m.write("create", f"{name} → {m.runs_list}", m.safe_create(
             rid, {"name": name}, lambda ts: next((x for x in ts if x.get("name") == name), None)))
         if ctx.log.apply and not (r and r.get("id")):
-            ctx.cache.save()
             return
         t = {"id": str(r["id"]) if r and r.get("id") else f"<new:{name}>", "name": name, "custom_fields": r.get("custom_fields") if r else []}
     if ctx.log.apply and not str(t["id"]).startswith("<"):
@@ -1168,14 +1190,17 @@ def push_run(ctx) -> None:
         fid = m.field_id(m.runs_list, fname)
         if fid:
             m.set_field(t, fid, v, f"{name}: {fname} = {v}")
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- push-results
 
 
 def push_results(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_results(ctx)
+
+
+def _push_results(ctx) -> None:
     m = _Mirror(ctx)
     ceiling = ctx.cfg.get("statusCeiling") == "testing"
     run_text = m.gen(f"run {m.label}", m.label)
@@ -1215,19 +1240,22 @@ def push_results(ctx) -> None:
             m.set_field(t, rfid, opt, f"{cid}: Last check result = {verdict}")
         if runfid:
             m.set_field(t, runfid, run_text, f"{cid}: Last check run = {m.label}")
-        if ceiling and _status_of(t) == CASE_TO_TEST:
-            m.write("status", f"{cid}: {CASE_TO_TEST} → {CASE_TESTING}", lambda t=t: m.tr.request(
-                "PUT", f"/v2/task/{t['id']}", {"status": CASE_TESTING}))
+        if ceiling and same_status(_status_of(t), m.case_new):
+            m.write("status", f"{cid}: {m.case_new} → {m.case_testing}", lambda t=t: m.tr.request(
+                "PUT", f"/v2/task/{t['id']}", {"status": m.case_testing}))
         if ctx.log.apply and commented:  # a failed comment is retried next run
             ctx.cache.put("result", cid, str(t["id"]), verdict)
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- push-bug
 
 
 def push_bug(ctx) -> None:
+    with _keep_cache(ctx):
+        _push_bug(ctx)
+
+
+def _push_bug(ctx) -> None:
     m = _Mirror(ctx)
     rows = _bug_rows(m.run_dir)
     if not rows:
@@ -1277,7 +1305,7 @@ def push_bug(ctx) -> None:
         if not title or actual is None or expected is None or steps is None:
             continue
         matches = [t for t in bugs if str(m.live_field(t, ref_fid) or "") == ref]
-        live_open = [t for t in matches if not _is_closed(t)]
+        live_open = [t for t in matches if not _is_closed(t, m.bug_closed)]
         if len(live_open) > 1:
             m.log.skip("duplicate", f"{ref}: {', '.join(str(t['id']) for t in live_open)}")
             continue
@@ -1298,7 +1326,7 @@ def push_bug(ctx) -> None:
             if note is None:
                 continue
         desc = bug_description(actual, expected, steps, note)
-        body: Dict[str, Any] = {"name": title, "markdown_content": desc, "status": BUG_OPEN}
+        body: Dict[str, Any] = {"name": title, "markdown_content": desc, "status": m.bug_open}
         pri = SEVERITY_PRIORITY.get(str(row.get("severity") or "").lower())
         if pri:
             body["priority"] = pri
@@ -1313,7 +1341,8 @@ def push_bug(ctx) -> None:
         body["custom_fields"] = fields
 
         def find(ts, ref=ref):
-            return next((x for x in ts if str(m.live_field(x, ref_fid) or "") == ref and not _is_closed(x)), None)
+            return next((x for x in ts if str(m.live_field(x, ref_fid) or "") == ref
+                         and not _is_closed(x, m.bug_closed)), None)
         kind = "create-again" if note else "create"
         r = m.write(kind, f"{ref}: {title}", m.safe_create(bid, body, find))
         if ctx.log.apply and not (r and r.get("id")):
@@ -1328,14 +1357,17 @@ def push_bug(ctx) -> None:
         elif case_fid:
             m.set_field(new, case_fid, {"add": [str(case_task["id"])], "rem": []},
                         f"{ref}: Case = {case_id}")
-    if ctx.log.apply:
-        ctx.cache.save()
 
 
 # -- update-retest
 
 
 def update_retest(ctx) -> None:
+    with _keep_cache(ctx):
+        _update_retest(ctx)
+
+
+def _update_retest(ctx) -> None:
     """Bugs in `retest`: when every linked case has a result in this run, set Retest result to
     passed (all pass) or still failing (any fail) and comment. Never changes a status."""
     m = _Mirror(ctx)
@@ -1347,7 +1379,7 @@ def update_retest(ctx) -> None:
     if case_fid is None or retest_fid is None:
         return
     for t in m.tasks_in(bid):
-        if _status_of(t) != BUG_RETEST:
+        if not same_status(_status_of(t), m.bug_retest):
             continue
         name = t.get("name") or t["id"]
         linked = m.live_field(t, case_fid) or []

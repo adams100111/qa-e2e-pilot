@@ -264,6 +264,21 @@ class PushPlanTests(PlanTestBase):
                          [f"Updated from the catalog on {TODAY} — re-verify if already passed."])
         self.assertEqual(fake.tasks["t3"]["status"]["status"], "passed")  # never touched
 
+    def test_custom_case_statuses_on_create_and_retire(self):
+        self.set_cfg(statuses={"case": ["ready", "running", "broken", "stuck", "done", "dropped"],
+                               "bug": ["new", "seen", "working", "verify", "fixed"]})
+        self.seed_cache("TC-A-009")
+        fake = FolderFake()
+        for lst in fake.lists.values():
+            lst["statuses"] = [{"status": x} for x in ("ready", "running", "broken", "stuck", "done", "dropped")]
+        self.edit_case("area-a.json", "TC-A-003", title="Email verification blocks the home page")
+        fake.tasks["t3"]["status"] = {"status": "ready"}
+        self.run_verb(fake, apply=True)
+        create = fake.writes("POST", r"/v2/list/902/task$")[0][2]
+        self.assertEqual(create["status"], "ready")
+        self.assertEqual(fake.tasks["t5"]["status"]["status"], "dropped")
+        self.assertNotIn("t3", fake.comments)  # still in the first case status: no re-verify comment
+
     def test_second_run_after_apply_is_empty(self):
         self.seed_cache("TC-A-009")
         fake = FolderFake()

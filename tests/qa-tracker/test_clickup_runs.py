@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import io
+import os
 import json
 import re
 import shutil
@@ -14,9 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
 
-from trackers import clickup, core  # noqa: E402
+from trackers import cli, clickup, core  # noqa: E402
 from trackers.clickup_api import ApiError, Transport  # noqa: E402
 from trackers.ctx import Ctx, build_token  # noqa: E402
+from unittest import mock  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "clickup" / "runs"
 FOLDER = "9003"
@@ -526,6 +529,92 @@ class FixRoundTests(RunsBase):
         self.fake.fields["901"][0]["type_config"]["options"] = []
         lines = self.run_verb("push_results")
         self.assertEqual(sum(1 for ln in lines if ln.startswith("SKIP\toption-missing\tf-a-result")), 1)
+
+
+class ApiErrorTests(RunsBase):
+    TOKEN = "pk_1234567890_SECRETSECRETSECRET"
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(clickup, "transport_for", return_value=self.fake), \
+                mock.patch.dict(os.environ, {"CLICKUP_API_TOKEN": self.TOKEN}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(list(argv) + ["--project", str(self.tmp)])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_401_on_first_get_is_a_clean_error_with_hint(self):
+        class Denied(FolderFake):
+            def request(s, method, path, body=None):
+                raise ApiError(method, path, 401, f"token {ApiErrorTests.TOKEN} rejected")
+        self.fake = Denied()
+        for verb in ("push-plan", "init", "push-run", "push-results", "push-bug", "update-retest"):
+            rc, out, err = self.run_cli(verb, "--apply", "--run", "r1")
+            self.assertEqual(rc, 1, verb)
+            self.assertIn("clickup error: HTTP 401 GET /v2/folder/9003", err, verb)
+            self.assertIn("check CLICKUP_API_TOKEN (a personal token with access to this workspace)", err)
+            self.assertNotIn("Traceback", err)
+            self.assertNotIn(self.TOKEN, out + err)
+            self.assertIn("SUMMARY ", out, verb)
+
+    def test_404_hint_points_at_the_ids(self):
+        class Missing(FolderFake):
+            def request(s, method, path, body=None):
+                raise ApiError(method, path, 404, "not found")
+        self.fake = Missing()
+        rc, _, err = self.run_cli("push-run", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("clickup error: HTTP 404 GET /v2/folder/9003", err)
+        self.assertIn("check ids.workspace / ids.folder in docs/agents/qa-tracker.json", err)
+
+    def test_failure_mid_run_keeps_the_cache_it_built(self):
+        class DeniedLater(FolderFake):
+            def request(s, method, path, body=None):
+                if method == "POST" and path == "/v2/task/b1/comment":
+                    raise ApiError(method, path, 403, "forbidden")
+                return super().request(method, path, body)
+        self.fake = DeniedLater()
+        rc, out, err = self.run_cli("push-results", "--apply", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("clickup error: HTTP 403 POST /v2/task/b1/comment", err)
+        self.assertIn("SUMMARY ", out)
+        cache = json.loads((self.tmp / ".qa" / "tracker-map.json").read_text())
+        self.assertEqual(sorted(cache["result"]), ["TC-A-001", "TC-A-002", "TC-A-003"])
+
+
+class CustomStatusTests(RunsBase):
+    CASE = ["ready", "running", "broken", "stuck", "done", "dropped"]
+    BUG = ["new", "seen", "working", "verify", "fixed"]
+
+    def setUp(self):
+        super().setUp()
+        self.edit_cfg(lambda d: d.update(statuses={"case": self.CASE, "bug": self.BUG}))
+
+    def test_ceiling_uses_custom_case_names(self):
+        self.edit_cfg(lambda d: d.update(statusCeiling="testing"))
+        for tid in ("a1", "a2", "a3", "b1"):
+            self.fake.tasks[tid]["status"]["status"] = "ready"
+        self.fake.tasks["a2"]["status"]["status"] = "to test"  # not a configured name: left alone
+        self.run_verb("push_results")
+        puts = self.fake.writes("PUT")
+        self.assertEqual(sorted(c[1] for c in puts), ["/v2/task/a1", "/v2/task/a3", "/v2/task/b1"])
+        self.assertTrue(all(c[2] == {"status": "running"} for c in puts))
+
+    def test_bug_create_and_closed_use_custom_names(self):
+        ref = self.ref("TC-A-002", "Wrong password shows no error message")
+        self.fake.add_task("x1", "Old sign-in error bug", "905", "fixed", {"f-ref": ref})
+        self.run_verb("push_bug")
+        creates = {c[2]["name"]: c[2] for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        body = creates["Wrong password shows no error message"]
+        self.assertEqual(body["status"], "new")
+        self.assertTrue(body["markdown_content"].startswith("Seen again after it was closed"))
+        self.assertNotIn("x1", self.fake.comments)
+
+    def test_retest_detects_custom_name(self):
+        self.fake.add_task("r1", "Sign in broke", "905", "verify", {"f-case": [{"id": "a1"}]})
+        self.fake.add_task("r2", "Old name", "905", "retest", {"f-case": [{"id": "a1"}]})
+        self.run_verb("update_retest")
+        self.assertEqual(self.fake.tasks["r1"]["values"]["f-retest"], 0)
+        self.assertNotIn("f-retest", self.fake.tasks["r2"]["values"])
 
 
 if __name__ == "__main__":

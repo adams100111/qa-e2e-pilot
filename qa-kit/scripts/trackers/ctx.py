@@ -61,14 +61,18 @@ def _run_date(run_dir: Path, manifest: dict) -> str:
 
 
 BUILD_KEYS = ("build", "build_id", "buildId", "version")
+VERSION_RE = re.compile(r"^v?\d+(\.\d+){0,3}([-.+][0-9A-Za-z.]+)?$")
 
 
 def build_token(value: Any) -> str:
     """Only the leading version token of a manifest build value: build ids often carry a branch,
-    commit or note ("v1.4.46 (next@beb2492a7) - ...") that must not reach a tracker."""
+    commit or note ("v1.4.46 (next@beb2492a7) - ...") that must not reach a tracker. A first token
+    that does not look like a version (a branch, a bare commit hash) gives "" so the label falls
+    back to the date."""
     if not isinstance(value, (str, int)) or isinstance(value, bool):
         return ""
-    return re.split(r"[\s(@/]", str(value).strip(), 1)[0]
+    token = re.split(r"[\s(@/]", str(value).strip(), 1)[0]
+    return token if VERSION_RE.match(token) else ""
 
 
 def manifest_build(manifest: dict) -> str:

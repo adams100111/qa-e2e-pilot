@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
 
 from trackers import cli, core  # noqa: E402
-from trackers.ctx import run_dir_for, run_label  # noqa: E402
+from trackers.ctx import build_token, run_dir_for, run_label  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 
@@ -71,6 +71,29 @@ class CliTests(LocalProject):
         self.assertEqual(rc, 2)
         self.assertIn("local does not support pull-plan", err)
 
+    def test_status_with_broken_catalog_prints_catalog_error(self) -> None:
+        (self.tmp / ".qa" / "catalog" / "manifest.json").unlink()
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({
+            "backend": "clickup", "ids": {"workspace": "1", "folder": "2"}}))
+        rc, _, err = self.run_cli("status")
+        self.assertEqual(rc, 1)
+        self.assertIn("catalog error:", err)
+        self.assertIn("no manifest", err)
+        self.assertNotIn("needs a catalog", err)
+
+    def test_missing_config_notes_local_backend_once(self) -> None:
+        rc, _, err = self.run_cli("status")
+        self.assertEqual(rc, 0)
+        note = "no docs/agents/qa-tracker.json: using the local backend"
+        self.assertEqual(err.count(note), 1)
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text("{}")
+        _, _, err = self.run_cli("status")
+        self.assertNotIn(note, err)
+
     def test_run_helpers(self) -> None:
         self.add_run("2026-11-02-b", {"build": "v1.4.2"})
         run_dir = self.tmp / ".qa" / "runs" / "2026-11-02-b"
@@ -84,6 +107,17 @@ class CliTests(LocalProject):
         run_dir = self.tmp / ".qa" / "runs" / "2026-11-09-v3"
         self.assertEqual(run_label(run_dir, types.SimpleNamespace(label=None)), "2026-11-09 v1.4.46")
         self.assertIn(run_dir_for(self.tmp, None).name, ("r1", "2026-11-02-b"))
+
+    def test_build_token_keeps_only_a_version(self) -> None:
+        self.assertEqual(build_token("next@abc1234"), "")
+        self.assertEqual(build_token("3f9da0c"), "")
+        self.assertEqual(build_token("v1.4.46 (next@x)"), "v1.4.46")
+        self.assertEqual(build_token("1.2"), "1.2")
+        self.assertEqual(build_token("v2.0.1-rc.1"), "v2.0.1-rc.1")
+        self.assertEqual(build_token("feature/login"), "")
+        self.add_run("2026-11-10-c", {"build": "3f9da0c"})
+        run_dir = self.tmp / ".qa" / "runs" / "2026-11-10-c"
+        self.assertEqual(run_label(run_dir, types.SimpleNamespace(label=None)), "2026-11-10")
 
 
 class LocalBackendTests(LocalProject):
@@ -168,6 +202,64 @@ class LocalBackendTests(LocalProject):
         self.assertNotIn("Retest", g.read_text())
         self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L9")
         self.assertEqual(f.read_text().count("Retest on L9"), 1)
+
+    def _retest_bug(self, name: str, case: str) -> Path:
+        d = self.tracker() / "bugs"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        f.write_text(f"---\nstatus: retest\nseverity: low\ncase: {case}\nref: {name}\nfound_in: L0\n---\n# {name}\n")
+        return f
+
+    def test_retest_rules_match_clickup(self) -> None:
+        cp = self.tmp / ".qa" / "runs" / "r1" / "checkpoint.json"
+        cp.write_text(json.dumps({"criteria": [
+            {"criterion_id": "C3", "persona": "user", "verdict": "pass"},
+            {"criterion_id": "C2", "persona": "user", "verdict": "fail"},
+            {"criterion_id": "C6", "persona": "admin", "verdict": "blocked"}]}))
+        (self.tmp / ".qa" / "runs" / "r1" / "verification.json").unlink()
+        passed = self._retest_bug("001-a.md", "TC-A-002")
+        failing = self._retest_bug("002-b.md", "TC-A-001")
+        blocked = self._retest_bug("003-c.md", "TC-B-001")
+        missing = self._retest_bug("004-d.md", "TC-A-003")
+        nocase = self._retest_bug("005-e.md", "")
+        rc, out, _ = self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L9")
+        self.assertEqual(rc, 0)
+        self.assertIn("- Retest on L9: passed", passed.read_text())
+        self.assertIn("- Retest on L9: still failing", failing.read_text())
+        for f in (blocked, missing, nocase):
+            self.assertNotIn("Retest on", f.read_text())
+        self.assertIn("SKIP\tretest-inconclusive\t003-c.md: TC-B-001 blocked", out)
+        self.assertIn("SKIP\tretest-incomplete\t004-d.md: no result in this run for TC-A-003", out)
+        self.assertIn("SKIP\tretest-no-case\t005-e.md: no case linked", out)
+
+    def test_push_bug_skips_export_duplicates_and_untitled_rows(self) -> None:
+        run = self.tmp / ".qa" / "runs" / "r1" / "bugs" / "bugs.json"
+        row = json.loads(run.read_text())[0]
+        dup = dict(row, title="Sidebar name is stale", duplicateOf="BUG-1")
+        untitled = dict(row, title="   ", criterionId="C5")
+        run.write_text(json.dumps([row, dup, untitled]))
+        rc, out, _ = self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        self.assertEqual(rc, 0)
+        self.assertIn("SKIP\tduplicate-of\tSidebar name is stale: the export marks it a duplicate", out)
+        self.assertTrue(any(ln.startswith("SKIP\tno-title\t") for ln in out.splitlines()))
+        files = sorted((self.tracker() / "bugs").glob("*.md"))
+        self.assertEqual([f.name for f in files], ["001-sidebar-shows-the-wrong-name-after-sign-in.md"])
+
+    def test_local_uses_custom_bug_statuses(self) -> None:
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({"statuses": {
+            "bug": ["new", "seen", "working", "verify", "fixed"]}}))
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        f = next((self.tracker() / "bugs").glob("*.md"))
+        self.assertIn("status: new\n", f.read_text())
+        f.write_text(f.read_text().replace("status: new", "status: fixed"))
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L2")
+        self.assertEqual(len(list((self.tracker() / "bugs").glob("*.md"))), 2)  # fixed counts as closed
+        self.assertNotIn("Still happens", f.read_text())
+        f.write_text(f.read_text().replace("status: fixed", "status: verify"))
+        self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L3")
+        self.assertIn("- Retest on L3: still failing", f.read_text())
 
     def _ref(self) -> str:
         return core.fingerprint("TC-A-001", "user", "Sidebar shows the wrong name after sign in")

@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trackers import core  # noqa: E402
+from trackers.clickup_api import ApiError  # noqa: E402
 from trackers.ctx import Ctx, run_dir_for, run_label  # noqa: E402,F401
 
 VERBS = ("validate", "results", "status", "init", "push-plan", "pull-plan",
@@ -39,6 +40,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+API_HINTS = {
+    401: "check CLICKUP_API_TOKEN (a personal token with access to this workspace)",
+    403: "check CLICKUP_API_TOKEN (a personal token with access to this workspace)",
+    404: f"check ids.workspace / ids.folder in {core.CONFIG_REL.as_posix()}",
+}
+
+
+def _api_error(exc: ApiError) -> None:
+    """One line naming the failed call (never the response body or the token), plus a hint."""
+    sys.stderr.write(f"clickup error: HTTP {exc.status} {exc.method} {exc.path}\n")
+    hint = API_HINTS.get(exc.status)
+    if hint:
+        sys.stderr.write(f"hint: {hint}\n")
+
+
 def _print_json(obj: object) -> None:
     sys.stdout.write(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n")
 
@@ -51,6 +67,8 @@ def main(argv=None) -> int:
     except core.ConfigError as exc:
         sys.stderr.write(f"config error: {exc}\n")
         return 1
+    if not (project / core.CONFIG_REL).exists():
+        sys.stderr.write(f"no {core.CONFIG_REL.as_posix()}: using the local backend\n")
 
     if args.verb == "results":
         try:
@@ -67,7 +85,7 @@ def main(argv=None) -> int:
         if args.verb == "validate":
             _print_json({"errors": [{"file": None, "id": None, "reason": str(exc)}], "ok": False})
             return 1
-        if args.verb not in ("status", "init"):
+        if args.verb != "init":
             sys.stderr.write(f"catalog error: {exc}\n")
             return 1
 
@@ -98,6 +116,10 @@ def main(argv=None) -> int:
         return 1
     except (core.RunError, FileNotFoundError) as exc:
         sys.stderr.write(f"error: {exc}\n")
+        return 1
+    except ApiError as exc:
+        _api_error(exc)
+        sys.stdout.write(ctx.log.summary() + "\n")
         return 1
     sys.stdout.write(ctx.log.summary() + "\n")
     return 0

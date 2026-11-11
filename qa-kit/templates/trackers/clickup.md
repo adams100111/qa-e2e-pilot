@@ -15,11 +15,16 @@ the source of truth for cases.
 
 ## Who owns what
 
-- The status of a case belongs to the tester. The tool never sets or changes it.
+- The status of a case belongs to the tester. The tool changes it in two cases only:
+  `push-results` moves a case from `to test` to `testing` when `statusCeiling` is `testing`, and
+  `push-plan` sets retired or orphaned cases, and guide tasks retired into the doc, to `skipped`.
+  With your own status names, the first and second case statuses and the last one play those roles.
 - The tool writes only its own fields, "Last check result" and "Last check run", and adds comments.
-- Bugs are created in `open`. The tool never moves or closes a bug. The team owns bug status.
-- If a person edits a case description in ClickUp, the tool reports it and skips that case until
-  someone copies the edit into the catalog or asks for an overwrite.
+- Bugs are created in `open` (the first bug status). The tool never moves or closes a bug. The
+  team owns bug status.
+- If a person edits a case description in ClickUp, the tool reports it as drift and skips that case
+  until someone copies the edit into the catalog or passes `--overwrite`. Drift detection works on a
+  machine that holds the last-pushed cache (`.qa/tracker-map.json`); without it, the catalog wins.
 - Nothing is ever deleted. A case the catalog no longer lists is tagged `retired`, gets a comment,
   and is set to `skipped`.
 
@@ -31,7 +36,8 @@ Run them as `bash <qa-kit>/scripts/tracker.sh <verb>`. Each verb is a dry run un
   Bugs list. Prints the clicks it cannot do itself.
 - `push-plan`: sends the catalog to ClickUp. Creates missing cases and updates the ones whose content
   changed.
-- `pull-plan`: reads cases added in ClickUp back into the catalog as drafts. Edits are reported, not
+- `pull-plan`: reads cases added in ClickUp and writes them as drafts to `.qa/tracker/pulled/`,
+  never into the catalog. Copy what you want into the catalog by hand. Edits are reported, not
   merged.
 - `push-run`: creates the run record with its build, environment and counts.
 - `push-results`: writes each case's result into "Last check result" and "Last check run" and adds
@@ -43,6 +49,28 @@ Run them as `bash <qa-kit>/scripts/tracker.sh <verb>`. Each verb is a dry run un
 - `status`: shows what each verb would change, including drift.
 - `validate`: checks the catalog against the schema. Exit 0 only when it is clean.
 - `results`: prints each case's result for a run, as JSON.
+
+## Config keys and flags
+
+Flags, added after the verb:
+
+- `--run <run-id>`: the run under `.qa/runs/` to send. Default: the newest run with a checkpoint.
+- `--label <text>`: the run's name in ClickUp. Default: the run date plus the build version.
+- `--only <area file> ...`: `push-plan` sends only these catalog areas, and retires nothing.
+- `--overwrite <case id> ...`: `push-plan` replaces these cases' descriptions even when someone
+  edited them in ClickUp.
+
+Keys in `docs/agents/qa-tracker.json`:
+
+- `statusCeiling`: `none` (the default) never moves a case. `testing` lets `push-results` move a
+  case from `to test` to `testing`, and no further.
+- `lists.guide`, `lists.runs`, `lists.bugs`: list names, when you want something other than
+  "00 – Guide & Sign-off", "Runs" and "Bugs".
+- `wording.allow`: phrases the forbidden-word check lets through. "AI" is a forbidden word in
+  generated text (run names, results, comments and bugs), so a product named "AI …" must be listed
+  here, or every item that names it is skipped.
+- `bugsTo`: `same` (the default) files bugs in the Bugs list. `issue-tracker` leaves bugs to the
+  project's issue tracker, and `push-bug` and `update-retest` do nothing.
 
 ## Rules
 
