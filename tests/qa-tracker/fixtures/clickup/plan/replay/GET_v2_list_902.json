@@ -1,0 +1,25 @@
+{
+  "id": "902",
+  "name": "Module: Events",
+  "content": "",
+  "statuses": [
+    {
+      "status": "to test"
+    },
+    {
+      "status": "testing"
+    },
+    {
+      "status": "failed"
+    },
+    {
+      "status": "blocked"
+    },
+    {
+      "status": "passed"
+    },
+    {
+      "status": "skipped"
+    }
+  ]
+}

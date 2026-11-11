@@ -660,6 +660,55 @@ The headline release: the engine now tells the truth about its own accuracy.
 
 ## qa-kit (process shell)
 
+### v0.4.0 — 2026-11-11 · "Track QA where your team works"
+
+**Added**
+
+- **`/qa-tracker`.** It asks where test cases, runs and bugs live (local files, GitHub or ClickUp),
+  where bugs go, and whether to keep the default statuses. It then writes
+  `docs/agents/qa-tracker.md` (the rules) and `docs/agents/qa-tracker.json` (ids and settings),
+  plus a pointer in `CLAUDE.md`/`AGENTS.md`. The token comes from `CLICKUP_API_TOKEN` and is never
+  written to a file.
+- **`scripts/tracker.sh`**, with verbs `validate`, `results`, `status`, `init`, `push-plan`,
+  `pull-plan`, `push-run`, `push-results`, `push-bug` and `update-retest`. Every verb is a dry run
+  unless you pass `--apply`.
+  - Cases come from a catalog: YAML areas plus a manifest, validated against
+    `templates/catalog-schema.json`.
+  - A case's result in a run is the worst verdict of the checks that name it, through a
+    `case:<id>` tag or `catalogRef`.
+  - Bugs are matched across runs by a fingerprint.
+- **Local backend.** It writes run tables to `.qa/tracker/runs/` and one markdown file per bug to
+  `.qa/tracker/bugs/`, with front matter.
+- **ClickUp backend.**
+  - `push-plan` syncs cases, intros and guides; the Innovation `sync_clickup.py` behaviour is
+    kept. With `guideAs: doc` the guides become pages of one "QA Guide" Doc.
+  - `init` creates lists and views. It prints the custom fields and statuses ClickUp's API can't
+    create as numbered manual steps, then records the ids.
+  - `push-run`, `push-results`, `push-bug` and `update-retest` mirror a run.
+
+**Safety**
+
+- Nothing is ever deleted.
+- The tool never changes a bug's status. It changes a case's status in two cases only:
+  `push-results` moves it from `to test` to `testing` when `statusCeiling` is `testing`, and
+  `push-plan` sets retired or orphaned cases, and guide tasks retired into the doc, to `skipped`.
+- Custom status names are read by position (six for cases, five for bugs); a list of the wrong
+  length is a config error.
+- A tester's edit to a case is reported as drift, not overwritten. Drift detection works on a
+  machine that holds the last-pushed cache (`.qa/tracker-map.json`).
+- `push-plan --apply` refuses to run while the catalog has errors.
+- Only cases the tool itself pushed can be retired as orphans. Two Docs with the same name, or
+  duplicate case tasks, block the affected writes.
+- Before any create, the tool looks for an existing item by name or Ref. A write that fails with a
+  server error is never retried blindly.
+- Every string sent to a tracker is redacted, including the shared password from the accounts
+  guide and the bug export's secret patterns.
+- Generated text is also checked for AI, agent and automation wording, file paths, branches and PR
+  references. Run labels keep only a build value that looks like a version.
+- A ClickUp API failure prints the status, method and path with a hint (token or ids), never the
+  token, and the remote-id cache built before the failure is kept.
+- `validate` and `results` work for every backend; the other verbs exit 2 for `github` and `other`.
+
 ### v0.3.1 — 2026-11-09 · "Point to the dashboard"
 
 `/qa-status` now points to the engine's `/qa-dashboard` for the project-wide view. Ships with engine `v0.12.1`.

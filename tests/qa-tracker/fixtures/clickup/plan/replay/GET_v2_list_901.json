@@ -1,0 +1,25 @@
+{
+  "id": "901",
+  "name": "Core: Sign-in",
+  "content": "Signing in and out of the platform.\n\nAccounts: faisal.alharbi and noura.alqahtani, both on the shared QA password.\n\nBefore you start:\n- Use a private window.\n\nRun order:\n- Run TC-A-001 first.\n\nNew to the platform? Read \"Guide · Start Here\" in the 00 – Guide & Sign-off list first, then pick cases tagged beginner.",
+  "statuses": [
+    {
+      "status": "to test"
+    },
+    {
+      "status": "testing"
+    },
+    {
+      "status": "failed"
+    },
+    {
+      "status": "blocked"
+    },
+    {
+      "status": "passed"
+    },
+    {
+      "status": "skipped"
+    }
+  ]
+}

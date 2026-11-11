@@ -1,5 +1,9 @@
 # QA tracker: test cases, runs and bugs in local files, GitHub or ClickUp
 
+Plan: `docs/superpowers/plans/2026-11-11-qa-tracker.md`. Amended 2026-11-11: config lives in
+`docs/agents/qa-tracker.json` (`.qa/` is git-ignored), and field names say "check", not
+"automated", so they pass D7.
+
 Date: 2026-11-10 · Status: accepted · Plugins: qa-kit (owner), qa-e2e-pilot (unchanged contracts)
 
 ## Why
@@ -74,7 +78,7 @@ that have tests.
 
 It runs in Matt Pocock's order:
 
-1. Look at what exists: the git remote, `docs/agents/issue-tracker.md`, `.qa/tracker.json`, any
+1. Look at what exists: the git remote, `docs/agents/issue-tracker.md`, `docs/agents/qa-tracker.json`, any
    existing catalog.
 2. Say what it found.
 3. Ask one question at a time, with the recommended answer first:
@@ -92,7 +96,7 @@ It writes:
 - `docs/agents/qa-tracker.md`: rules a person or agent reads. It says how each operation is done
   on this tracker and lists the tracker's quirks. It is seeded from
   `templates/trackers/<backend>.md`.
-- `.qa/tracker.json`: config the scripts read. Example:
+- `docs/agents/qa-tracker.json`: config the scripts read. Example:
   `{backend, catalog: "docs/qa/catalog", ids: {...}, statuses: {...}, fields: {...}, statusCeiling, wording: {forbidden: [...]}}`.
 - A short "QA tracker" entry under `## Agent skills` in `CLAUDE.md` or `AGENTS.md`, pointing at the
   rules file.
@@ -141,8 +145,8 @@ syncs.
 
 ### D5. Who owns which field
 
-- The case **status** belongs to the tester. The agent writes only its own fields: last automated
-  result, last automated run, automated evidence link. It also comments.
+- The case **status** belongs to the tester. The agent writes only its own fields: last check
+  result, last check run, check evidence link. It also comments.
 - `statusCeiling` (default `none`) allows a project to let the agent move `to test` → `testing`,
   and nothing beyond that.
 - **Bug status** belongs to the team. The agent creates bugs in `open` and comments, nothing more.
@@ -170,7 +174,7 @@ guesses an id.
 
 Custom fields:
 
-- On cases: Role, Level, Last automated result, Last automated run, Linked bugs.
+- On cases: Role, Level, Last check result, Last check run, Linked bugs.
 - On bugs: Severity (critical / high / medium / low), Case (relationship), Found in run, Retest
   result.
 - On runs: Build, Environment, Language, Passed / Failed / Blocked counts.

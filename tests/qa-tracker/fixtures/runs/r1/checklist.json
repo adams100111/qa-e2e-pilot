@@ -1,0 +1,8 @@
+[
+  {"id": "C1", "title": "Sign in opens the dashboard", "tags": ["human-action"], "catalogRef": ["TC-A-001"]},
+  {"id": "C2", "title": "Sidebar shows the signed-in name", "tags": ["read-only", "case:TC-A-001"]},
+  {"id": "C3", "title": "Wrong password shows an error", "tags": ["human-action"], "catalogRef": "TC-A-002"},
+  {"id": "C4", "title": "Sign-in screen copy", "tags": ["read-only"], "catalogRef": ["TC-A-001", "TC-A-003"]},
+  {"id": "C5", "title": "Footer links open", "tags": ["read-only"], "catalogRef": null},
+  {"id": "C6", "title": "Event list loads", "tags": ["read-only", "case:TC-B-001"]}
+]

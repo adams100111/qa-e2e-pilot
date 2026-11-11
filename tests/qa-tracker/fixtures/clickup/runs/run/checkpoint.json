@@ -1,0 +1,10 @@
+{
+  "run_id": "r1",
+  "criteria": [
+    {"criterion_id": "C1", "persona": "user", "verdict": "pass", "confidence": "high"},
+    {"criterion_id": "C2", "persona": "user", "verdict": "fail", "confidence": "high"},
+    {"criterion_id": "C3", "persona": "user", "verdict": "blocked", "confidence": "high"},
+    {"criterion_id": "C4", "persona": "admin", "verdict": "pass", "confidence": "high"},
+    {"criterion_id": "C5", "persona": "user", "verdict": "fail", "confidence": "high"}
+  ]
+}

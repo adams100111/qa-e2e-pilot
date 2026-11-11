@@ -54,6 +54,13 @@ from the plan (increment-4 finding — see ADR-0022). qa-kit closes that with a 
 `checkpoint.json[].criterion_id` against the frozen `checklist.json[].id` and flags any out-of-plan act.
 `qa-verify` itself is never modified.
 
+## Tracking cases, runs and bugs
+
+`/qa-tracker` picks where the QA work is tracked: local files, GitHub or ClickUp. It writes
+`docs/agents/qa-tracker.{md,json}`. After that, `qa-kit/scripts/tracker.sh <verb>` keeps the
+tracker in step with the catalog and the runs, as a dry run unless you pass `--apply`. The design
+is `docs/superpowers/specs/2026-11-10-qa-tracker-design.md`.
+
 ## Bundled helpers (`qa-kit/scripts/`, pure + dual-engine)
 
 - `constitution.sh` — `version` / `diff` / `state` / `render`.

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "BUG-1",
+    "title": "Sidebar shows the wrong name after sign in",
+    "severity": "high",
+    "criterionId": "C2",
+    "persona": "user",
+    "steps": ["Sign in as qa.user.", "Look at the bottom of the left sidebar."],
+    "expected": "The sidebar shows the name of qa.user.",
+    "actual": "The sidebar shows the name of the previous account.",
+    "evidence": []
+  }
+]

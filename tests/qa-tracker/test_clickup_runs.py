@@ -1,0 +1,621 @@
+"""ClickUp push-run, push-results, push-bug and update-retest against an in-memory folder."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import copy
+import io
+import os
+import json
+import re
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
+
+from trackers import cli, clickup, core  # noqa: E402
+from trackers.clickup_api import ApiError, Transport  # noqa: E402
+from trackers.ctx import Ctx, build_token  # noqa: E402
+from unittest import mock  # noqa: E402
+
+FIX = Path(__file__).resolve().parent / "fixtures" / "clickup" / "runs"
+FOLDER = "9003"
+LABEL = "2026-11-11 v1.4.30"
+VERDICT_OPTS = ["pass", "fail", "blocked", "deferred", "error"]
+
+
+def dropdown(fid, name, options):
+    return {"id": fid, "name": name, "type": "drop_down",
+            "type_config": {"options": [{"id": f"{fid}-o{i}", "name": o, "orderindex": i}
+                                        for i, o in enumerate(options)]}}
+
+
+def text_field(fid, name, kind="short_text"):
+    return {"id": fid, "name": name, "type": kind}
+
+
+class FolderFake(Transport):
+    """An in-memory ClickUp folder. Reflects every write; records every non-GET call."""
+
+    def __init__(self):
+        self.calls: list = []
+        self.lists: dict = {}
+        self.fields: dict = {}
+        self.tasks: dict = {}
+        self.comments: dict = {}
+        self.n = 0
+        self.fail_create_after_landing = 0  # next N task creates land, then raise HTTP 500
+        area = lambda p: [dropdown(f"f-{p}-result", "Last check result", VERDICT_OPTS),  # noqa: E731
+                          text_field(f"f-{p}-run", "Last check run")]
+        self.add_list("901", "Core: Sign-in", area("a"))
+        self.add_list("902", "Module: Events", area("b"))
+        self.add_list("904", "Runs", [text_field("f-build", "Build"), text_field("f-env", "Environment"),
+                                      text_field("f-lang", "Language"), text_field("f-passed", "Passed", "number"),
+                                      text_field("f-failed", "Failed", "number"),
+                                      text_field("f-blocked", "Blocked", "number")])
+        self.add_list("905", "Bugs", [dropdown("f-sev", "Severity", ["critical", "high", "medium", "low"]),
+                                      text_field("f-case", "Case", "list_relationship"),
+                                      text_field("f-found", "Found in run"),
+                                      dropdown("f-retest", "Retest result", ["passed", "still failing"]),
+                                      text_field("f-ref", "Ref")])
+        for tid, name, lid in [("a1", "TC-A-001 · Sign in", "901"), ("a2", "TC-A-002 · Wrong password", "901"),
+                               ("a3", "TC-A-003 · Remember me", "901"), ("a4", "TC-A-004 · Old", "901"),
+                               ("b1", "TC-B-001 · Event list", "902"), ("b2", "TC-B-002 · Event page", "902")]:
+            self.add_task(tid, name, lid, "to test")
+
+    def add_list(self, lid, name, fields):
+        self.lists[lid] = {"id": lid, "name": name}
+        self.fields[lid] = fields
+
+    def add_task(self, tid, name, lid, status, values=None):
+        self.tasks[tid] = {"id": tid, "name": name, "status": {"status": status, "type": "closed" if status == "closed" else "custom"},
+                           "list": {"id": lid, "name": self.lists[lid]["name"]}, "values": dict(values or {}),
+                           "priority": None, "markdown_description": ""}
+        return self.tasks[tid]
+
+    def view(self, t):
+        out = {k: copy.deepcopy(v) for k, v in t.items() if k != "values"}
+        cfs = []
+        for f in self.fields[t["list"]["id"]]:
+            cf = copy.deepcopy(f)
+            if f["id"] in t["values"]:
+                cf["value"] = copy.deepcopy(t["values"][f["id"]])
+            cfs.append(cf)
+        out["custom_fields"] = cfs
+        return out
+
+    def field_def(self, t, fid):
+        return next(f for f in self.fields[t["list"]["id"]] if f["id"] == fid)
+
+    def store(self, t, fid, value):
+        f = self.field_def(t, fid)
+        if f["type"] == "drop_down":
+            value = next(o["orderindex"] for o in f["type_config"]["options"] if o["id"] == value)
+        elif f["type"] == "list_relationship":
+            cur = [x["id"] for x in t["values"].get(fid, [])]
+            value = [{"id": i} for i in cur + [i for i in value["add"] if i not in cur] if i not in value["rem"]]
+        t["values"][fid] = value
+
+    def writes(self, method=None, pattern=""):
+        return [c for c in self.calls if (method is None or c[0] == method) and re.search(pattern, c[1])]
+
+    def request(self, method, path, body=None):
+        method = method.upper()
+        if method != "GET":
+            self.calls.append((method, path, copy.deepcopy(body)))
+        if method == "GET" and path == f"/v2/folder/{FOLDER}":
+            return {"id": FOLDER, "lists": [dict(l) for l in self.lists.values()]}
+        m = re.fullmatch(r"/v2/list/(\w+)/task\?.*page=(\d+)", path)
+        if m and method == "GET":
+            if m.group(2) != "0":
+                return {"tasks": []}
+            return {"tasks": [self.view(t) for t in self.tasks.values() if t["list"]["id"] == m.group(1)]}
+        m = re.fullmatch(r"/v2/list/(\w+)/field", path)
+        if m and method == "GET":
+            return {"fields": copy.deepcopy(self.fields[m.group(1)])}
+        m = re.fullmatch(r"/v2/list/(\w+)", path)
+        if m and method == "GET":
+            return {"id": m.group(1), "statuses": []}
+        m = re.fullmatch(r"/v2/list/(\w+)/task", path)
+        if m and method == "POST":
+            self.n += 1
+            t = self.add_task(f"n{self.n}", body["name"], m.group(1), body.get("status") or "to test")
+            t["priority"] = {"id": str(body["priority"])} if body.get("priority") else None
+            t["markdown_description"] = body.get("markdown_content", "")
+            for cf in body.get("custom_fields") or []:
+                self.store(t, cf["id"], cf["value"])
+            if self.fail_create_after_landing:
+                self.fail_create_after_landing -= 1
+                raise ApiError(method, path, 500, "internal error")
+            return self.view(t)
+        m = re.fullmatch(r"/v2/task/(\w+)/field/([\w-]+)", path)
+        if m and method == "POST":
+            self.store(self.tasks[m.group(1)], m.group(2), body["value"])
+            return {}
+        m = re.fullmatch(r"/v2/task/(\w+)/comment", path)
+        if m:
+            if method == "POST":
+                self.comments.setdefault(m.group(1), []).append(body["comment_text"])
+                return {"id": "c"}
+            return {"comments": [{"comment_text": c} for c in self.comments.get(m.group(1), [])]}
+        m = re.fullmatch(r"/v2/task/(\w+)", path)
+        if m and method == "PUT":
+            t = self.tasks[m.group(1)]
+            if "status" in body:
+                t["status"] = {"status": body["status"], "type": "custom"}
+            return {}
+        raise ApiError(method, path, 404, "unhandled in FolderFake")
+
+
+class RunsBase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        shutil.copytree(FIX / "project", self.tmp, dirs_exist_ok=True)
+        shutil.copytree(FIX / "run", self.tmp / ".qa" / "runs" / "r1")
+        self.cfg_path = self.tmp / "docs/agents/qa-tracker.json"
+        self.fake = FolderFake()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def edit_cfg(self, fn):
+        data = json.loads(self.cfg_path.read_text())
+        fn(data)
+        self.cfg_path.write_text(json.dumps(data, indent=2) + "\n")
+
+    def run_verb(self, verb, apply=True):
+        cfg = core.load_config(self.tmp)
+        out = io.StringIO()
+        ctx = Ctx(project=self.tmp, cfg=cfg, catalog=core.load_catalog(self.tmp, cfg),
+                  log=core.ActionLog(apply=apply, out=out), cache=core.MapCache(self.tmp),
+                  args=argparse.Namespace(only=[], overwrite=[], transport=self.fake, run="r1", label=None))
+        getattr(clickup, verb)(ctx)
+        return [ln for ln in out.getvalue().splitlines() if ln]
+
+    def ref(self, key, title, persona="user"):
+        return core.fingerprint(key, persona, title)
+
+    def bug_tasks(self):
+        return [t for t in self.fake.tasks.values() if t["list"]["id"] == "905"]
+
+    def clear_cache(self):
+        (self.tmp / ".qa" / "tracker-map.json").unlink()
+
+
+class PushRunTests(RunsBase):
+    def test_push_run_idempotent_by_label(self):
+        self.run_verb("push_run")
+        creates = self.fake.writes("POST", r"/v2/list/904/task$")
+        self.assertEqual([c[2]["name"] for c in creates], [f"Run {LABEL}"])
+        t = next(t for t in self.fake.tasks.values() if t["name"] == f"Run {LABEL}")
+        self.assertEqual(t["values"], {"f-build": "v1.4.30", "f-env": "staging", "f-lang": "ar",
+                                       "f-passed": 2, "f-failed": 1, "f-blocked": 1})
+        self.fake.calls.clear()
+        self.run_verb("push_run")
+        self.assertEqual(self.fake.calls, [])
+        # a second machine: empty cache, same label → found by name, nothing written
+        self.clear_cache()
+        self.run_verb("push_run")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_manifest_missing_leaves_fields_empty(self):
+        (self.tmp / ".qa/runs/r1/run-manifest.json").unlink()
+        self.run_verb("push_run")
+        t = next(t for t in self.fake.tasks.values() if t["list"]["id"] == "904")
+        self.assertEqual(t["name"], "Run r1")  # no manifest: the label falls back to the run dir
+        self.assertNotIn("f-build", t["values"])
+        self.assertNotIn("f-env", t["values"])
+        self.assertEqual(t["values"]["f-passed"], 2)
+
+    def test_missing_field_id_skips_that_field_only(self):
+        self.edit_cfg(lambda d: (d["fields"].pop("Runs/Build"), d["fields"].pop("Core: Sign-in/Last check run")))
+        lines = self.run_verb("push_run")
+        self.assertEqual([ln for ln in lines if ln.startswith("SKIP")],
+                         ["SKIP\tfield-missing\tRuns/Build: run tracker.sh init"])
+        t = next(t for t in self.fake.tasks.values() if t["list"]["id"] == "904")
+        self.assertNotIn("f-build", t["values"])
+        self.assertEqual(t["values"]["f-env"], "staging")
+        lines = self.run_verb("push_results")
+        self.assertEqual([ln for ln in lines if ln.startswith("SKIP")],
+                         ["SKIP\tfield-missing\tCore: Sign-in/Last check run: run tracker.sh init"])
+        a1 = self.fake.tasks["a1"]
+        self.assertNotIn("f-a-run", a1["values"])
+        self.assertEqual(a1["values"]["f-a-result"], 0)  # pass
+        self.assertEqual(self.fake.comments["a1"], [f"Checked on {LABEL}: pass (1 checks)."])
+
+
+class ResultsTests(RunsBase):
+    def test_results_never_change_status_by_default(self):
+        self.run_verb("push_results")
+        self.assertEqual(self.fake.writes("PUT"), [])
+        self.assertEqual({t: self.fake.tasks[t]["status"]["status"] for t in ("a1", "a2", "a3", "b1")},
+                         {"a1": "to test", "a2": "to test", "a3": "to test", "b1": "to test"})
+        self.assertEqual(self.fake.tasks["a2"]["values"], {"f-a-result": 1, "f-a-run": LABEL})
+        self.assertEqual(self.fake.tasks["a3"]["values"]["f-a-result"], 2)
+        self.assertEqual(self.fake.tasks["b1"]["values"], {"f-b-result": 0, "f-b-run": LABEL})
+        self.assertEqual(self.fake.comments["a2"], [f"Checked on {LABEL}: fail (1 checks)."])
+        self.assertNotIn("a4", self.fake.comments)
+        # unchanged result: no write, no second comment, also with a cleared cache
+        self.fake.calls.clear()
+        self.run_verb("push_results")
+        self.assertEqual(self.fake.calls, [])
+        self.clear_cache()
+        self.run_verb("push_results")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_result_change_comments_once(self):
+        self.run_verb("push_results")
+        cp = self.tmp / ".qa/runs/r1/checkpoint.json"
+        data = json.loads(cp.read_text())
+        data["criteria"][1]["verdict"] = "pass"
+        cp.write_text(json.dumps(data))
+        self.fake.calls.clear()
+        self.run_verb("push_results")
+        self.assertEqual([c[1] for c in self.fake.writes("POST", r"/comment$")], ["/v2/task/a2/comment"])
+        self.assertEqual(self.fake.comments["a2"][-1], f"Checked on {LABEL}: pass (1 checks).")
+
+    def test_results_ceiling_moves_to_testing_only_from_to_test(self):
+        self.edit_cfg(lambda d: d.update(statusCeiling="testing"))
+        self.fake.tasks["a2"]["status"]["status"] = "passed"
+        self.fake.tasks["a3"]["status"]["status"] = "failed"
+        self.run_verb("push_results")
+        puts = self.fake.writes("PUT")
+        self.assertEqual(sorted(c[1] for c in puts), ["/v2/task/a1", "/v2/task/b1"])
+        self.assertTrue(all(c[2] == {"status": "testing"} for c in puts))
+        self.assertEqual(self.fake.tasks["a2"]["status"]["status"], "passed")
+        self.assertEqual(self.fake.tasks["a3"]["status"]["status"], "failed")
+        self.fake.calls.clear()
+        self.run_verb("push_results")
+        self.assertEqual(self.fake.writes("PUT"), [])
+
+
+class BugTests(RunsBase):
+    def ref1(self):
+        return self.ref("TC-A-002", "Wrong password shows no error message")
+
+    def test_bug_dedupe_comments_instead_of_creating(self):
+        self.fake.add_task("x1", "Wrong password shows no error message", "905", "fixing",
+                           {"f-ref": self.ref1(), "f-found": "2026-11-01 v1.4.29"})
+        lines = self.run_verb("push_bug")
+        self.assertEqual(self.fake.comments["x1"], [f"Still happens on {LABEL}."])
+        names = [c[2]["name"] for c in self.fake.writes("POST", r"/v2/list/905/task$")]
+        self.assertEqual(names, ["Footer privacy link opens a not found page"])
+        self.assertEqual(self.fake.tasks["x1"]["status"]["status"], "fixing")
+        self.assertEqual(self.fake.writes("PUT"), [])
+        self.assertTrue(any(ln.startswith("SKIP\twording\t") and ln.endswith(": automated") for ln in lines))
+        # second run: the comment is already there, the new bug is found by Ref
+        self.fake.calls.clear()
+        self.run_verb("push_bug")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_closed_bug_reappears_as_new_with_note(self):
+        self.fake.add_task("x1", "Old sign-in error bug", "905", "closed", {"f-ref": self.ref1()})
+        self.run_verb("push_bug")
+        creates = {c[2]["name"]: c[2] for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        body = creates["Wrong password shows no error message"]
+        self.assertTrue(body["markdown_content"].startswith(
+            "Seen again after it was closed: Old sign-in error bug."))
+        self.assertEqual(body["status"], "open")
+        self.assertNotIn("x1", self.fake.comments)
+        self.assertEqual(self.fake.tasks["x1"]["status"]["status"], "closed")
+        self.fake.calls.clear()
+        self.run_verb("push_bug")
+        self.assertEqual(self.fake.writes("POST", r"/task$"), [])
+
+    def test_new_bug_fields_text_and_case_link(self):
+        self.run_verb("push_bug")
+        creates = {c[2]["name"]: c for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        body = creates["Wrong password shows no error message"][2]
+        self.assertEqual(body["markdown_content"],
+                         "**What happened**\nThe page reloads with no message.\n\n"
+                         "**What should happen**\nA red message says the password is wrong.\n\n"
+                         "**Steps**\n1. Open the sign-in page.\n2. Enter a wrong password and submit.")
+        new = next(t for t in self.bug_tasks() if t["name"] == "Wrong password shows no error message")
+        self.assertEqual(new["values"]["f-ref"], self.ref1())
+        self.assertEqual(new["values"]["f-found"], LABEL)
+        self.assertEqual(new["values"]["f-sev"], 1)  # high
+        self.assertEqual(new["values"]["f-case"], [{"id": "a2"}])
+        footer = next(t for t in self.bug_tasks() if t["name"].startswith("Footer"))
+        self.assertEqual(footer["values"]["f-ref"], self.ref("C5", "Footer privacy link opens a not found page"))
+        self.assertNotIn("f-case", footer["values"])
+        sent = json.dumps(self.fake.calls)
+        for leak in ("FE/route", "evidence", "BUG-1", "\"C2\"", "C2/"):
+            self.assertNotIn(leak, sent)
+
+    def test_priority_follows_severity_table(self):
+        self.assertEqual(clickup.SEVERITY_PRIORITY, {"critical": 1, "high": 2, "medium": 3, "low": 4})
+        self.run_verb("push_bug")
+        pri = {c[2]["name"]: c[2].get("priority") for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        self.assertEqual(pri, {"Wrong password shows no error message": 2,
+                               "Footer privacy link opens a not found page": 1})
+
+    def test_wording_hit_skips_only_that_bug(self):
+        lines = self.run_verb("push_bug")
+        ref3 = self.ref("TC-A-002", "Sign-in button stays disabled")
+        self.assertIn(f"SKIP\twording\t{ref3}: automated", lines)
+        self.assertEqual(len(self.fake.writes("POST", r"/v2/list/905/task$")), 2)
+
+    def test_cleared_cache_second_run_creates_no_duplicates(self):
+        self.run_verb("push_run")
+        self.run_verb("push_bug")
+        self.clear_cache()
+        self.fake.calls.clear()
+        self.run_verb("push_run")
+        self.run_verb("push_bug")
+        self.assertEqual(self.fake.writes("POST", r"/task$"), [])
+        self.assertEqual(len(self.bug_tasks()), 2)
+
+    def test_create_that_landed_after_500_is_found_by_ref(self):
+        self.fake.fail_create_after_landing = 1
+        lines = self.run_verb("push_bug")
+        self.assertTrue(any(ln.startswith("APPLY\treconciled\t") for ln in lines))
+        self.assertEqual(len(self.bug_tasks()), 2)
+        self.fake.calls.clear()
+        self.run_verb("push_bug")
+        self.assertEqual(self.fake.writes("POST", r"/task$"), [])
+        self.assertEqual(len(self.bug_tasks()), 2)
+
+    def test_create_500_that_did_not_land_is_not_retried(self):
+        class NoLand(FolderFake):
+            def request(s, method, path, body=None):
+                if method == "POST" and path == "/v2/list/905/task":
+                    s.calls.append((method, path, body))
+                    raise ApiError(method, path, 502, "bad gateway")
+                return super().request(method, path, body)
+        self.fake = NoLand()
+        lines = self.run_verb("push_bug")
+        self.assertEqual(len(self.fake.writes("POST", r"/v2/list/905/task$")), 2)  # one try per bug
+        self.assertEqual(sum(1 for ln in lines if ln.startswith("SKIP\tapi-error")), 2)
+        self.assertEqual(self.bug_tasks(), [])
+
+
+class RetestTests(RunsBase):
+    def test_retest_sets_field_never_status(self):
+        self.fake.add_task("r1", "Sign in broke", "905", "retest", {"f-case": [{"id": "a1"}]})
+        self.fake.add_task("r2", "Wrong password", "905", "retest", {"f-case": [{"id": "a2"}]})
+        self.fake.add_task("r3", "Remember me", "905", "retest", {"f-case": [{"id": "a3"}]})
+        self.fake.add_task("r4", "Not ready", "905", "fixing", {"f-case": [{"id": "a1"}]})
+        self.fake.add_task("r5", "Unrelated", "905", "retest", {"f-case": [{"id": "a4"}]})
+        lines = self.run_verb("update_retest")
+        self.assertEqual(self.fake.writes("PUT"), [])
+        self.assertEqual(self.fake.tasks["r1"]["values"]["f-retest"], 0)  # passed
+        self.assertEqual(self.fake.tasks["r2"]["values"]["f-retest"], 1)  # still failing
+        self.assertNotIn("f-retest", self.fake.tasks["r3"]["values"])
+        self.assertNotIn("f-retest", self.fake.tasks["r4"]["values"])
+        self.assertNotIn("f-retest", self.fake.tasks["r5"]["values"])
+        self.assertEqual(self.fake.comments["r1"], [f"Retest on {LABEL}: passed."])
+        self.assertEqual(self.fake.comments["r2"], [f"Retest on {LABEL}: still failing."])
+        self.assertIn("SKIP\tretest-inconclusive\tRemember me: TC-A-003 blocked", lines)
+        self.assertEqual({t["status"]["status"] for t in self.bug_tasks()}, {"retest", "fixing"})
+        self.fake.calls.clear()
+        self.run_verb("update_retest")
+        self.assertEqual(self.fake.calls, [])
+
+
+class DryRunTests(RunsBase):
+    def test_dry_run_makes_no_writes(self):
+        self.fake.add_task("r1", "Sign in broke", "905", "retest", {"f-case": [{"id": "a1"}]})
+        self.edit_cfg(lambda d: d.update(statusCeiling="testing"))
+        lines = []
+        for verb in ("push_run", "push_results", "push_bug", "update_retest"):
+            lines += self.run_verb(verb, apply=False)
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse((self.tmp / ".qa" / "tracker-map.json").exists())
+        self.assertTrue(any(ln.startswith(f"DRY\tcreate\tRun {LABEL}") for ln in lines))
+        self.assertTrue(any(ln.startswith("DRY\tstatus\tTC-A-001") for ln in lines))
+        self.assertTrue(any(ln.startswith("DRY\tcreate\t") and "Footer" in ln for ln in lines))
+        self.assertFalse(any(ln.startswith("APPLY") for ln in lines))
+
+
+class FixRoundTests(RunsBase):
+    def set_manifest(self, data):
+        (self.tmp / ".qa/runs/r1/run-manifest.json").write_text(json.dumps(data))
+
+    def set_verdict(self, criterion, verdict):
+        cp = self.tmp / ".qa/runs/r1/checkpoint.json"
+        data = json.loads(cp.read_text())
+        for row in data["criteria"]:
+            if row["criterion_id"] == criterion:
+                row["verdict"] = verdict
+        cp.write_text(json.dumps(data))
+
+    def test_build_field_uses_version_token_like_the_label(self):
+        noisy = "v1.4.46 (next@beb2492a7) - preflight could not auto-detect"
+        self.assertEqual(build_token(noisy), "v1.4.46")
+        self.set_manifest({"started_at": "2026-11-09T10:00:00Z", "build_id": noisy,
+                           "base_url": "https://staging.innovation-lab.co"})
+        self.run_verb("push_run")
+        t = next(t for t in self.fake.tasks.values() if t["list"]["id"] == "904")
+        self.assertEqual(t["name"], "Run 2026-11-09 v1.4.46")
+        self.assertEqual(t["values"]["f-build"], "v1.4.46")
+        self.assertNotIn("f-env", t["values"])  # base_url is not an environment name
+        self.assertNotIn("beb2492a7", json.dumps(self.fake.calls))
+
+    def test_empty_cache_unchanged_verdicts_post_no_comment(self):
+        for t in ("a1", "a2", "a3", "b1"):
+            self.fake.tasks[t]["values"] = {}
+        self.fake.tasks["a1"]["values"] = {"f-a-result": 0, "f-a-run": "2026-11-01 v1.4.29"}  # pass, older run
+        self.run_verb("push_results")
+        self.assertNotIn("a1", self.fake.comments)  # same verdict as the live field: no comment
+        self.assertEqual(self.fake.tasks["a1"]["values"]["f-a-run"], LABEL)
+        self.assertEqual(sorted(self.fake.comments), ["a2", "a3", "b1"])
+
+    def test_cache_for_another_task_is_not_trusted(self):
+        self.run_verb("push_results")
+        cache = json.loads((self.tmp / ".qa/tracker-map.json").read_text())
+        cache["result"]["TC-A-002"] = {"id": "zzz", "hash": "pass"}  # stale: another task id
+        (self.tmp / ".qa/tracker-map.json").write_text(json.dumps(cache))
+        self.fake.calls.clear()
+        self.run_verb("push_results")
+        self.assertEqual(self.fake.writes("POST", r"/comment$"), [])  # live field already says fail
+
+    def test_failed_comment_is_not_cached_and_retried(self):
+        class CommentFails(FolderFake):
+            fail = True
+            def request(s, method, path, body=None):
+                if s.fail and method == "POST" and path == "/v2/task/a2/comment":
+                    s.calls.append((method, path, body))
+                    raise ApiError(method, path, 400, "bad")
+                return super().request(method, path, body)
+        self.fake = CommentFails()
+        self.run_verb("push_results")
+        cache = json.loads((self.tmp / ".qa/tracker-map.json").read_text())
+        self.assertNotIn("TC-A-002", cache["result"])
+        self.assertIn("TC-A-001", cache["result"])
+        self.assertNotIn("f-a-result", self.fake.tasks["a2"]["values"])  # moves with its comment
+        self.fake.fail = False
+        self.fake.calls.clear()
+        self.run_verb("push_results")
+        self.assertEqual([c[1] for c in self.fake.writes("POST", r"/comment$")], ["/v2/task/a2/comment"])
+
+    def test_retest_needs_every_case_and_a_clear_result(self):
+        self.set_verdict("C4", "error")  # TC-B-001 → error
+        self.fake.add_task("r1", "Two cases, one not run", "905", "retest", {"f-case": [{"id": "a1"}, {"id": "a4"}]})
+        self.fake.add_task("r2", "No case", "905", "retest", {})
+        self.fake.add_task("r3", "Errored", "905", "retest", {"f-case": [{"id": "b1"}]})
+        self.fake.add_task("r4", "Pass and fail", "905", "retest", {"f-case": [{"id": "a1"}, {"id": "a2"}]})
+        lines = self.run_verb("update_retest")
+        self.assertIn("SKIP\tretest-incomplete\tTwo cases, one not run: no result in this run for TC-A-004", lines)
+        self.assertIn("SKIP\tretest-no-case\tNo case: no Case linked", lines)
+        self.assertIn("SKIP\tretest-inconclusive\tErrored: TC-B-001 error", lines)
+        self.assertEqual(self.fake.tasks["r4"]["values"]["f-retest"], 1)  # still failing
+        for tid in ("r1", "r2", "r3"):
+            self.assertNotIn("f-retest", self.fake.tasks[tid]["values"])
+            self.assertNotIn(tid, self.fake.comments)
+        self.assertEqual(self.fake.writes("PUT"), [])
+
+    def test_retest_missing_field_id_does_nothing(self):
+        self.edit_cfg(lambda d: d["fields"].pop("Bugs/Case"))
+        self.fake.add_task("r1", "Sign in broke", "905", "retest", {"f-case": [{"id": "a1"}]})
+        lines = self.run_verb("update_retest")
+        self.assertIn("SKIP\tfield-missing\tBugs/Case: run tracker.sh init", lines)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_list_id_not_in_live_folder_is_refused(self):
+        self.edit_cfg(lambda d: d["listIds"].update(Runs="999"))
+        lines = self.run_verb("push_run")
+        self.assertIn("SKIP\tlist-missing\tRuns: run tracker.sh init", lines)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_two_open_bugs_with_one_ref_are_a_duplicate(self):
+        ref = self.ref("TC-A-002", "Wrong password shows no error message")
+        self.fake.add_task("x1", "One", "905", "open", {"f-ref": ref})
+        self.fake.add_task("x2", "Two", "905", "fixing", {"f-ref": ref})
+        lines = self.run_verb("push_bug")
+        self.assertIn(f"SKIP\tduplicate\t{ref}: x1, x2", lines)
+        self.assertEqual(self.fake.comments, {})
+        names = [c[2]["name"] for c in self.fake.writes("POST", r"/v2/list/905/task$")]
+        self.assertNotIn("Wrong password shows no error message", names)
+
+    def test_export_duplicates_and_untitled_rows_are_skipped(self):
+        path = self.tmp / ".qa/runs/r1/bugs/bugs.json"
+        rows = json.loads(path.read_text())
+        rows[1]["duplicateOf"] = "BUG-1"
+        rows[2]["title"] = "  "
+        path.write_text(json.dumps(rows))
+        lines = self.run_verb("push_bug")
+        self.assertTrue(any(ln.startswith("SKIP\tduplicate-of\tFooter privacy link") for ln in lines))
+        self.assertTrue(any(ln.startswith("SKIP\tno-title\t") for ln in lines))
+        self.assertEqual([c[2]["name"] for c in self.fake.writes("POST", r"/v2/list/905/task$")],
+                         ["Wrong password shows no error message"])
+
+    def test_option_missing_logged_once_per_field(self):
+        self.fake.fields["905"][0]["type_config"]["options"] = []  # Severity has no options
+        lines = self.run_verb("push_bug")
+        self.assertEqual(sum(1 for ln in lines if ln.startswith("SKIP\toption-missing\tf-sev")), 1)
+        self.fake.fields["901"][0]["type_config"]["options"] = []
+        lines = self.run_verb("push_results")
+        self.assertEqual(sum(1 for ln in lines if ln.startswith("SKIP\toption-missing\tf-a-result")), 1)
+
+
+class ApiErrorTests(RunsBase):
+    TOKEN = "pk_1234567890_SECRETSECRETSECRET"
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(clickup, "transport_for", return_value=self.fake), \
+                mock.patch.dict(os.environ, {"CLICKUP_API_TOKEN": self.TOKEN}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(list(argv) + ["--project", str(self.tmp)])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_401_on_first_get_is_a_clean_error_with_hint(self):
+        class Denied(FolderFake):
+            def request(s, method, path, body=None):
+                raise ApiError(method, path, 401, f"token {ApiErrorTests.TOKEN} rejected")
+        self.fake = Denied()
+        for verb in ("push-plan", "init", "push-run", "push-results", "push-bug", "update-retest"):
+            rc, out, err = self.run_cli(verb, "--apply", "--run", "r1")
+            self.assertEqual(rc, 1, verb)
+            self.assertIn("clickup error: HTTP 401 GET /v2/folder/9003", err, verb)
+            self.assertIn("check CLICKUP_API_TOKEN (a personal token with access to this workspace)", err)
+            self.assertNotIn("Traceback", err)
+            self.assertNotIn(self.TOKEN, out + err)
+            self.assertIn("SUMMARY ", out, verb)
+
+    def test_404_hint_points_at_the_ids(self):
+        class Missing(FolderFake):
+            def request(s, method, path, body=None):
+                raise ApiError(method, path, 404, "not found")
+        self.fake = Missing()
+        rc, _, err = self.run_cli("push-run", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("clickup error: HTTP 404 GET /v2/folder/9003", err)
+        self.assertIn("check ids.workspace / ids.folder in docs/agents/qa-tracker.json", err)
+
+    def test_failure_mid_run_keeps_the_cache_it_built(self):
+        class DeniedLater(FolderFake):
+            def request(s, method, path, body=None):
+                if method == "POST" and path == "/v2/task/b1/comment":
+                    raise ApiError(method, path, 403, "forbidden")
+                return super().request(method, path, body)
+        self.fake = DeniedLater()
+        rc, out, err = self.run_cli("push-results", "--apply", "--run", "r1")
+        self.assertEqual(rc, 1)
+        self.assertIn("clickup error: HTTP 403 POST /v2/task/b1/comment", err)
+        self.assertIn("SUMMARY ", out)
+        cache = json.loads((self.tmp / ".qa" / "tracker-map.json").read_text())
+        self.assertEqual(sorted(cache["result"]), ["TC-A-001", "TC-A-002", "TC-A-003"])
+
+
+class CustomStatusTests(RunsBase):
+    CASE = ["ready", "running", "broken", "stuck", "done", "dropped"]
+    BUG = ["new", "seen", "working", "verify", "fixed"]
+
+    def setUp(self):
+        super().setUp()
+        self.edit_cfg(lambda d: d.update(statuses={"case": self.CASE, "bug": self.BUG}))
+
+    def test_ceiling_uses_custom_case_names(self):
+        self.edit_cfg(lambda d: d.update(statusCeiling="testing"))
+        for tid in ("a1", "a2", "a3", "b1"):
+            self.fake.tasks[tid]["status"]["status"] = "ready"
+        self.fake.tasks["a2"]["status"]["status"] = "to test"  # not a configured name: left alone
+        self.run_verb("push_results")
+        puts = self.fake.writes("PUT")
+        self.assertEqual(sorted(c[1] for c in puts), ["/v2/task/a1", "/v2/task/a3", "/v2/task/b1"])
+        self.assertTrue(all(c[2] == {"status": "running"} for c in puts))
+
+    def test_bug_create_and_closed_use_custom_names(self):
+        ref = self.ref("TC-A-002", "Wrong password shows no error message")
+        self.fake.add_task("x1", "Old sign-in error bug", "905", "fixed", {"f-ref": ref})
+        self.run_verb("push_bug")
+        creates = {c[2]["name"]: c[2] for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        body = creates["Wrong password shows no error message"]
+        self.assertEqual(body["status"], "new")
+        self.assertTrue(body["markdown_content"].startswith("Seen again after it was closed"))
+        self.assertNotIn("x1", self.fake.comments)
+
+    def test_retest_detects_custom_name(self):
+        self.fake.add_task("r1", "Sign in broke", "905", "verify", {"f-case": [{"id": "a1"}]})
+        self.fake.add_task("r2", "Old name", "905", "retest", {"f-case": [{"id": "a1"}]})
+        self.run_verb("update_retest")
+        self.assertEqual(self.fake.tasks["r1"]["values"]["f-retest"], 0)
+        self.assertNotIn("f-retest", self.fake.tasks["r2"]["values"])
+
+
+if __name__ == "__main__":
+    unittest.main()

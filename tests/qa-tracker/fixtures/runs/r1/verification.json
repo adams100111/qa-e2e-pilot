@@ -1,0 +1,7 @@
+[
+  {"criterionId": "C1", "persona": "user", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C3", "persona": "user", "inRunVerdict": "pass", "verifierVerdict": "fail", "confidence": "high", "reasons": ["no read-back of the error"]},
+  {"criterionId": "C4", "persona": "user", "inRunVerdict": "fail", "verifierVerdict": "fail", "confidence": "high", "reasons": ["stale row from an earlier pass"]},
+  {"criterionId": "C6", "persona": "viewer", "inRunVerdict": "pass", "verifierVerdict": "fail", "confidence": "high", "reasons": ["other persona"]},
+  {"criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a", "verifierVerdict": "fail", "confidence": "high", "reasons": []}
+]
