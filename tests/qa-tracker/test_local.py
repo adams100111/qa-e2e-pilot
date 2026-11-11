@@ -203,6 +203,48 @@ class LocalBackendTests(LocalProject):
         self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L9")
         self.assertEqual(f.read_text().count("Retest on L9"), 1)
 
+    def _retest_bug(self, name: str, case: str) -> Path:
+        d = self.tracker() / "bugs"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        f.write_text(f"---\nstatus: retest\nseverity: low\ncase: {case}\nref: {name}\nfound_in: L0\n---\n# {name}\n")
+        return f
+
+    def test_retest_rules_match_clickup(self) -> None:
+        cp = self.tmp / ".qa" / "runs" / "r1" / "checkpoint.json"
+        cp.write_text(json.dumps({"criteria": [
+            {"criterion_id": "C3", "persona": "user", "verdict": "pass"},
+            {"criterion_id": "C2", "persona": "user", "verdict": "fail"},
+            {"criterion_id": "C6", "persona": "admin", "verdict": "blocked"}]}))
+        (self.tmp / ".qa" / "runs" / "r1" / "verification.json").unlink()
+        passed = self._retest_bug("001-a.md", "TC-A-002")
+        failing = self._retest_bug("002-b.md", "TC-A-001")
+        blocked = self._retest_bug("003-c.md", "TC-B-001")
+        missing = self._retest_bug("004-d.md", "TC-A-003")
+        nocase = self._retest_bug("005-e.md", "")
+        rc, out, _ = self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L9")
+        self.assertEqual(rc, 0)
+        self.assertIn("- Retest on L9: passed", passed.read_text())
+        self.assertIn("- Retest on L9: still failing", failing.read_text())
+        for f in (blocked, missing, nocase):
+            self.assertNotIn("Retest on", f.read_text())
+        self.assertIn("SKIP\tretest-inconclusive\t003-c.md: TC-B-001 blocked", out)
+        self.assertIn("SKIP\tretest-incomplete\t004-d.md: no result in this run for TC-A-003", out)
+        self.assertIn("SKIP\tretest-no-case\t005-e.md: no case linked", out)
+
+    def test_push_bug_skips_export_duplicates_and_untitled_rows(self) -> None:
+        run = self.tmp / ".qa" / "runs" / "r1" / "bugs" / "bugs.json"
+        row = json.loads(run.read_text())[0]
+        dup = dict(row, title="Sidebar name is stale", duplicateOf="BUG-1")
+        untitled = dict(row, title="   ", criterionId="C5")
+        run.write_text(json.dumps([row, dup, untitled]))
+        rc, out, _ = self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        self.assertEqual(rc, 0)
+        self.assertIn("SKIP\tduplicate-of\tSidebar name is stale: the export marks it a duplicate", out)
+        self.assertTrue(any(ln.startswith("SKIP\tno-title\t") for ln in out.splitlines()))
+        files = sorted((self.tracker() / "bugs").glob("*.md"))
+        self.assertEqual([f.name for f in files], ["001-sidebar-shows-the-wrong-name-after-sign-in.md"])
+
     def _ref(self) -> str:
         return core.fingerprint("TC-A-001", "user", "Sidebar shows the wrong name after sign in")
 

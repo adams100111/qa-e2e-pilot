@@ -196,10 +196,16 @@ def push_bug(ctx: Ctx) -> None:
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if row.get("duplicateOf"):
+            ctx.log.skip("duplicate-of", f"{row.get('title') or 'untitled'}: the export marks it a duplicate")
+            continue
         case_id = _case_of(results, row.get("criterionId") or row.get("criterion_id"))
         key = case_id or str(row.get("criterionId") or row.get("criterion_id") or row.get("id") or "")
         ref = core.fingerprint(key, str(row.get("persona") or ""), str(row.get("title") or ""))
         if ref in created:
+            continue
+        if not str(row.get("title") or "").strip():
+            ctx.log.skip("no-title", f"{ref}: the export row has no title")
             continue
         try:
             text = _bug_text(row, ctx)
@@ -235,14 +241,30 @@ def push_bug(ctx: Ctx) -> None:
 
 
 def update_retest(ctx: Ctx) -> None:
+    """Bugs in `retest`: when the linked case has a clear result in this run, add a line saying
+    passed (pass) or still failing (fail). The same rules as ClickUp: blocked, deferred or error is
+    inconclusive, no result is incomplete. Never changes a status."""
     run_dir = run_dir_for(ctx.project, getattr(ctx.args, "run", None))
     label = _label(ctx, run_dir)
     results = core.case_results(run_dir)
     for path, meta in _bug_files(ctx):
-        case_id = meta.get("case", "")
-        if _status(meta) != "retest" or case_id not in results:
+        if _status(meta) != "retest":
             continue
-        outcome = "passed" if results[case_id]["verdict"] == "pass" else "still failing"
+        case_id = meta.get("case", "").strip().strip("\"'")
+        if not case_id:
+            ctx.log.skip("retest-no-case", f"{path.name}: no case linked")
+            continue
+        if case_id not in results:
+            ctx.log.skip("retest-incomplete", f"{path.name}: no result in this run for {case_id}")
+            continue
+        verdict = results[case_id]["verdict"]
+        if verdict == "pass":
+            outcome = "passed"
+        elif verdict == "fail":
+            outcome = "still failing"
+        else:
+            ctx.log.skip("retest-inconclusive", f"{path.name}: {case_id} {verdict}")
+            continue
         line = f"- Retest on {label}: {outcome}"
         if line in [l.strip() for l in _split(path.read_text(encoding="utf-8"))[1].splitlines()]:
             continue
