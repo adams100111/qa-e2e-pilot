@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
-from trackers.core import (CONFIG_REL, VERDICT_RANK, ConfigError, RunError, WordingError, case_index, case_results,
+from trackers.core import (CONFIG_REL, ConfigError, RunError, WordingError, case_index, case_results,
                            content_hash, fingerprint, norm, outbound, validate_catalog)
-from trackers.ctx import _manifest, run_dir_for, run_label
+from trackers.ctx import _manifest, manifest_build, run_dir_for, run_label
 
 try:  # optional, only for writing pulled drafts as YAML
     import yaml  # type: ignore
@@ -923,7 +923,6 @@ def init(ctx) -> None:
 
 
 SEVERITY_PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4}  # P6
-VERDICTS = ("pass", "fail", "blocked", "deferred", "error")
 BUG_OPEN = "open"
 BUG_CLOSED = "closed"
 BUG_RETEST = "retest"
@@ -932,9 +931,9 @@ CASE_TESTING = "testing"
 RETEST_PASSED = "passed"
 RETEST_FAILING = "still failing"
 # run-manifest.json keys per Runs field; the first non-empty one wins, none means left empty
+# (Build comes from ctx.manifest_build: the version token only, as in the run label)
 MANIFEST_KEYS = {
-    "Build": ("build", "build_id", "buildId", "version"),
-    "Environment": ("environment", "env", "baseUrl", "base_url"),
+    "Environment": ("environment", "env"),
     "Language": ("language", "locale", "lang"),
 }
 
@@ -995,14 +994,16 @@ class _Mirror(_Sync):
         self.bugs_list = lists_cfg.get("bugs") or BUGS_LIST
         self.field_defs: Dict[str, List[dict]] = {}
         self.missing_fields: set = set()
+        self.missing_options: set = set()
         self.by_id = {str(t["id"]): t for t in self.folder.tasks}
 
     # -- ids
 
     def list_id(self, name: str) -> Optional[str]:
-        """The list id from cfg listIds (written by init), else the live folder by name."""
+        """The list id from cfg listIds (written by init), else the live folder by name. An id that
+        is not one of the live folder's lists is refused: the verb then does nothing."""
         lid = (self.cfg.get("listIds") or {}).get(name) or self.lists.get(name)
-        if not lid:
+        if not lid or str(lid) not in {str(v) for v in self.lists.values()}:
             self.log.skip("list-missing", f"{name}: run tracker.sh init")
             return None
         return str(lid)
@@ -1025,7 +1026,9 @@ class _Mirror(_Sync):
                 for o in (f.get("type_config") or {}).get("options") or []:
                     if norm(o.get("name")) == norm(name):
                         return str(o["id"])
-        self.log.skip("option-missing", f"{fid}: no option {name!r}")
+        if fid not in self.missing_options:
+            self.missing_options.add(fid)
+            self.log.skip("option-missing", f"{fid}: no option {name!r}")
         return None
 
     @staticmethod
@@ -1059,6 +1062,8 @@ class _Mirror(_Sync):
         return True
 
     def comments(self, task_id: str) -> List[str]:
+        """Comment texts of a task. Reads only the latest page (ClickUp returns the newest 25),
+        enough to see a comment this tool added on a recent run."""
         if task_id.startswith("<"):
             return []
         r = self.tr.request("GET", f"/v2/task/{task_id}/comment")
@@ -1112,6 +1117,8 @@ class _Mirror(_Sync):
 
 
 def _manifest_value(manifest: dict, field_name: str) -> Optional[str]:
+    if field_name == "Build":
+        return manifest_build(manifest) or None
     for k in MANIFEST_KEYS[field_name]:
         v = manifest.get(k)
         if isinstance(v, (str, int, float)) and str(v).strip():
@@ -1193,20 +1200,25 @@ def push_results(ctx) -> None:
         rfid = m.field_id(lname, "Last check result")
         runfid = m.field_id(lname, "Last check run")
         opt = m.option_id(lid, rfid, verdict) if rfid else None
-        already = (opt is not None and m.live_field(t, rfid) == opt
-                   and runfid is not None and m.live_field(t, runfid) == run_text)
+        # the previous result: the cache when it is about this very task, else the live field
         cached = ctx.cache.get("result", cid)
-        changed = not (cached and cached.get("hash") == verdict) and not already
-        if opt:
+        if cached and str(cached.get("id")) == str(t["id"]):
+            prev = cached.get("hash")
+        else:
+            prev = verdict if (opt is not None and m.live_field(t, rfid) == opt) else None
+        commented = True
+        if prev != verdict:
+            commented = m.write("comment", f"{cid}: {verdict} ({n} checks)",
+                                lambda t=t, c=comment: m.comment(t["id"], c) or True) is not None
+        # the result field moves only with its comment, so a failed comment is redone next run
+        if opt and (commented or not ctx.log.apply):
             m.set_field(t, rfid, opt, f"{cid}: Last check result = {verdict}")
         if runfid:
             m.set_field(t, runfid, run_text, f"{cid}: Last check run = {m.label}")
-        if changed:
-            m.say_comment(t, comment, f"{cid}: {verdict} ({n} checks)")
         if ceiling and _status_of(t) == CASE_TO_TEST:
             m.write("status", f"{cid}: {CASE_TO_TEST} → {CASE_TESTING}", lambda t=t: m.tr.request(
                 "PUT", f"/v2/task/{t['id']}", {"status": CASE_TESTING}))
-        if ctx.log.apply:
+        if ctx.log.apply and commented:  # a failed comment is retried next run
             ctx.cache.put("result", cid, str(t["id"]), verdict)
     if ctx.log.apply:
         ctx.cache.save()
@@ -1237,6 +1249,9 @@ def push_bug(ctx) -> None:
     bugs = m.tasks_in(bid)
     done: set = set()
     for row in rows:
+        if row.get("duplicateOf"):
+            m.log.skip("duplicate-of", f"{row.get('title') or 'untitled'}: the export marks it a duplicate")
+            continue
         criterion = str(row.get("criterionId") or row.get("criterion_id") or "")
         case_id = _case_of(m.results, criterion)
         ref = fingerprint(case_id or criterion or str(row.get("id") or ""),
@@ -1244,7 +1259,11 @@ def push_bug(ctx) -> None:
         if ref in done:
             continue
         done.add(ref)
-        title = m.gen(ref, str(row.get("title") or "").strip())
+        raw_title = str(row.get("title") or "").strip()
+        if not raw_title:
+            m.log.skip("no-title", f"{ref}: the export row has no title")
+            continue
+        title = m.gen(ref, raw_title)
         actual = m.gen(ref, str(row.get("actual") or "").strip()) if title else None
         expected = m.gen(ref, str(row.get("expected") or "").strip()) if actual is not None else None
         steps = []
@@ -1259,6 +1278,9 @@ def push_bug(ctx) -> None:
             continue
         matches = [t for t in bugs if str(m.live_field(t, ref_fid) or "") == ref]
         live_open = [t for t in matches if not _is_closed(t)]
+        if len(live_open) > 1:
+            m.log.skip("duplicate", f"{ref}: {', '.join(str(t['id']) for t in live_open)}")
+            continue
         m.checked("bug", ref, live_open[0] if live_open else None)
         if live_open:
             t = live_open[0]
@@ -1314,46 +1336,49 @@ def push_bug(ctx) -> None:
 
 
 def update_retest(ctx) -> None:
+    """Bugs in `retest`: when every linked case has a result in this run, set Retest result to
+    passed (all pass) or still failing (any fail) and comment. Never changes a status."""
     m = _Mirror(ctx)
     bid = m.list_id(m.bugs_list)
     if bid is None:
         return
-    case_fid = (ctx.cfg.get("fields") or {}).get(field_key(m.bugs_list, "Case"))
+    case_fid = m.field_id(m.bugs_list, "Case")
     retest_fid = m.field_id(m.bugs_list, "Retest result")
+    if case_fid is None or retest_fid is None:
+        return
     for t in m.tasks_in(bid):
         if _status_of(t) != BUG_RETEST:
             continue
-        linked: List[str] = []
-        for f in t.get("custom_fields") or []:
-            if (case_fid and str(f.get("id")) == str(case_fid)) or (not case_fid and f.get("name") == "Case"):
-                linked = [str(x.get("id")) if isinstance(x, dict) else str(x) for x in f.get("value") or []]
-        cases = []
+        name = t.get("name") or t["id"]
+        linked = m.live_field(t, case_fid) or []
+        if not isinstance(linked, list) or not linked:
+            m.log.skip("retest-no-case", f"{name}: no Case linked")
+            continue
+        cases, missing = [], []
         for tid in linked:
-            mt = TC_RE.match((m.by_id.get(tid) or {}).get("name") or "")
+            mt = TC_RE.match((m.by_id.get(str(tid)) or {}).get("name") or "")
             if mt and mt.group(1) in m.results:
                 cases.append(mt.group(1))
-        if not cases:
+            else:
+                missing.append(mt.group(1) if mt else str(tid))
+        if missing:
+            m.log.skip("retest-incomplete", f"{name}: no result in this run for {', '.join(missing)}")
             continue
-        verdict = _worst_of([m.results[c]["verdict"] for c in cases])
-        name = t.get("name") or t["id"]
-        if verdict == "pass":
+        verdicts = {c: m.results[c]["verdict"] for c in cases}
+        if all(v == "pass" for v in verdicts.values()):
             outcome = RETEST_PASSED
-        elif verdict in ("fail", "error"):
+        elif any(v == "fail" for v in verdicts.values()) and \
+                not any(v in ("error", "blocked", "deferred") for v in verdicts.values()):
             outcome = RETEST_FAILING
         else:
-            m.log.skip("retest-inconclusive", f"{name}: {', '.join(cases)} {verdict}")
+            detail = ", ".join(f"{c} {v}" for c, v in verdicts.items())
+            m.log.skip("retest-inconclusive", f"{name}: {detail}")
             continue
         text = m.gen(str(t["id"]), f"Retest on {m.label}: {outcome}.")
         if text is None:
             continue
-        if retest_fid:
-            opt = m.option_id(bid, retest_fid, outcome)
-            if opt:
-                m.set_field(t, retest_fid, opt, f"{name}: Retest result = {outcome}")
+        opt = m.option_id(bid, retest_fid, outcome)
+        if opt:
+            m.set_field(t, retest_fid, opt, f"{name}: Retest result = {outcome}")
         if text not in m.comments(str(t["id"])):
             m.say_comment(t, text, f"{name}: {outcome}")
-
-
-
-def _worst_of(verdicts: List[str]) -> str:
-    return max(verdicts, key=lambda v: VERDICT_RANK.get(v, VERDICT_RANK["error"]))
