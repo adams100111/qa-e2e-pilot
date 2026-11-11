@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
 
 from trackers import cli, core  # noqa: E402
-from trackers.ctx import run_dir_for, run_label  # noqa: E402
+from trackers.ctx import build_token, run_dir_for, run_label  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 
@@ -84,6 +84,17 @@ class CliTests(LocalProject):
         run_dir = self.tmp / ".qa" / "runs" / "2026-11-09-v3"
         self.assertEqual(run_label(run_dir, types.SimpleNamespace(label=None)), "2026-11-09 v1.4.46")
         self.assertIn(run_dir_for(self.tmp, None).name, ("r1", "2026-11-02-b"))
+
+    def test_build_token_keeps_only_a_version(self) -> None:
+        self.assertEqual(build_token("next@abc1234"), "")
+        self.assertEqual(build_token("3f9da0c"), "")
+        self.assertEqual(build_token("v1.4.46 (next@x)"), "v1.4.46")
+        self.assertEqual(build_token("1.2"), "1.2")
+        self.assertEqual(build_token("v2.0.1-rc.1"), "v2.0.1-rc.1")
+        self.assertEqual(build_token("feature/login"), "")
+        self.add_run("2026-11-10-c", {"build": "3f9da0c"})
+        run_dir = self.tmp / ".qa" / "runs" / "2026-11-10-c"
+        self.assertEqual(run_label(run_dir, types.SimpleNamespace(label=None)), "2026-11-10")
 
 
 class LocalBackendTests(LocalProject):
