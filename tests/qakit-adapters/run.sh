@@ -12,10 +12,10 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 for h in claude pi codex opencode; do bash "$B" "$h" >/dev/null || { echo "build $h failed"; exit 1; }; done
 
-# (a) 6 commands + agent per harness, right agent ext
-# (constitution, spec, scenarios, analyze, verify, status)
+# (a) 7 commands + agent per harness, right agent ext
+# (constitution, spec, scenarios, analyze, verify, status, tracker)
 for h in claude pi codex opencode; do
-  check "$h has 6 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "6"
+  check "$h has 7 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "7"
 done
 check "claude agent md"   "$(ls "$D/claude/agent")"   "qa-kit.md"
 check "pi agent md"       "$(ls "$D/pi/agent")"       "qa-kit.md"
