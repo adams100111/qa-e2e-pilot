@@ -78,6 +78,11 @@ class CliTests(LocalProject):
         self.assertEqual(run_label(run_dir, types.SimpleNamespace(label="Beta")), "Beta")
         self.assertEqual(run_label(self.tmp / ".qa" / "runs" / "2026-11-05-x"), "2026-11-05")
         self.assertEqual(run_dir_for(self.tmp, "r1").name, "r1")
+
+    def test_run_label_keeps_only_the_version_token(self) -> None:
+        self.add_run("2026-11-09-v3", {"build_id": "v1.4.46 (next@beb2492a7) - preflight could not auto-detect"})
+        run_dir = self.tmp / ".qa" / "runs" / "2026-11-09-v3"
+        self.assertEqual(run_label(run_dir, types.SimpleNamespace(label=None)), "2026-11-09 v1.4.46")
         self.assertIn(run_dir_for(self.tmp, None).name, ("r1", "2026-11-02-b"))
 
 

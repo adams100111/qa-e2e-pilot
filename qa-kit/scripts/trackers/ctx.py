@@ -69,6 +69,9 @@ def run_label(run_dir: Path, args: Any = None) -> str:
     date = _run_date(run_dir, manifest)
     for key in ("build", "build_id", "buildId", "version"):
         v = manifest.get(key)
-        if isinstance(v, (str, int)) and str(v).strip():
-            return f"{date} {str(v).strip()}"
+        # Only the leading version token: build ids often carry a branch, commit or note
+        # ("v1.4.46 (next@beb2492a7) - ...") that must not reach a tracker.
+        build = re.split(r"[\s(@/]", str(v).strip(), 1)[0] if isinstance(v, (str, int)) else ""
+        if build:
+            return f"{date} {build}"
     return date
