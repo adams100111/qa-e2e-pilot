@@ -34,6 +34,10 @@ BACKENDS = ("local", "clickup", "github", "other")
 STATUS_CEILINGS = ("none", "testing")
 GUIDE_AS = ("tasks", "doc")
 BUGS_TO = ("same", "issue-tracker")
+# `statuses.case` / `statuses.bug` are the project's own names, read by position as these roles
+CASE_ROLES = ("to_test", "testing", "failed", "blocked", "passed", "skipped")
+BUG_ROLES = ("open", "triaged", "fixing", "retest", "closed")
+STATUS_ROLES = {"case": CASE_ROLES, "bug": BUG_ROLES}
 
 # P4: worst verdict wins. Unknown verdicts rank as "error" so they never hide behind a pass.
 VERDICT_RANK = {"pass": 0, "deferred": 1, "blocked": 2, "error": 3, "fail": 4}
@@ -118,6 +122,13 @@ def load_config(project: Path) -> Config:
         problems.append(f"guideAs must be one of {', '.join(GUIDE_AS)}")
     if merged.get("bugsTo") not in BUGS_TO:
         problems.append(f"bugsTo must be one of {', '.join(BUGS_TO)}")
+    statuses = merged.get("statuses")
+    for kind, roles in STATUS_ROLES.items():
+        names = statuses.get(kind) if isinstance(statuses, dict) else None
+        if not (isinstance(names, list) and len(names) == len(roles)
+                and all(isinstance(n, str) and n.strip() for n in names)):
+            problems.append(f"statuses.{kind} must list {len(roles)} names, in this order: "
+                            + ", ".join(r.replace("_", " ") for r in roles))
     if not isinstance(merged.get("secrets"), list):
         problems.append("secrets must be a list")
     wording = merged.get("wording")
@@ -135,6 +146,16 @@ def load_config(project: Path) -> Config:
     cfg = Config(merged)
     cfg.project = project
     return cfg
+
+
+def status_name(cfg: dict, kind: str, role: str) -> str:
+    """The project's name for a status role, e.g. `status_name(cfg, "bug", "retest")`."""
+    return cfg["statuses"][kind][STATUS_ROLES[kind].index(role)]
+
+
+def same_status(a: Any, b: Any) -> bool:
+    """Status names compare case- and space-insensitively, as ClickUp shows them."""
+    return str(a or "").strip().lower() == str(b or "").strip().lower()
 
 
 # ---------------------------------------------------------------- catalog

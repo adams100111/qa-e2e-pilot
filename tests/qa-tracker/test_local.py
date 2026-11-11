@@ -245,6 +245,22 @@ class LocalBackendTests(LocalProject):
         files = sorted((self.tracker() / "bugs").glob("*.md"))
         self.assertEqual([f.name for f in files], ["001-sidebar-shows-the-wrong-name-after-sign-in.md"])
 
+    def test_local_uses_custom_bug_statuses(self) -> None:
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({"statuses": {
+            "bug": ["new", "seen", "working", "verify", "fixed"]}}))
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L1")
+        f = next((self.tracker() / "bugs").glob("*.md"))
+        self.assertIn("status: new\n", f.read_text())
+        f.write_text(f.read_text().replace("status: new", "status: fixed"))
+        self.run_cli("push-bug", "--apply", "--run", "r1", "--label", "L2")
+        self.assertEqual(len(list((self.tracker() / "bugs").glob("*.md"))), 2)  # fixed counts as closed
+        self.assertNotIn("Still happens", f.read_text())
+        f.write_text(f.read_text().replace("status: fixed", "status: verify"))
+        self.run_cli("update-retest", "--apply", "--run", "r1", "--label", "L3")
+        self.assertIn("- Retest on L3: still failing", f.read_text())
+
     def _ref(self) -> str:
         return core.fingerprint("TC-A-001", "user", "Sidebar shows the wrong name after sign in")
 

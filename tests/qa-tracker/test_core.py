@@ -75,6 +75,31 @@ class ConfigTests(TempProject):
         self.assertIn(str(path), str(ctx.exception))
 
 
+    def test_statuses_must_have_one_name_per_role(self) -> None:
+        path = self.tmp / "docs" / "agents" / "qa-tracker.json"
+        path.parent.mkdir(parents=True)
+        for bad in ({"case": ["to test", "testing"]}, {"bug": ["open", "triaged", "fixing", "retest"]},
+                    {"case": ["a", "b", "c", "d", "e", 6]}):
+            path.write_text(json.dumps({"statuses": bad}))
+            with self.assertRaises(core.ConfigError) as ctx:
+                self.cfg()
+            self.assertIn("statuses", str(ctx.exception))
+
+    def test_status_roles_map_by_position(self) -> None:
+        path = self.tmp / "docs" / "agents" / "qa-tracker.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"statuses": {
+            "case": ["Ready", "Running", "Broken", "Stuck", "Done", "Dropped"],
+            "bug": ["New", "Seen", "Working", "Verify", "Fixed"]}}))
+        cfg = self.cfg()
+        self.assertEqual(core.CASE_ROLES, ("to_test", "testing", "failed", "blocked", "passed", "skipped"))
+        self.assertEqual(core.BUG_ROLES, ("open", "triaged", "fixing", "retest", "closed"))
+        self.assertEqual(core.status_name(cfg, "case", "to_test"), "Ready")
+        self.assertEqual(core.status_name(cfg, "case", "skipped"), "Dropped")
+        self.assertEqual(core.status_name(cfg, "bug", "retest"), "Verify")
+        self.assertEqual(core.status_name(cfg, "bug", "closed"), "Fixed")
+        self.assertEqual(core.status_name(core.load_config(self.tmp / "none"), "bug", "open"), "open")
+
 class CatalogTests(TempProject):
     def test_validate_clean_catalog(self) -> None:
         self.copy_catalog()

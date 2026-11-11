@@ -528,5 +528,41 @@ class FixRoundTests(RunsBase):
         self.assertEqual(sum(1 for ln in lines if ln.startswith("SKIP\toption-missing\tf-a-result")), 1)
 
 
+class CustomStatusTests(RunsBase):
+    CASE = ["ready", "running", "broken", "stuck", "done", "dropped"]
+    BUG = ["new", "seen", "working", "verify", "fixed"]
+
+    def setUp(self):
+        super().setUp()
+        self.edit_cfg(lambda d: d.update(statuses={"case": self.CASE, "bug": self.BUG}))
+
+    def test_ceiling_uses_custom_case_names(self):
+        self.edit_cfg(lambda d: d.update(statusCeiling="testing"))
+        for tid in ("a1", "a2", "a3", "b1"):
+            self.fake.tasks[tid]["status"]["status"] = "ready"
+        self.fake.tasks["a2"]["status"]["status"] = "to test"  # not a configured name: left alone
+        self.run_verb("push_results")
+        puts = self.fake.writes("PUT")
+        self.assertEqual(sorted(c[1] for c in puts), ["/v2/task/a1", "/v2/task/a3", "/v2/task/b1"])
+        self.assertTrue(all(c[2] == {"status": "running"} for c in puts))
+
+    def test_bug_create_and_closed_use_custom_names(self):
+        ref = self.ref("TC-A-002", "Wrong password shows no error message")
+        self.fake.add_task("x1", "Old sign-in error bug", "905", "fixed", {"f-ref": ref})
+        self.run_verb("push_bug")
+        creates = {c[2]["name"]: c[2] for c in self.fake.writes("POST", r"/v2/list/905/task$")}
+        body = creates["Wrong password shows no error message"]
+        self.assertEqual(body["status"], "new")
+        self.assertTrue(body["markdown_content"].startswith("Seen again after it was closed"))
+        self.assertNotIn("x1", self.fake.comments)
+
+    def test_retest_detects_custom_name(self):
+        self.fake.add_task("r1", "Sign in broke", "905", "verify", {"f-case": [{"id": "a1"}]})
+        self.fake.add_task("r2", "Old name", "905", "retest", {"f-case": [{"id": "a1"}]})
+        self.run_verb("update_retest")
+        self.assertEqual(self.fake.tasks["r1"]["values"]["f-retest"], 0)
+        self.assertNotIn("f-retest", self.fake.tasks["r2"]["values"])
+
+
 if __name__ == "__main__":
     unittest.main()

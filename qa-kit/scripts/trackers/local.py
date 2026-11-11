@@ -126,6 +126,11 @@ def _status(meta: Dict[str, str]) -> str:
     return meta.get("status", "").strip().strip("\"'").lower()
 
 
+def _bug_status(ctx: Ctx, role: str) -> str:
+    """The project's name for a bug status role (`statuses.bug`, read by position)."""
+    return core.status_name(ctx.cfg, "bug", role)
+
+
 def _bug_files(ctx: Ctx) -> List[Tuple[Path, Dict[str, str]]]:
     d = _tracker(ctx) / "bugs"
     out = []
@@ -212,7 +217,9 @@ def push_bug(ctx: Ctx) -> None:
         except core.WordingError as exc:
             ctx.log.skip("wording", f"{ref}: {exc.word}")
             continue
-        match = next((f for f, m in existing if m.get("ref") == ref and _status(m) != "closed"), None)
+        closed = _bug_status(ctx, "closed")
+        match = next((f for f, m in existing if m.get("ref") == ref and not core.same_status(_status(m), closed)),
+                     None)
         if match is not None:
             content = match.read_text(encoding="utf-8")
             meta, body = _split(content)
@@ -225,7 +232,7 @@ def push_bug(ctx: Ctx) -> None:
         name = f"{number:03d}-{_slug(str(text['title']))}.md"
         path = _tracker(ctx) / "bugs" / name
         body_lines = [
-            "---", "status: open", f"severity: {row.get('severity') or ''}", f"case: {case_id}",
+            "---", f"status: {_bug_status(ctx, 'open')}", f"severity: {row.get('severity') or ''}", f"case: {case_id}",
             f"ref: {ref}", f"found_in: {label}", "---", f"# {text['title']}", "",
         ]
         if text["steps"]:
@@ -247,8 +254,9 @@ def update_retest(ctx: Ctx) -> None:
     run_dir = run_dir_for(ctx.project, getattr(ctx.args, "run", None))
     label = _label(ctx, run_dir)
     results = core.case_results(run_dir)
+    retest = _bug_status(ctx, "retest")
     for path, meta in _bug_files(ctx):
-        if _status(meta) != "retest":
+        if not core.same_status(_status(meta), retest):
             continue
         case_id = meta.get("case", "").strip().strip("\"'")
         if not case_id:
