@@ -126,6 +126,21 @@ class InitTests(InitBase):
         self.assertEqual(fake.writes("POST", r"/v2/folder/9003/list$"), [])
         self.assertEqual(fake.writes("POST", r"/view$"), [])
 
+    def test_field_missing_from_several_lists_is_one_folder_step(self):
+        fake = InitFake()
+        self.seed_complete(fake)
+        for lid in ("901", "902"):
+            fake.fields[lid] = [f for f in fake.fields[lid] if f["name"] not in ("Role", "Level")]
+        fake.lists["901"]["statuses"] = [{"status": s} for s in CASE_STATUSES if s != "blocked"]
+        fake.lists["902"]["statuses"] = [{"status": s} for s in CASE_STATUSES if s != "blocked"]
+        lines = self.run_init(fake, apply=False)
+        manual = [ln for ln in lines if ln.startswith("MANUAL")]
+        self.assertEqual(manual, [
+            'MANUAL\t1. In the folder: add custom field "Role" (labels). Add it at folder level so every list gets it.',
+            'MANUAL\t2. In the folder: add custom field "Level" (drop down: Beginner/Needs setup/Technical). Add it at folder level so every list gets it.',
+            'MANUAL\t3. In the folder: add status "blocked". Add it at folder level so every list gets it.',
+        ])
+
     def test_missing_field_prints_manual_step_and_no_post(self):
         fake = InitFake()
         self.seed_complete(fake)

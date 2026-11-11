@@ -855,6 +855,7 @@ class _Init(_Sync):
         super().__init__(ctx, Folder(lists=lists, tasks=[]))
         self.tr = tr
         self.manual = 0
+        self.pending: List[Tuple[str, str]] = []
         self.found_lists: Dict[str, str] = {}
         self.found_fields: Dict[str, str] = {}
 
@@ -862,9 +863,27 @@ class _Init(_Sync):
         self.log.out.write(line + "\n")
 
     def need_manual(self, list_name: str, what: str) -> None:
-        self.manual += 1
-        self.log.counts["manual"] = self.manual
-        self.say(f'MANUAL\t{self.manual}. In list "{list_name}": {what}')
+        """Collected and printed by flush_manual, so a step missing from several lists is one
+        folder-level step (ClickUp fields and statuses added on the folder reach every list)."""
+        self.pending.append((list_name, what))
+
+    def flush_manual(self) -> None:
+        lists_per: Dict[str, List[str]] = {}
+        for list_name, what in self.pending:
+            lists_per.setdefault(what, []).append(list_name)
+        done = set()
+        for list_name, what in self.pending:
+            if len(lists_per[what]) > 1:
+                if what in done:
+                    continue
+                done.add(what)
+                line = f"In the folder: {what}. Add it at folder level so every list gets it."
+            else:
+                line = f'In list "{list_name}": {what}'
+            self.manual += 1
+            self.log.counts["manual"] = self.manual
+            self.say(f"MANUAL\t{self.manual}. {line}")
+        self.pending = []
 
     def check_list(self, name: str, fields, views) -> None:
         lid = self.ensure_list(name)
@@ -888,6 +907,7 @@ class _Init(_Sync):
                 ids[fname] = fid
                 self.found_fields[field_key(name, fname)] = fid
             else:
+                how = how.replace('the "Bugs" list', f'the "{self.bugs_list}" list')
                 self.need_manual(name, f'add custom field "{fname}" ({how})')
         # statuses: only checked on a list that exists
         if exists and name not in (self.runs_list, self.guide_list):
@@ -938,6 +958,7 @@ def init(ctx) -> None:
         try:
             s.run()
         finally:
+            s.flush_manual()
             if ctx.log.apply:
                 _save_ids(ctx, s.found_lists, s.found_fields)
 

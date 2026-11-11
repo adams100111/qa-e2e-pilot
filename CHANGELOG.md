@@ -660,6 +660,14 @@ The headline release: the engine now tells the truth about its own accuracy.
 
 ## qa-kit (process shell)
 
+### v0.4.2 — 2026-11-11 · "Sixteen clicks, not 176"
+
+**Changed**
+
+- **`tracker.sh init` groups manual steps.** A custom field or status missing from several lists is
+  now one step: add it at folder level, and ClickUp gives it to every list in the folder. Innovation's
+  setup goes from 176 steps to 16. The relationship field names the project's own bugs list.
+
 ### v0.4.1 — 2026-11-11 · "Leave tester instructions alone"
 
 **Fixed**
