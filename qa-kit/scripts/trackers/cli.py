@@ -51,6 +51,8 @@ def main(argv=None) -> int:
     except core.ConfigError as exc:
         sys.stderr.write(f"config error: {exc}\n")
         return 1
+    if not (project / core.CONFIG_REL).exists():
+        sys.stderr.write(f"no {core.CONFIG_REL.as_posix()}: using the local backend\n")
 
     if args.verb == "results":
         try:
@@ -67,7 +69,7 @@ def main(argv=None) -> int:
         if args.verb == "validate":
             _print_json({"errors": [{"file": None, "id": None, "reason": str(exc)}], "ok": False})
             return 1
-        if args.verb not in ("status", "init"):
+        if args.verb != "init":
             sys.stderr.write(f"catalog error: {exc}\n")
             return 1
 

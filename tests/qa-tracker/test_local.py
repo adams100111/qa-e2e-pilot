@@ -71,6 +71,29 @@ class CliTests(LocalProject):
         self.assertEqual(rc, 2)
         self.assertIn("local does not support pull-plan", err)
 
+    def test_status_with_broken_catalog_prints_catalog_error(self) -> None:
+        (self.tmp / ".qa" / "catalog" / "manifest.json").unlink()
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text(json.dumps({
+            "backend": "clickup", "ids": {"workspace": "1", "folder": "2"}}))
+        rc, _, err = self.run_cli("status")
+        self.assertEqual(rc, 1)
+        self.assertIn("catalog error:", err)
+        self.assertIn("no manifest", err)
+        self.assertNotIn("needs a catalog", err)
+
+    def test_missing_config_notes_local_backend_once(self) -> None:
+        rc, _, err = self.run_cli("status")
+        self.assertEqual(rc, 0)
+        note = "no docs/agents/qa-tracker.json: using the local backend"
+        self.assertEqual(err.count(note), 1)
+        cfgdir = self.tmp / "docs" / "agents"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "qa-tracker.json").write_text("{}")
+        _, _, err = self.run_cli("status")
+        self.assertNotIn(note, err)
+
     def test_run_helpers(self) -> None:
         self.add_run("2026-11-02-b", {"build": "v1.4.2"})
         run_dir = self.tmp / ".qa" / "runs" / "2026-11-02-b"
