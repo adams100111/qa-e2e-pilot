@@ -1,22 +1,25 @@
-# qa-kit ClickUp tracking per spec and run (release 1) Implementation Plan
+# qa-kit ClickUp tracking and unattended journey Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `sdd-lanes:sdd-lanes` to implement this plan
-> task-by-task (plan-lite format). Steps are the bullets under each task; tests are written first.
+> task-by-task (plan-lite format). Tests are written first.
 
-**Goal:** A spec with ClickUp set up gets a subfolder, a list per run with scenario tickets and check
-subtasks, end-of-run status and evidence sync, and Docs, all through new `tracker.sh` verbs that the
-qa-kit commands call.
+**Goal:** (A) A spec with ClickUp set up gets a subfolder, a list per run with scenario tickets and
+check subtasks, end-of-run status and evidence sync, and Docs. (B) `/qa-auto <target>` drives the
+whole qa-kit process with no stops, records every self-answered question, audits its own limits
+from files, and ends with a handoff list.
 
-**Architecture:** New python modules beside the existing tracker (`qa-kit/scripts/trackers/`): pure
-ones for settings, wording lint, cards, run results and Doc text; one ClickUp module that reuses
-`clickup._Mirror`. `cli.py` dispatches the new verbs through a verb → `module:function` table. The
-qa-kit command sources call the verbs. The engine is not touched.
+**Architecture:** (A) New python modules beside the existing tracker (`qa-kit/scripts/trackers/`),
+dispatched from `cli.py` through a verb → `module:function` table, reusing `clickup._Mirror`.
+(B) One bash script, `qa-kit/scripts/auto.sh`, owns the journey files under
+`.qa/specs/<target>/auto/`; one command source loops over `auto.sh next` and follows the existing
+step commands. The two parts meet only in the qa-kit command sources and the release. The engine
+is not touched.
 
-**Tech Stack:** python3 ≥ 3.9 standard library only; `unittest` with in-memory transports; bash 3.2.
+**Tech Stack:** python3 ≥ 3.9 standard library and `unittest` (A); bash 3.2 with jq and a python3
+fallback, dual-engine bash tests (B).
 
-**Spec:** `docs/superpowers/specs/2026-11-27-qa-kit-clickup-spec-tracking-design.md` (read it first;
-section numbers D1 to D9 below refer to it). Release 2 (live hook, `/qa-tracker --browser`) is not
-in this plan.
+**Spec:** `docs/superpowers/specs/2026-11-27-qa-kit-clickup-tracking-and-unattended-journey-design.md`
+(read it first; A1 to A9 and B1 to B9 refer to its sections).
 
 ## Global Constraints
 
@@ -24,34 +27,62 @@ in this plan.
   changes (ADR-0022). `bash scripts/validate-adapters.sh` must still pass.
 - qa-kit commands are edited in `qa-kit/core/commands/*.md` and regenerated; never edit
   `qa-kit/commands/*.md` by hand (ADR-0024).
-- No test calls a live tracker. No new python dependency.
-- Every new verb is a dry run without `--apply`, and safe to repeat.
-- The token is read only from the environment variable named by `tokenEnv`. It is never written,
-  logged or put in an error message.
-- Every string sent to ClickUp passes `core.outbound(..., source="generated")` and the new lint.
-- Existing verbs, config files and the 0.4.2 behaviour of projects without `specs` stay unchanged.
-- Nothing in ClickUp is deleted. Lists are archived, tickets are set to the `skipped` status.
+- No test calls a live tracker, a model or a browser. No new python dependency.
+- Nothing may turn a non-pass into a pass or raise a confidence (ADR-0032, ADR-0033).
 - Commits: Conventional Commits, no attribution lines. No destructive git commands.
-- Gates: task = the task's own `python3 -m unittest` file; lane = `bash tests/qa-tracker/run.sh`;
-  milestone = `bash qa-kit/scripts/run-qakit-ci.sh && bash qa-kit/scripts/validate-qakit-adapters.sh
-  && bash scripts/validate-adapters.sh && bash scripts/check-suite-coverage.sh`.
+- Part A:
+  - Every new tracker verb is a dry run without `--apply`, and safe to repeat.
+  - The token is read only from the environment variable named by `tokenEnv`. It is never written,
+    logged or put in an error message.
+  - Every string sent to ClickUp passes `core.outbound(..., source="generated")` and the new lint.
+  - Existing verbs, config files and the 0.4.2 behaviour of projects without `specs` stay unchanged.
+  - Nothing in ClickUp is deleted. Lists are archived, tickets are set to the `skipped` status.
+- Part B:
+  - A qa-kit script cannot call an engine script. Where `auto.sh` needs an engine script's result,
+    the command runs it and passes the result in; where the result is a gate, `auto.sh` reads the
+    engine's output file itself and does not take the agent's word.
+  - `auto.sh` never edits `.qa/config.json`, `run-config.json`, `checklist.json`, the known-defect
+    registry or anything outside `.qa/specs/<target>/auto/`.
+  - Every verb gives the same output under `QA_ENGINE=jq` and `QA_ENGINE=python3`.
+  - The word in docs and messages is "unattended journey", never bare "autonomous" (`CONTEXT.md`).
+- Gates: task = the task's own gate line; lane = `bash tests/qa-tracker/run.sh` (A lanes),
+  `bash tests/qa-auto/run.sh` (lane G), the three adapter suites (lane E); milestone =
+  `bash qa-kit/scripts/run-qakit-ci.sh && bash qa-kit/scripts/validate-qakit-adapters.sh &&
+  bash scripts/validate-adapters.sh && bash scripts/check-suite-coverage.sh`.
 
 ## Decisions
 
+Part A:
+
 | # | Decision | Why |
 |---|---|---|
-| P1 | Settings order: template < machine file < project file < project `specDefaults` < `specs.<target>`. A target with no `specs` entry is enabled when `specDefaults.enabled` is true. Machine file is `~/.config/qa-kit/tracker.json`, overridable by env `QA_KIT_TRACKER_CONFIG` (tests use it). | D2 |
-| P2 | New verbs: `lint`, `spec-init`, `push-scenarios`, `sync-run`, `push-docs`, `spec-note`, `spec-status`. All take `--spec <target>`. If omitted and exactly one spec is enabled, that one; else exit 1 `error: name the spec with --spec`. | D5; no guessing a run's spec |
-| P3 | A spec verb on a spec that is not enabled prints `SKIP	not-set-up	<target>` and exits 0. On a backend other than `clickup` it exits 2. | D7, optional when not set up |
-| P4 | A spec verb exits 1 when any item was skipped for wording, lint or a failed call, after printing the summary. | D7, required once set up |
-| P5 | Ticket identity is the `Ref` custom field: `qk1-<key>-<s>` for tickets and subtasks, `qk1-<key>-<s>-<run>` for the Run summary ticket. `<key>` = first 12 hex of sha256 of `<target>\|<N>\|<kind>\|<local id>` (N = the list's run number, kind = `summary`, `card`, `check`). `<s>` = one letter for the status role the tool last wrote: `t` to test, `g` testing, `f` failed, `b` blocked, `p` passed, `s` skipped. `<run>` = first 8 hex of sha256 of the run id, or `open`. | D4: no local file needed; a person's status change is detected when the live status role differs from `<s>` |
-| P6 | A run's list is found by its Run summary ticket's `<run>`; else the list whose summary says `open` is bound; else list N+1 is created. `.qa/tracker-map.json` (kind `spec`) only caches ids. | D6 |
-| P7 | Folder-level custom fields, exact names: `Ref` (short text), `Role` (short text), `Needs a person's review` (checkbox), `Build` (short text). Ids saved in config `fields` under keys `folder:<name>`. | D3 |
-| P8 | `tracker-cards.json` schema as in Task 4. A (criterion, role) pair belongs to exactly one card. A card has `as`: `subtasks` or `checklist`. | D4 |
-| P9 | Without subfolders (the QA folder has `parent_folder`, or the subfolder create call fails with a 4xx) the spec is recorded as `specs.<target>.layout: "flat"`; lists are created in the QA folder and named `<spec title> · Run N · …`. | D1 fallback |
-| P10 | Bugs: `/qa-verify` runs the existing `push-bug`, then `sync-run` links each of the run's bugs to its scenario ticket with a ClickUp task link. | D1 |
+| P1 | Settings order: template < machine file < project file < project `specDefaults` < `specs.<target>`. A target with no `specs` entry is enabled when `specDefaults.enabled` is true. Machine file is `~/.config/qa-kit/tracker.json`, overridable by env `QA_KIT_TRACKER_CONFIG` (tests use it). | A2 |
+| P2 | New verbs: `lint`, `spec-init`, `push-scenarios`, `sync-run`, `push-docs`, `spec-note`, `spec-status`. All take `--spec <target>`. If omitted and exactly one spec is enabled, that one; else exit 1 `error: name the spec with --spec`. | A5; no guessing a run's spec |
+| P3 | A spec verb on a spec that is not enabled prints `SKIP	not-set-up	<target>` and exits 0. On a backend other than `clickup` it exits 2. | A7, optional when not set up |
+| P4 | A spec verb exits 1 when any item was skipped for wording, lint or a failed call, after printing the summary. | A7, required once set up |
+| P5 | Ticket identity is the `Ref` custom field: `qk1-<key>-<s>` for tickets and subtasks, `qk1-<key>-<s>-<run>` for the Run summary ticket. `<key>` = first 12 hex of sha256 of `<target>\|<N>\|<kind>\|<local id>` (N = the list's run number, kind = `summary`, `card`, `check`). `<s>` = one letter for the status role the tool last wrote: `t` to test, `g` testing, `f` failed, `b` blocked, `p` passed, `s` skipped. `<run>` = first 8 hex of sha256 of the run id, or `open`. | A4: no local file needed; a person's status change is detected when the live status role differs from `<s>` |
+| P6 | A run's list is found by its Run summary ticket's `<run>`; else the list whose summary says `open` is bound; else list N+1 is created. `.qa/tracker-map.json` (kind `spec`) only caches ids. | A6 |
+| P7 | Folder-level custom fields, exact names: `Ref` (short text), `Role` (short text), `Needs a person's review` (checkbox), `Build` (short text). Ids saved in config `fields` under keys `folder:<name>`. | A3 |
+| P8 | `tracker-cards.json` schema as in Task 4. A (criterion, role) pair belongs to exactly one card. A card has `as`: `subtasks` or `checklist`. | A4 |
+| P9 | Without subfolders (the QA folder has `parent_folder`, or the subfolder create call fails with a 4xx) the spec is recorded as `specs.<target>.layout: "flat"`; lists are created in the QA folder and named `<spec title> · Run N · …`. | A1 fallback |
+| P10 | Bugs: `/qa-verify` runs the existing `push-bug`, then `sync-run` links each of the run's bugs to its scenario ticket with a ClickUp task link. | A1 |
 | P11 | A missing screenshot file is reported and does not fail the sync; a failed upload does. | Review Focus |
-| P12 | Version: qa-kit `0.5.0`. | new feature |
+| P12 | Version: qa-kit `0.5.0`, one release for both parts. | new feature |
+
+Part B:
+
+| # | Decision | Why |
+|---|---|---|
+| J1 | Steps, in order: `constitution`, `spec`, `scenarios`, `analyze`, `run`, `verify`. States: `pending`, `running`, `done`. Journey state: `open`, `done`, `stopped`. | B1 |
+| J2 | Stop reasons: `time-limit`, `step-failed`, `until` (resumable with `auto.sh resume`); `blocked`, `audit`, `no-sign-in`, `tracker` (not resumable; a new journey is needed after a person acts). | B2 |
+| J3 | `journey.json`: `{version:1, target, profile, startedAt, deadline, until, steps:[{name,state}], analyzeRounds, runId, state, stop:{reason,detail}\|null, endedAt}`. | left to builder; fixed here |
+| J4 | `decisions.json`: array of `{id:"D<n>", step, class, question, answer, evidence, confidence, criteria:[], assumption:true, needsPerson, second:null\|"stands"\|"ask", secondReason}`. | B3 |
+| J5 | Decidable classes: `roles`, `surface-access`, `scope`, `role-overrides`, `journeys`, `inputs`, `expected`, `gaps`. Forbidden classes: `seed`, `exclusion`, `crawl-only`, `oracle-human`, `safety`, `known-defect`. | B3, B4 |
+| J6 | Safety keys (dot paths in `.qa/config.json`): `allowApiWrites`, `seedableEnvMarker`, `environment`, `allowBlackboxCrawl`, `gates`, `profile`, `humanInteraction.enforce`, `humanInteraction.maxOptOutRate`. | B4 |
+| J7 | Production = `environment == "production"`, or `environment == "auto"` with a non-local `baseUrl` and an empty or `QA_DISPOSABLE_ENV` `seedableEnvMarker` (the rule `auto-seed.sh` mirrors). Local hosts: `localhost`, `127.0.0.1`, `[::1]`, `*.localhost`, `*.test`, `*.local`, `*.ddev.site`. | B2 |
+| J8 | The engine's ship verdict is read from the run's `report.md`: a line containing `NOT SHIP-READY` → not ready; else one containing `SHIP-READY` → ready; neither → none. | J-constraint: files, not the agent's word |
+| J9 | Result values: `ready`, `not confirmed`, `not ready`, `verified`, `not verified`, `stopped`. | B6 |
+| J10 | The second look is rendered per harness by a new token `{{SECOND_LOOK}}` from a new `secondLook` string in `qa-kit/harness-profiles.qakit.json`: the dispatch instruction on Claude, the unavailable banner elsewhere. | B3, B7 |
 
 ## File Structure
 
@@ -67,23 +98,54 @@ in this plan.
 | `qa-kit/scripts/trackers/spec_runs.py` (create) | pure: run results → ticket states, evidence picks, counts |
 | `qa-kit/scripts/trackers/spec_docs.py` (create) | pure: Doc page markdown |
 | `qa-kit/scripts/trackers/clickup_spec.py` (create) | ClickUp side of every spec verb |
-| `qa-kit/templates/trackers/writing-rules.md` (create), `clickup.md` (modify) | D8 rules, verb docs |
+| `qa-kit/templates/trackers/writing-rules.md` (create), `clickup.md` (modify) | A8 rules, verb docs |
 | `qa-kit/templates/tracker-cards.json` (create) | example cards file |
 | `qa-kit/core/commands/qa-{tracker,spec,scenarios,analyze,verify,status}.md` (modify) + regenerated `qa-kit/commands/` | command wiring |
 | `tests/qa-tracker/test_spec_*.py`, `tests/qa-tracker/fixtures/spec/` (create) | tests |
-| `docs/adr/0034-clickup-spec-layout.md`, `qa-kit/README.md`, `CLAUDE.md`, `CHANGELOG.md`, version sites | docs and release |
+| `qa-kit/scripts/auto.sh` (create) | all journey verbs |
+| `tests/qa-auto/run.sh`, `tests/qa-auto/fixtures/` (create) | dual-engine tests over fixture projects |
+| `qa-kit/core/commands/qa-auto.md` (create) | the command |
+| `qa-kit/core/commands/qa-{constitution,spec,scenarios,analyze,status}.md` (modify) | the open-journey line; status line |
+| `qa-kit/harness-profiles.qakit.json`, `qa-kit/scripts/build-qakit-adapter.sh` (modify) | `{{SECOND_LOOK}}` |
+| `qa-kit/commands/*` (regenerated), harness install files that list commands | generated |
+| `qa-kit/scripts/run-qakit-ci.sh` (modify) | enrol `qa-auto` |
+| `docs/adr/0034-clickup-spec-layout.md`, `docs/adr/0035-unattended-journey.md`, `CONTEXT.md`, `qa-kit/README.md`, `CLAUDE.md`, `CHANGELOG.md`, version sites | docs and release |
 
 ## Lanes
+
+Lanes A, B and G start together and share no file. Lane E holds every command-source change of
+both parts, so no command file has two owners.
 
 | Wave | Lane | Tasks | Owns files | Consumes (from) |
 |---|---|---|---|---|
 | 1 | A | 1, 2 | `core.py`, `qa-tracker-config.json`, `clickup_api.py`, `clickup.py`, `cli.py`, `test_spec_settings.py`, `test_spec_cli.py` | — |
 | 1 | B | 3, 4 | `wording.py`, `cards.py`, `templates/tracker-cards.json`, `test_spec_wording.py`, `test_spec_cards.py`, `fixtures/spec/cards/` | — |
+| 1 | G | 12, 13, 14, 15, 16 | `auto.sh`, `tests/qa-auto/`, `run-qakit-ci.sh` | — (the tracker call is stubbed by `QA_AUTO_TRACKER_CMD`) |
 | 2 | C | 5, 6 | `spec_runs.py`, `spec_docs.py`, `test_spec_runs.py`, `test_spec_docs.py`, `fixtures/spec/run/` | A (`criterion_rows`), B (`Cards`) |
 | 2 | D | 7 | `clickup_spec.py`, `test_spec_clickup_structure.py`, `fixtures/spec/project/` | A, B |
+| 2 | E | 10, then 17 | `writing-rules.md`, `clickup.md`, every `qa-kit/core/commands/*` and generated `qa-kit/commands/*`, `harness-profiles.qakit.json`, `build-qakit-adapter.sh`, harness install files, `tests/qa-kit-phases/`, `tests/qakit-adapters/`, `tests/qakit-install/` | tracker verb names (P2), the `auto.sh` interface below |
 | 3 | D | 8, 9 | same lane; adds `test_spec_clickup_sync.py`, `test_spec_clickup_docs.py` | C |
-| 3 | E | 10 | `writing-rules.md`, `clickup.md`, `qa-kit/core/commands/*`, `qa-kit/commands/*`, `tests/qa-kit-phases/`, `tests/qakit-adapters/` | verb names (P2) |
-| 4 | F | 11 | ADR, README, CLAUDE.md, CHANGELOG, version sites | all |
+| 4 | F | 11 | ADRs, CONTEXT, README, CLAUDE.md, CHANGELOG, `persona-body.md`, version sites | all |
+
+`auto.sh` interface shared by lanes G and E (`T` = `<target>`; every verb takes `--project <dir>`, default `.`):
+
+```
+auto.sh start T [--profile ship|smoke|full] [--until <step>] [--max-hours <n>] [--restart]
+auto.sh resume T [--max-hours <n>]
+auto.sh next T                      -> one JSON line: {"next":"<step>"} | {"next":"done"} | {"next":"stopped","reason":…,"detail":…}
+auto.sh step-start T <step>
+auto.sh step-done T <step> [--run <run-id>]
+auto.sh signin T                    -> {"ok":[…],"missing":[…]}
+auto.sh decide T --step <s> --class <c> --question <q> --answer <a> --evidence <e|none> --confidence high|low [--criteria id,id]
+auto.sh second T <decision-id> stands|ask --reason <r>
+auto.sh second T --unavailable
+auto.sh stop T --reason <J2 reason> --detail <text>
+auto.sh audit T                     -> {"ok":bool,"violations":[…]}; exit 1 when not ok
+auto.sh handoff T [--records <file>] -> writes handoff.md; prints {"result":…,"needsPerson":n}
+auto.sh status T                    -> journey.json plus {"needsPerson":n}; read-only
+```
+
+Exit codes: 0 ok; 1 refused or failed (one line on stderr, `auto: <reason>`); 2 usage.
 
 ---
 
@@ -458,7 +520,7 @@ prints one JSON line: `{"spec", "folderUrl", "docUrl", "list": {"n","url","bound
 regenerate `qa-kit/commands/` with `bash qa-kit/scripts/build-qakit-adapter.sh claude` as ADR-0024
 describes. Update assertions in `tests/qa-kit-phases/run.sh` and `tests/qakit-adapters/run.sh`.
 
-**Exact values:** the rules in `writing-rules.md` are the eight bullets of spec D8, verbatim in
+**Exact values:** the rules in `writing-rules.md` are the eight bullets of spec A8, verbatim in
 meaning, plus one line on screenshots: `Screenshots are sent as they are. Use test accounts and
 test data only.` Every command addition starts with the same guard sentence: `Only when
 docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero,
@@ -487,20 +549,241 @@ the guard sentence and its verb are present; `validate-qakit-adapters.sh` shows 
 
 **Task gate:** `bash tests/qa-kit-phases/run.sh; echo rc=$?` and `bash tests/qakit-adapters/run.sh; echo rc=$?`
 
-### Task 11: Docs and release   (Lane F, risk: normal)
+### Task 11: Docs and release, both parts   (Lane F, risk: normal)
 
-**Files:** Create `docs/adr/0034-clickup-spec-layout.md`. Modify `qa-kit/README.md`, `CLAUDE.md`,
-`CHANGELOG.md`, `qa-kit/.claude-plugin/plugin.json`, the qa-kit entry in
-`.claude-plugin/marketplace.json`, and the spec's status line.
+**Files:** Create `docs/adr/0034-clickup-spec-layout.md`, `docs/adr/0035-unattended-journey.md`.
+Modify `CONTEXT.md`, `qa-kit/README.md`, `CLAUDE.md`, `CHANGELOG.md`,
+`qa-kit/.claude-plugin/plugin.json`, the qa-kit entry in `.claude-plugin/marketplace.json`,
+`qa-kit/core/persona-body.md` (the agent's list of steps, then regenerate).
 
 **Behaviour:**
 - ADR-0034 records: subfolder per spec and list per run; `Ref` as identity (P5); the tool owns
   status in run lists; required once set up; why the template and the HTML report were dropped.
+- ADR-0035 records: the journey state machine on disk; the open journey as the setup signal (no
+  config edit); the never-decided list and the file audit; the stricter result; QA only.
+- `CONTEXT.md`: the term **unattended journey**, with "Avoid: autonomous mode, auto mode".
+- `CLAUDE.md`: the tracker verbs, `auto.sh` and the new files in the Layout block and script
+  list, the suite count, and one invariant: "An unattended journey never decides seed, exclusion,
+  crawl-only, human oracle, safety settings or the known-defect registry; `auto.sh audit` fails
+  the journey if any changed."
 - Version `0.5.0` in every qa-kit site; the engine's version is not changed.
-- `CLAUDE.md`: the tracker verbs and the new files in the Layout block, one paragraph, no new invariant
-  beyond "spec verbs never touch the engine".
-- Milestone gate (Global Constraints) passes. Tagging and merging follow the owner's finish workflow
-  and are not part of this task.
+- Milestone gate (Global Constraints) passes. Tagging and merging follow the owner's finish
+  workflow and are not part of this task.
+
+### Task 12: `start`, `resume`, `status`, `stop`   (Lane G, risk: high)
+
+**Files:** Create `qa-kit/scripts/auto.sh`, `tests/qa-auto/run.sh`, `tests/qa-auto/fixtures/`.
+Modify `qa-kit/scripts/run-qakit-ci.sh` (add `qa-auto` to `SUITES`).
+
+**Exact values:** refusal lines (stderr, exit 1):
+- `auto: no .qa/config.json; set the project up first`
+- `auto: this environment is production; an unattended journey does not run there`
+- `auto: another journey is open for <other target>`
+- `auto: a journey is already open for <target>; continue it or pass --restart`
+- `auto: the environment is shared and gates.dataPolicy is not enforce`
+- `auto: .qa/known-defects.json is not valid` (when `--known-defects-invalid` is passed by the command)
+
+Default `--max-hours` is `6`.
+
+**Behaviour:**
+- `start` writes `baseline.json` then `journey.json` (J3) and creates `auto/`. The lock for "one
+  journey per project" is the existence of any `.qa/specs/*/auto/journey.json` with `state: open`.
+- `baseline.json` holds: the J6 values from `.qa/config.json`; the ids of `checklist.json` rows
+  whose `fixture.expect.oracleSource` is `human`; whether `seed.json` exists; the entries of
+  `coverage-exclusions.json`; a hash of `.qa/known-defects.json`; the J6 keys present in the
+  spec's `run-config.json`; the launch `profile`.
+- Steps whose artifact already exists start as `done` for `constitution`, `spec`, `scenarios`
+  (artifact rules in Task 13); `analyze`, `run`, `verify` always start `pending`.
+- A finished journey (`done` or `stopped` with a non-resumable reason) is moved to
+  `auto/history/<n>/` by the next `start`. `--restart` does the same to an open one.
+- `resume` clears a resumable stop and sets a new deadline; on any other state it refuses with
+  `auto: nothing to resume`.
+- `stop` records J2 reasons only; an unknown reason is a usage error.
+- `status` prints and writes nothing.
+
+**Tests (write first; each runs under both engines):**
+- `start_writes_journey_and_baseline` — fixture project → both files, six steps, `state: open`.
+- `start_refuses_production` — `environment: production`; and `auto` + `https://app.example.sa` + empty marker.
+- `start_allows_local_auto` — `environment: auto`, `http://shop.ddev.site` → ok.
+- `start_refuses_shared_without_data_policy` — non-local, disposable marker set, `gates.dataPolicy` absent.
+- `start_refuses_second_journey` — another target open.
+- `start_refuses_open_same_target_without_restart`; `restart_moves_to_history`.
+- `existing_spec_marks_steps_done` — fixture with `qa-spec.md`, `spec-roles.json` → `spec: done`.
+- `baseline_records_existing_human_rows_and_exclusions`.
+- `resume_only_after_resumable_stop`; `stop_rejects_unknown_reason`.
+- `finished_journey_archived_on_next_start`.
+
+### Task 13: `next`, `step-start`, `step-done`, `signin`   (Lane G, risk: high)
+
+**Files:** Modify `auto.sh`, `tests/qa-auto/`.
+
+**Exact values:** artifacts per step (the checks `/qa-status` makes):
+- `constitution`: `.qa/constitution.state.json`
+- `spec`: `.qa/specs/T/qa-spec.md` and `spec-roles.json`
+- `scenarios`: `.qa/specs/T/scenarios.md` and `checklist.json`
+- `analyze`: `.qa/specs/T/analysis.md`, not older than `checklist.json`
+- `run`: `.qa/runs/<run-id>/run-manifest.json` and `checkpoint.json`
+- `verify`: `.qa/runs/<run-id>/verification.json`
+
+**Behaviour:**
+- `next` returns the first step not `done`. Before that it returns `stopped` / `time-limit` when
+  the deadline has passed, and `stopped` / `until` when the step after `--until` would be next.
+- `step-done` refuses when the artifact is missing: `auto: <step> has no result yet`.
+  `step-done T run --run <id>` records `runId`.
+- After `analyze` is done: when `analysis.md`'s `## Verdict` is `BLOCKED`, `scenarios` and `analyze`
+  go back to `pending` and `analyzeRounds` increases; at `analyzeRounds == 2` the journey becomes
+  `stopped` / `blocked` instead.
+- When every step is `done`, `next` returns `done` and the journey state becomes `done`.
+- `signin` reads the personas from `.qa/config.json` and reports which have their sign-in
+  configured (the persona auth fields as `.qa/config.json.example` and the
+  `discovering-user-roles` skill define them; read both, read-only; presence of the named file or
+  entry only). With none configured it stops the journey `no-sign-in`.
+- `next` on a stopped journey repeats the stop; it never advances.
+
+**Tests:** `next_walks_six_steps`; `step_done_requires_artifact`; `stale_analysis_is_not_done`;
+`blocked_analysis_reopens_scenarios_once`; `blocked_twice_stops_blocked`; `deadline_stops_time_limit`
+(journey with a past `deadline`); `until_scenarios_stops_before_analyze`; `signin_partial_lists_missing`;
+`signin_none_stops`; `next_after_stop_does_not_advance`; `all_done_sets_state_done`.
+
+### Task 14: `decide` and `second`   (Lane G, risk: normal)
+
+**Files:** Modify `auto.sh`, `tests/qa-auto/`.
+
+**Exact values:** refusal for a forbidden class:
+`auto: <class> is never decided by an unattended journey`. Unknown class: usage error.
+
+**Behaviour:**
+- `decide` appends a J4 record with the next id, `assumption: true`, `needsPerson: false`, and
+  prints the id. `--evidence none` is stored as `evidence: null` and sets `needsPerson: true`.
+- `--confidence low` does not set `needsPerson` by itself; `second` does.
+- `second T <id> ask` sets `second: "ask"`, `needsPerson: true`. `stands` sets `second: "stands"`
+  and never clears a `needsPerson` that is already true.
+- `second T --unavailable` marks every decision with `confidence: low` and `second: null` as
+  `needsPerson: true`, and records `secondLook: "unavailable"` in `journey.json`.
+- A decision can be recorded only while the journey is `open`.
+
+**Tests:** `decide_appends_with_id`; `decide_refuses_each_forbidden_class` (six);
+`evidence_none_needs_person`; `second_ask_sets_needs_person`; `second_stands_never_clears`;
+`second_unavailable_marks_low_confidence`; `decide_refused_on_closed_journey`.
+
+### Task 15: `audit`   (Lane G, risk: high)
+
+**Files:** Modify `auto.sh`, `tests/qa-auto/`.
+
+**Exact values:** violation codes: `safety-setting-changed:<key>`, `run-config-safety:<key>`,
+`human-oracle-added:<criterion id>`, `seed-added`, `exclusion-added`, `known-defects-changed`,
+`forbidden-decision:<id>`, `step-without-result:<step>`, `not-verified`, `tracker-behind`.
+The ClickUp check runs `${QA_AUTO_TRACKER_CMD:-bash <qa-kit>/scripts/tracker.sh} spec-status --spec T`.
+
+**Behaviour:**
+- Each violation in B5 maps to one code above; all are collected, none short-circuits.
+- `run-config-safety` ignores `profile` when it equals the launch profile in the baseline.
+- `tracker-behind` only when the tracker command reports the spec as set up and `behind: true`;
+  a `not-set-up` answer is not a violation; a tracker command that fails is `tracker-behind`.
+- A journey stopped before `verify` is audited without `not-verified` and `step-without-result`
+  for the steps it never reached.
+- A failed audit sets the journey `stopped` / `audit` with the codes in `detail`.
+
+**Tests:** one per code (ten), built by mutating a clean finished fixture;
+`clean_journey_passes`; `launch_profile_is_not_a_violation`; `untracked_spec_skips_tracker_check`
+(stub tracker prints `SKIP\tnot-set-up`); `tracker_failure_is_violation`;
+`early_stop_audited_without_verify_checks`; `two_violations_both_reported`.
+
+### Task 16: `handoff`   (Lane G, risk: high)
+
+**Files:** Modify `auto.sh`, `tests/qa-auto/`.
+
+**Exact values:** first line when any decision has `evidence: null`:
+`No written requirements were found for this target. Expected results were taken from the application and need a person.`
+Section titles, in order: `Result`, `Scope chosen for this spec`, `Decided without a person`,
+`Needs a person`, `Records created`, `How to confirm`. Result sentences: `Ready.`;
+`Not confirmed: <n> items need a person.`; `Not ready: <reasons>.`; `Verified.`; `Not verified.`;
+`Stopped: <plain reason>.` Plain stop reasons: `time-limit` → `the time limit was reached`;
+`step-failed` → `a step could not be completed`; `until` → `it was asked to stop before the run`;
+`blocked` → `coverage could not be reached`; `audit` → `a limit was broken: <codes>`;
+`no-sign-in` → `no role has sign-in set up`; `tracker` → `ClickUp could not be updated`.
+
+**Behaviour:**
+- Result rule (J8, J9): stopped → `stopped`. Launch profile without a ship verdict in
+  `report.md` → `verified` when `verification.json` exists with no override that turned a pass
+  into a non-pass, else `not verified`. Ship verdict not ready → `not ready` with the report's
+  listed conditions. Ship verdict ready → `ready` unless a P1 check rests on a person: a decision
+  with `needsPerson` and empty `criteria`, or with a `criteria` id whose checklist row is P1, or a
+  P1 `computed-logic|business-rule` row whose `oracleSource` is not `human` or `spec`; then
+  `not confirmed`.
+- `Needs a person` lists: `needsPerson` decisions; proposal-only expected values; checks that
+  passed at low confidence (from the run's files); personas missing sign-in; a seed command that
+  was proposed and not run; checks left out because they assert an application failure.
+- `Records created` comes from `--records <file>` (the command passes the engine's
+  `data-policy.sh list` output); absent or empty → `None recorded.`
+- `How to confirm` names `oracle-confirm.sh render`, `surface-access.sh confirm-table`, and
+  `/qa-auto <target>` again.
+- The file is plain text for people: no criterion ids in sentences (titles from
+  `tracker-cards.json` when it exists, else the checklist row's own title).
+- It prints `{"result", "needsPerson"}` and can be run more than once; the last write wins.
+
+**Tests:** `ready_when_ship_ready_and_nothing_pending`; `not_confirmed_when_p1_rests_on_proposal`;
+`not_confirmed_when_spec_wide_decision_needs_person`; `ready_when_only_p2_needs_person`;
+`not_ready_lists_conditions`; `verified_under_full_profile`; `not_verified_without_verification`;
+`stopped_time_limit_sentence`; `no_requirements_opening_line`; `records_listed`;
+`no_records_sentence`; `sections_in_order`; `never_better_than_engine` (report says NOT SHIP-READY,
+no pending items → `not ready`).
+
+### Task 17: The command and the second look   (Lane E, risk: high)
+
+**Files:** Create `qa-kit/core/commands/qa-auto.md`. Modify
+`qa-kit/core/commands/qa-{constitution,spec,scenarios,analyze,status}.md`,
+`qa-kit/harness-profiles.qakit.json`, `qa-kit/scripts/build-qakit-adapter.sh`; regenerate
+`qa-kit/commands/`; update the harness install files and `tests/qakit-adapters/run.sh`,
+`tests/qakit-install/run.sh`, `tests/qa-kit-phases/run.sh` where they list or count commands.
+
+**Exact values:**
+- Frontmatter: `description: Drive the whole qa-kit process for a target with nobody present, record every self-answered question, and end with a handoff list for a person.`
+  `argument-hint: "<target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>] [--restart]"`
+- The line added to the four step command sources: `An open unattended journey for this target
+  (`bash {{PLUGIN_ROOT}}/scripts/auto.sh status <target>` shows `state: open`) counts as
+  `autonomousSetup` on for this step. Record each answer you give in place of a person with
+  `auto.sh decide`.`
+- Banner when the second look is unavailable: `SECOND LOOK UNAVAILABLE: this harness cannot start
+  a fresh agent; every low-confidence decision is left for a person.`
+
+**Behaviour (the command source says, in order):**
+- Keep the machine awake for the journey (`caffeinate -dimsu` on macOS) and release it at the end.
+- Run the engine's `known-defects.sh validate` when the registry exists; then `auto.sh start` with
+  the flags (and `--known-defects-invalid` if it failed). On refusal, print the line and end. If a
+  resumable journey exists, `auto.sh resume`.
+- Run the engine's pre-flight; a dead application → `auto.sh stop --reason step-failed`.
+- Loop: `auto.sh next` → `step-start` → follow that step's own command source (never a second
+  copy of its instructions) under the rules of spec B3 and B4, recording each answer with `decide`
+  → `step-done` → next. After `constitution` (or at the first step if it was already done) run
+  `auto.sh signin`. A step that fails is redone once, then `stop --reason step-failed`.
+- The launch `--profile` is passed to the spec step, which writes it to the spec's run-config as
+  `/qa-spec` does today; the command never chooses a profile and never changes one that exists.
+- B3's answer rules per class, verbatim in meaning, including "when unsure whether a journey is
+  P1, mark it P1" and "never `oracleSource: human`".
+- B4's table as a list of things not to do, each with what happens instead.
+- After `spec` and after `scenarios`: `{{SECOND_LOOK}}`. On Claude it dispatches one fresh agent
+  with only that step's decisions (from `decisions.json`), their evidence and the step's artifact;
+  the agent answers `stands` or `ask a person` with a reason per decision; the command records each
+  with `auto.sh second`. It never includes the conversation, and the acting agent never reviews
+  its own decisions. Elsewhere it prints the banner and runs `auto.sh second <target> --unavailable`.
+- The `run` step follows the engine's run command including its end-of-run order (verify,
+  re-adjudication, verify, bug export, render). An interrupted run continues with the engine's
+  resume, never a new run.
+- A required ClickUp step that fails → `stop --reason tracker`.
+- End, always: `auto.sh audit`; the engine's `data-policy.sh list` into a temp file;
+  `auto.sh handoff --records <file>`; on a tracked spec one `tracker.sh spec-note` built from the
+  fixed sentence `<n> items need a person's review. See the results page.` (or `Nothing needs a
+  person's review.`); then print the handoff's Result section and the path of `handoff.md`.
+- `qa-status` gains: an open or stopped journey's step, stop reason and count of items for a person.
+
+**Tests:** adapter suites pass after regeneration; assertions that `qa-auto.md` renders for all
+four harnesses with no residual `{{`; that the Claude render contains the dispatch instruction and
+the other three contain the banner; that each of the four step sources contains the open-journey
+line; that the command count in the install tests matches.
+
+**Task gate:** `bash tests/qakit-adapters/run.sh; echo rc=$?` and `bash tests/qakit-install/run.sh; echo rc=$?`
+and `bash tests/qa-kit-phases/run.sh; echo rc=$?`
 
 ## Review Focus
 
@@ -516,3 +799,16 @@ Each is pinned by a test in the task named.
    `test_plan_changed_stops_before_writes`; a removed check is skipped, not deleted — Task 7.
 5. A screenshot is missing, or the project uses its own status names: the sync still completes
    correctly — Task 8 `test_missing_screenshot_reported_rc0`, Task 7 `test_own_status_names`.
+6. The journey is interrupted and started again: it continues, it does not start over — Task 12
+   `start_refuses_open_same_target_without_restart`, Task 13 `next_after_stop_does_not_advance`,
+   `deadline_stops_time_limit`.
+7. A person already wrote the spec or has exclusions: nothing is regenerated and their choices are
+   not reported as violations — Task 12 `existing_spec_marks_steps_done`,
+   `baseline_records_existing_human_rows_and_exclusions`.
+8. The agent loosens something to get further: the audit catches it from files — Task 15, one test
+   per code.
+9. The result reads better than it is: never better than the engine's, and "not confirmed" while
+   a top-priority check rests on the agent alone — Task 16 `never_better_than_engine`,
+   `not_confirmed_when_p1_rests_on_proposal`.
+10. The project is on a shared or production environment, or has no sign-in for any role: it
+   refuses or stops with one plain line — Task 12 refusal tests, Task 13 `signin_none_stops`.
