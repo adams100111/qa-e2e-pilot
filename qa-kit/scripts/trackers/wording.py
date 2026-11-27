@@ -30,8 +30,10 @@ EMOJI_RE = re.compile(
 )
 # a URL up to the next whitespace (linear: one negated class)
 URL_RE = re.compile(r"https?://\S+")
-# a markdown link target "](...)": the link text before it stays linted
-MD_TARGET_RE = re.compile(r"\]\([^)\s]*\)")
+# a markdown link target "](...)", up to its closing bracket on the same line: it may hold spaces
+# and one level of brackets of its own. The link text before it stays linted. (Linear: the two
+# alternatives start with different characters.)
+MD_TARGET_RE = re.compile(r"\]\((?:[^()\n]|\([^()\n]*\))*\)")
 
 ID_RES = [
     # criterion or rule id: 1-5 capitals, optional hyphen, digits (C-012, J1, AC12)

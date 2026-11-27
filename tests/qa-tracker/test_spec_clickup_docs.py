@@ -705,6 +705,13 @@ class LinkTests(unittest.TestCase):
                 self.assertIsNone(self.link_of("86c2xk4", kind, ws="9001/x", doc="2ky4-311"))
         self.assertIsNone(self.link_of("86c2xk4", "page", ws="9001", doc="2ky4/../311"))
 
+    def test_returned_url_with_whitespace_is_not_used(self):
+        for bad in ("https://app.clickup.com/t/86c2xk4 extra", "https://app.clickup.com/t/86c2xk4\n",
+                    "https://app.clickup.com/t/\t86c2xk4", "https://app.clickup.com/t/86c2xk4\u00a0x"):
+            # the standard form, built from the id, stands in for it
+            self.assertEqual(self.link_of({"id": "86c2xk4", "url": bad}, "task"), "https://app.clickup.com/t/86c2xk4", bad)
+            self.assertIsNone(self.link_of({"url": bad}, "task"), bad)
+
     def test_missing_workspace_or_doc_or_kind_gives_no_link(self):
         for kind in ("list", "folder", "doc", "page"):
             self.assertIsNone(self.link_of("86c2xk4", kind))

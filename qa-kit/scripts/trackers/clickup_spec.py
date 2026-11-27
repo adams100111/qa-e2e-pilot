@@ -39,7 +39,7 @@ POLL_STEP = 2.0
 COMMENT_PAGE, COMMENT_PAGES = 25, 40   # ClickUp gives 25 comments a read; at most 1000 are looked through
 _RUN_NAME_RE = re.compile(r"(?:^| · )Run (\d+) · ")
 VIEW_STATUS, VIEW_ROLE, VIEW_FAILED = "By status", "By role", "Failed and blocked"
-_MD_LINK = re.compile(r"https?://\S+|\]\([^)\s]*\)")
+_MD_LINK = re.compile(r"https?://\S+|" + wording.MD_TARGET_RE.pattern)
 _MD_LEAD = re.compile(r"^([ \t]*)(#{1,6}(?=[ \t]|$)|>|[-+](?=[ \t])|\d+[.)](?=[ \t]))", re.M)
 
 

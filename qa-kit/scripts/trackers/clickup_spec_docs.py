@@ -105,8 +105,8 @@ def link_of(obj: Any, kind: Optional[str] = None, ws: Any = None, doc: Any = Non
     workspace id for all but a task, and the Doc's id for a page. Every id put in a link passes
     `plain_id`; None when one is missing or refused, or no `kind` is named."""
     url = obj.get("url") if isinstance(obj, dict) else None
-    if isinstance(url, str) and url.startswith("https://"):
-        return url
+    if isinstance(url, str) and url.startswith("https://") and not re.search(r"\s", url):
+        return url  # one with whitespace in it would end the link early: the standard form stands in
     form = LINK_FORMS.get(kind or "")
     if form is None:
         return None

@@ -7,7 +7,8 @@ used (P11), `unjoined` lists the recorded rows that belong to no card and `ready
 ship verdict.
 
 Nothing here makes a result look better than the engine recorded it (ADR-0032, ADR-0033): a
-non-pass never maps to `passed`, and a pass stays in `testing` until a person confirms it unless
+non-pass never maps to `passed` (a verification row that reads better than the recorded verdict
+is not followed), and a pass stays in `testing` until a person confirms it unless
 both its recorded confidence and its confidence after verification are exactly `high`. When a
 card is the only holder of a criterion and the run has both a row for the card's role and a live
 row without a persona, the worse of the two is shown.
@@ -18,7 +19,7 @@ of the run, its `screenshot-*.json` records (each names its image in `image`), a
 that folder, and the image paths in the row's `evidence_refs`; ordered before, after, other.
 The ids are joined as they are, so an id with `:` is one folder and an id with `/` is nested
 folders. Unlike the report, which only shows files, these picks are uploaded: every file is
-resolved and kept only when it is an image inside the run folder. A link that leaves the run, a
+resolved and kept only when the resolved file is an image inside the run folder. A link that leaves the run, a
 persona or criterion id with `..` or an absolute path, and a recorded file that is not an image
 are dropped and reported by `missing_evidence`.
 
@@ -98,7 +99,7 @@ class CheckState:
 # ---------------------------------------------------------------- screenshots
 
 
-_HASHES: Dict[Tuple[str, int, int], str] = {}
+_HASHES: Dict[Tuple[str, int, int, int], str] = {}
 _HASHES_MAX = 4096
 
 
@@ -107,10 +108,11 @@ def _hash_file(path: Path) -> str:
 
 
 def _sha256(path: Path) -> str:
-    """The file's digest, read once per file state (path, change time, size), so `states` and
-    `missing_evidence` of one sync do not read every image twice."""
+    """The file's digest, read once per file state (path, modification time, change time, size),
+    so `states` and `missing_evidence` of one sync do not read every image twice. The change time
+    moves even when a rewrite keeps the size and puts the modification time back."""
     st = path.stat()
-    key = (str(path), st.st_mtime_ns, st.st_size)
+    key = (str(path), st.st_mtime_ns, st.st_ctime_ns, st.st_size)
     got = _HASHES.get(key)
     if got is None:
         if len(_HASHES) >= _HASHES_MAX:
@@ -132,6 +134,13 @@ def _inside(root: Path, path: Path) -> Optional[Path]:
     except (OSError, ValueError, RuntimeError):
         return None
     return real if real.is_file() else None
+
+
+def _image_inside(root: Path, path: Path) -> Optional[Path]:
+    """`_inside`, for a screenshot: the file a link leads to must itself be named as an image,
+    since that file, not the link, is what gets read and uploaded."""
+    real = _inside(root, path)
+    return real if real is not None and _IMAGE_RE.search(real.name) else None
 
 
 def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tuple[List[Tuple[str, Path]], bool]:
@@ -176,7 +185,7 @@ def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tupl
             missing = True
             continue
         claimed.add(image)
-        img = _inside(root, abs_dir / image)
+        img = _image_inside(root, abs_dir / image)
         if img is None:
             missing = True
             continue
@@ -204,7 +213,7 @@ def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tupl
         known.add(ref)
         loose.append(ref)
     for rel in loose:
-        img = _inside(root, root / rel)
+        img = _image_inside(root, root / rel)
         if img is None:
             missing = True
             continue
@@ -257,6 +266,13 @@ def _mode(cfg: dict) -> str:
 def _judge(got: dict) -> Tuple[str, bool, Optional[str]]:
     """`(status role, needs review, note)` of one recorded row."""
     verdict = got["verdict"] if got["verdict"] in VERDICT_ROLE else "error"
+    # A verification row can only downgrade (ADR-0032): the worse of the verdict as recorded and
+    # the one after verification is shown.
+    row = got.get("row")
+    recorded = str(row.get("verdict") or "").lower() if isinstance(row, dict) else verdict
+    recorded = recorded if recorded in VERDICT_ROLE else "error"
+    if core.VERDICT_RANK[recorded] > core.VERDICT_RANK[verdict]:
+        verdict = recorded
     if verdict == "pass":
         row = got.get("row")
         recorded = row.get("confidence") if isinstance(row, dict) else None
@@ -363,7 +379,7 @@ def counts(states: List[CheckState]) -> Dict[str, int]:
     out = {role: 0 for role in core.CASE_ROLES}
     out["needs_review"] = 0
     for s in states:
-        out[s.role or "to_test"] += 1
+        out[s.role if s.role in core.CASE_ROLES else "to_test"] += 1  # an unknown role: not tested yet
         if s.needs_review:
             out["needs_review"] += 1
     return out

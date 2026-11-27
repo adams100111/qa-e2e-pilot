@@ -84,7 +84,12 @@ def _table(header: List[str], rows: List[List[str]]) -> List[str]:
 
 
 def _link(text: str, url: Optional[str]) -> str:
-    return f"[{_BRACKET_RE.sub(lambda m: chr(92) + m.group(1), _text(text))}]({url})" if url else _text(text)
+    if not url:
+        return _text(text)
+    label = _BRACKET_RE.sub(lambda m: chr(92) + m.group(1), _text(text))
+    if (len(label) - len(label.rstrip(chr(92)))) % 2:
+        label += chr(92)  # a lone backslash at the end would escape the bracket that closes the text
+    return f"[{label}]({url})"
 
 
 def _status(cfg: dict, role) -> str:
