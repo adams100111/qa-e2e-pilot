@@ -73,9 +73,11 @@ done
 
 # (h) ClickUp tracking guard sentence reaches every harness's render of each step command
 for h in claude pi codex opencode; do
-  for c in qa-spec qa-scenarios qa-analyze qa-verify qa-status; do
-    grep -qF 'Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true.' "$D/$h/commands/$c.md"; check "$h $c has tracker guard" "$?" "0"
+  for c in qa-spec qa-scenarios qa-analyze qa-verify qa-status qa-auto; do
+    grep -qF 'Run it for every spec: the tracker says whether the spec is tracked.' "$D/$h/commands/$c.md" && grep -qF 'Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.' "$D/$h/commands/$c.md"; check "$h $c has tracker guard" "$?" "0"
+    check "$h $c guard does not read the settings file" "$(grep -c 'has specs.<target>.enabled: true' "$D/$h/commands/$c.md" 2>/dev/null || true)" "0"
   done
+  grep -qF 'auto: the plan check did not pass for this run' "$D/$h/commands/qa-auto.md" && grep -q 'start nothing' "$D/$h/commands/qa-auto.md"; check "$h qa-auto carries the final-wave rules" "$?" "0"
 done
 
 # (i) /qa-auto (the unattended journey) renders on every harness; the second look follows dispatch

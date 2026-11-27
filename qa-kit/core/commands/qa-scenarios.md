@@ -189,8 +189,11 @@ When a person runs this command while a journey is open for the target, tell the
      the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
      for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
 
-7c. **ClickUp cards (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+7c. **ClickUp cards (per spec).** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
    `lint` is the exception: a non-zero `lint` means fix the cards and run it again. The stop rule applies to `push-scenarios` and `push-docs`.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb. To find out before writing the cards, run
+   `bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-status --spec <target>` (it reads only): the one line
+   `{"setUp": false, "target": "<target>"}` means the spec is not tracked, so write no cards file and skip this step.
    Read `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md` first. Then write
    `.qa/specs/<target>/tracker-cards.json` in the `language` set in `docs/agents/qa-tracker.json`
    (default `en`): `{"spec": {"title", "overview", "outOfScope": []}, "cards": [{"id", "role",
@@ -212,7 +215,10 @@ When a person runs this command while a journey is open for the target, tell the
    ```
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" lint --spec <target>
    ```
-   Then send them:
+   Every reason the lint gives is fixed in the cards, the same way. Two of them are about repeats:
+   `duplicate card title` (give each card its own title) and `duplicate check title in this card`
+   (give each check in a card its own title).
+   Then send them (a `SKIP	page-not-ours	<name>: …` line from `push-docs` does not fail the step; repeat it in the report):
    ```
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-scenarios --spec <target> --apply
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-docs --spec <target> --apply

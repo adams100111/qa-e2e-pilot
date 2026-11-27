@@ -305,7 +305,7 @@ populate the harness's shared skills dir; qa-kit's generated step commands refer
 each installer aborts if they're absent. On Claude this is the `dependencies:["qa-e2e-pilot"]` plugin model.
 
 **Unattended journey (qa-kit)**:
-One agent driving the whole qa-kit process for a target (constitution → spec → scenarios → analyze → run → verify) with nobody present, started by `/qa-auto`. Its state lives on disk in `.qa/specs/<target>/auto/`, owned by `auto.sh`; every question it answers in place of a person is recorded as a **decision**, a fixed list of things it never decides is checked by `auto.sh audit`, and it ends with a **handoff**. While it is open, each qa-kit step treats the setup questions as `autonomousSetup` on.
+One agent driving the whole qa-kit process for a target (constitution → spec → scenarios → analyze → run → verify) with nobody present, started by `/qa-auto`. Its state lives on disk in `.qa/specs/<target>/auto/`, owned by `auto.sh`; every question it answers in place of a person is recorded as a **decision**, a fixed list of things it never decides is checked by `auto.sh audit` (all but a crawl-only census and a seed command run without `seed.json`, which leave no file to compare), and it ends with a **handoff**. A journey that is not finished (open, or stopped for any reason) is replaced only with `--restart`. While it is open, each qa-kit step treats the setup questions as `autonomousSetup` on.
 _Avoid_: autonomous mode, auto mode (the word "autonomous" belongs to the `autonomousSetup` flag).
 
 **Decision (qa-kit, unattended journey)**:

@@ -683,8 +683,12 @@ Needs engine `~0.12.0`, unchanged. Design in ADR-0034 and ADR-0035.
   and ends with `.qa/specs/<target>/auto/handoff.md`. It continues after an interruption and refuses
   production. It never decides a seed command, a coverage exclusion, a crawl-only census, a
   person-confirmed expected value, a safety setting or the known-defect registry, and `auto.sh audit`
-  fails the journey if any of them changed. The audit is a tripwire against drift and mistakes: it
-  reads files the agent can also write, so it does not stop an agent set on defeating it.
+  fails the journey when the files show one of them changed. The audit is a tripwire against drift
+  and mistakes: it reads files the agent can also write, so it does not stop an agent set on
+  defeating it. It does not check two of those: a crawl-only census, and a seed command that was run
+  without writing `seed.json`. A journey that is not finished is replaced only with `--restart`. The
+  verify step is closed by a script: `auto.sh step-done <target> verify` runs `verify-plan.sh`, plain
+  and `--drift`, and refuses on a non-zero exit. A verifier override on the run is never `ready`.
 - **A second look** (Claude only): a fresh agent reads the journey's decisions after the spec and
   scenarios steps and can only hand one to a person. On other harnesses every low-confidence decision
   goes on the handoff list.
@@ -698,6 +702,9 @@ Needs engine `~0.12.0`, unchanged. Design in ADR-0034 and ADR-0035.
   else reads as "analyze has no result yet".
 - **A tracked spec's ClickUp step is part of its command.** When it fails the command gives its own
   result, says ClickUp was not updated and stops. A spec that is not tracked never contacts ClickUp.
+  The step runs its tracker verb for every spec and the tracker says whether the spec is tracked
+  (its own entry or `specDefaults`): the not-set-up answer ends the step, and any non-zero exit is
+  reported, never skipped.
 - **Run lists are owned by the run's results.** The tool sets ticket status; a status a person changed
   is left alone and reported. A pass stays in `testing` until a person confirms it, unless it was
   recorded and verified at high confidence.
