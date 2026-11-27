@@ -538,6 +538,30 @@ run_engine_steps() {
     auto step-done checkout run --run r1 --project "$Q" >/dev/null 2>&1
     check "$E a run with the start time [$s] is accepted" "$?" "0"
   done
+  # a manifest start time without a zone cannot be compared: the first checkpoint stands in for it
+  # (the engine's checkpoint.sh writes `checkpointed_at` in UTC with Z)
+  Q="$(journey_at run)"
+  artifact "$Q" run r1 "2026-11-27T07:30:00"
+  printf '{"criteria":[{"criterion_id":"C-002","checkpointed_at":"2026-11-27T09:10:00Z"},{"criterion_id":"C-001","checkpointed_at":"2026-11-27T08:40:00Z"}]}\n' > "$Q/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a zone-less manifest with a later first checkpoint is accepted" "$rc|$(jv "$Q/.qa/specs/checkout/auto/journey.json" '[d["runId"],d["steps"][4]["state"]]')" '0|["r1", "done"]'
+  Q="$(journey_at run)"
+  artifact "$Q" run r1 "2026-11-27T11:30:00"
+  printf '{"criteria":[{"criterion_id":"C-002","checkpointed_at":"2026-11-27T09:10:00Z"},{"criterion_id":"C-001","checkpointed_at":"2026-11-27T07:40:00Z"},{"criterion_id":"C-003","checkpointed_at":"2026-11-27T08:40:00Z"}]}\n' > "$Q/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a zone-less manifest with an earlier first checkpoint is refused" "$rc|$out|$(jv "$Q/.qa/specs/checkout/auto/journey.json" 'd["runId"]')" "1|auto: that run started before this journey|null"
+  printf '{"criteria":[{"criterion_id":"C-001","checkpointed_at":"soon"},{"criterion_id":"C-002"},"x"]}\n' > "$Q/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a zone-less manifest and no readable checkpoint time is refused" "$rc|$out" "1|auto: that run has no start time"
+  printf '{"criteria":[' > "$Q/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a zone-less manifest and a broken checkpoint.json is refused" "$rc|$out" "1|auto: that run has no start time"
+  # a manifest that names its zone is the start time, whatever the checkpoints say
+  Q="$(journey_at run)"
+  artifact "$Q" run r1 "2026-11-27T07:59:59Z"
+  printf '{"criteria":[{"criterion_id":"C-001","checkpointed_at":"2026-11-27T08:40:00Z"}]}\n' > "$Q/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a manifest start time with a zone is not replaced by the checkpoints" "$rc|$out" "1|auto: that run started before this journey"
   out="$(auto step-done checkout verify --project "$P" 2>&1)"; rc=$?
   check "$E step_done_requires_artifact: verify" "$rc|$out" "1|auto: verify has no result yet"
   # the verify result is looked for in the recorded run only

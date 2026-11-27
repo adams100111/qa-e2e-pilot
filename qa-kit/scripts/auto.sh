@@ -7,6 +7,8 @@
 #
 #   .qa/specs/<target>/auto/journey.json     the steps, their state, the deadline, the stop reason
 #   .qa/specs/<target>/auto/baseline.json    the snapshot taken at start that the audit compares against
+#   .qa/specs/<target>/auto/decisions.json   every answer the journey gave in place of a person (an array)
+#   .qa/specs/<target>/auto/notes.json       things left for a person that are not decisions (an array)
 #   .qa/specs/<target>/auto/history/<n>/     earlier journeys of the same target
 #
 # It NEVER writes outside `.qa/specs/<target>/auto/` and never edits `.qa/config.json`, the spec's
@@ -25,9 +27,28 @@
 #   auto.sh step-start <target> <step>
 #   auto.sh step-done  <target> <step> [--run <run-id>]
 #   auto.sh signin     <target>                    -> {"missing":[…],"ok":[…]}
+#   auto.sh decide <target> --step <step> --class <class> --question <text> --answer <text>
+#                           --evidence <text|none> --confidence high|low [--criteria id,id]
+#                                                  -> the new decision's id (`D<n>`)
+#   auto.sh second <target> <decision-id> stands|ask --reason <text>
+#                                                  -> {"id":…,"needsPerson":…,"second":…}
+#   auto.sh second <target> --unavailable          -> {"marked":[<ids newly left for a person>]}
+#   auto.sh note   <target> --kind seed-not-run|check-left-out --text <text>
+#                                                  -> the new note's id (`N<n>`)
 #
 #   start, resume, stop, status, step-start and step-done print ONE JSON line: journey.json plus
 #   {"needsPerson": n}. status writes nothing. next and signin print their own one line.
+#
+# DECISIONS: `decide` appends one record to decisions.json:
+#   {id, step, class, question, answer, evidence, confidence, criteria:[], assumption:true,
+#    needsPerson, second:null|"stands"|"ask", secondReason}
+# `--evidence none` (the literal word) stores `evidence: null` and `needsPerson: true`. A class the
+# journey must never decide (FORBIDDEN_CLASSES) is refused. `second` records the second look: `ask`
+# sets `needsPerson: true`; `stands` never clears it; once a decision is `ask` it stays `ask`.
+# `second --unavailable` leaves every low-confidence decision without a second look for a person
+# and writes `secondLook: "unavailable"` into journey.json. `note` appends {id, kind, text, at} to
+# notes.json. All three verbs need an open journey. Free text is passed to the engines as
+# arguments, never as program text, so it is stored exactly as given.
 #
 # STEP ORDER: `next` names the first step that is not done; `step-start` and `step-done` take only
 # that step. `step-done` looks for the step's result on disk (the checks /qa-status makes) and
@@ -43,7 +64,8 @@
 # overrides). Both engines give byte-identical files and output. No node/perl/grep -P.
 #
 # ADDING A VERB: write `cmd_<verb>`, add it to the dispatch `case` at the bottom, and reuse the
-# helpers below (parse_common, journey_load, journey_read, journey_require_open, json_get/json_strs/
+# helpers below (parse_common, journey_load, journey_read, journey_require_open, journey_require_open_strict,
+# rows_commit, one_of, text_given, json_get/json_strs/
 # json_pick/json_merge, journey_stepset, stop_journey, print_status, print_stopped, now_iso,
 # iso_add_hours, iso_epoch, step_artifact_done, step_state, first_open_step, signin_json, read_lines).
 set -uo pipefail
@@ -56,6 +78,10 @@ RESUMABLE_REASONS="time-limit step-failed until"
 FINAL_REASONS="blocked audit no-sign-in tracker"
 SAFETY_KEYS="allowApiWrites seedableEnvMarker environment allowBlackboxCrawl gates profile humanInteraction.enforce humanInteraction.maxOptOutRate"
 DEFAULT_MAX_HOURS=6
+# Plan decision J5: what a journey may answer for itself, and what it never decides.
+DECIDABLE_CLASSES="roles surface-access scope role-overrides journeys inputs expected gaps"
+FORBIDDEN_CLASSES="seed exclusion crawl-only oracle-human safety known-defect"
+NOTE_KINDS="seed-not-run check-left-out"
 
 # ---------------------------------------------------------------------------------------------
 # Errors
@@ -72,10 +98,18 @@ usage: auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--m
        auto.sh step-start <target> <step> [--project <dir>]
        auto.sh step-done  <target> <step> [--run <run-id>] [--project <dir>]
        auto.sh signin <target> [--project <dir>]
+       auto.sh decide <target> --step <step> --class <class> --question <text> --answer <text> --evidence <text|none> --confidence high|low [--criteria id,id] [--project <dir>]
+       auto.sh second <target> <decision-id> stands|ask --reason <text> [--project <dir>]
+       auto.sh second <target> --unavailable [--project <dir>]
+       auto.sh note   <target> --kind seed-not-run|check-left-out --text <text> [--project <dir>]
 EOF
   exit 2
 }
 in_list() { case " $2 " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# one_of <word> "<space list>" — in_list for a word that came from outside: one word, no blanks.
+one_of() { case "$1" in ""|*[[:space:]]*) return 1 ;; esac; in_list "$1" "$2"; }
+# text_given <text> — true when the text has something other than blanks in it.
+text_given() { case "$1" in *[![:space:]]*) return 0 ;; *) return 1 ;; esac; }
 
 # ---------------------------------------------------------------------------------------------
 # Engine selection
@@ -95,7 +129,7 @@ need_engine() { [ -n "$ENGINE" ] || die "this script needs either jq or python3"
 # The python3 side of every JSON helper, one small program with sub-commands. Output is always
 # UTF-8, keys sorted, so it matches `jq -S` byte for byte.
 PY_HELPERS='
-import calendar, json, math, sys, time
+import calendar, json, math, re, sys, time
 op, a = sys.argv[1], sys.argv[2:]
 def load(p):
     with open(p, encoding="utf-8") as f:
@@ -115,7 +149,28 @@ def emit(v, pretty=False):
         s = json.dumps(v, sort_keys=True, indent=2, ensure_ascii=False)
     else:
         s = json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    sys.stdout.buffer.write((s + "\n").encode("utf-8"))
+    # jq writes U+007F as an escape; a raw one can only be inside a string, so this is safe
+    sys.stdout.buffer.write((s.replace("\x7f", "\\u007f") + "\n").encode("utf-8"))
+def jstr(v):
+    return json.dumps(v, ensure_ascii=False).replace("\x7f", "\\u007f")
+def rows_in():
+    # the array on stdin; nothing at all (no file yet) is an empty array
+    t = sys.stdin.buffer.read().decode("utf-8")
+    rows = json.loads(t) if t.strip(" \t\r\n") else []
+    if not isinstance(rows, list):
+        sys.exit(1)
+    return rows
+def next_id(rows, prefix):
+    n = 0
+    for r in rows:
+        i = r.get("id") if isinstance(r, dict) else None
+        if isinstance(i, str) and re.fullmatch(prefix + "[0-9]+", i):
+            n = max(n, int(i[1:]))
+    return prefix + str(n + 1)
+def rows_out(line, rows):
+    # the result line, then the whole array as it goes back to the file
+    sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+    emit(rows, pretty=True)
 def walk(d, path):
     if path == "":
         return True, d
@@ -214,6 +269,55 @@ try:
             if isinstance(x, dict) and isinstance(x.get("id"), str):
                 out.append(json.dumps(x["id"], ensure_ascii=False) + "\t" + s(x.get("auth")))
         sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+    elif op == "decide":
+        # step class question answer evidence no-evidence(1|0) confidence criteria
+        rows = rows_in()
+        i = next_id(rows, "D")
+        none = a[5] == "1"
+        rows.append({"id": i, "step": a[0], "class": a[1], "question": a[2], "answer": a[3],
+                     "evidence": None if none else a[4], "confidence": a[6],
+                     "criteria": [c.strip(" \t\r\n") for c in a[7].split(",") if c.strip(" \t\r\n")],
+                     "assumption": True, "needsPerson": none, "second": None, "secondReason": None})
+        rows_out(i, rows)
+    elif op == "note":
+        # kind text at
+        rows = rows_in()
+        i = next_id(rows, "N")
+        rows.append({"id": i, "kind": a[0], "text": a[1], "at": a[2]})
+        rows_out(i, rows)
+    elif op == "second":
+        # id verdict reason
+        rows = rows_in()
+        r = None
+        for x in rows:
+            if isinstance(x, dict) and x.get("id") == a[0]:
+                r = x
+                break
+        if r is None:
+            sys.stdout.write("!missing\n")
+        else:
+            if r.get("second") is None or (r.get("second") == "stands" and a[1] == "ask"):
+                r["second"] = a[1]
+                r["secondReason"] = a[2]
+                if a[1] == "ask":
+                    r["needsPerson"] = True
+            rows_out("{\"id\":%s,\"needsPerson\":%s,\"second\":%s}" % (jstr(r.get("id")), jstr(r.get("needsPerson")), jstr(r.get("second"))), rows)
+    elif op == "unavailable":
+        rows = rows_in()
+        ids = []
+        for x in rows:
+            if isinstance(x, dict) and x.get("confidence") == "low" and x.get("second") is None:
+                if x.get("needsPerson") is not True:
+                    ids.append(x.get("id"))
+                x["needsPerson"] = True
+        rows_out("{\"marked\":[%s]}" % ",".join(jstr(i) for i in ids), rows)
+    elif op == "cptimes":
+        d = load(a[0])
+        cs = d.get("criteria") if isinstance(d, dict) else None
+        for c in (cs if isinstance(cs, list) else []):
+            v = c.get("checkpointed_at") if isinstance(c, dict) else None
+            if isinstance(v, str):
+                sys.stdout.buffer.write((v.replace("\r", " ").replace("\n", " ") + "\n").encode("utf-8"))
     elif op == "counttrue":
         rows = load(a[0])
         emit(len([r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict) and r.get(a[1]) is True]))
@@ -228,6 +332,11 @@ py() { PYTHONUTF8=1 python3 -c "$PY_HELPERS" "$@"; }
 # The jq side normalises numbers the same way (0.20 → 0.2, 1.0 → 1), so both engines agree.
 JQ_DEFS='def norm: walk(if type == "number" then . + 0 else . end);'
 JQ_ONE='if length != 1 then error("not one JSON document") else .[0] end'
+# The array of a rows file read with `jq -s` (nothing at all, no file yet, is an empty array), and
+# the next free id with a one-letter prefix.
+JQ_ROWS='def rows_in: (if length == 0 then [] elif length == 1 then .[0] else error("not one JSON document") end)
+    | if type == "array" then . else error("not an array") end;
+  def next_id($p): $p + (([ .[] | objects | .id | strings | select(test("\\A" + $p + "[0-9]+\\z")) | .[1:] | tonumber ] | (max // 0) + 1) | tostring);'
 
 # ---------------------------------------------------------------------------------------------
 # JSON helpers (both engines; reuse these in new verbs)
@@ -354,7 +463,7 @@ valid_hours() {
 # Paths and arguments
 # ---------------------------------------------------------------------------------------------
 PROJECT="."; TARGET=""
-QA_DIR=""; CONFIG=""; SPEC_DIR=""; AUTO_DIR=""; JOURNEY=""; BASELINE=""; DECISIONS=""
+QA_DIR=""; CONFIG=""; SPEC_DIR=""; AUTO_DIR=""; JOURNEY=""; BASELINE=""; DECISIONS=""; NOTES=""
 REST=()
 
 # parse_common "$@" — takes the target (first bare word) and `--project <dir>` out of a verb's
@@ -383,12 +492,13 @@ parse_common() {
   JOURNEY="$AUTO_DIR/journey.json"
   BASELINE="$AUTO_DIR/baseline.json"
   DECISIONS="$AUTO_DIR/decisions.json"
+  NOTES="$AUTO_DIR/notes.json"
 }
 # flag_takes_value <flag> — true for the flags whose next word is their value (so that word is
 # never mistaken for the target). Add a verb's value flags here.
 flag_takes_value() {
   case "$1" in
-    --profile|--until|--max-hours|--reason|--detail|--run|--step|--class|--question|--answer|--evidence|--confidence|--criteria|--records) return 0 ;;
+    --profile|--until|--max-hours|--reason|--detail|--run|--step|--class|--question|--answer|--evidence|--confidence|--criteria|--records|--kind|--text) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -425,6 +535,49 @@ journey_require() {
 journey_require_open() {
   journey_load
   [ "$J_STATE" = open ] || die "no open journey for $TARGET"
+}
+# journey_require_open_strict — the same, telling "no journey at all" from "not open".
+journey_require_open_strict() {
+  journey_load
+  [ -n "$J_STATE" ] || die "no journey for $TARGET"
+  [ "$J_STATE" = open ] || die "no open journey for $TARGET"
+}
+# rows_commit <file> <engine output> — an engine op that changes a rows file (decisions.json,
+# notes.json) prints one result line and then the whole array, pretty-printed. This keeps the
+# result line in ROWS_LINE and replaces the file atomically with the array. Output that is only
+# a result line (a refusal such as `!missing`) writes nothing.
+ROWS_LINE=""
+rows_commit() {
+  local dest="$1" out="$2" nl=$'\n' tmp
+  case "$dest" in "$AUTO_DIR"/*) ;; *) die "internal: refused to write outside the journey directory" ;; esac
+  ROWS_LINE="${out%%"$nl"*}"
+  case "$out" in *"$nl"*) ;; *) return 0 ;; esac
+  tmp="$dest.tmp.$$"
+  if ! printf '%s\n' "${out#*"$nl"}" > "$tmp" || [ ! -s "$tmp" ]; then rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; fi
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; }
+}
+# rows_source <file> — the file to read a rows file from: itself, or /dev/null when it is not there yet.
+rows_source() { if [ -f "$1" ]; then printf '%s\n' "$1"; else printf '/dev/null\n'; fi; }
+# run_start_epoch <run id> — seconds since 1970 of the run's start: the manifest's `started_at`
+# when it names its zone, else the earliest `checkpointed_at` of the run's checkpoint.json (the
+# engine writes those in UTC with `Z`). Fails when neither is readable.
+run_start_epoch() {
+  local dir="$QA_DIR/runs/$1" started e times line min=""
+  started="$(json_strs "$dir/run-manifest.json" started_at)" || started=""
+  if e="$(time_epoch "$started")"; then printf '%s\n' "$e"; return 0; fi
+  if [ "$ENGINE" = jq ]; then
+    times="$(jq -r '(.criteria? | if type == "array" then .[] else empty end) | objects | .checkpointed_at | strings | gsub("[\r\n]"; " ")' "$dir/checkpoint.json" 2>/dev/null)" || return 1
+  else
+    times="$(py cptimes "$dir/checkpoint.json" 2>/dev/null)" || return 1
+  fi
+  while IFS= read -r line; do
+    e="$(time_epoch "$line")" || continue
+    if [ -z "$min" ] || [ "$e" -lt "$min" ]; then min="$e"; fi
+  done <<EOT
+$times
+EOT
+  [ -n "$min" ] || return 1
+  printf '%s\n' "$min"
 }
 # other_open_target — the name of another target whose journey is open in this project, if any.
 # This is the "one journey per project" lock: any .qa/specs/*/auto/journey.json with state open.
@@ -977,13 +1130,13 @@ cmd_step_done() {
   journey_read_open
   require_next_step "$step"
 
-  local top="" verdict now started j_epoch r_epoch rounds
+  local top="" verdict now j_epoch r_epoch rounds
   case "$step" in
     run)
       step_artifact_done run "$run" || die "run has no result yet"
       # The run must have started inside this journey; an earlier run is another plan's result.
-      started="$(json_strs "$QA_DIR/runs/$run/run-manifest.json" started_at)" || die "that run has no start time"
-      r_epoch="$(time_epoch "$started")" || die "that run has no start time"
+      # A manifest start time without a zone cannot be compared: the first checkpoint stands in.
+      r_epoch="$(run_start_epoch "$run")" || die "that run has no start time"
       j_epoch="$(time_epoch "$J_STARTED")" || die "journey.json for $TARGET is not readable"
       [ "$r_epoch" -ge "$j_epoch" ] || die "that run started before this journey"
       top="\"runId\":$(json_quote "$run")"
@@ -1031,6 +1184,146 @@ cmd_signin() {
   printf '%s\n' "$out"
 }
 
+cmd_decide() {
+  parse_common "$@"
+  local step="" class="" question="" answer="" evidence="" confidence="" criteria="" seen=""
+  set -- ${REST[@]+"${REST[@]}"}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --step|--class|--question|--answer|--evidence|--confidence|--criteria)
+        [ "$#" -ge 2 ] || usage "$1 needs a value"
+        case "$1" in
+          --step) step="$2" ;; --class) class="$2" ;; --question) question="$2" ;; --answer) answer="$2" ;;
+          --evidence) evidence="$2" ;; --confidence) confidence="$2" ;; --criteria) criteria="$2" ;;
+        esac
+        seen="$seen $1"; shift 2 ;;
+      *) usage "decide does not take: $1" ;;
+    esac
+  done
+  local f
+  for f in --step --class --question --answer --evidence --confidence; do
+    in_list "$f" "$seen" || usage "decide needs $f"
+  done
+  one_of "$step" "$STEPS" || usage "--step must be one of: $STEPS"
+  one_of "$class" "$DECIDABLE_CLASSES $FORBIDDEN_CLASSES" || usage "--class must be one of: $DECIDABLE_CLASSES"
+  one_of "$confidence" "high low" || usage "--confidence must be high or low"
+  text_given "$question" || usage "--question cannot be empty"
+  text_given "$answer" || usage "--answer cannot be empty"
+  text_given "$evidence" || usage "--evidence cannot be empty; pass the word none when there is no evidence"
+  need_engine
+  journey_require_open_strict
+  in_list "$class" "$FORBIDDEN_CLASSES" && die "$class is never decided by an unattended journey"
+  local none=0 src out
+  [ "$evidence" = none ] && none=1
+  src="$(rows_source "$DECISIONS")"
+  if [ "$ENGINE" = jq ]; then
+    out="$(jq -rsS --arg step "$step" --arg class "$class" --arg q "$question" --arg a "$answer" --arg ev "$evidence" \
+      --arg none "$none" --arg conf "$confidence" --arg crit "$criteria" "$JQ_DEFS $JQ_ROWS"' rows_in
+      | next_id("D") as $id
+      | . + [{id: $id, step: $step, class: $class, question: $q, answer: $a,
+              evidence: (if $none == "1" then null else $ev end), confidence: $conf,
+              criteria: ($crit | split(",") | map(gsub("^[ \t\r\n]+|[ \t\r\n]+$"; "")) | map(select(length > 0))),
+              assumption: true, needsPerson: ($none == "1"), second: null, secondReason: null}]
+      | $id, norm' < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+  else
+    out="$(py decide "$step" "$class" "$question" "$answer" "$evidence" "$none" "$confidence" "$criteria" < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+  fi
+  rows_commit "$DECISIONS" "$out"
+  printf '%s\n' "$ROWS_LINE"
+}
+
+cmd_second() {
+  parse_common "$@"
+  local id="" verdict="" reason="" have_reason=0 unavailable=0 words=0
+  set -- ${REST[@]+"${REST[@]}"}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --reason) [ "$#" -ge 2 ] || usage "--reason needs a value"; reason="$2"; have_reason=1; shift 2 ;;
+      --unavailable) unavailable=1; shift ;;
+      --*) usage "second does not take: $1" ;;
+      *) words=$((words + 1))
+         case "$words" in 1) id="$1" ;; 2) verdict="$1" ;; *) usage "second does not take: $1" ;; esac
+         shift ;;
+    esac
+  done
+  local src out
+  if [ "$unavailable" -eq 1 ]; then
+    [ "$words" -eq 0 ] && [ "$have_reason" -eq 0 ] || usage "--unavailable goes alone"
+    need_engine
+    journey_require_open_strict
+    src="$(rows_source "$DECISIONS")"
+    if [ "$ENGINE" = jq ]; then
+      out="$(jq -rsS "$JQ_DEFS $JQ_ROWS"' rows_in
+        | [ .[] | objects | select(.confidence == "low" and .second == null and .needsPerson != true) | .id ] as $ids
+        | map(if type == "object" and .confidence == "low" and .second == null then .needsPerson = true else . end)
+        | "{\"marked\":[\($ids | map(tojson) | join(","))]}", norm' < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+    else
+      out="$(py unavailable < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+    fi
+    # Without a decisions file there is nothing to mark and no file is made.
+    if [ -f "$DECISIONS" ]; then rows_commit "$DECISIONS" "$out"; else ROWS_LINE='{"marked":[]}'; fi
+    journey_stepset '{"set":{"secondLook":"unavailable"}}'
+    printf '%s\n' "$ROWS_LINE"
+    return 0
+  fi
+  [ "$words" -ge 1 ] || usage "second needs a decision id, or --unavailable"
+  [ "$words" -eq 2 ] || usage "second needs stands or ask"
+  one_of "$verdict" "stands ask" || usage "the second look is stands or ask"
+  [ "$have_reason" -eq 1 ] || usage "second needs --reason"
+  text_given "$reason" || usage "--reason cannot be empty"
+  need_engine
+  journey_require_open_strict
+  src="$(rows_source "$DECISIONS")"
+  if [ "$ENGINE" = jq ]; then
+    out="$(jq -rsS --arg id "$id" --arg v "$verdict" --arg r "$reason" "$JQ_DEFS $JQ_ROWS"' rows_in
+      | (map(type == "object" and .id == $id) | index(true)) as $i
+      | if $i == null then "!missing"
+        else
+          (if .[$i].second == null or (.[$i].second == "stands" and $v == "ask")
+           then .[$i] |= (.second = $v | .secondReason = $r | if $v == "ask" then .needsPerson = true else . end)
+           else . end)
+          | (.[$i] | "{\"id\":\(.id | tojson),\"needsPerson\":\(.needsPerson | tojson),\"second\":\(.second | tojson)}"), norm
+        end' < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+  else
+    out="$(py second "$id" "$verdict" "$reason" < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
+  fi
+  [ "$out" != "!missing" ] || die "no decision $id"
+  rows_commit "$DECISIONS" "$out"
+  printf '%s\n' "$ROWS_LINE"
+}
+
+cmd_note() {
+  parse_common "$@"
+  local kind="" text="" have_kind=0 have_text=0
+  set -- ${REST[@]+"${REST[@]}"}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --kind) [ "$#" -ge 2 ] || usage "--kind needs a value"; kind="$2"; have_kind=1; shift 2 ;;
+      --text) [ "$#" -ge 2 ] || usage "--text needs a value"; text="$2"; have_text=1; shift 2 ;;
+      *) usage "note does not take: $1" ;;
+    esac
+  done
+  [ "$have_kind" -eq 1 ] || usage "note needs --kind"
+  [ "$have_text" -eq 1 ] || usage "note needs --text"
+  one_of "$kind" "$NOTE_KINDS" || usage "--kind must be one of: $NOTE_KINDS"
+  text_given "$text" || usage "--text cannot be empty"
+  need_engine
+  journey_require_open_strict
+  local now src out
+  now="$(now_iso)" || exit 1
+  src="$(rows_source "$NOTES")"
+  if [ "$ENGINE" = jq ]; then
+    out="$(jq -rsS --arg kind "$kind" --arg text "$text" --arg at "$now" "$JQ_DEFS $JQ_ROWS"' rows_in
+      | next_id("N") as $id
+      | . + [{id: $id, kind: $kind, text: $text, at: $at}]
+      | $id, norm' < "$src" 2>/dev/null)" || die "notes.json for $TARGET is not readable"
+  else
+    out="$(py note "$kind" "$text" "$now" < "$src" 2>/dev/null)" || die "notes.json for $TARGET is not readable"
+  fi
+  rows_commit "$NOTES" "$out"
+  printf '%s\n' "$ROWS_LINE"
+}
+
 # ---------------------------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------------------------
@@ -1045,5 +1338,8 @@ case "$VERB" in
   step-start) cmd_step_start "$@" ;;
   step-done)  cmd_step_done "$@" ;;
   signin)     cmd_signin "$@" ;;
+  decide)     cmd_decide "$@" ;;
+  second)     cmd_second "$@" ;;
+  note)       cmd_note "$@" ;;
   *)      usage ;;
 esac
