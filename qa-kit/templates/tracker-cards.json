@@ -1,0 +1,36 @@
+{
+  "spec": {
+    "title": "Judges score hackathon submissions",
+    "overview": "Judges at a Riyadh innovation hackathon open each team submission, give it a score and see the ranking update. Admins watch the same ranking.",
+    "outOfScope": ["Sending certificates to the winners"]
+  },
+  "cards": [
+    {
+      "id": "judge-scores-a-submission",
+      "role": "judge",
+      "roleName": "Judge",
+      "title": "A judge scores a team submission",
+      "storyline": "Noura opens a submission from the smart water metering team, enters a score and saves it. A score above the maximum is refused with a clear message.",
+      "priority": "P1",
+      "as": "subtasks",
+      "checks": [
+        {"criterion": "C-SCORE-01", "title": "Save a valid score", "do": "Open a submission, type 8 in the score box and press Save.", "expect": "The score is saved and shown on the submission page."},
+        {"criterion": "C-SCORE-02", "title": "Refuse a score above the maximum", "do": "Type 15 in the score box and press Save.", "expect": "A message says the score must be between 1 and 10 and nothing is saved."},
+        {"criterion": "C-RANK-01", "title": "Judge sees the ranking", "do": "Open the leaderboard as a judge.", "expect": "Teams are listed from the highest average score to the lowest."}
+      ]
+    },
+    {
+      "id": "admin-watches-the-ranking",
+      "role": "admin",
+      "roleName": "Admin",
+      "title": "An admin watches the ranking",
+      "storyline": "Faisal opens the leaderboard and the hackathon list to follow the judging.",
+      "priority": "P2",
+      "as": "checklist",
+      "checks": [
+        {"criterion": "C-RANK-01", "title": "Admin sees the ranking", "do": "Open the leaderboard as an admin.", "expect": "Teams are listed from the highest average score to the lowest."},
+        {"criterion": "load-clean:GET /admin/hackathons:admin", "title": "Hackathon list opens", "do": "Open the hackathon list.", "expect": "The page opens and lists the hackathons without an error."}
+      ]
+    }
+  ]
+}
