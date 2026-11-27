@@ -12,10 +12,10 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 for h in claude pi codex opencode; do bash "$B" "$h" >/dev/null || { echo "build $h failed"; exit 1; }; done
 
-# (a) 7 commands + agent per harness, right agent ext
-# (constitution, spec, scenarios, analyze, verify, status, tracker)
+# (a) 8 commands + agent per harness, right agent ext
+# (constitution, spec, scenarios, analyze, verify, status, tracker, auto)
 for h in claude pi codex opencode; do
-  check "$h has 7 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "7"
+  check "$h has 8 commands" "$(ls "$D/$h/commands" | wc -l | tr -d ' ')" "8"
 done
 check "claude agent md"   "$(ls "$D/claude/agent")"   "qa-kit.md"
 check "pi agent md"       "$(ls "$D/pi/agent")"       "qa-kit.md"
@@ -76,6 +76,27 @@ for h in claude pi codex opencode; do
   for c in qa-spec qa-scenarios qa-analyze qa-verify qa-status; do
     grep -qF 'Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true.' "$D/$h/commands/$c.md"; check "$h $c has tracker guard" "$?" "0"
   done
+done
+
+# (i) /qa-auto (the unattended journey) renders on every harness; the second look follows dispatch
+BANNER='SECOND LOOK UNAVAILABLE: this harness cannot start a fresh agent; every low-confidence decision is left for a person.'
+for h in claude pi codex opencode; do
+  f="$D/$h/commands/qa-auto.md"
+  check "$h qa-auto rendered" "$([ -s "$f" ] && echo y)" "y"
+  check "$h qa-auto no residual token" "$(grep -c '{{' "$f" 2>/dev/null || true)" "0"
+  grep -q '^description: Drive the whole qa-kit process for a target with nobody present' "$f" 2>/dev/null; check "$h qa-auto frontmatter" "$?" "0"
+  grep -qF "$BANNER" "$f" 2>/dev/null && grep -q 'auto.sh" second <target> --unavailable' "$f" 2>/dev/null; check "$h qa-auto has unavailable banner + verb" "$?" "0"
+  for c in qa-constitution qa-spec qa-scenarios qa-analyze; do
+    grep -qF 'shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.' "$D/$h/commands/$c.md"; check "$h $c has open-journey line" "$?" "0"
+  done
+  grep -q 'unattended journey' "$D/$h/commands/qa-status.md"; check "$h qa-status mentions the journey" "$?" "0"
+done
+grep -q 'Start one fresh agent' "$D/claude/commands/qa-auto.md" 2>/dev/null && grep -q 'auto.sh" second <target> <decision-id> stands --reason' "$D/claude/commands/qa-auto.md" 2>/dev/null; check "claude qa-auto dispatches the second look" "$?" "0"
+grep -q '${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" second' "$D/claude/commands/qa-auto.md" 2>/dev/null; check "claude second look plugin-root rendered" "$?" "0"
+grep -q '/qa-e2e-pilot:qa-run' "$D/claude/commands/qa-auto.md" 2>/dev/null; check "claude qa-auto names the engine run" "$?" "0"
+for h in pi codex opencode; do
+  check "$h qa-auto has no dispatch instruction" "$(grep -c 'Start one fresh agent' "$D/$h/commands/qa-auto.md" 2>/dev/null || true)" "0"
+  check "$h qa-auto leads the second look with the banner" "$(grep -c 'Print this line exactly' "$D/$h/commands/qa-auto.md" 2>/dev/null || true)" "1"
 done
 
 echo "qakit-adapters: PASS=$pass FAIL=$fail"

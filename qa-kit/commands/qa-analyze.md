@@ -10,6 +10,8 @@ remediation the human approves; it does not modify artifacts and does not block 
 (step 4b) sets the Verdict to `BLOCKED` until no surface x role pair is uncovered. Fourth qa-kit
 step. Full input: `$ARGUMENTS` — the first token is `<target>`.
 
+An open unattended journey for this target (`bash ${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+
 ## What to do
 
 1. **Prereq.** Require `.qa/specs/<target>/scenarios.md` (+ `checklist.json`). If missing, error and

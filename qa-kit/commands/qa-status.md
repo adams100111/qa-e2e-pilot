@@ -49,6 +49,20 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) and print the links it returns for the spec
    and its latest run, plus each reason it gives for ClickUp being behind the local files.
 
+6. **Unattended journey (per spec).** Only when `.qa/specs/<target>/auto/journey.json` exists (an
+   unattended journey was started for this spec with `/qa-auto`). Run
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" status <target>` (it reads only): it prints the journey plus
+   `needsPerson`. Add to that spec's summary line:
+   - `state: open` → `journey: open at <step>`, the first step in `steps` whose `state` is not `done`;
+   - `state: stopped` → `journey: stopped at <step> (<stop.reason>)`, and say whether starting
+     `/qa-auto <target>` again continues it (`time-limit`, `step-failed`, `until`) or a person has to
+     act first (`blocked`, `audit`, `no-sign-in`, `tracker`);
+   - `state: done` → `journey: done`;
+
+   then `<needsPerson> items for a person`, and point at `.qa/specs/<target>/auto/handoff.md` when that
+   file exists. While a journey is open, the next step for that spec is the journey's own; say so
+   instead of telling a person to run a step by hand.
+
 ## Going further: the dashboard
 
 `/qa-status` answers "which step is next". For run-level detail — each run's progress, rate and ETA,

@@ -193,5 +193,62 @@ grep -q 'writing-rules.md' "$CC/qa-tracker.md"; check "tracker_cmd_references_wr
 grep -q 'writing-rules.md' "$CC/qa-scenarios.md" && grep -q 'tracker-cards.json' "$CC/qa-scenarios.md"; check "scenarios_reads_rules_writes_cards" "$?" "0"
 grep -q 'Screenshots are sent as they are' "$ROOT/qa-kit/templates/trackers/writing-rules.md"; check "writing_rules_screenshot_line" "$?" "0"
 
+# --- Unattended journey (Task 17): /qa-auto is a loop over auto.sh; steps honour an open journey ---
+OJ='An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.'
+for f in qa-constitution qa-spec qa-scenarios qa-analyze; do
+  grep -qF "$OJ" "$CC/$f.md"; check "open_journey_line_${f}" "$?" "0"
+done
+grep -q 'with the reason `unattended journey`' "$CC/qa-constitution.md"; check "constitution_passes_unattended_journey_reason" "$?" "0"
+grep -q 'auto.sh" status <target>' "$CC/qa-status.md" && grep -q 'unattended journey' "$CC/qa-status.md" && grep -q 'needsPerson' "$CC/qa-status.md" && grep -q 'stop.reason' "$CC/qa-status.md"; check "status_shows_journey_step_reason_and_count" "$?" "0"
+QAU="$CC/qa-auto.md"
+[ -f "$QAU" ]; check "qa_auto_source_exists" "$?" "0"
+grep -qxF 'description: Drive the whole qa-kit process for a target with nobody present, record every self-answered question, and end with a handoff list for a person.' "$QAU" 2>/dev/null; check "qa_auto_description_verbatim" "$?" "0"
+grep -qxF 'argument-hint: "<target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>] [--restart]"' "$QAU" 2>/dev/null; check "qa_auto_argument_hint_verbatim" "$?" "0"
+for v in start resume next step-start step-done signin decide stop audit handoff status; do
+  grep -Eq "auto\.sh\"? $v( |\$)" "$QAU" 2>/dev/null; check "qa_auto_calls_$v" "$?" "0"
+done
+check "qa_auto_second_look_token_once" "$(grep -c '{{SECOND_LOOK}}' "$QAU" 2>/dev/null || true)" "1"
+grep -q -- '--known-defects-invalid' "$QAU" 2>/dev/null && grep -q 'caffeinate -dimsu' "$QAU" 2>/dev/null; check "qa_auto_start_flags_and_keep_awake" "$?" "0"
+for r in step-failed tracker; do
+  grep -q -- "--reason $r" "$QAU" 2>/dev/null; check "qa_auto_stops_with_$r" "$?" "0"
+done
+grep -q 'time-limit' "$QAU" 2>/dev/null; check "qa_auto_names_time_limit" "$?" "0"
+for c in roles surface-access scope role-overrides journeys inputs expected gaps seed exclusion crawl-only oracle-human safety known-defect; do
+  grep -q "\`$c\`" "$QAU" 2>/dev/null; check "qa_auto_names_class_$c" "$?" "0"
+done
+grep -q 'When unsure whether a journey is P1, mark it P1' "$QAU" 2>/dev/null; check "qa_auto_unsure_p1_is_p1" "$?" "0"
+grep -q 'Never `oracleSource: "human"`' "$QAU" 2>/dev/null; check "qa_auto_never_oracle_human" "$?" "0"
+grep -q 'main session' "$QAU" 2>/dev/null && grep -q '{{ENGINE_RUN}}' "$QAU" 2>/dev/null && grep -q '/qa-resume' "$QAU" 2>/dev/null; check "qa_auto_run_in_main_session_engine_run_and_resume" "$?" "0"
+grep -q 'data-policy.sh list' "$QAU" 2>/dev/null && grep -q -- '--records' "$QAU" 2>/dev/null && grep -q 'known-defects.sh validate' "$QAU" 2>/dev/null; check "qa_auto_engine_results_passed_in" "$?" "0"
+grep -qF "<n> items need a person's review. See the results page." "$QAU" 2>/dev/null && grep -qF "Nothing needs a person's review." "$QAU" 2>/dev/null && grep -q 'tracker.sh" spec-note' "$QAU" 2>/dev/null; check "qa_auto_fixed_clickup_note" "$?" "0"
+# the words: "unattended journey"; never bare "autonomous" or "auto mode"
+check "qa_auto_no_bare_autonomous" "$(grep -oi 'autonomous[A-Za-z]*' "$QAU" 2>/dev/null | grep -vc '^autonomousSetup$' || true)" "0"
+check "qa_auto_no_auto_mode" "$(grep -ci 'auto mode' "$QAU" 2>/dev/null || true)" "0"
+grep -q 'unattended journey' "$QAU" 2>/dev/null; check "qa_auto_says_unattended_journey" "$?" "0"
+# no second copy of a step's instructions: the step scripts are named only in the step sources
+for s in spec-snapshot.sh constitution.sh generate-ship-criteria.sh coverage.sh check-fixtures.sh verify-plan.sh surface-access.sh; do
+  check "qa_auto_does_not_copy_step_$s" "$(grep -c "scripts/$s" "$QAU" 2>/dev/null || true)" "0"
+done
+# the second look follows the engine's subagentDispatch, recorded in qa-kit's own profile
+check "second_look_profile_matches_engine_dispatch" "$(python3 - "$ROOT" <<'PYEOF'
+import json, sys
+root = sys.argv[1]
+eng = json.load(open(root + "/harness-profiles.json"))["harnesses"]
+kit = json.load(open(root + "/qa-kit/harness-profiles.qakit.json"))["harnesses"]
+banner = "SECOND LOOK UNAVAILABLE: this harness cannot start a fresh agent; every low-confidence decision is left for a person."
+bad = []
+for h in ("claude", "pi", "codex", "opencode"):
+    k = kit[h]
+    if k.get("subagentDispatch") is not eng[h]["subagentDispatch"]:
+        bad.append(h + ":dispatch")
+    sl = k.get("secondLook", "")
+    if "auto.sh\" second <target> --unavailable" not in sl or banner not in sl:
+        bad.append(h + ":banner")
+    if ("Start one fresh agent" in sl) is not bool(k.get("subagentDispatch")):
+        bad.append(h + ":instruction")
+print(",".join(bad) or "ok")
+PYEOF
+)" "ok"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

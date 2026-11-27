@@ -8,6 +8,8 @@ Turn `.qa/specs/<target>/qa-spec.md` into `scenarios.md` (human storylines) + `c
 machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. Full input:
 `$ARGUMENTS` — the first token is `<target>`.
 
+An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+
 ## What to do
 
 1. **Prereq.** Require `.qa/specs/<target>/qa-spec.md` **and** `.qa/specs/<target>/spec-roles.json`.
