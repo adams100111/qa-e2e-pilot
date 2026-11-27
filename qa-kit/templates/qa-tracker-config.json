@@ -50,5 +50,14 @@
       "\\b(?:feat|fix|docs|chore)/[\\w.-]+",
       "\\bPR ?#\\d+\\b"
     ]
-  }
+  },
+  "tokenEnv": "CLICKUP_API_TOKEN",
+  "language": "en",
+  "evidence": "standard",
+  "evidenceCap": 3,
+  "keepRuns": 3,
+  "notify": null,
+  "reportUrl": null,
+  "specs": {},
+  "specDefaults": {}
 }
