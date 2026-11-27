@@ -91,9 +91,9 @@ It does not see:
 
 - a value changed and changed back before the audit;
 - `baseline.json` and `journey.json` rewritten together so they agree;
-- a fresh baseline taken with `start --restart` after a change (the new journey says `restartedFrom`,
-  and the handoff says it was restarted, so a person can see it; the files alone cannot prove it);
-- a safety key that went from absent to an explicit null;
+- a fresh baseline taken with `start --restart` after a change (the new journey says `replacedFrom`,
+  and `restartedFrom` when the old one was still open; the handoff says so, so a person can see it;
+  the files alone cannot prove it);
 - a plan row without a string id;
 - a tracker command replaced through the environment.
 
@@ -108,8 +108,9 @@ or leaves a pass that was recorded; `not ready` when the report says NOT SHIP-RE
 when the report says SHIP-READY but a top-priority check rests on a person (a decision that needs a
 person, or an expected value that is only a proposal); `ready` only when none of that holds; and under
 `full`, with no ship section, `verified` or `not verified`. The sentence carries the count of items
-waiting for a person. A passing audit is recorded; a handoff with no audit record says the audit did
-not run and is `not verified`. `step-done run` refuses a run that is unfinished, has no rendered
+waiting for a person. A passing audit is recorded; a handoff with no audit that passed and is not older than the last
+step says `The audit has not run for this journey.` and is `not verified` (`stopped` stays `stopped`).
+Run the audit first, then the handoff. `step-done run` refuses a run that is unfinished, has no rendered
 report, has no checkpoint row from this plan, or started before the journey.
 
 **H. QA only.** The journey ends with a verified report and a bug list. It does not fix the application,
@@ -122,7 +123,9 @@ pre-flight, stricter than the design's B2). `environment` is compared lower-case
 than `auto`, `production` or `disposable` is refused. The gate judges the **merged** settings: the
 spec's run-config replaces top-level keys of the config, as the engine's profile resolution does, so a
 run-config cannot move the journey past it. On a host that is not local the run's
-`gates.dataPolicy` must be `enforce` (`ship` and `smoke` count as enforce when unset). It also refuses
+`gates.dataPolicy` must be `enforce` (`ship` and `smoke` count as enforce when unset). The baseline records the merged `safety` values,
+the merged `baseUrl` and the run-config's own watched keys, and the audit compares the same way. A run-config that is
+not a JSON object, or a safety number like `1e16`, is refused at `start`. It also refuses
 when the known-defect registry does not validate, when any journey file in the project cannot be read,
 or when another journey is open. `--max-hours` is 0.1 to 72 (default 6); the deadline and `--until` are
 enforced by `next`, `step-start` and `step-done` alike.

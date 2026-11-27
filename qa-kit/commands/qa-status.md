@@ -56,7 +56,7 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
 6. **Unattended journey (per spec).** For each spec run
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" status <target>` (it reads only). Exit 1 with
    `auto: no journey for <target>` means no unattended journey was started for this spec with
-   `/qa-auto`: add nothing for it. Otherwise it prints the journey plus `needsPerson`. Add to that
+   `/qa-auto`: add nothing for it. Otherwise it prints the journey plus `needsPerson`, the number of decisions that need a person. Add to that
    spec's summary line:
    - `state: open` → `journey: open at <step>`, the first step in `steps` whose `state` is not `done`;
    - `state: stopped` → `journey: stopped at <step> (<stop.reason>)`, and say whether starting
@@ -64,7 +64,7 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
      act first (`blocked`, `audit`, `no-sign-in`, `tracker`);
    - `state: done` → `journey: done`;
 
-   then `<needsPerson> items for a person`, and point at `.qa/specs/<target>/auto/handoff.md` when that
+   then `<needsPerson> decisions that need a person` (not the handoff's count of all items for a person, which is never smaller), and point at `.qa/specs/<target>/auto/handoff.md` when that
    file exists. While a journey is open, the next step for that spec is the journey's own; say so
    instead of telling a person to run a step by hand.
 

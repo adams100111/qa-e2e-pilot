@@ -179,7 +179,7 @@ a `.qa/config.json` and working sign-in for the roles. Run it in the main sessio
   of the starting plan changed, a step has no result, the run was not verified, or ClickUp is behind
   (eighteen codes: `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`). It reads files the agent can also write. It cannot see a change that was changed
   back, a baseline and journey rewritten together, or a fresh baseline taken with `--restart` after a
-  change (the new journey says `restartedFrom`). It is a tripwire against drift and mistakes, not
+  change (the new journey says `replacedFrom`). It is a tripwire against drift and mistakes, not
   protection against an agent set on defeating it.
 
 ## Bundled helpers (`qa-kit/scripts/`, pure + dual-engine)
