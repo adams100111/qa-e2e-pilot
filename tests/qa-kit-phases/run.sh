@@ -389,6 +389,11 @@ check "vl_template_verdict_line_first" "$(awk '/^## Verdict$/{f=1;next} f&&NF{pr
 has "$CC/qa-analyze.md" '`Verdict: BLOCKED`' && has "$CC/qa-analyze.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-analyze.md" 'nothing else on the line'; check "vl_analyze_names_both_values" "$?" "0"
 has "$CC/qa-status.md" '`Verdict: BLOCKED`' && has "$CC/qa-status.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-status.md" 'not finished'; check "vl_status_reads_the_line" "$?" "0"
 has "$CC/qa-auto.md" 'reads that one line'; check "vl_auto_reads_the_line" "$?" "0"
+# /qa-auto follows the final auto.sh rules (limits in step verbs, run refusals, run-config keys, audit before handoff)
+has "$CC/qa-auto.md" 'A limit stop is not a failed step' && has "$CC/qa-auto.md" 'do not call `stop`'; check "qa_auto_step_verbs_limit_stop" "$?" "0"
+has "$CC/qa-auto.md" 'auto: that run is still in progress' && has "$CC/qa-auto.md" 'auto: that run has no results for this spec' && has "$CC/qa-auto.md" 'auto: run has no result yet' && has "$CC/qa-auto.md" 'auto: verify has no result yet'; check "qa_auto_step_done_run_refusals" "$?" "0"
+has "$CC/qa-auto.md" '`gates`, `humanInteraction`, `environment`, `allowApiWrites`, `seedableEnvMarker`, `allowBlackboxCrawl`, `profile` and `baseUrl`' && has "$CC/qa-auto.md" 'run-config-safety:<key>'; check "qa_auto_run_config_whole_keys" "$?" "0"
+has "$CC/qa-auto.md" 'not older than the last step' && has "$CC/qa-auto.md" 'The audit has not run for this journey.'; check "qa_auto_audit_before_handoff" "$?" "0"
 for f in qa-analyze qa-status; do
   has "$ROOT/qa-kit/commands/$f.md" 'Verdict: PASS (advisory)'; check "vl_rendered_$f" "$?" "0"
 done

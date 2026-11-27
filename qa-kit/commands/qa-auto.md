@@ -43,6 +43,10 @@ one where the harness can.
    - Anything else, no journey included → `auto.sh start <target>` with the flags from the input
      (`--profile`, `--until`, `--max-hours`, `--restart`), plus `--known-defects-invalid` when step 2 exited non-zero.
 
+   `start` and `resume` judge the config merged with the spec's run-config. A run-config that is not
+   a JSON object is refused at `start`, and so is a safety number written like `1e16` or with more
+   than 15 digits. Print its line and end.
+
    If `start` or `resume` exits 1, print its one line, release the machine (step 12) and end. There is
    no journey, so there is nothing to audit or hand off. Do not try to remove the cause yourself.
 
@@ -65,7 +69,9 @@ one where the harness can.
       time `/qa-auto <target>` is started.
    2. **Sign-in, once.** Before the first step that is not `constitution` (so: right after
       `constitution` is done, or at the first step when it was already done), run `auto.sh signin <target>`.
-      It prints `{"ok":[…],"missing":[…]}`. A role in `missing` stays in the plan; do not create
+      It prints `{"ok":[…],"missing":[…]}`. A role counts as configured only when its `auth` entry names
+      a `.json` file inside the project (a real file, not a link), gives a login pattern with `@`,
+      says `login as …`, or says `none needed`. Any other free text is `missing`. A role in `missing` stays in the plan; do not create
       accounts, credentials or sign-in files for it. When no role has sign-in, `signin` stops the
       journey and the next `next` says so.
    3. `auto.sh step-start <target> <step>`.
@@ -84,11 +90,24 @@ one where the harness can.
       Each of those commands treats the open journey as `autonomousSetup` on, so it asks nobody. Where
       it would have asked a person, answer by the rules below and record the answer (step 7).
    5. `auto.sh step-done <target> <step>`. It refuses (`auto: <step> has no result yet`) when the step's
-      files are missing. For the run step: `auto.sh step-done <target> run --run <run-id>`, and
+      files are missing; `auto: verify has no result yet` also covers a `verification.json` that does not parse.
+      For the run step: `auto.sh step-done <target> run --run <run-id>`, and
       only after the engine's end-of-run order has completed and the run's rendered report
-      (`.qa/runs/<run-id>/report.md`) exists. The script refuses a run without `report.md`, and refuses a
-      run that started before the journey with `auto: that run started before this journey`. If the
-      engine's agent returns before the run is finished, resume it (step 6); never mark it done.
+      (`.qa/runs/<run-id>/report.md`) exists. It refuses a run that is not this journey's finished
+      result, with one of these lines:
+      - `auto: that run is still in progress`: the `status` in the run's `run-manifest.json` must no
+        longer be `in-progress`;
+      - `auto: that run has no results for this spec`;
+      - `auto: run has no result yet`: also when the manifest or the checkpoint does not parse, or
+        `report.md` is empty;
+      - `auto: that run started before this journey`.
+
+      If the engine's agent returns before the run is finished, resume it (step 6); never mark it done.
+
+      **A limit stop in `step-start` or `step-done`.** Both can exit 1 and print the same stop line
+      `next` prints when the time limit or `--until` is reached, for example
+      `{"detail":…,"next":"stopped","reason":"time-limit"}`. A limit stop is not a failed step: go to the
+      end (step 9). Do not redo the step and do not call `stop`.
    6. After `spec` and after `scenarios`, take the second look (step 8), then go back to 5.1.
 
    **A step that fails** (its command stops on an error, or `step-done` refuses). Do not keep the count
@@ -96,7 +115,7 @@ one where the harness can.
    shows that step still `running` after the first attempt. A second failure of the same step is `step-failed`:
    `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end.
 
-   **An `auto.sh` verb that exits 1** where no rule here says what to do (`step-start`, `next`, `signin`, `decide`):
+   **An `auto.sh` verb that exits 1** where no rule here says what to do (`step-start`, `next`, `signin`, `decide`), other than a limit stop, which has its rule above:
    stop the loop. If `auto.sh status <target>` still shows `state: open`, run
    `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`. Then go to the end (step 9).
 
@@ -200,7 +219,9 @@ one where the harness can.
    - Never change a safety setting (`safety`), in `.qa/config.json` or in the spec's run-config:
      `allowApiWrites`, `seedableEnvMarker`, `environment`, `allowBlackboxCrawl`, anything under `gates`,
      `profile`, `humanInteraction.enforce`, `humanInteraction.maxOptOutRate`. They stay as the project
-     set them. Do not turn `autonomousSetup` on in a file either: the open journey is the signal.
+     set them. In the spec's run-config the whole top-level keys are watched: `gates`, `humanInteraction`, `environment`, `allowApiWrites`, `seedableEnvMarker`, `allowBlackboxCrawl`, `profile` and `baseUrl`. Adding, changing or removing any of them there fails the audit
+     (`run-config-safety:<key>`), because a run-config key replaces the config's whole key. The one
+     exception: `profile` set to the launch profile is not a change. Do not turn `autonomousSetup` on in a file either: the open journey is the signal.
    - Never add to, edit or migrate a check into the known-defect registry (`known-defect`). A check
      that asserts an application failure is left out of the plan; record that with
      `note --kind check-left-out` (below), naming the check in plain words.
@@ -261,7 +282,11 @@ one where the harness can.
 
 ## The end, always
 
-9. **Audit.** `auto.sh audit <target>` prints `{"ok":bool,"violations":[…]}` and exits 1 when a limit was
+9. **Audit.** Audit first, then handoff. Without a passing audit that is not older than the last step,
+   `handoff` prints result `not verified` and the sentence `The audit has not run for this journey.`
+   (a stopped journey stays `stopped`, with the same sentence).
+
+   `auto.sh audit <target>` prints `{"ok":bool,"violations":[…]}` and exits 1 when a limit was
    broken; it then stops the journey itself. Do not undo anything to make it pass and do not run it a
    second time to get a better answer. Go on to step 10 either way.
 
