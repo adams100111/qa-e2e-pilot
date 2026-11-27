@@ -45,6 +45,27 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    [· drift: stale]`. End with the single **next step** for the requested scope. Never invent an
    artifact you did not find; report only what is present on disk.
 
+5. **ClickUp links (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+   Run `bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) once per tracked spec. Print one ClickUp line
+   per tracked spec, under the summary lines and before the final **next step** line: the links it
+   returns for the spec and its latest run, plus each reason it gives for ClickUp being behind the
+   local files.
+
+6. **Unattended journey (per spec).** For each spec run
+   `bash "{{PLUGIN_ROOT}}/scripts/auto.sh" status <target>` (it reads only). Exit 1 with
+   `auto: no journey for <target>` means no unattended journey was started for this spec with
+   `/qa-auto`: add nothing for it. Otherwise it prints the journey plus `needsPerson`. Add to that
+   spec's summary line:
+   - `state: open` → `journey: open at <step>`, the first step in `steps` whose `state` is not `done`;
+   - `state: stopped` → `journey: stopped at <step> (<stop.reason>)`, and say whether starting
+     `/qa-auto <target>` again continues it (`time-limit`, `step-failed`, `until`) or a person has to
+     act first (`blocked`, `audit`, `no-sign-in`, `tracker`);
+   - `state: done` → `journey: done`;
+
+   then `<needsPerson> items for a person`, and point at `.qa/specs/<target>/auto/handoff.md` when that
+   file exists. While a journey is open, the next step for that spec is the journey's own; say so
+   instead of telling a person to run a step by hand.
+
 ## Going further: the dashboard
 
 `/qa-status` answers "which step is next". For run-level detail — each run's progress, rate and ETA,

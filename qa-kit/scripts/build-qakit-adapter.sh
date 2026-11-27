@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # build-qakit-adapter.sh <claude|pi|codex|opencode> — assemble qa-kit/dist/<h>/ from qa-kit/core +
 # qa-kit/harness-profiles.qakit.json + qa-kit/harnesses/<h>/. Mirrors scripts/build-adapter.sh (ADR-0017),
-# qa-kit-owned so the engine stays untouched. Renders three token families per harness:
+# qa-kit-owned so the engine stays untouched. Renders these token families per harness:
 #   {{SKILL_REF:<name>}} -> the profile's skillRef template ({name} substituted)  (the 7 engine skills)
 #   {{ENGINE_RUN}}       -> the profile's engineRun string                        (the engine's qa-run command)
 #   {{PLUGIN_ROOT}}      -> the profile's pluginRoot                              (qa-kit's OWN scripts/templates root)
 #   {{SKILL_REF_GENERIC}}-> the profile's skillRefGeneric string (literal replace) (generic "invoke an engine skill" instruction, per harness dialect)
+#   {{SECOND_LOOK}}      -> the profile's secondLook string (literal replace)      (/qa-auto: the fresh-agent dispatch instruction where
+#                           the profile's subagentDispatch is true, the unavailable banner elsewhere; substituted AFTER the skill and engine-run tokens
+#                           ({{SKILL_REF:<name>}}, {{ENGINE_RUN}}), so the string must not contain them, and BEFORE
+#                           {{PLUGIN_ROOT}}, so it may carry that one)
 #   {{PERSONA_BODY}}     -> qa-kit/core/persona-body.md (agent manifest only)
 # Bare /qa-<step> command refs are intentionally NOT tokenized (they read fine on every harness).
 # NEVER modifies the engine. Output qa-kit/dist/<h>/ is git-ignored.
@@ -30,6 +34,7 @@ data = sys.stdin.read()
 data = re.sub(r"\{\{SKILL_REF:([a-z0-9-]+)\}\}",
               lambda m: prof["skillRef"].replace("{name}", m.group(1)), data)
 data = data.replace("{{ENGINE_RUN}}", prof["engineRun"])
+data = data.replace("{{SECOND_LOOK}}", prof["secondLook"])
 data = data.replace("{{PLUGIN_ROOT}}", prof["pluginRoot"])
 data = data.replace("{{SKILL_REF_GENERIC}}", prof["skillRefGeneric"])
 pbf = os.environ.get("PERSONA_BODY_FILE")

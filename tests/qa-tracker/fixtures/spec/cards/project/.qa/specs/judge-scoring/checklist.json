@@ -1,0 +1,10 @@
+[
+  {"id": "C-SCORE-01", "surface": "/judge/submissions", "kind": "happy-path", "tags": ["human-action"],
+   "action": "Open a submission and enter a score", "persona": "judge", "priority": "P1"},
+  {"id": "C-SCORE-02", "surface": "/judge/submissions", "kind": "business-rule", "tags": ["human-action"],
+   "action": "Enter a score above the maximum", "persona": "judge", "priority": "P1"},
+  {"id": "C-RANK-01", "surface": "/leaderboard", "kind": "multiplicity-1", "tags": ["read-only"],
+   "action": "Open the leaderboard", "personas": ["admin", "judge"], "priority": "P2"},
+  {"id": "load-clean:GET /admin/hackathons:admin", "surface": "/admin/hackathons", "kind": "load-clean",
+   "tags": ["independent", "read-only"], "action": "Open the hackathon list", "persona": "admin"}
+]

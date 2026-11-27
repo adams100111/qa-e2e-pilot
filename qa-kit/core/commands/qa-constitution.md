@@ -10,6 +10,15 @@ Run role discovery/confirmation via the qa-e2e-pilot engine's role skills, then 
 qa-kit's bundled `constitution.sh` (`{{PLUGIN_ROOT}}/scripts/constitution.sh`) — it invents no
 role logic and no new hashing/diff logic.
 
+An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.
+This command takes no target, and `auto.sh status` is per target: run it for each directory under `.qa/specs/`.
+The one that shows `state: open` is `<target>` (one journey is open per project at a time); when there
+is no such directory yet, `<target>` is the one `/qa-auto` was started with. While it is open, tell `{{SKILL_REF:confirming-discovered-roles}}` to take its
+`autonomousSetup` path, with the reason `unattended journey`, and take the `autonomousSetup` branch of
+step 6. Change no file to switch it on; when the journey closes, a person running this command is asked
+as usual.
+
 ## Arguments
 
 Forwarded as-is to the role flow: `--refresh`, `--global`, `--from-global`. Full input: `$ARGUMENTS`.

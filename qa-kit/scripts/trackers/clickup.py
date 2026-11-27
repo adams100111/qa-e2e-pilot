@@ -9,7 +9,8 @@ name, a list by name, the guide Doc by name, a page by name. `.qa/tracker-map.js
 remote ids and the last-pushed description hash (used to tell a human edit from a catalog change).
 
 The transport comes from `transport_for(ctx)`: `ctx.transport` or `ctx.args.transport` when set
-(tests inject a fake there), else an `HttpTransport` with `CLICKUP_API_TOKEN`.
+(tests inject a fake there), else an `HttpTransport` with the token from the environment variable
+named by `tokenEnv` (default `CLICKUP_API_TOKEN`).
 """
 from __future__ import annotations
 
@@ -24,9 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from trackers.clickup_api import ApiError, HttpTransport, Transport, token_from_env
+from trackers.clickup_api import ApiError, HttpTransport, Transport, token_env_name, token_from_env
 from trackers.core import (CONFIG_REL, ConfigError, RunError, WordingError, case_index, case_results,
-                           content_hash, fingerprint, norm, outbound, same_status, status_name,
+                           content_hash, enabled_specs, fingerprint, norm, outbound, same_status, status_name,
                            validate_catalog)
 from trackers.ctx import _manifest, manifest_build, run_dir_for, run_label
 
@@ -59,7 +60,7 @@ def today() -> str:
 
 def transport_for(ctx) -> Transport:
     t = getattr(ctx, "transport", None) or getattr(getattr(ctx, "args", None), "transport", None)
-    return t if t is not None else HttpTransport(token_from_env())
+    return t if t is not None else HttpTransport(token_from_env(token_env_name(getattr(ctx, "cfg", None))))
 
 
 def _ids(ctx) -> Tuple[str, Optional[str], str]:
@@ -950,6 +951,12 @@ class _Init(_Sync):
         self.check_list(self.bugs_list, BUG_FIELDS, BUG_VIEWS)
 
 
+def _any_spec_enabled(cfg) -> bool:
+    """A spec listed under `specs` is enabled, or `specDefaults.enabled` makes every new one so."""
+    defaults = cfg.get("specDefaults")
+    return bool(enabled_specs(cfg)) or (isinstance(defaults, dict) and defaults.get("enabled") is True)
+
+
 def init(ctx) -> None:
     """Build the folder structure (lists, views), check fields and statuses, print the manual
     click steps, and write the ids found back into docs/agents/qa-tracker.json (only --apply)."""
@@ -961,6 +968,12 @@ def init(ctx) -> None:
             s.flush_manual()
             if ctx.log.apply:
                 _save_ids(ctx, s.found_lists, s.found_fields)
+        if _any_spec_enabled(ctx.cfg):
+            from trackers import clickup_spec  # lazy: only projects that track a spec load it
+            for step in clickup_spec.report_folder_fields(ctx) or []:
+                s.manual += 1
+                s.log.counts["manual"] = s.manual
+                s.say(f"MANUAL\t{s.manual}. {step}")
 
 
 # ---------------------------------------------------------------- runs, results, bugs, retest
