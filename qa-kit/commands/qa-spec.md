@@ -9,6 +9,9 @@ the constitution's roles into an **immutable, version-stamped snapshot** the run
 (`plan_frozen`, ADR-0020). Full input: `$ARGUMENTS` — the first token is `<target>` (a slug for this
 feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles for this spec only.
 
+An open unattended journey for this target (`bash ${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.
+
 ## What to do
 
 1. **Prereq: constitution.** Require `.qa/constitution.state.json`.
@@ -207,13 +210,16 @@ feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles 
    carries an owner, a capped deadline and a severity.
 
 7b. **ClickUp tracking (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
-   If the spec is not enabled, offer `/qa-tracker --spec <target>` once, in one line, and go on; the
-   spec works the same without it. If it is enabled, create its ClickUp structure and Overview doc:
+   Create the spec's ClickUp structure and Overview doc, asking nothing:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-init --spec <target> --apply
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-docs --spec <target> --apply
    ```
-   Under `autonomousSetup` ask nothing: sync an enabled spec, leave a spec that is not enabled alone.
+
+   **A spec that is not tracked yet.** Only when `docs/agents/qa-tracker.json` has `backend: "clickup"` and
+   `specs.<target>.enabled` is not `true`: offer `/qa-tracker --spec <target>` once, in one line, and go
+   on; the spec works the same without it. Make no offer under an unattended journey or `autonomousSetup`.
+   On the local or GitHub backend, or with no tracker config, say nothing about ClickUp.
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
    applied, the drift result, the data-baseline entity count (seeded vs created), the journeys written (count, how many P1), any known-defect entry

@@ -88,7 +88,6 @@ Keys in `docs/agents/qa-tracker.json`:
 
 - Read `writing-rules.md` (appended to `docs/agents/qa-tracker.md` at setup) before
   writing any text for ClickUp. `lint` enforces what a script can.
-
 - Text sent to ClickUp is read by testers and customers. It is checked against the forbidden words in
   the config, and passwords are masked. An item that fails is skipped, not sent in part.
 - ClickUp allows about 100 requests a minute. The tool waits between writes.
