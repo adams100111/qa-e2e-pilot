@@ -1,6 +1,6 @@
 # qa-kit ClickUp tracking per spec and run, and the unattended journey
 
-Date: 2026-11-27 · Status: accepted (owner, 2026-11-27) · Plugin: qa-kit (owner). The engine is unchanged.
+Date: 2026-11-27 · Status: accepted (owner, 2026-11-27). Built in qa-kit 0.5.0; see ADR-0034 and ADR-0035. · Plugin: qa-kit (owner). The engine is unchanged.
 
 One spec in two parts, built from one plan so both can be worked on in parallel:
 

@@ -19,12 +19,24 @@ The spine (each step is a slash command; each writes one human-reviewable artifa
 
 `/qa-status` prints which step is next (and any constitution drift advisory).
 
+Two commands sit beside the spine:
+
+- **`/qa-tracker`** — choose where cases, runs and bugs are tracked (local files, GitHub or ClickUp).
+  For ClickUp it also sets up tracking per spec (`--spec <target>`) and per machine (`--global`). Once a
+  spec is tracked, each step above updates ClickUp, and a failed ClickUp step stops that step's command.
+- **`/qa-auto <target>`** — run the spine for one target as an **unattended journey**, with nobody
+  present. `auto.sh` keeps the journey on disk and says what is next; you answer each question a step
+  would have asked, from evidence, and record it with `auto.sh decide`. Never decide a seed command,
+  a coverage exclusion, a crawl-only census, a person-confirmed expected value, a safety setting or the
+  known-defect registry; the audit fails the journey if any of them changed. Run it in the main
+  session, and end with `auto.sh audit` and `auto.sh handoff`.
+
 **Never hand off to `/qa-run` while the target's `.qa/specs/<target>/analysis.md` Verdict is `BLOCKED`**
 (the ship-profile coverage gate, which also blocks on a missing census or an unavailable engine script).
 Send the operator back to `/qa-scenarios` to add criteria or recorded exclusions, then re-run
 `/qa-analyze`. An engine-only `/qa-run` (without qa-kit) has no coverage gate; say so if asked to ship
 from one.
 
-All seven steps exist (constitution → spec → scenarios → analyze → run → verify → status). When a
+All seven steps exist (constitution → spec → scenarios → analyze → run → verify → status), with `/qa-tracker` and `/qa-auto` beside them. When a
 step needs a role flow, stack detection, or any verification skill, invoke the engine's skill by
 {{SKILL_REF_GENERIC}} — never reimplement it here.
