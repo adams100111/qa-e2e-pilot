@@ -209,13 +209,14 @@ run_engine_limits() {
   printf '{"overrides":' > "$R/verification.json"
   out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
   check "$E a verification.json that does not parse is no result" "$rc|$out|$(jv "$J" 'd["steps"][5]["state"]')" "1|auto: verify has no result yet|pending"
-  # item 14: a document that parses and holds no rows is not a result
-  for r in 'null' '[]' '{}' '{"overrides":[]}' '{"rows":[]}' '{"criteria":[]}' '"verified"' '7' 'true' '[1]' '[null]' '{"rows":["C-001"]}' '{"rows":null,"criteria":{}}'; do
+  # item 14: a result is a list of rows (empty allowed: the engine writes [] for a run with no
+  # passes), at the top level or under `rows` or `criteria`; anything else is not a result
+  for r in 'null' '{}' '{"overrides":[]}' '"verified"' '7' 'true' '[1]' '[null]' '{"rows":["C-001"]}' '{"rows":null,"criteria":{}}'; do
     printf '%s\n' "$r" > "$R/verification.json"
     before="$(snapshot "$Q")"
     out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
-    check "$E verify_needs_rows [$r]" "$rc|$out" "1|auto: verify has no result yet"
-    check "$E verify_needs_rows [$r] changes nothing" "$(snapshot "$Q")" "$before"
+    check "$E verify_refuses_what_is_not_a_list_of_rows [$r]" "$rc|$out" "1|auto: verify has no result yet"
+    check "$E verify_refuses_what_is_not_a_list_of_rows [$r] changes nothing" "$(snapshot "$Q")" "$before"
   done
   # item 22: the plan checks decide. The stub records how it was called and fails when told to.
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/vp-args.txt"\ncase "$1" in --drift) exit "${VP_DRIFT_RC:-0}" ;; *) exit "${VP_PLAIN_RC:-0}" ;; esac\n' "$ROOT" > "$ROOT/vp.sh"
@@ -259,12 +260,12 @@ run_engine_limits() {
   cp "$Q/.qa/specs/checkout/checklist.json" "$R/checklist.json"
   real step-done checkout verify --project "$Q" >/dev/null 2>&1
   check "$E verify_plan_real_script_passes_a_clean_run" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
-  # item 14: the two shapes that hold rows are a result
-  for r in '[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]' '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}' '{"criteria":[{"criterionId":"C-001"}]}'; do
+  # item 14: the shapes that hold a list of rows are a result, an empty list included
+  for r in '[]' '{"rows":[]}' '{"criteria":[]}' '[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]' '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}' '{"criteria":[{"criterionId":"C-001"}]}'; do
     Q="$(journey_at verify)"; J="$Q/.qa/specs/checkout/auto/journey.json"; R="$Q/.qa/runs/r1"
     printf '%s\n' "$r" > "$R/verification.json"
     auto step-done checkout verify --project "$Q" >/dev/null 2>&1
-    check "$E a verification.json that holds rows is a result [$r]" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
+    check "$E verify_accepts_a_list_of_rows [$r]" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
   done
   # item 11: the clock override cannot hold a passed deadline open in a real journey
   Q="$(journey_at analyze)"; J="$Q/.qa/specs/checkout/auto/journey.json"

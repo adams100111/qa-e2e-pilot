@@ -557,7 +557,8 @@ def cid(r):
 
 def has_rows(v):
     # a verification.json that holds a result: the rows the handoff reads (the document itself when
-    # it is a list, else the list under `rows` or `criteria`), at least one, every one an object
+    # it is a list, else the list under `rows` or `criteria`), every one an object; the list may be
+    # empty (the engine writes [] for a run with no passes)
     rows = None
     if isinstance(v, list):
         rows = v
@@ -566,7 +567,7 @@ def has_rows(v):
             if isinstance(v.get(k), list):
                 rows = v[k]
                 break
-    return isinstance(rows, list) and len(rows) > 0 and all(isinstance(r, dict) for r in rows)
+    return isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
 
 
 def op_verified():
@@ -1003,6 +1004,13 @@ def op_facts():
     put("S", "notes", nstat)
     put("S", "plan", pstat)
     put("S", "results", kstat)
+    # a second check with no rows at all covers nothing: beside a recorded pass it is `empty`
+    last = {}
+    for r in (krows or []):
+        if isinstance(r, dict) and cid(r) is not None:
+            last[(cid(r), who(r))] = r
+    if vstat == "ok" and len(vrows) == 0 and any(low(r.get("verdict")) == "pass" for r in last.values()):
+        vstat = "empty"
     put("S", "second", vstat)
     put("J", b(j.get("restartedFrom") is not None), b(j.get("replacedAfterAudit") is True))
     # what the audit found: the code word, and its key, step, check title or question

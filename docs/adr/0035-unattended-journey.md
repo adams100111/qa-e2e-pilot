@@ -87,7 +87,7 @@ detail) if any of these changed: a safety setting of the config or the run-confi
 application, the known-defect registry, a seed file, a coverage exclusion, a person-confirmed expected
 value (added, removed or its expected value changed), a row of the starting plan (removed), or when a
 decision of a forbidden class is on record, a step is marked done without its result, the run has no
-`verification.json` that holds rows, or ClickUp is behind the results (`tracker.sh spec-status`, asked
+`verification.json` that is a list of rows, or ClickUp is behind the results (`tracker.sh spec-status`, asked
 only when the project has `docs/agents/qa-tracker.json`; its one line `{"setUp": false, "target": …}`
 means the spec is not tracked). The codes are
 `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`. Once failed it stays failed.
@@ -111,8 +111,8 @@ or a hash held by a person or a CI job); that is not built.
 
 **G. The result rule is stricter than the engine's.** `auto.sh handoff` works the result out from files
 only and never reports better than what the engine recorded: `stopped` for any stop; `not verified`
-when the journey is open, has no run, a file it decides from cannot be read, or verification is missing
-or leaves a pass that was recorded; `not ready` when the report says NOT SHIP-READY; `not confirmed`
+when the journey is open, has no run, a file it decides from cannot be read, or verification is missing,
+leaves a pass that was recorded, or has no rows while the run recorded a pass; `not ready` when the report says NOT SHIP-READY; `not confirmed`
 when the report says SHIP-READY but a top-priority check rests on a person (a decision that needs a
 person, or an expected value that is only a proposal); `ready` only when none of that holds; and under
 `full`, with no ship section, `verified` or `not verified`. The sentence carries the count of items
@@ -121,7 +121,8 @@ step says `The audit has not run for this journey.` and is `not verified` (`stop
 Run the audit first, then the handoff. `step-done run` refuses a run that is unfinished (its manifest
 `status` must be text other than `in-progress`), has no rendered report (one with only blanks is
 empty), has no checkpoint row from this plan, or started before the journey. `step-done verify`
-refuses a `verification.json` that holds no rows (`null`, `[]`, `{}`), and then runs qa-kit's own
+refuses a `verification.json` that is not a list of rows (`null`, `{}`; an empty list is a result, the
+engine writes `[]` for a run with no passes), and then runs qa-kit's own
 `verify-plan.sh` for the run, plain and `--drift`, and refuses when either does not exit 0: the
 script decides, not the agent. A refused verify stops the journey (`step-failed`); it is still audited
 and handed off. The handoff's last lines name the command that works next: `/qa-auto <target>` after

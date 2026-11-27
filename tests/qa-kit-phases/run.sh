@@ -214,7 +214,7 @@ grep -q 'There is no journey, or it shows `state: done`, or `--restart` was give
 grep -qF 'auto: a journey for <target> is stopped (<reason>); pass --restart to start a new one' "$QAU"; check "qa_auto_names_the_start_refusal" "$?" "0"
 grep -q '`auto.sh status` itself fails' "$QAU" && grep -q 'with a line other than `auto: no journey for <target>`' "$QAU" && grep -q 'the end (step 9): audit, then handoff' "$QAU"; check "qa_auto_status_failure_stops_step_failed" "$?" "0"
 grep -qF 'auto: the plan check did not pass for this run' "$QAU" && grep -qF 'auto: the plan drift check did not pass for this run' "$QAU" && grep -q 'A refused' "$QAU" && grep -q 'verify is not redone' "$QAU"; check "qa_auto_refused_verify_stops" "$?" "0"
-grep -qF 'auto: that run has no status' "$QAU" && grep -q 'holds no rows (`null`, `\[\]`, `{}`)' "$QAU" && grep -q 'holds only blanks' "$QAU"; check "qa_auto_names_the_new_step_done_refusals" "$?" "0"
+grep -qF 'auto: that run has no status' "$QAU" && grep -q 'is not a list of rows (`null`, `{}`); an empty list is a result' "$QAU" && grep -q 'holds only blanks' "$QAU"; check "qa_auto_names_the_new_step_done_refusals" "$?" "0"
 grep -qF 'auto: the second look was recorded as unavailable; a decision cannot be let stand' "$QAU"; check "qa_auto_stands_refused_after_unavailable" "$?" "0"
 grep -q 'It does not check two: a census accepted without the' "$QAU" && grep -q 'It does not check the' "$QAU" && grep -q 'a seed command run without `seed.json`' "$QAU"; check "qa_auto_says_what_the_audit_does_not_check" "$?" "0"
 grep -q 'and then start a new journey with' "$CC/qa-status.md" && grep -q '`/qa-auto <target> --restart`' "$CC/qa-status.md"; check "qa_status_names_restart_after_a_final_stop" "$?" "0"

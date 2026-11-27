@@ -177,8 +177,8 @@
 #   step-without-result:<step>          a step other than verify is marked done and its result is not
 #                                       on disk
 #   not-verified                        the journey is done, or its verify step is, and the recorded
-#                                       run's verification.json is missing, does not parse, or holds
-#                                       no rows (`null`, `[]`, `{}`; see STEP ORDER)
+#                                       run's verification.json is missing, does not parse, or is
+#                                       not a list of rows (`null`, `{}`; see STEP ORDER)
 #   tracker-behind                      `bash <this directory>/tracker.sh spec-status --spec <target>
 #                                       --project <dir>` failed, gave no answer, or answered anything
 #                                       other than: a JSON line whose `behind` is the boolean false
@@ -247,8 +247,9 @@
 # (one with only blanks is empty), a manifest whose `status` is text and is not `in-progress` (a
 # status that is missing, null, blank or not text is refused: `that run has no status`), at least
 # one checkpoint row for a row of this spec's checklist.json, and a start inside this journey;
-# verify wants a verification.json that parses and holds rows (a list of objects, at the top level
-# or under `rows` or `criteria`, at least one: `null`, `[]` and `{}` are not a result), and then
+# verify wants a verification.json that parses and is a list of rows (a list of objects, at the top
+# level or under `rows` or `criteria`; an empty list is a result, the engine writes `[]` for a run
+# with no passes; `null`, `{}` and a scalar are not), and then
 # runs qa-kit's own verify-plan.sh for the recorded run, plain and `--drift`, and refuses when
 # either does not exit 0 (`the plan check did not pass for this run`, `the plan drift check did
 # not pass for this run`): the script decides, not the caller. `QA_AUTO_VERIFY_PLAN_CMD` replaces
@@ -387,11 +388,12 @@ JQ_RD='def rd($state; $text; $empty_ok):
       then {found: true, v: ($d | getpath($k))} else {found: false, v: null} end;
   def merged($c; $r): (if ($c | type) == "object" then $c else {} end) + $r;'
 # has_rows — true for a verification.json that holds a result: the rows the handoff reads (the
-# document itself when it is a list, else the list under `rows` or `criteria`), at least one, every
-# one an object. `null`, `[]`, `{}` and an object without such a list are not a result. (The python
-# side is has_rows in auto_helpers.py.)
+# document itself when it is a list, else the list under `rows` or `criteria`), every one an
+# object. The list may be empty: the engine writes `[]` for a run with no passes, and that is a
+# finished result. `null`, `{}`, a scalar and an object without such a list are not a result. (The
+# python side is has_rows in auto_helpers.py.)
 JQ_VRES='def has_rows: (if type == "array" then . elif type == "object" then (first((.rows, .criteria) | select(type == "array")) // null) else null end)
-    | (type == "array" and length > 0 and all(.[]; type == "object"));'
+    | (type == "array" and all(.[]; type == "object"));'
 # The array of a rows file read with `jq -s` (nothing at all, no file yet, is an empty array), and
 # the next free id with a one-letter prefix.
 JQ_ROWS='def rows_in: (if length == 0 then [] elif length == 1 then .[0] else error("not one JSON document") end)
@@ -1623,7 +1625,7 @@ cmd_step_done() {
       journey_read_open
       case "$J_RUN" in ""|.|..|*/*|-*) J_RUN="" ;; esac
       if [ -z "$J_RUN" ]; then refuse="no run is recorded for this journey"
-      # An empty or broken verification.json, or one that holds no rows (`null`, `[]`, `{}`), is no result.
+      # An empty or broken verification.json, or one that is not a list of rows (`null`, `{}`), is no result.
       elif ! verification_ok "$QA_DIR/runs/$J_RUN/verification.json"; then refuse="verify has no result yet"
       # The plan checks decide, not the caller: qa-kit's own verify-plan.sh, plain and --drift.
       else refuse="$(verify_plan_refusal "$J_RUN")"; fi
@@ -2071,7 +2073,8 @@ US="$(printf '\037')"
 # kept alike). One fact per line, fields split by U+001F, every text made one line by `clean`:
 #   S <file> <ok|absent|bad>      decisions, notes, plan, results (checkpoint.json), second
 #                                 (verification.json; also `override`: a row that is not about a
-#                                 recorded non-pass does not say pass)
+#                                 recorded non-pass does not say pass; and `empty`: it has no
+#                                 rows and the run recorded a pass)
 #   J <1|0> <1|0>                 the journey was restarted; the journey it replaced had failed its audit
 #   V <code word> <text>          one audit violation; the text is its key, step, check title or question
 #   D <step> <class> <needs 1|0> <a top priority check rests on it 1|0> <no evidence 1|0> <question> <answer> <evidence>
@@ -2128,7 +2131,7 @@ JQ_HANDOFF='
      elif $vrows == null or any($vrows[]; type != "object") then "bad"
      elif any($vrows[]; (.inRunVerdict | low) as $in
                 | (($in == "fail" or $in == "blocked" or $in == "deferred" or $in == "error") | not) and ((.verifierVerdict | low) != "pass"))
-     then "override" else "ok" end) as $vstat
+     then "override" else "ok" end) as $vstat0
   # expected values that are only a proposal: a calculated check, or any check that names a source,
   # whose source is neither a person nor a cited spec line
   | ($plan.ids | map(select(. as $i | $plan.by[$i] as $x
@@ -2142,6 +2145,8 @@ JQ_HANDOFF='
   | (reduce (($krows // [])[] | select(type == "object") | select(cid != null)) as $x
        ({keys: [], by: {}}; ([($x | cid), ($x | who)] | tojson) as $key
           | (if (.by | has($key)) then . else .keys += [$key] end) | .by[$key] = $x)) as $cp
+  # a second check with no rows at all covers nothing: beside a recorded pass it is `empty`
+  | (if $vstat0 == "ok" and ($vrows | length) == 0 and any($cp.keys[]; ($cp.by[.].verdict | low) == "pass") then "empty" else $vstat0 end) as $vstat
   | [ ["S", "decisions", $dstat], ["S", "notes", $nstat], ["S", "plan", $pstat], ["S", "results", $kstat], ["S", "second", $vstat],
       ["J", ($j.restartedFrom != null | b), ($j.replacedAfterAudit == true | b)],
       # what the audit found: the code word, and its key, step, check title or question
@@ -2375,7 +2380,8 @@ violation_plain() {
 #                  decision that needs a person (JQ_NEEDS) and names no check, or names a top
 #                  priority check; or a top priority expected value that is only a proposal
 #   ready          the report says SHIP-READY and none of that holds, and verification.json records
-#                  no override (a pass that verification did not leave a pass is `not verified`)
+#                  no override (a pass that verification did not leave a pass is `not verified`,
+#                  and so is a verification.json with no rows beside a recorded pass)
 # Under a SHIP-READY report the result is `not verified` when verification.json is absent or
 # unreadable, or checkpoint.json, decisions.json (when there is one) or the plan cannot be read.
 # The first sentence of the Result section is the fixed sentence of the result; whenever items
@@ -2499,6 +2505,7 @@ EOT
         elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
         elif [ "$vstat" = absent ]; then why="The results have not had their second check."
         elif [ "$vstat" = override ]; then why="The second check did not confirm every passed result."
+        elif [ "$vstat" = empty ]; then why="The second check does not cover the passed results."
         elif [ "$vstat" != ok ]; then why="The second check could not be read."
         else result=verified; line="Verified."; fi ;;
       ready)
@@ -2506,6 +2513,8 @@ EOT
         elif [ "$vstat" = bad ]; then why="The second check could not be read."
         # a pass the second check did not leave a pass is never ready, whatever the report says
         elif [ "$vstat" = override ]; then why="The second check did not confirm every passed result."
+        # a second check with no rows beside a recorded pass covers nothing
+        elif [ "$vstat" = empty ]; then why="The second check does not cover the passed results."
         elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
         elif [ "$dstat" = bad ] || [ "$pstat" != ok ]; then why="The decisions or the plan of checks could not be read."
         elif [ "$p1pending" -eq 1 ]; then result="not confirmed"; line="Not confirmed: $count items need a person."; counted=1

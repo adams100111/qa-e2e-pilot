@@ -178,10 +178,15 @@ EOT
   expect "an empty verification.json is not-verified" "$P" 1 '"not-verified"'
   P="$(fin)"; printf '{"overrides":' > "$P/.qa/runs/r1/verification.json"
   expect "a verification.json that does not parse is not-verified" "$P" 1 '"not-verified"'
-  # item 14: a verification that parses and holds no rows is no verification either
-  for k in 'null' '[]' '{}' '{"overrides":[]}' '{"rows":[]}' '[1]' '"ok"'; do
+  # item 14: a verification that parses and is not a list of rows is no verification either; an
+  # empty list is one (the engine writes [] for a run with no passes)
+  for k in 'null' '{}' '{"overrides":[]}' '[1]' '"ok"'; do
     P="$(fin)"; printf '%s\n' "$k" > "$P/.qa/runs/r1/verification.json"
-    expect "not_verified_without_rows [$k]" "$P" 1 '"not-verified"'
+    expect "not_verified_without_a_list_of_rows [$k]" "$P" 1 '"not-verified"'
+  done
+  for k in '[]' '{"rows":[]}' '{"criteria":[]}'; do
+    P="$(fin)"; printf '%s\n' "$k" > "$P/.qa/runs/r1/verification.json"
+    expect "an_empty_list_of_rows_is_a_verification [$k]" "$P" 0 ""
   done
   P="$(fin)"; printf '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}\n' > "$P/.qa/runs/r1/verification.json"
   expect "a verification with its rows under a key is a verification" "$P" 0 ""

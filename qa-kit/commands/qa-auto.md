@@ -107,7 +107,8 @@ one where the harness can.
       it would have asked a person, answer by the rules below and record the answer (step 7).
    5. `auto.sh step-done <target> <step>`. It refuses (`auto: <step> has no result yet`) when the step's
       files are missing; `auto: verify has no result yet` also covers a `verification.json` that does not
-      parse or holds no rows (`null`, `[]`, `{}`).
+      parse or is not a list of rows (`null`, `{}`); an empty list is a result, the engine writes `[]` for
+      a run with no passes.
       For the verify step the script then runs qa-kit's own `verify-plan.sh` for the journey's run, plain
       and `--drift`, and refuses when either does not exit 0: `auto: the plan check did not pass for this run`
       or `auto: the plan drift check did not pass for this run`. The script decides, not you. A refused

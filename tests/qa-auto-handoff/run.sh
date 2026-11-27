@@ -278,6 +278,18 @@ run_engine() {
   rm "$R/verification.json"
   check "$E ship-ready with no second check on disk" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}The results have not had their second check."
   cp "$HX/verification-override.json" "$R/verification.json"
+  # an empty second check (the engine writes [] for a run with no passes) beside recorded passes
+  # covers none of them: never `ready`
+  printf '[]\n' > "$R/verification.json"
+  check "$E empty_second_check_beside_passes_is_not_verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}The second check does not cover the passed results."
+  printf '{"rows":[]}\n' > "$R/verification.json"
+  check "$E empty_second_check_beside_passes_is_not_verified (rows under a key)" "$(ho "$P")" '0|{"result":"not verified","needsPerson":0}'
+  ed "$R/checkpoint.json" 'rows=d["criteria"] if isinstance(d,dict) else d
+for r in rows: r["verdict"]="fail"'
+  printf '[]\n' > "$R/verification.json"
+  check "$E empty_second_check_with_no_passes_follows_the_report" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
+  cp "$HX/checkpoint.json" "$R/checkpoint.json"
+  cp "$HX/verification-override.json" "$R/verification.json"
   # item 23: an override on the run is never `ready`, also when the engine's ship verdict did not count it
   check "$E override_under_ship_ready_is_not_verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}The second check did not confirm every passed result."
   ed "$R/verification.json" 'd[1]["verifierVerdict"]="blocked"'
@@ -305,6 +317,8 @@ run_engine() {
   check "$E verified: a recorded fail the second check left a fail is no override" "$(ho "$P")" '0|{"result":"verified","needsPerson":2}'
   ed "$R/verification.json" 'del d[0]["verifierVerdict"]'
   check "$E not verified: a second-check row without a verdict" "$(ho "$P")" '0|{"result":"not verified","needsPerson":2}'
+  printf '[]\n' > "$R/verification.json"
+  check "$E not verified under full: an empty second check beside recorded passes" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified. 2 items need a person.${NL}The second check does not cover the passed results."
   printf '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}\n' > "$R/verification.json"
   check "$E verified: the rows may sit under a key" "$(ho "$P")" '0|{"result":"verified","needsPerson":2}'
   n=0
