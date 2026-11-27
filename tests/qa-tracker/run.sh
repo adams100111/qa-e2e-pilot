@@ -9,6 +9,11 @@ OUT="$(mktemp "${TMPDIR:-/tmp}/qa-tracker-run.XXXXXX")"
 trap 'rm -f "$OUT"' EXIT
 
 cd "$ROOT" || exit 1
+# a developer's own ~/.config/qa-kit/tracker.json must not change a result: unless the caller
+# chose a machine file, point the suite at one that does not exist
+if [ -z "${QA_KIT_TRACKER_CONFIG:-}" ]; then
+  export QA_KIT_TRACKER_CONFIG="$OUT.no-machine-config.json"
+fi
 python3 -m unittest discover -s tests/qa-tracker -p 'test_*.py' -v > "$OUT" 2>&1
 rc=$?
 cat "$OUT"
