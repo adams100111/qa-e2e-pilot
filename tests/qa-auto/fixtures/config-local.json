@@ -1,0 +1,10 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "auth": { "storageState": ".qa/auth/storageState.json" },
+  "allowApiWrites": false,
+  "seedableEnvMarker": "",
+  "environment": "auto",
+  "allowBlackboxCrawl": false,
+  "humanInteraction": { "enforce": true, "saveSession": true, "autonomousSetup": false, "maxOptOutRate": 0.2 },
+  "profile": "full"
+}
