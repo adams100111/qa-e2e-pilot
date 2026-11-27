@@ -128,6 +128,15 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
    list, plan-drift list, override list, confidence downgrades, the re-adjudication outcome (re-judged / verifier
    overrides / unavailable banner / did not run), and the verified/overridden/not-verified state.
 
+4b. **ClickUp sync (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+   After the checks above, with `<run-id>` from step 1:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-bug --spec <target> --apply
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" sync-run --spec <target> --run <run-id> --apply
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-docs --spec <target> --run <run-id> --apply
+   ```
+   Report the run as complete only if all three exit 0. If one fails, say which and how to retry it.
+
 5. **Report:** counts — out-of-plan acts, plan-drift findings, overrides, confidence downgrades, verifier overrides —
    plus the run-scoped checks' state (passed / which of the four failed / did not complete / no
    record), whether the run was reported `UNVERIFIED`, whether re-adjudication ran, and the next

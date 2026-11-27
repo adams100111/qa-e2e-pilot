@@ -180,5 +180,18 @@ grep -q 'until uncovered = 0 and `uxMissing` is empty' "$QA"; check "analyze_vis
 grep -q 'uxMissing' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_template_coverage_lists_ux_missing" "$?" "0"
 grep -q -- '--require-visual-ux' "$ROOT/qa-kit/core/commands/qa-analyze.md" && grep -q 'step 5c' "$ROOT/qa-kit/core/commands/qa-scenarios.md"; check "ux_wiring_in_core_sources" "$?" "0"
 
+# --- ClickUp spec tracking wiring (Task 10): every step command guards, then calls its verb ---
+GUARD='Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.'
+CC="$ROOT/qa-kit/core/commands"
+for pair in qa-spec:spec-init qa-spec:push-docs qa-scenarios:push-scenarios qa-scenarios:lint qa-analyze:spec-note qa-verify:sync-run qa-verify:push-bug qa-verify:push-docs qa-status:spec-status; do
+  f="${pair%%:*}"; v="${pair##*:}"
+  grep -qF "$GUARD" "$CC/$f.md" && grep -Eq "tracker.sh\"? $v" "$CC/$f.md"; check "tracker_wiring_${f}_${v}" "$?" "0"
+done
+grep -qF -- '--global' "$CC/qa-tracker.md" && grep -qF -- '--spec <target>' "$CC/qa-tracker.md" && grep -q 'spec-init' "$CC/qa-tracker.md"; check "tracker_cmd_global_and_spec_levels" "$?" "0"
+grep -q 'writing-rules.md' "$CC/qa-tracker.md"; check "tracker_cmd_references_writing_rules" "$?" "0"
+[ -f "$ROOT/qa-kit/templates/trackers/writing-rules.md" ]; check "writing_rules_file_exists" "$?" "0"
+grep -q 'writing-rules.md' "$CC/qa-scenarios.md" && grep -q 'tracker-cards.json' "$CC/qa-scenarios.md"; check "scenarios_reads_rules_writes_cards" "$?" "0"
+grep -q 'Screenshots are sent as they are' "$ROOT/qa-kit/templates/trackers/writing-rules.md"; check "writing_rules_screenshot_line" "$?" "0"
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

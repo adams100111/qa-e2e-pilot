@@ -71,5 +71,12 @@ for h in claude pi codex opencode; do
   check "$h scripts exclude validate-qakit-adapters.sh" "$([ -f "$D/$h/scripts/validate-qakit-adapters.sh" ] && echo present || echo absent)" "absent"
 done
 
+# (h) ClickUp tracking guard sentence reaches every harness's render of each step command
+for h in claude pi codex opencode; do
+  for c in qa-spec qa-scenarios qa-analyze qa-verify qa-status; do
+    grep -qF 'Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true.' "$D/$h/commands/$c.md"; check "$h $c has tracker guard" "$?" "0"
+  done
+done
+
 echo "qakit-adapters: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

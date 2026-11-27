@@ -148,6 +148,15 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    stays advisory. This coverage gate is the only blocking analyze check besides
    plan defects.
 
+5b. **ClickUp note (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+   Write the coverage note in plain words (the gaps and whether the plan is ready, no criterion ids,
+   following `${CLAUDE_PLUGIN_ROOT}/templates/trackers/writing-rules.md`) to a temp file, then:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
+   ```
+   Add `--blocked` when the Verdict is `BLOCKED`. This writes to ClickUp only; the read-only rule below
+   still holds for the spec's files.
+
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
    into a single "N gaps" figure — plus the next step. State the Verdict plainly: `BLOCKED` with the
    uncovered pair count (or the fail-closed reason) when the coverage gate blocks, and then the next step is
