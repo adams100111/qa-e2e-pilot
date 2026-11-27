@@ -19,7 +19,7 @@
 # USAGE (every verb takes `--project <dir>`, default `.`):
 #   auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>]
 #                           [--restart] [--known-defects-invalid]
-#   auto.sh resume <target> [--max-hours <n>]
+#   auto.sh resume <target> [--max-hours <n>] [--known-defects-invalid]
 #   auto.sh stop   <target> --reason <reason> --detail <text>
 #   auto.sh status <target>
 #   auto.sh next       <target>                    -> {"next":"<step>"} | {"next":"done"}
@@ -39,6 +39,32 @@
 #
 #   start, resume, stop, status, step-start and step-done print ONE JSON line: journey.json plus
 #   {"needsPerson": n}. status writes nothing. next and signin print their own one line.
+#
+# THE GATE (`start`, and again on every `resume`), in this order; nothing is written before all hold:
+#   - `.qa/config.json` is there and is one JSON document (a leading byte order mark is accepted).
+#   - `environment` is `auto`, `production` or `disposable` in any letter case; a missing key reads
+#     as `auto`; any other word or a value that is not text is refused.
+#   - the environment is not production. Production is `environment: production`; or a project
+#     with no `baseUrl` (missing, empty, blank, not text) unless it is `disposable` with a real
+#     `seedableEnvMarker`; or any environment other than `disposable` on a host that is not local
+#     with no real marker. A marker that is empty, blank or the bootstrap word QA_DISPOSABLE_ENV is
+#     not real. A host is local only when it is exactly `localhost`, `127.0.0.1`, `[::1]` or ends in
+#     `.localhost`, `.test`, `.local`, `.ddev.site`, and the address holds nothing unusual: a
+#     backslash, a blank, a host character outside `a-z 0-9 . -`, a port that is not digits or
+#     anything after `[::1]` other than a port makes it not local.
+#   - `--known-defects-invalid` was not passed.
+#   - no journey.json of ANY target in the project is unreadable (not one JSON object whose
+#     `state` is open, done or stopped), and no other target's journey is open. Directories whose
+#     name starts with a dot are looked at too.
+#   - on a host that is not local, the run's `gates.dataPolicy` will be `enforce` (judged under the
+#     launch profile; on `resume`, the profile recorded in journey.json).
+# A target must be a plain name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`, no `..`), for every verb.
+# `--max-hours` is between 0.1 and 72. `start --restart` on a journey that was open writes
+# `restartedFrom: <history number>` into the new journey.json.
+#
+# WRITES: every file is written whole to a temporary name beside it and moved into place. A write
+# that fails ends the verb with exit 1 and the one line `auto: could not write <path>`; nothing
+# that reads as a result is printed, and `start` never writes journey.json after a failed baseline.
 #
 # DECISIONS: `decide` appends one record to decisions.json:
 #   {id, step, class, question, answer, evidence, confidence, criteria:[], assumption:true,
@@ -60,6 +86,9 @@
 #   baseline-missing                    there is no baseline.json
 #   baseline-changed                    baseline.json is not the file `start` wrote (its SHA-256 is kept
 #                                       in journey.json as `baselineHash`), or it no longer parses
+#   base-url-changed                    the `baseUrl` of .qa/config.json is not the one recorded at the
+#                                       start (or the config is unreadable). Skipped for a baseline
+#                                       written before the address was recorded (no `baseUrl` key).
 #   safety-setting-changed:<key>        a SAFETY_KEYS value of .qa/config.json differs from the baseline
 #                                       (by value: key order and number spelling do not count; a
 #                                       changed type does). An unreadable config fails every key.
@@ -69,6 +98,10 @@
 #   known-defects-changed               .qa/known-defects.json has other bytes, appeared or is gone
 #   human-oracle-added:<criterion id>   a plan row is `oracleSource: "human"` and was not at the start
 #   human-oracle-removed:<criterion id> a row that was `human` at the start still exists and is not now
+#   human-oracle-changed:<criterion id> a row is still `human` and its `fixture.expect` is not the one
+#                                       recorded at the start (SHA-256 of its canonical JSON: keys
+#                                       sorted, compact, numbers normalised). Skipped for a baseline
+#                                       without `humanOracleHashes`.
 #   plan-row-removed:<criterion id>     a row of the starting plan is gone (adding rows is allowed)
 #   plan-unreadable                     checklist.json is not one JSON array
 #   seed-added                          seed.json exists and did not at the start
@@ -90,9 +123,9 @@
 #                                       `gtimeout` is installed; without either there is no time guard.
 # What the audit cannot see: a value changed and changed back before the audit; a baseline.json
 # and journey.json rewritten together to agree (or a new baseline taken with `start --restart`
-# after a change); a safety key that went from absent to an explicit null (both read as null); a
-# changed expected value on a row that stays `human`; a plan row without a string id; a tracker
-# command replaced through the environment.
+# after a change; the new journey then says `restartedFrom`); a safety key that went from absent
+# to an explicit null (both read as null); a plan row without a string id; a tracker command
+# replaced through the environment.
 #
 # STEP ORDER: `next` names the first step that is not done; `step-start` and `step-done` take only
 # that step. `step-done` looks for the step's result on disk (the checks /qa-status makes) and
@@ -109,10 +142,11 @@
 #
 # ADDING A VERB: write `cmd_<verb>`, add it to the dispatch `case` at the bottom, and reuse the
 # helpers below (parse_common, journey_load, journey_read, journey_require_open, journey_require_open_strict,
-# rows_commit, one_of, text_given, json_get/json_strs/
+# rows_commit, atomic_write, one_of, text_given, json_get/json_strs/
 # json_pick/json_merge, journey_stepset, stop_journey, print_status, print_stopped, now_iso,
 # iso_add_hours, iso_epoch, step_artifact_done, step_state, first_open_step, signin_json, read_lines,
-# checklist_ids, file_state, hash_or). A new audit check goes into BOTH JQ_AUDIT and the `audit` op
+# checklist_ids, plan_hashes, file_state, hash_or). Register every option a verb takes in
+# VALUE_FLAGS or SWITCH_FLAGS: parse_common refuses any other `--word`. A new audit check goes into BOTH JQ_AUDIT and the `audit` op
 # of PY_HELPERS, or, when it needs no JSON, into audit_steps with `code <fixed word>`.
 set -uo pipefail
 
@@ -124,6 +158,11 @@ RESUMABLE_REASONS="time-limit step-failed until"
 FINAL_REASONS="blocked audit no-sign-in tracker"
 SAFETY_KEYS="allowApiWrites seedableEnvMarker environment allowBlackboxCrawl gates profile humanInteraction.enforce humanInteraction.maxOptOutRate"
 DEFAULT_MAX_HOURS=6
+ENVIRONMENTS="auto production disposable"
+# Every option of every verb, in one place. parse_common refuses a `--word` that is in neither
+# list, so an option that was not registered fails loudly instead of being read as the target.
+VALUE_FLAGS="--profile --until --max-hours --reason --detail --run --step --class --question --answer --evidence --confidence --criteria --records --kind --text"
+SWITCH_FLAGS="--restart --known-defects-invalid --unavailable"
 # Plan decision J5: what a journey may answer for itself, and what it never decides.
 DECIDABLE_CLASSES="roles surface-access scope role-overrides journeys inputs expected gaps"
 FORBIDDEN_CLASSES="seed exclusion crawl-only oracle-human safety known-defect"
@@ -137,7 +176,7 @@ usage() {
   [ "$#" -gt 0 ] && echo "auto: $*" >&2
   cat >&2 <<'EOF'
 usage: auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>] [--restart] [--known-defects-invalid] [--project <dir>]
-       auto.sh resume <target> [--max-hours <n>] [--project <dir>]
+       auto.sh resume <target> [--max-hours <n>] [--known-defects-invalid] [--project <dir>]
        auto.sh stop   <target> --reason time-limit|step-failed|until|blocked|audit|no-sign-in|tracker --detail <text> [--project <dir>]
        auto.sh status <target> [--project <dir>]
        auto.sh next   <target> [--project <dir>]
@@ -176,10 +215,11 @@ need_engine() { [ -n "$ENGINE" ] || die "this script needs either jq or python3"
 # The python3 side of every JSON helper, one small program with sub-commands. Output is always
 # UTF-8, keys sorted, so it matches `jq -S` byte for byte.
 PY_HELPERS='
-import calendar, json, math, re, sys, time
+import calendar, hashlib, json, math, re, sys, time
 op, a = sys.argv[1], sys.argv[2:]
 def load(p):
-    with open(p, encoding="utf-8") as f:
+    # utf-8-sig: one leading byte order mark is dropped, as jq drops it
+    with open(p, encoding="utf-8-sig") as f:
         return json.load(f)
 def norm(v):
     # whole-valued floats print as integers, as jq prints them
@@ -190,19 +230,21 @@ def norm(v):
     if isinstance(v, list):
         return [norm(x) for x in v]
     return v
-def emit(v, pretty=False):
+def dumps(v, pretty=False):
     v = norm(v)
     if pretty:
         s = json.dumps(v, sort_keys=True, indent=2, ensure_ascii=False)
     else:
         s = json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     # jq writes U+007F as an escape; a raw one can only be inside a string, so this is safe
-    sys.stdout.buffer.write((s.replace("\x7f", "\\u007f") + "\n").encode("utf-8"))
+    return s.replace("\x7f", "\\u007f")
+def emit(v, pretty=False):
+    sys.stdout.buffer.write((dumps(v, pretty) + "\n").encode("utf-8"))
 def jstr(v):
     return json.dumps(v, ensure_ascii=False).replace("\x7f", "\\u007f")
 def rows_in():
     # the array on stdin; nothing at all (no file yet) is an empty array
-    t = sys.stdin.buffer.read().decode("utf-8")
+    t = sys.stdin.buffer.read().decode("utf-8-sig")
     rows = json.loads(t) if t.strip(" \t\r\n") else []
     if not isinstance(rows, list):
         sys.exit(1)
@@ -230,6 +272,18 @@ def plan_ids(rows):
         if isinstance(ex, dict) and ex.get("oracleSource") == "human":
             human.add(r["id"])
     return human, every
+def plan_hashes(rows):
+    # {id: SHA-256 of the canonical JSON of fixture.expect} for the person-confirmed rows; of two
+    # such rows with one id the first counts
+    out = {}
+    for r in (rows if isinstance(rows, list) else []):
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str):
+            continue
+        fx = r.get("fixture")
+        ex = fx.get("expect") if isinstance(fx, dict) else None
+        if isinstance(ex, dict) and ex.get("oracleSource") == "human" and r["id"] not in out:
+            out[r["id"]] = hashlib.sha256(dumps(ex).encode("utf-8")).hexdigest()
+    return out
 def walk(d, path):
     if path == "":
         return True, d
@@ -278,10 +332,32 @@ try:
         t = calendar.timegm(time.strptime(a[0], "%Y-%m-%dT%H:%M:%SZ")) + math.floor(float(a[1]) * 3600)
         sys.stdout.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) + "\n")
     elif op == "planids":
-        # two lines: the ids of the person-confirmed rows, then every row id
-        human, every = plan_ids(load(a[0]))
-        emit(sorted(human))
-        emit(sorted(every))
+        # two lines: the ids of the person-confirmed rows, then every row id; `"!shape"` alone
+        # when the plan is not a list
+        rows = load(a[0])
+        if not isinstance(rows, list):
+            emit("!shape")
+        else:
+            human, every = plan_ids(rows)
+            emit(sorted(human))
+            emit(sorted(every))
+    elif op == "planhashes":
+        emit(plan_hashes(load(a[0])))
+    elif op == "cfacts":
+        # what the gate needs from the config, one per line: how `environment` is given (absent, string,
+        # other), then environment, baseUrl, seedableEnvMarker, profile as text (empty when not
+        # text), then baseUrl as JSON (null when not text)
+        d = load(a[0])
+        d = d if isinstance(d, dict) else {}
+        def s(v):
+            return v.replace("\r", " ").replace("\n", " ") if isinstance(v, str) else ""
+        kind = "absent" if "environment" not in d else ("string" if isinstance(d["environment"], str) else "other")
+        b = d.get("baseUrl")
+        out = [kind, s(d.get("environment")), s(b), s(d.get("seedableEnvMarker")), s(d.get("profile")), dumps(b if isinstance(b, str) else None)]
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+    elif op == "needs":
+        # how many decisions of the array on stdin need a person
+        emit(len([r for r in rows_in() if isinstance(r, dict) and r.get("needsPerson") is True]))
     elif op == "audit":
         # The file checks of `audit`, in one pass. Arguments: journey, then a state (1 there,
         # 0 absent, ! there but not a readable file) and a path for each of baseline, config,
@@ -290,6 +366,8 @@ try:
         # safety keys, the decidable classes, and the codes the shell already found (space lists).
         # Prints the result line, then (only when the journey changes) the new journey.json.
         jf, bs, bf, cs, cf, rs, rf, ps, pf, es, ef, ds, df, bhash, kdhash, seed, now, keys, classes, extra = a[:20]
+        # (the jq side is also handed the hashes of the person-confirmed rows as they are now; here
+        # they are worked out in place, from the same rows)
         keys = keys.split(" ")
         classes = classes.split(" ")
         def rd(state, path, empty_ok=False):
@@ -299,7 +377,7 @@ try:
             try:
                 with open(path, "rb") as f:
                     t = f.read().decode("utf-8")
-                if t.startswith("﻿"):
+                if t.startswith("\ufeff"):
                     t = t[1:]
                 if t.strip(" \t\r\n") == "":
                     return (True, []) if empty_ok else (False, None)
@@ -333,6 +411,11 @@ try:
             if ok:
                 # safety settings of the project config
                 okc, c = rd(cs, cf)
+                # the address the journey runs against (only a baseline that recorded it)
+                if "baseUrl" in b:
+                    found, v = walk(c, "baseUrl")
+                    if not okc or not same(v if isinstance(v, str) else None, b["baseUrl"]):
+                        codes.add("base-url-changed")
                 bsaf = b.get("safety") if isinstance(b.get("safety"), dict) else None
                 for k in keys:
                     found, v = walk(c, k)
@@ -364,6 +447,10 @@ try:
                     codes.update("human-oracle-added:" + i for i in ch - bh)
                     codes.update("plan-row-removed:" + i for i in gone)
                     codes.update("human-oracle-removed:" + i for i in bh - ch - gone)
+                    bhh = b.get("humanOracleHashes") if isinstance(b.get("humanOracleHashes"), dict) else None
+                    if bhh is not None:
+                        hh = plan_hashes(rows)
+                        codes.update("human-oracle-changed:" + i for i in ch & bh if i in bhh and not same(bhh[i], hh.get(i)))
                 if seed == "1" and b.get("seedExists") is not True:
                     codes.add("seed-added")
                 if es != "0":
@@ -499,9 +586,6 @@ try:
             v = c.get("checkpointed_at") if isinstance(c, dict) else None
             if isinstance(v, str):
                 sys.stdout.buffer.write((v.replace("\r", " ").replace("\n", " ") + "\n").encode("utf-8"))
-    elif op == "counttrue":
-        rows = load(a[0])
-        emit(len([r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict) and r.get(a[1]) is True]))
     else:
         sys.exit(2)
 except SystemExit:
@@ -582,40 +666,88 @@ json_patch() {
     jq -Sc --argjson p "$2" "$JQ_DEFS"' if type == "object" and ($p | type) == "object" then . + $p | norm else error("not an object") end' "$1" 2>/dev/null
   else py patch "$1" "$2" 2>/dev/null; fi
 }
-# json_write <file> — stdin (JSON text) → the file, pretty-printed with sorted keys, replaced
-# atomically. Refuses any path outside the journey directory.
-json_write() {
-  local dest="$1" tmp
+# atomic_write <file> <text> — THE writer: every file this script writes goes through here. The
+# text plus a final line break goes to a temporary name beside the file, which is then moved into
+# place. Refuses any path outside the journey directory. On any failure it removes the temporary
+# file and ends the script with exit 1 and the one line `auto: could not write <path>` (the
+# shell's own complaint is not shown). ALWAYS call it, and every function that calls it, as a
+# plain command: at the end of a pipeline or inside `$(…)` its exit would only end a subshell and
+# the verb would carry on as if the write had worked.
+atomic_write() {
+  local dest="$1" tmp="$1.tmp.$$" rel="${1#"$PROJECT"/}"
   case "$dest" in "$AUTO_DIR"/*) ;; *) die "internal: refused to write outside the journey directory" ;; esac
-  tmp="$dest.tmp.$$"
-  if [ "$ENGINE" = jq ]; then jq -S "$JQ_DEFS norm" > "$tmp" 2>/dev/null; else py pretty > "$tmp" 2>/dev/null; fi
-  if [ "$?" -ne 0 ] || [ ! -s "$tmp" ]; then rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; fi
-  mv -f "$tmp" "$dest" || { rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; }
+  [ -n "$2" ] || die "could not write $rel"
+  if ! { printf '%s\n' "$2" > "$tmp"; } 2>/dev/null; then rm -f "$tmp" 2>/dev/null; die "could not write $rel"; fi
+  if ! mv -f "$tmp" "$dest" 2>/dev/null; then rm -f "$tmp" 2>/dev/null; die "could not write $rel"; fi
 }
-# json_merge <file> <json object> — set top-level keys of a journey file in place.
+# json_write <file> <json text> — the JSON text → the file, pretty-printed with sorted keys,
+# through atomic_write. A plain command only (see atomic_write).
+json_write() {
+  local out
+  if [ "$ENGINE" = jq ]; then out="$(printf '%s\n' "$2" | jq -S "$JQ_DEFS norm" 2>/dev/null)"; else out="$(printf '%s\n' "$2" | py pretty 2>/dev/null)"; fi
+  # shellcheck disable=SC2181
+  if [ "$?" -ne 0 ] || [ -z "$out" ]; then die "could not write ${1#"$PROJECT"/}"; fi
+  atomic_write "$1" "$out"
+}
+# json_merge <file> <json object> — set top-level keys of a journey file in place. A plain command
+# only (see atomic_write).
 json_merge() {
   local out
   out="$(json_patch "$1" "$2")" && [ -n "$out" ] || die "could not update ${1#"$PROJECT"/}"
-  printf '%s\n' "$out" | json_write "$1"
+  json_write "$1" "$out"
 }
-# json_count_true <file> <key> — how many objects of a top-level array have <key> == true.
-json_count_true() {
+# json_needs_person <decisions.json> — how many of its decisions need a person. Fails when the
+# file is not one JSON array (an empty file is an empty array, as for `decide`).
+json_needs_person() {
   if [ "$ENGINE" = jq ]; then
-    jq -c --arg k "$2" '[ (if type == "array" then .[] else empty end) | select(type == "object") | select(.[$k] == true) ] | length' "$1" 2>/dev/null
-  else py counttrue "$1" "$2" 2>/dev/null; fi
+    jq -cs "$JQ_ROWS"' rows_in | [ .[] | objects | select(.needsPerson == true) ] | length' < "$1" 2>/dev/null
+  else py needs < "$1" 2>/dev/null; fi
 }
 # JQ_PLAN — jq side of the plan readers. `plan_rows` is the rows of a plan that have a string id;
-# `human_ids` the sorted ids of those whose fixture.expect.oracleSource is "human"; `row_ids` all ids.
+# `human_rows` those whose fixture.expect.oracleSource is "human" (of two with one id, the first),
+# `human_ids` their sorted ids; `row_ids` all ids.
 JQ_PLAN='def plan_rows: [ (if type == "array" then .[] else empty end) | select(type == "object" and (.id | type) == "string") ];
-  def human_ids: [ .[] | select((.fixture | type) == "object" and (.fixture.expect | type) == "object"
-                                and .fixture.expect.oracleSource == "human") | .id ] | unique;
+  def human_rows: [ .[] | select((.fixture | type) == "object" and (.fixture.expect | type) == "object"
+                                 and .fixture.expect.oracleSource == "human") ]
+                  | to_entries | group_by(.value.id) | map(min_by(.key) | .value);
+  def human_ids: human_rows | map(.id);
   def row_ids: [ .[] | .id ] | unique;'
 # checklist_ids <checklist.json> — two lines: the sorted ids of the rows whose
-# fixture.expect.oracleSource is "human", then the sorted ids of every row.
+# fixture.expect.oracleSource is "human", then the sorted ids of every row. One line, `"!shape"`,
+# when the file is JSON and not a list. Nothing when it is not one JSON document.
 checklist_ids() {
   if [ "$ENGINE" = jq ]; then
-    jq -c "$JQ_PLAN"' plan_rows | human_ids, row_ids' "$1" 2>/dev/null
+    jq -cs "$JQ_PLAN $JQ_ONE"' | if type == "array" then (plan_rows | human_ids, row_ids) else "!shape" end' < "$1" 2>/dev/null
   else py planids "$1" 2>/dev/null; fi
+}
+# sha256_text <text> — hex SHA-256 of the text's bytes (no line break added).
+sha256_text() {
+  local out=""
+  if command -v sha256sum >/dev/null 2>&1; then out="$(printf '%s' "$1" | sha256sum 2>/dev/null)"
+  elif command -v shasum >/dev/null 2>&1; then out="$(printf '%s' "$1" | shasum -a 256 2>/dev/null)"
+  elif command -v openssl >/dev/null 2>&1; then out="$(printf '%s' "$1" | openssl dgst -sha256 -r 2>/dev/null)"
+  elif has_py; then out="$(printf '%s' "$1" | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null)"
+  fi
+  out="${out%% *}"
+  [ "${#out}" -eq 64 ] || return 1
+  printf '%s\n' "$out"
+}
+# plan_hashes <checklist.json> — one compact JSON object, {"<row id>": "<SHA-256>"}: for every
+# person-confirmed row, the hash of its `fixture.expect` in canonical form (keys sorted, compact,
+# numbers normalised: the bytes `jq -cS` and the python side both print). `{}` for a plan that is
+# not a list. Fails when the plan is not readable. Row ids travel as the JSON string literals the
+# engine printed; they are never read by the shell.
+plan_hashes() {
+  local out idj ex h acc=""
+  if [ "$ENGINE" != jq ]; then py planhashes "$1" 2>/dev/null; return; fi
+  out="$(jq -cSs "$JQ_DEFS $JQ_PLAN $JQ_ONE"' | plan_rows | human_rows[] | .id, (.fixture.expect | norm)' < "$1" 2>/dev/null)" || return 1
+  while IFS= read -r idj && IFS= read -r ex; do
+    h="$(sha256_text "$ex")" || return 1
+    acc="$acc,$idj:\"$h\""
+  done <<EOT
+$out
+EOT
+  printf '{%s}\n' "${acc#,}"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -638,11 +770,23 @@ iso_add_hours() {
     jq -rn --arg t "$1" --arg h "$2" '(($t | fromdateiso8601) + ((($h | tonumber) * 3600) | floor)) | todateiso8601' 2>/dev/null
   else py addhours "$1" "$2" 2>/dev/null; fi
 }
-# valid_hours <text> — a positive whole or decimal number.
+# valid_hours <text> — a whole or decimal number between 0.1 and 72, both included. Worked out on
+# the digits, so no engine is needed and no rounding can move the edge.
 valid_hours() {
+  local i f=""
   [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
-  case "$1" in *[1-9]*) return 0 ;; *) return 1 ;; esac
+  i="${1%%.*}"
+  case "$1" in *.*) f="${1#*.}" ;; esac
+  while [ "${#i}" -gt 1 ] && [ "${i:0:1}" = 0 ]; do i="${i:1}"; done
+  [ "${#i}" -le 2 ] || return 1
+  if [ "$i" -eq 0 ]; then
+    case "$f" in [1-9]*) return 0 ;; *) return 1 ;; esac
+  fi
+  [ "$i" -lt 72 ] && return 0
+  [ "$i" -eq 72 ] || return 1
+  case "$f" in *[1-9]*) return 1 ;; *) return 0 ;; esac
 }
+HOURS_RULE="--max-hours must be between 0.1 and 72"
 
 # ---------------------------------------------------------------------------------------------
 # Paths and arguments
@@ -652,7 +796,10 @@ QA_DIR=""; CONFIG=""; SPEC_DIR=""; AUTO_DIR=""; JOURNEY=""; BASELINE=""; DECISIO
 REST=()
 
 # parse_common "$@" — takes the target (first bare word) and `--project <dir>` out of a verb's
-# arguments, sets the path variables, and leaves everything else, in order, in REST.
+# arguments, sets the path variables, and leaves everything else, in order, in REST. Every verb
+# calls it first, so the rules here hold for all of them: an option that is not registered
+# (VALUE_FLAGS, SWITCH_FLAGS) is a usage error and never the target, and the target must be a
+# plain name.
 parse_common() {
   REST=()
   local seen_target=0 expect_value=0
@@ -660,16 +807,18 @@ parse_common() {
     if [ "$expect_value" -eq 1 ]; then REST+=("$1"); expect_value=0; shift; continue; fi
     case "$1" in
       --project) [ "$#" -ge 2 ] || usage "--project needs a directory"; PROJECT="$2"; shift 2 ;;
-      --*) REST+=("$1"); flag_takes_value "$1" && expect_value=1; shift ;;
+      --*) if flag_takes_value "$1"; then expect_value=1
+           elif ! one_of "$1" "$SWITCH_FLAGS"; then usage "$VERB does not take: $1"; fi
+           REST+=("$1"); shift ;;
       *) if [ "$seen_target" -eq 0 ]; then TARGET="$1"; seen_target=1; else REST+=("$1"); fi; shift ;;
     esac
   done
   [ "$seen_target" -eq 1 ] || usage "a target is needed"
-  case "$TARGET" in
-    ""|.|..|*/*|-*) usage "not a usable target name: $TARGET" ;;
-  esac
+  plain_name "$TARGET" || usage "the target must be a plain name"
   [ -d "$PROJECT" ] || die "no such project directory: $PROJECT"
   PROJECT="${PROJECT%/}"; [ -n "$PROJECT" ] || PROJECT="/"
+  # A relative directory that starts with a dash would be read as an option by every tool below.
+  case "$PROJECT" in -*) PROJECT="./$PROJECT" ;; esac
   QA_DIR="$PROJECT/.qa"
   CONFIG="$QA_DIR/config.json"
   SPEC_DIR="$QA_DIR/specs/$TARGET"
@@ -679,11 +828,17 @@ parse_common() {
   DECISIONS="$AUTO_DIR/decisions.json"
   NOTES="$AUTO_DIR/notes.json"
 }
-# flag_takes_value <flag> — true for the flags whose next word is their value (so that word is
-# never mistaken for the target). Add a verb's value flags here.
-flag_takes_value() {
+# flag_takes_value <flag> — true for the options whose next word is their value (so that word is
+# never mistaken for the target): the ones registered in VALUE_FLAGS.
+flag_takes_value() { one_of "$1" "$VALUE_FLAGS"; }
+# plain_name <text> — true for a name that is safe as one directory under .qa/specs/: it starts
+# with a letter or a digit, holds only letters, digits, `.`, `_` and `-` (ASCII), and no `..`.
+# The characters are listed one by one: a range such as A-Z means other letters in some locales.
+NAME_FIRST='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+plain_name() {
   case "$1" in
-    --profile|--until|--max-hours|--reason|--detail|--run|--step|--class|--question|--answer|--evidence|--confidence|--criteria|--records|--kind|--text) return 0 ;;
+    ""|*..*|*[!${NAME_FIRST}._-]*) return 1 ;;
+    [${NAME_FIRST}]*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -704,12 +859,13 @@ EOT
 TARGET_JSON=""
 target_json() { if [ -n "$TARGET_JSON" ]; then printf '%s\n' "$TARGET_JSON"; else json_quote "$TARGET"; fi; }
 # journey_load — reads the journey once into J_STATE (`open`, `done`, `stopped`, or empty when
-# there is no readable journey) and J_REASON (the stop reason, or empty).
-J_STATE=""; J_REASON=""
+# there is no readable journey), J_REASON (the stop reason, or empty) and J_PROFILE (the launch
+# profile, or empty).
+J_STATE=""; J_REASON=""; J_PROFILE=""
 journey_load() {
-  J_STATE=""; J_REASON=""
+  J_STATE=""; J_REASON=""; J_PROFILE=""
   [ -f "$JOURNEY" ] || return 0
-  read_lines "$(json_strs "$JOURNEY" state stop.reason)" J_STATE J_REASON
+  read_lines "$(json_strs "$JOURNEY" state stop.reason profile)" J_STATE J_REASON J_PROFILE
 }
 # journey_require — die unless the target has a readable journey.
 journey_require() {
@@ -730,16 +886,15 @@ journey_require_open_strict() {
 # rows_commit <file> <engine output> — an engine op that changes a rows file (decisions.json,
 # notes.json) prints one result line and then the whole array, pretty-printed. This keeps the
 # result line in ROWS_LINE and replaces the file atomically with the array. Output that is only
-# a result line (a refusal such as `!missing`) writes nothing.
+# a result line (a refusal such as `!missing`) writes nothing. A plain command only (see
+# atomic_write); print ROWS_LINE after it has returned, never before.
 ROWS_LINE=""
 rows_commit() {
-  local dest="$1" out="$2" nl=$'\n' tmp
+  local dest="$1" out="$2" nl=$'\n'
   case "$dest" in "$AUTO_DIR"/*) ;; *) die "internal: refused to write outside the journey directory" ;; esac
   ROWS_LINE="${out%%"$nl"*}"
   case "$out" in *"$nl"*) ;; *) return 0 ;; esac
-  tmp="$dest.tmp.$$"
-  if ! printf '%s\n' "${out#*"$nl"}" > "$tmp" || [ ! -s "$tmp" ]; then rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; fi
-  mv -f "$tmp" "$dest" || { rm -f "$tmp"; die "could not write ${dest#"$PROJECT"/}"; }
+  atomic_write "$dest" "${out#*"$nl"}"
 }
 # rows_source <file> — the file to read a rows file from: itself, or /dev/null when it is not there yet.
 rows_source() { if [ -f "$1" ]; then printf '%s\n' "$1"; else printf '/dev/null\n'; fi; }
@@ -764,29 +919,50 @@ EOT
   [ -n "$min" ] || return 1
   printf '%s\n' "$min"
 }
-# other_open_target — the name of another target whose journey is open in this project, if any.
-# This is the "one journey per project" lock: any .qa/specs/*/auto/journey.json with state open.
-other_open_target() {
-  local f t
-  for f in "$QA_DIR"/specs/*/auto/journey.json; do
-    [ -f "$f" ] || continue
+# journey_file_state <journey.json> — prints `open`, `done` or `stopped`; `none` when nothing is
+# at that path; `unreadable` for anything else (not a file, no permission, not one JSON object,
+# a state that is not one of the three).
+journey_file_state() {
+  local st=""
+  if [ ! -e "$1" ] && [ ! -L "$1" ]; then echo none; return 0; fi
+  [ -f "$1" ] && [ -r "$1" ] && st="$(json_strs "$1" state)"
+  case "$st" in open|done|stopped) printf '%s\n' "$st" ;; *) echo unreadable ;; esac
+}
+# lock_check — the "one journey per project" lock, failing closed. Dies when the journey.json of
+# ANY target in this project (this one included) cannot be read, or when another target's journey
+# is open. Directories whose name starts with a dot are looked at too.
+lock_check() {
+  local f t st
+  for f in "$QA_DIR"/specs/*/auto/journey.json "$QA_DIR"/specs/.[!.]*/auto/journey.json "$QA_DIR"/specs/..?*/auto/journey.json; do
+    st="$(journey_file_state "$f")"
+    [ "$st" = none ] && continue
     t="${f%/auto/journey.json}"; t="${t##*/}"
+    [ "$st" != unreadable ] || die "the journey for $t cannot be read"
     [ "$t" = "$TARGET" ] && continue
-    if [ "$(json_strs "$f" state)" = open ]; then printf '%s\n' "$t"; return 0; fi
+    [ "$st" != open ] || die "another journey is open for $t"
   done
   return 0
 }
-# needs_person_count — decisions that need a person (0 without a decisions file).
+# needs_person_count — decisions that need a person (0 without a decisions file). Fails when
+# decisions.json is there and is not one JSON array.
 needs_person_count() {
-  local n=""
-  [ -f "$DECISIONS" ] && n="$(json_count_true "$DECISIONS" needsPerson)"
-  case "$n" in ""|*[!0-9]*) n=0 ;; esac
+  local n=0
+  if [ -f "$DECISIONS" ]; then
+    n="$(json_needs_person "$DECISIONS")" || return 1
+    case "$n" in ""|*[!0-9]*) return 1 ;; esac
+  fi
   printf '%s\n' "$n"
 }
-# print_status — one line: journey.json plus {"needsPerson": n}. Writes nothing.
+# print_status [strict] — one line: journey.json plus {"needsPerson": n}. Writes nothing. With
+# `strict` (the `status` verb) decisions that cannot be read are a refusal; the verbs that have
+# just written the journey print 0 for them instead, as before (the audit reports the file).
 print_status() {
-  local out
-  out="$(json_patch "$JOURNEY" "{\"needsPerson\":$(needs_person_count)}")" && [ -n "$out" ] || die "journey.json for $TARGET is not readable"
+  local out n
+  if ! n="$(needs_person_count)"; then
+    [ "${1:-}" != strict ] || die "decisions.json for $TARGET is not readable"
+    n=0
+  fi
+  out="$(json_patch "$JOURNEY" "{\"needsPerson\":$n}")" && [ -n "$out" ] || die "journey.json for $TARGET is not readable"
   printf '%s\n' "$out"
 }
 # journey_read — reads the whole journey once: J_STATE, J_REASON, J_DETAIL (line breaks as spaces),
@@ -849,22 +1025,22 @@ require_next_step() {
 }
 # journey_stepset <json> — change the journey in place. The JSON is
 # {"set": {<top-level keys>}, "steps": {"<name>": {"state": "<state>", "bump": true}}}; both parts
-# are optional, `bump` adds one to the step's attempts.
+# are optional, `bump` adds one to the step's attempts. A plain command only (see atomic_write).
 journey_stepset() {
-  local tmp="$JOURNEY.tmp.$$" rc
+  local out
   if [ "$ENGINE" = jq ]; then
-    jq -S --argjson p "$1" "$JQ_DEFS"' if type == "object" and (.steps | type) == "array" then . else error("not a journey") end
+    out="$(jq -S --argjson p "$1" "$JQ_DEFS"' if type == "object" and (.steps | type) == "array" then . else error("not a journey") end
       | . + ($p.set // {})
       | .steps |= map(. as $x | (if type == "object" then ($p.steps // {})[$x.name // ""] else null end) as $u
           | if $u then (if $u.state then .state = $u.state else . end)
                        | (if $u.bump then .attempts = ((.attempts // 0) + 1) else . end)
             else . end)
-      | norm' "$JOURNEY" > "$tmp" 2>/dev/null; rc=$?
+      | norm' "$JOURNEY" 2>/dev/null)" || out=""
   else
-    py stepset "$JOURNEY" "$1" > "$tmp" 2>/dev/null; rc=$?
+    out="$(py stepset "$JOURNEY" "$1" 2>/dev/null)" || out=""
   fi
-  if [ "$rc" -ne 0 ] || [ ! -s "$tmp" ]; then rm -f "$tmp"; die "could not update ${JOURNEY#"$PROJECT"/}"; fi
-  mv -f "$tmp" "$JOURNEY" || { rm -f "$tmp"; die "could not update ${JOURNEY#"$PROJECT"/}"; }
+  [ -n "$out" ] || die "could not update ${JOURNEY#"$PROJECT"/}"
+  atomic_write "$JOURNEY" "$out"
 }
 # print_stopped <reason> — the `next` line of a stopped journey:
 # {"detail":…,"next":"stopped","reason":…}. Writes nothing.
@@ -1002,9 +1178,12 @@ step_artifact_done() {
     *) return 1 ;;
   esac
 }
-# archive_journey — move everything in auto/ except history/ to auto/history/<n>/.
+# archive_journey — move everything in auto/ except history/ to auto/history/<n>/. Sets
+# ARCHIVED_N to that number, or 0 when there was nothing to move. A plain command only.
+ARCHIVED_N=0
 archive_journey() {
   local n=0 d b f moved=0
+  ARCHIVED_N=0
   [ -d "$AUTO_DIR" ] || return 0
   for d in "$AUTO_DIR"/history/*/; do
     [ -d "$d" ] || continue
@@ -1016,42 +1195,105 @@ archive_journey() {
   for f in "$AUTO_DIR"/* "$AUTO_DIR"/.[!.]*; do
     [ -e "$f" ] || continue
     [ "${f##*/}" = history ] && continue
-    if [ "$moved" -eq 0 ]; then mkdir -p "$AUTO_DIR/history/$n" || die "could not create the history directory"; moved=1; fi
-    mv "$f" "$AUTO_DIR/history/$n/" || die "could not move the earlier journey to history"
+    if [ "$moved" -eq 0 ]; then mkdir -p "$AUTO_DIR/history/$n" 2>/dev/null || die "could not write .qa/specs/$TARGET/auto/history/$n"; moved=1; fi
+    mv "$f" "$AUTO_DIR/history/$n/" 2>/dev/null || die "could not write .qa/specs/$TARGET/auto/history/$n"
   done
+  [ "$moved" -eq 0 ] || ARCHIVED_N="$n"
 }
 
 # ---------------------------------------------------------------------------------------------
 # Environment rules (plan decision J7; design B2)
 # ---------------------------------------------------------------------------------------------
-# url_host <url> — the lower-case host of a URL.
+LOWER='abcdefghijklmnopqrstuvwxyz'; UPPER='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+# lower <text> — the text with ASCII capitals made small.
+lower() { printf '%s' "$1" | tr "$UPPER" "$LOWER"; }
+# trimmed <text> — the text without blanks at either end.
+trimmed() { local t="$1"; t="${t#"${t%%[![:space:]]*}"}"; printf '%s' "${t%"${t##*[![:space:]]}"}"; }
+# url_host <url> — the lower-case host of a URL, or nothing when the address is not plainly
+# `[scheme://][user[:password]@]host[:port][/…]`: a backslash or a blank anywhere before the
+# path, an unusual character in the user part, a host character outside `a-z 0-9 . -` (the one
+# bracketed host accepted is `[::1]`), or a port that is not digits. Strict on purpose: the answer
+# decides whether an environment counts as local, and browsers read such addresses in other ways.
 url_host() {
-  local u="$1" h
+  local u="$1" ui="" h port=""
   case "$u" in *://*) u="${u#*://}" ;; esac
-  u="${u%%/*}"; u="${u%%\?*}"; u="${u%%#*}"; u="${u##*@}"
+  u="${u%%/*}"; u="${u%%\?*}"; u="${u%%#*}"
+  case "$u" in *\\*|*[[:space:]]*|*[[:cntrl:]]*) return 0 ;; esac
+  case "$u" in *@*) ui="${u%@*}"; u="${u##*@}" ;; esac
+  case "$ui" in *[!${LOWER}${UPPER}0123456789._~!\$\&\'\(\)*+,\;=:%-]*) return 0 ;; esac
   case "$u" in
-    \[*) h="${u%%]*}]" ;;
-    *)   h="${u%%:*}" ;;
+    '[::1]') h="$u" ;;
+    '[::1]':*) h='[::1]'; port="${u:6}" ;;
+    \[*) return 0 ;;
+    *:*) h="${u%%:*}"; port="${u#*:}" ;;
+    *) h="$u" ;;
   esac
-  printf '%s' "$h" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz'
+  case "$port" in *[!0123456789]*) return 0 ;; esac
+  h="$(lower "$h")"
+  case "$h" in
+    '[::1]') ;;
+    ""|*[!${LOWER}0123456789.-]*) return 0 ;;
+  esac
+  printf '%s' "$h"
 }
-# is_local_url <url> — exit 0 for a local host.
+# is_local_url <url> — exit 0 for a local host. A missing or empty address is not local.
 is_local_url() {
   case "$(url_host "$1")" in
     localhost|127.0.0.1|'[::1]'|*.localhost|*.test|*.local|*.ddev.site) return 0 ;;
     *) return 1 ;;
   esac
 }
-# env_is_production <environment> <baseUrl> <seedableEnvMarker> — production is
-# `environment: production`, or any environment other than `disposable` on a non-local baseUrl
-# whose seedableEnvMarker is empty or the bootstrap sentinel (the rule the engine's pre-flight
-# applies; `auto` is the default).
+# real_marker <seedableEnvMarker> — exit 0 when the marker says something: not empty, not blank,
+# not the bootstrap word.
+real_marker() {
+  local m; m="$(trimmed "$1")"
+  [ -n "$m" ] && [ "$m" != QA_DISPOSABLE_ENV ]
+}
+# env_is_production <environment> <baseUrl> <seedableEnvMarker> — the environment is one of the
+# three words, lower-case (gate_config sees to that). Production is:
+#   - `production`;
+#   - a project with no baseUrl (empty or blank), unless it is `disposable` with a real marker;
+#   - any environment other than `disposable` on a host that is not local with no real marker
+#     (the rule the engine's pre-flight applies).
 env_is_production() {
-  local env="${1:-auto}"
-  [ "$env" = production ] && return 0
-  [ "$env" = disposable ] && return 1
+  [ "$1" = production ] && return 0
+  if ! text_given "$2"; then
+    [ "$1" = disposable ] && real_marker "$3" && return 1
+    return 0
+  fi
+  [ "$1" = disposable ] && return 1
   is_local_url "$2" && return 1
-  [ -z "$3" ] || [ "$3" = QA_DISPOSABLE_ENV ]
+  ! real_marker "$3"
+}
+# gate_config — the refusals about .qa/config.json that `start` and `resume` share, in order:
+# no config, not JSON, an environment that is not one of the three words, production. Sets G_BASE
+# (baseUrl as text), G_BASE_JSON (baseUrl as JSON, null when it is not text) and G_PROFILE.
+G_BASE=""; G_BASE_JSON=null; G_PROFILE=""
+gate_config() {
+  local facts kind env marker
+  [ -f "$CONFIG" ] || die "no .qa/config.json; set the project up first"
+  if [ "$ENGINE" = jq ]; then
+    facts="$(jq -rs 'def s: if type == "string" then gsub("[\r\n]"; " ") else "" end;
+      '"$JQ_ONE"' | (if type == "object" then . else {} end) as $d
+      | (if ($d | has("environment") | not) then "absent" elif ($d.environment | type) == "string" then "string" else "other" end),
+        ($d.environment | s), ($d.baseUrl | s), ($d.seedableEnvMarker | s), ($d.profile | s),
+        ($d.baseUrl | if type == "string" then . else null end | tojson)' < "$CONFIG" 2>/dev/null)" || facts=""
+  else
+    facts="$(py cfacts "$CONFIG" 2>/dev/null)" || facts=""
+  fi
+  [ -n "$facts" ] || die ".qa/config.json is not valid JSON"
+  read_lines "$facts" kind env G_BASE marker G_PROFILE G_BASE_JSON
+  case "$kind" in
+    absent) env=auto ;;
+    string) env="$(lower "$env")"; one_of "$env" "$ENVIRONMENTS" || die "environment must be auto, production or disposable" ;;
+    *) die "environment must be auto, production or disposable" ;;
+  esac
+  env_is_production "$env" "$G_BASE" "$marker" && die "this environment is production; an unattended journey does not run there"
+  return 0
+}
+# gate_data_policy <profile> — on a host that is not local the run must enforce the data policy.
+gate_data_policy() {
+  is_local_url "$G_BASE" || data_policy_enforced "$1" || die "the environment is shared and gates.dataPolicy is not enforce"
 }
 # data_policy_enforced <profile> — exit 0 when the run's gates.dataPolicy will be `enforce`.
 # The spec's run-config replaces the whole `gates` key when it has one (runconfig-merge.sh); the
@@ -1070,8 +1312,8 @@ data_policy_enforced() {
 # file_sha256 <file> — hex SHA-256 of the file's bytes.
 file_sha256() {
   local out=""
-  if command -v shasum >/dev/null 2>&1; then out="$(shasum -a 256 "$1" 2>/dev/null)"
-  elif command -v sha256sum >/dev/null 2>&1; then out="$(sha256sum "$1" 2>/dev/null)"
+  if command -v sha256sum >/dev/null 2>&1; then out="$(sha256sum "$1" 2>/dev/null)"
+  elif command -v shasum >/dev/null 2>&1; then out="$(shasum -a 256 "$1" 2>/dev/null)"
   elif command -v openssl >/dev/null 2>&1; then out="$(openssl dgst -sha256 -r "$1" 2>/dev/null)"
   elif has_py; then out="$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1" 2>/dev/null)"
   fi
@@ -1080,8 +1322,9 @@ file_sha256() {
   printf '%s\n' "$out"
 }
 # baseline_json <profile> <now> — prints the baseline (compact JSON) from the files as they are now.
+# gate_config has run, so G_BASE_JSON is the config's baseUrl.
 baseline_json() {
-  local profile="$1" now="$2" safety rcs ids rows excl kd seed
+  local profile="$1" now="$2" safety rcs ids rows excl kd seed hashes
   # shellcheck disable=SC2086
   safety="$(json_pick "$CONFIG" all $SAFETY_KEYS)"
   [ -n "$safety" ] || die ".qa/config.json is not valid JSON"
@@ -1092,10 +1335,15 @@ baseline_json() {
     [ -n "$rcs" ] || die ".qa/specs/$TARGET/run-config.json is not valid JSON"
   fi
   # planRowIds is null when there is no plan yet: the audit then has no starting rows to miss.
-  ids="[]"; rows=null
+  ids="[]"; rows=null; hashes="{}"
   if [ -f "$SPEC_DIR/checklist.json" ]; then
     read_lines "$(checklist_ids "$SPEC_DIR/checklist.json")" ids rows
+    [ "$ids" != '"!shape"' ] || die ".qa/specs/$TARGET/checklist.json is not a list of rows"
     [ -n "$ids" ] && [ -n "$rows" ] || die ".qa/specs/$TARGET/checklist.json is not valid JSON"
+    # the expected value of each person-confirmed row, as a hash (nothing to hash without such rows)
+    if [ "$ids" != "[]" ]; then
+      hashes="$(plan_hashes "$SPEC_DIR/checklist.json")" && [ -n "$hashes" ] || die ".qa/specs/$TARGET/checklist.json is not valid JSON"
+    fi
   fi
   excl="[]"
   if [ -f "$SPEC_DIR/coverage-exclusions.json" ]; then
@@ -1104,8 +1352,8 @@ baseline_json() {
   fi
   seed=false; [ -f "$SPEC_DIR/seed.json" ] && seed=true
   kd=null; [ -f "$QA_DIR/known-defects.json" ] && kd="\"$(file_sha256 "$QA_DIR/known-defects.json")\""
-  printf '{"version":1,"target":%s,"takenAt":"%s","profile":"%s","safety":%s,"runConfigSafety":%s,"humanOracleIds":%s,"planRowIds":%s,"seedExists":%s,"exclusions":%s,"knownDefectsHash":%s}\n' \
-    "$(target_json)" "$now" "$profile" "$safety" "$rcs" "$ids" "$rows" "$seed" "$excl" "$kd"
+  printf '{"version":1,"target":%s,"takenAt":"%s","profile":"%s","baseUrl":%s,"safety":%s,"runConfigSafety":%s,"humanOracleIds":%s,"humanOracleHashes":%s,"planRowIds":%s,"seedExists":%s,"exclusions":%s,"knownDefectsHash":%s}\n' \
+    "$(target_json)" "$now" "$profile" "$G_BASE_JSON" "$safety" "$rcs" "$ids" "$hashes" "$rows" "$seed" "$excl" "$kd"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -1127,20 +1375,17 @@ cmd_start() {
   done
   [ -z "$profile_flag" ] || in_list "$profile_flag" "ship smoke full" || usage "--profile must be ship, smoke or full"
   [ -z "$until" ] || in_list "$until" "$STEPS" || usage "--until must be one of: $STEPS"
-  valid_hours "$hours" || usage "--max-hours must be a number above zero"
+  valid_hours "$hours" || usage "$HOURS_RULE"
   need_engine
 
-  # Preconditions (design B2), in order. Nothing is written until all of them hold.
-  [ -f "$CONFIG" ] || die "no .qa/config.json; set the project up first"
-  local facts c_env c_base c_marker c_profile
-  facts="$(json_strs "$CONFIG" environment baseUrl seedableEnvMarker profile)" || die ".qa/config.json is not valid JSON"
-  read_lines "$facts" c_env c_base c_marker c_profile
-  env_is_production "$c_env" "$c_base" "$c_marker" && die "this environment is production; an unattended journey does not run there"
+  # Preconditions (design B2; "THE GATE" in the header), in order. Nothing is written until all
+  # of them hold.
+  local facts was_open=0
+  gate_config
   [ "$kd_invalid" -eq 0 ] || die ".qa/known-defects.json is not valid"
-  local other
-  other="$(other_open_target)"
-  [ -z "$other" ] || die "another journey is open for $other"
+  lock_check
   journey_load
+  [ "$J_STATE" = open ] && was_open=1
   if [ "$restart" -eq 0 ]; then
     if [ "$J_STATE" = open ]; then
       die "a journey is already open for $TARGET; continue it or pass --restart"
@@ -1155,13 +1400,11 @@ cmd_start() {
     facts="$(json_strs "$SPEC_DIR/run-config.json" profile)" || die ".qa/specs/$TARGET/run-config.json is not valid JSON"
     [ -n "$profile" ] || profile="$facts"
   fi
-  [ -n "$profile" ] || profile="$c_profile"
+  [ -n "$profile" ] || profile="$G_PROFILE"
   in_list "$profile" "ship smoke full" || profile=full
-  if ! is_local_url "$c_base"; then
-    data_policy_enforced "$profile" || die "the environment is shared and gates.dataPolicy is not enforce"
-  fi
+  gate_data_policy "$profile"
 
-  local now deadline base steps sep s st until_json
+  local now deadline base steps sep s st until_json restarted=""
   now="$(now_iso)" || exit 1
   TARGET_JSON="$(json_quote "$TARGET")"
   deadline="$(iso_add_hours "$now" "$hours")"
@@ -1177,38 +1420,51 @@ cmd_start() {
   until_json=null; [ -z "$until" ] || until_json="\"$until\""
 
   # Writes start here: the earlier journey (finished, or open with --restart) goes to history,
-  # then the baseline, then the journey.
+  # then the baseline, then the journey. Each is a plain command that ends the script when it
+  # fails, so the journey is never written unless the baseline was.
   archive_journey
-  mkdir -p "$AUTO_DIR" || die "could not create .qa/specs/$TARGET/auto"
-  printf '%s\n' "$base" | json_write "$BASELINE"
+  mkdir -p "$AUTO_DIR" 2>/dev/null || die "could not write .qa/specs/$TARGET/auto"
+  json_write "$BASELINE" "$base"
   # The journey keeps the hash of the baseline as written, so the audit can tell a rewritten one.
   local bhash
   bhash="$(file_sha256 "$BASELINE")" || exit 1
-  printf '{"version":1,"target":%s,"profile":"%s","startedAt":"%s","deadline":"%s","until":%s,"steps":[%s],"analyzeRounds":0,"runId":null,"state":"open","stop":null,"endedAt":null,"baselineHash":"%s"}\n' \
-    "$(target_json)" "$profile" "$now" "$deadline" "$until_json" "$steps" "$bhash" \
-    | json_write "$JOURNEY"
+  # A journey that replaced one still open says so: the handoff tells the person it was restarted.
+  if [ "$was_open" -eq 1 ] && [ "$ARCHIVED_N" -gt 0 ]; then restarted=",\"restartedFrom\":$ARCHIVED_N"; fi
+  json_write "$JOURNEY" "$(printf '{"version":1,"target":%s,"profile":"%s","startedAt":"%s","deadline":"%s","until":%s,"steps":[%s],"analyzeRounds":0,"runId":null,"state":"open","stop":null,"endedAt":null,"baselineHash":"%s"%s}' \
+    "$(target_json)" "$profile" "$now" "$deadline" "$until_json" "$steps" "$bhash" "$restarted")"
   print_status
 }
 
 cmd_resume() {
   parse_common "$@"
-  local hours="$DEFAULT_MAX_HOURS"
+  local hours="$DEFAULT_MAX_HOURS" kd_invalid=0
   set -- ${REST[@]+"${REST[@]}"}
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --max-hours) [ "$#" -ge 2 ] || usage "--max-hours needs a number"; hours="$2"; shift 2 ;;
+      --known-defects-invalid) kd_invalid=1; shift ;;
       *) usage "resume does not take: $1" ;;
     esac
   done
-  valid_hours "$hours" || usage "--max-hours must be a number above zero"
+  valid_hours "$hours" || usage "$HOURS_RULE"
   need_engine
-  local reason other now deadline patch
+  local reason now deadline patch profile
+  [ "$(journey_file_state "$JOURNEY")" != unreadable ] || die "the journey for $TARGET cannot be read"
   journey_load
   [ "$J_STATE" = stopped ] || die "nothing to resume"
   reason="$J_REASON"
   in_list "$reason" "$RESUMABLE_REASONS" || die "nothing to resume"
-  other="$(other_open_target)"
-  [ -z "$other" ] || die "another journey is open for $other"
+  # The gate again, as at `start`: the config may have changed while the journey was stopped.
+  gate_config
+  [ "$kd_invalid" -eq 0 ] || die ".qa/known-defects.json is not valid"
+  lock_check
+  # The data policy is judged under the profile this journey was launched with.
+  profile="$J_PROFILE"
+  in_list "$profile" "ship smoke full" || profile=full
+  if [ -f "$SPEC_DIR/run-config.json" ]; then
+    json_valid "$SPEC_DIR/run-config.json" || die ".qa/specs/$TARGET/run-config.json is not valid JSON"
+  fi
+  gate_data_policy "$profile"
   now="$(now_iso)" || exit 1
   deadline="$(iso_add_hours "$now" "$hours")"
   [ -n "$deadline" ] || die "could not work out the deadline"
@@ -1244,7 +1500,7 @@ cmd_status() {
   [ "${#REST[@]}" -eq 0 ] || usage "status does not take: ${REST[0]}"
   need_engine
   journey_require
-  print_status
+  print_status strict
 }
 
 cmd_next() {
@@ -1539,8 +1795,9 @@ file_state() {
 # are kept line for line alike). See the header for what each code means.
 JQ_AUDIT='
   def rd($state; $text):
-    if $state != "1" or ($text | test("^[ \t\r\n]*$")) then {ok: false, v: null}
-    else (try {ok: true, v: ($text | fromjson)} catch {ok: false, v: null}) end;
+    ($text | ltrimstr("\ufeff")) as $text
+    | if $state != "1" or ($text | test("^[ \t\r\n]*$")) then {ok: false, v: null}
+      else (try {ok: true, v: ($text | fromjson)} catch {ok: false, v: null}) end;
   def look($d; $p): ($p | split(".")) as $k
     | if (try ($d | getpath($k[:-1]) | (type == "object" and has($k[-1]))) catch false)
       then {found: true, v: ($d | getpath($k))} else {found: false, v: null} end;
@@ -1560,7 +1817,11 @@ JQ_AUDIT='
            # safety settings of the project config
            | rd($cs; $ct) as $c
            | ($base.safety | if type == "object" then . else null end) as $bsaf
-           | [ $keys[] | . as $k | look($c.v; $k) as $l
+           # the address the journey runs against (only a baseline that recorded it)
+           | (if ($base | has("baseUrl") | not) then []
+              elif ($c.ok | not) or (look($c.v; "baseUrl").v | if type == "string" then . else null end) != $base.baseUrl
+              then ["base-url-changed"] else [] end)
+           + [ $keys[] | . as $k | look($c.v; $k) as $l
                | select(($c.ok | not) or $bsaf == null or ($bsaf | has($k) | not) or $l.v != $bsaf[$k])
                | "safety-setting-changed:" + $k ]
            # safety keys of the spec run-config
@@ -1585,6 +1846,10 @@ JQ_AUDIT='
                   | (if $br == null then [] else $br - $cr end) as $gone
                   | [ ($ch - $bh)[] | "human-oracle-added:" + . ] + [ $gone[] | "plan-row-removed:" + . ]
                     + [ ($bh - $ch - $gone)[] | "human-oracle-removed:" + . ]
+                    + (($base.humanOracleHashes | if type == "object" then . else null end) as $bhh
+                       | if $bhh == null then []
+                         else [ ($ch - ($ch - $bh))[] | select(. as $i | ($bhh | has($i)) and $bhh[$i] != $hh[$i])
+                                | "human-oracle-changed:" + . ] end)
                 end)
            + (if $seed == "1" and $base.seedExists != true then ["seed-added"] else [] end)
            + (if $es == "0" then []
@@ -1621,7 +1886,7 @@ JQ_AUDIT='
 # own record, in one engine call. Prints the result line and, when the journey changes, the new
 # journey.json after it (the shape rows_commit takes).
 audit_files() {
-  local bs bf cs cf rs rf ps pf es ef ds df bhash="" kdhash="" seed=0 now
+  local bs bf cs cf rs rf ps pf es ef ds df bhash="" kdhash="" seed=0 now hh=""
   file_state "$BASELINE"; bs="$FS_STATE"; bf="$FS_PATH"
   [ "$bs" = 1 ] && bhash="$(hash_or "$BASELINE")"
   file_state "$CONFIG"; cs="$FS_STATE"; cf="$FS_PATH"
@@ -1633,7 +1898,11 @@ audit_files() {
   file_state "$SPEC_DIR/seed.json"; [ "$FS_STATE" = 0 ] || seed=1
   now="$(now_iso)" || exit 1
   if [ "$ENGINE" = jq ]; then
-    jq -rnS --rawfile jt "$JOURNEY" --rawfile bt "$bf" --rawfile ct "$cf" --rawfile rt "$rf" --rawfile pt "$pf" \
+    # jq cannot hash: the hashes of the person-confirmed rows as they are now are handed in.
+    # (The python side works them out itself, from the same rows.)
+    if [ "$bs" = 1 ] && [ "$ps" = 1 ]; then hh="$(plan_hashes "$pf")" || hh=""; fi
+    [ -n "$hh" ] || hh="{}"
+    jq -rnS --argjson hh "$hh" --rawfile jt "$JOURNEY" --rawfile bt "$bf" --rawfile ct "$cf" --rawfile rt "$rf" --rawfile pt "$pf" \
       --rawfile et "$ef" --rawfile dt "$df" --arg bs "$bs" --arg cs "$cs" --arg rs "$rs" --arg ps "$ps" --arg es "$es" \
       --arg ds "$ds" --arg bhash "$bhash" --arg kdhash "$kdhash" --arg seed "$seed" --arg now "$now" \
       --arg keys "$SAFETY_KEYS" --arg classes "$DECIDABLE_CLASSES" --arg extra "$CODES" "$JQ_DEFS $JQ_PLAN $JQ_AUDIT" 2>/dev/null

@@ -11,7 +11,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # in both. The error-honesty work added no qa-kit suite, so nothing was appended below.
 SUITES=(constitution spec-snapshot qa-kit-enforcement runconfig-merge data-baseline
         check-fixtures detect-seed auto-seed qa-kit-phases qakit-adapters qakit-install
-        surface-access ship-criteria coverage-gate oracle-confirm qa-tracker qa-auto qa-auto-decisions qa-auto-audit)
+        surface-access ship-criteria coverage-gate oracle-confirm qa-tracker qa-auto qa-auto-decisions qa-auto-audit
+        qa-auto-gate)
 
 # SELF-CHECK on the enrolment surface, mirroring scripts/run-engine-ci.sh: check-suite-coverage.sh
 # reads this array into a python SET, so a name listed TWICE is invisible to it. Checked here.

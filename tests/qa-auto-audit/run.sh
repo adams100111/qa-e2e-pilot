@@ -18,7 +18,7 @@ PY="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; [ -x "$PY" ]
 case "$PY" in */python3) PATH="${PY%/python3}:$PATH"; export PATH ;; esac
 pass=0; fail=0
 ROOT="$(mktemp -d)"
-trap 'rm -rf "$ROOT"' EXIT
+trap 'chmod -R u+rwx "$ROOT" 2>/dev/null; rm -rf "$ROOT"' EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
 E=jq
@@ -173,7 +173,7 @@ EOT
   expect "a changed type is a change (false to the text false)" "$P" 1 '"safety-setting-changed:allowApiWrites"'
   P="$(fin)"; ed "$P/.qa/config.json" 'del d["allowBlackboxCrawl"]'
   expect "a removed safety key is a change" "$P" 1 '"safety-setting-changed:allowBlackboxCrawl"'
-  P="$(fin)"; printf '{"profile":"full","humanInteraction":{"maxOptOutRate":0.20,"autonomousSetup":false,"saveSession":true,"enforce":true},\n "allowBlackboxCrawl":false,"environment":"auto","seedableEnvMarker":"","allowApiWrites":false,"auth":{"storageState":"x.json"},"baseUrl":"http://127.0.0.1:8000"}\n' > "$P/.qa/config.json"
+  P="$(fin)"; printf '{"profile":"full","humanInteraction":{"maxOptOutRate":0.20,"autonomousSetup":false,"saveSession":true,"enforce":true},\n "allowBlackboxCrawl":false,"environment":"auto","seedableEnvMarker":"","allowApiWrites":false,"auth":{"storageState":"x.json"},"baseUrl":"http://localhost:3000"}\n' > "$P/.qa/config.json"
   expect "key order, number spelling and other keys are not a change" "$P" 0 ""
   # the nested gates object
   P="$(fin rich)"; ed "$P/.qa/config.json" 'd["gates"]["oracle"]="off"'
@@ -191,11 +191,28 @@ EOT
   expect "a symlinked config is read through the link" "$P" 1 '"safety-setting-changed:allowApiWrites"'
   ALL8='"safety-setting-changed:allowApiWrites","safety-setting-changed:allowBlackboxCrawl","safety-setting-changed:environment","safety-setting-changed:gates","safety-setting-changed:humanInteraction.enforce","safety-setting-changed:humanInteraction.maxOptOutRate","safety-setting-changed:profile","safety-setting-changed:seedableEnvMarker"'
   P="$(fin)"; rm "$P/.qa/config.json"; ln -s "$P/nowhere.json" "$P/.qa/config.json"
-  expect "a config link that leads nowhere fails every key" "$P" 1 "$ALL8"
+  expect "a config link that leads nowhere fails every key" "$P" 1 "\"base-url-changed\",$ALL8"
   P="$(fin)"; rm "$P/.qa/config.json"
-  expect "a removed config fails every key" "$P" 1 "$ALL8"
+  expect "a removed config fails every key" "$P" 1 "\"base-url-changed\",$ALL8"
   P="$(fin)"; printf '{"allowApiWrites":' > "$P/.qa/config.json"
-  expect "a config that does not parse fails every key" "$P" 1 "$ALL8"
+  expect "a config that does not parse fails every key" "$P" 1 "\"base-url-changed\",$ALL8"
+
+  # ---- base-url-changed ----
+  P="$(fin)"; B="$P/.qa/specs/checkout/auto/baseline.json"
+  check "$E start records the address the journey ran against" "$(jv "$B" 'd["baseUrl"]')" "http://localhost:3000"
+  ed "$P/.qa/config.json" 'd["baseUrl"]="https://app.example.sa"'
+  expect "base-url-changed" "$P" 1 '"base-url-changed"'
+  P="$(fin)"; ed "$P/.qa/config.json" 'd["baseUrl"]="http://localhost:3000/"'
+  expect "base-url-changed on one added character" "$P" 1 '"base-url-changed"'
+  P="$(fin)"; ed "$P/.qa/config.json" 'del d["baseUrl"]'
+  expect "base-url-changed when the address is removed" "$P" 1 '"base-url-changed"'
+  P="$(fin)"; ed "$P/.qa/config.json" 'd["baseUrl"]=["http://localhost:3000"]'
+  expect "base-url-changed when the address is no longer text" "$P" 1 '"base-url-changed"'
+  # a baseline written before the address was recorded has nothing to compare
+  P="$(fin)"; J="$P/.qa/specs/checkout/auto/journey.json"; B="$P/.qa/specs/checkout/auto/baseline.json"
+  ed "$B" 'del d["baseUrl"]'; ed "$J" "d['baselineHash']='$(sha "$B")'"
+  ed "$P/.qa/config.json" 'd["baseUrl"]="https://app.example.sa"'
+  expect "an older baseline without the address skips the check" "$P" 0 ""
 
   # ---- run-config-safety:<key> ----
   while IFS='|' read -r k v; do
@@ -258,7 +275,22 @@ EOT
   P="$(fin)"; edk "$P" 'del d[3]["fixture"]'
   expect "human-oracle-removed when the expected value is dropped" "$P" 1 '"human-oracle-removed:C-004"'
   P="$(fin)"; edk "$P" 'd[0]["fixture"]["expect"]["value"]="120.00"'
-  expect "known limit: a changed expected value on a row that stays person-confirmed is not seen" "$P" 0 ""
+  expect "human-oracle-changed:<criterion id>" "$P" 1 '"human-oracle-changed:C-001"'
+  P="$(fin)"; B="$P/.qa/specs/checkout/auto/baseline.json"
+  check "$E start records a hash of each person-confirmed expected value" "$(jv "$B" 'd["humanOracleHashes"]')" "{\"C-001\": \"$(printf '%s' '{"oracleSource":"human","value":"115.00"}' | "$PY" -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')\", \"C-004\": \"$(printf '%s' '{"oracleSource":"human","value":"15.00"}' | "$PY" -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')\"}"
+  edk "$P" 'd[3]["fixture"]["expect"]["citation"]="docs/pricing.md:30"'
+  expect "human-oracle-changed when a field is added to the expected value" "$P" 1 '"human-oracle-changed:C-004"'
+  P="$(fin)"; edk "$P" 'd[0]["fixture"]["expect"]["value"]=115.00; d[3]["fixture"]["expect"]["value"]="15.0"'
+  expect "human-oracle-changed for each changed row, a changed type included" "$P" 1 '"human-oracle-changed:C-001","human-oracle-changed:C-004"'
+  P="$(fin)"; edk "$P" 'd[0]["fixture"]["expect"]={"value":"115.00","oracleSource":"human"}; d[0]["fixture"]["note"]="x"; d[0]["title"]="t"; d[1]["fixture"]["expect"]["value"]="91.00"'
+  expect "the same expected value in another key order, and other fields of the row, pass" "$P" 0 ""
+  P="$(fin)"; edk "$P" 'd[0]["fixture"]["expect"]={"value":"120.00","oracleSource":"spec"}'
+  expect "a row that is no longer person-confirmed is reported as that, once" "$P" 1 '"human-oracle-removed:C-001"'
+  # a baseline written before the hashes were recorded has nothing to compare
+  P="$(fin)"; J="$P/.qa/specs/checkout/auto/journey.json"; B="$P/.qa/specs/checkout/auto/baseline.json"
+  ed "$B" 'del d["humanOracleHashes"]'; ed "$J" "d['baselineHash']='$(sha "$B")'"
+  edk "$P" 'd[0]["fixture"]["expect"]["value"]="120.00"'
+  expect "an older baseline without the hashes skips the check" "$P" 0 ""
   P="$(fin)"; printf '[{"id":' > "$P/.qa/specs/checkout/checklist.json"; touch -t "$T_OLD" "$P/.qa/specs/checkout/checklist.json"
   expect "plan-unreadable (does not parse)" "$P" 1 '"plan-unreadable"'
   P="$(fin)"; : > "$P/.qa/specs/checkout/checklist.json"; touch -t "$T_OLD" "$P/.qa/specs/checkout/checklist.json"
@@ -434,6 +466,17 @@ EOT
   P="$(fin)"; ed "$P/.qa/specs/checkout/auto/baseline.json" 'd["safety"]="x"; d["exclusions"]=None'
   expect "a baseline rewritten into another shape" "$P" 1 "\"baseline-changed\",\"exclusion-added\",$ALL8"
 
+  # ---- a failed audit that cannot be recorded ----
+  if [ "$(id -u)" != 0 ]; then
+    P="$(fin)"; printf '{"x":1}\n' > "$P/.qa/specs/checkout/seed.json"; chmod 555 "$P/.qa/specs/checkout/auto"; before="$(snapshot "$P")"
+    out="$(au "$P" 2>&1)"; rc=$?
+    check "$E a failed audit that cannot write the journey" "$rc|$out" "1|auto: could not write .qa/specs/checkout/auto/journey.json"
+    check "$E the journey it could not write is unchanged" "$(snapshot "$P")" "$before"
+    rm "$P/.qa/specs/checkout/seed.json"
+    expect "a passing audit needs to write nothing" "$P" 0 ""
+    chmod 755 "$P/.qa/specs/checkout/auto"
+  fi
+
   # ---- nothing outside auto/ is ever written ----
   P="$(fin)"; printf '{"x":1}\n' > "$P/.qa/specs/checkout/seed.json"
   before="$(snapshot "$P" | grep -v '/auto/')"
@@ -453,24 +496,25 @@ if command -v jq >/dev/null 2>&1; then
     local P="$1" S="$1/.qa/specs/checkout"
     ed "$P/.qa/config.json" 'd["gates"]={"dataPolicy":"off","weight":1.0}; d["humanInteraction"]["maxOptOutRate"]=1E+0'
     ed "$S/run-config.json" 'd["environment"]="disposable"'
-    edk "$P" 'd.append({"id":"معيار-٧ \"مقتبس\" \\ $HOME\n`x`","fixture":{"expect":{"oracleSource":"human"}}}); d.append({"id":"C-\u007f-del","fixture":{"expect":{"oracleSource":"human"}}}); del d[2]; d[0]["fixture"]["expect"]["oracleSource"]="spec"'
+    ed "$P/.qa/config.json" 'd["baseUrl"]="https://متجر.example.sa/\"x\""'
+    edk "$P" 'd[3]["fixture"]["expect"]={"value":1.50,"oracleSource":"human","note":"قيمة \"جديدة\" \u007f","z":[1.0,{"b":2,"a":None}]}; d.append({"id":"معيار-٧ \"مقتبس\" \\ $HOME\n`x`","fixture":{"expect":{"oracleSource":"human"}}}); d.append({"id":"C-\u007f-del","fixture":{"expect":{"oracleSource":"human"}}}); del d[2]; d[0]["fixture"]["expect"]["oracleSource"]="spec"'
     ed "$S/coverage-exclusions.json" 'd.append({"surfaceId":"x","personaId":"*","weight":2.0})'
     ed "$S/auto/decisions.json" 'd.append({"id":"قرار, ٢","class":"seed"}); d.append({"id":7,"class":"safety"})'
     printf '\n' >> "$P/.qa/known-defects.json"; printf '{}\n' > "$S/seed.json"; rm "$P/.qa/runs/r1/report.md"
   }
   for shape in plain rich atverify; do
     XJ="$(E=jq; fin "$shape")"; XP="$(E=python3; fin "$shape")"
-    check "cross-engine fixture journey.json identical ($shape)" "$(cat "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cat "$XP/.qa/specs/checkout/auto/journey.json")"
-    check "cross-engine fixture baseline.json identical ($shape)" "$(cat "$XJ/.qa/specs/checkout/auto/baseline.json")" "$(cat "$XP/.qa/specs/checkout/auto/baseline.json")"
+    check "cross-engine fixture journey.json identical ($shape)" "$(cksum < "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/journey.json")"
+    check "cross-engine fixture baseline.json identical ($shape)" "$(cksum < "$XJ/.qa/specs/checkout/auto/baseline.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/baseline.json")"
     oj="$(E=jq; au "$XJ" 2>&1; echo "rc=$?")"; op="$(E=python3; au "$XP" 2>&1; echo "rc=$?")"
     check "cross-engine clean audit identical ($shape)" "$oj" "$op"
     mut "$XJ"; mut "$XP"
     for t in skip behind fail; do
       oj="$(E=jq; NOW="2026-11-27T11:00:00Z" TRK=$t au "$XJ" 2>&1; echo "rc=$?")"; op="$(E=python3; NOW="2026-11-27T11:00:00Z" TRK=$t au "$XP" 2>&1; echo "rc=$?")"
       check "cross-engine failed audit output identical ($shape, tracker $t)" "$oj" "$op"
-      check "cross-engine journey.json identical after the audit ($shape, tracker $t)" "$(cat "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cat "$XP/.qa/specs/checkout/auto/journey.json")"
+      check "cross-engine journey.json identical after the audit ($shape, tracker $t)" "$(cksum < "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/journey.json")"
     done
-    check "the failed audit found something ($shape)" "$(printf '%s' "$oj" | grep -c '"ok":false.*"exclusion-added".*"forbidden-decision:#3".*"known-defects-changed".*"tracker-behind"')" "1"
+    check "the failed audit found something ($shape)" "$(printf '%s' "$oj" | grep -c '"ok":false.*"base-url-changed".*"exclusion-added".*"forbidden-decision:#3".*"human-oracle-changed:C-004".*"known-defects-changed".*"tracker-behind"')" "1"
     # each engine reads the other's files and still agrees
     oj="$(E=jq; au "$XP" 2>&1; echo "rc=$?")"; op="$(E=python3; au "$XJ" 2>&1; echo "rc=$?")"
     check "cross-engine audit of each other's journey identical ($shape)" "$oj" "$op"

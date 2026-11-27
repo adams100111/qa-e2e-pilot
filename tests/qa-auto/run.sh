@@ -102,62 +102,7 @@ run_engine() {
   check "$E start_refuses_missing_config" "$rc|$out" "1|auto: no .qa/config.json; set the project up first"
   check "$E missing config writes nothing" "$([ -e "$P/.qa" ] && echo yes || echo no)" "no"
 
-  # ---- start_refuses_production ----
-  P="$(mkproj '{"baseUrl":"http://localhost:3000","environment":"production","seedableEnvMarker":"MATJAR_DISPOSABLE"}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E start_refuses_production (explicit)" "$rc|$out" "1|auto: this environment is production; an unattended journey does not run there"
-  check "$E production writes nothing" "$([ -e "$P/.qa/specs" ] && echo yes || echo no)" "no"
-  P="$(mkproj '{"baseUrl":"https://app.example.sa","environment":"auto","seedableEnvMarker":""}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E start_refuses_production (auto, non-local, empty marker)" "$rc|$out" "1|auto: this environment is production; an unattended journey does not run there"
-  P="$(mkproj '{"baseUrl":"https://app.example.sa","environment":"auto","seedableEnvMarker":"QA_DISPOSABLE_ENV","gates":{"dataPolicy":"enforce"}}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E start_refuses_production (bootstrap sentinel marker)" "$rc|$out" "1|auto: this environment is production; an unattended journey does not run there"
-  P="$(mkproj '{"baseUrl":"https://app.example.sa","gates":{"dataPolicy":"enforce"}}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E start_refuses_production (environment absent = auto)" "$rc|$out" "1|auto: this environment is production; an unattended journey does not run there"
-  P="$(mkproj '{"baseUrl":"https://localhost.example.sa","environment":"auto","seedableEnvMarker":""}')"
-  auto start checkout --project "$P" >/dev/null 2>&1
-  check "$E a host that only contains 'localhost' is not local" "$?" "1"
-
-  # ---- start_allows_local_auto ----
-  P="$(mkproj '{"baseUrl":"http://shop.ddev.site","environment":"auto","seedableEnvMarker":""}')"
-  auto start checkout --project "$P" >/dev/null 2>&1
-  check "$E start_allows_local_auto (*.ddev.site)" "$?" "0"
-  local u
-  for u in "http://localhost:3000" "http://127.0.0.1:8000/app" "http://[::1]:5173" "https://shop.localhost" "http://matjar.test" "http://Matjar.LOCAL:8080" "http://user@shop.ddev.site/x"; do
-    P="$(mkproj "{\"baseUrl\":\"$u\",\"environment\":\"auto\"}")"
-    auto start checkout --project "$P" >/dev/null 2>&1
-    check "$E local host allowed: $u" "$?" "0"
-  done
-
-  # ---- start_refuses_shared_without_data_policy ----
-  P="$(mkproj '{"baseUrl":"https://staging.matjar.example.sa","environment":"auto","seedableEnvMarker":"MATJAR_DISPOSABLE"}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E start_refuses_shared_without_data_policy" "$rc|$out" "1|auto: the environment is shared and gates.dataPolicy is not enforce"
-  check "$E shared refusal writes nothing" "$([ -e "$P/.qa/specs" ] && echo yes || echo no)" "no"
-  P="$(mkproj '{"baseUrl":"https://staging.matjar.example.sa","environment":"disposable","seedableEnvMarker":"MATJAR_DISPOSABLE","gates":{"dataPolicy":"advise"}}')"
-  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
-  check "$E shared with dataPolicy advise refused" "$rc|$out" "1|auto: the environment is shared and gates.dataPolicy is not enforce"
-  P="$(mkproj "$SHARED_OK")"
-  auto start checkout --project "$P" >/dev/null 2>&1
-  check "$E shared with dataPolicy enforce allowed" "$?" "0"
-  # the ship profile fills gates.dataPolicy when the project does not set it (profile.sh, ADR-0030)
-  P="$(mkproj '{"baseUrl":"https://staging.matjar.example.sa","environment":"auto","seedableEnvMarker":"MATJAR_DISPOSABLE"}')"
-  auto start checkout --project "$P" --profile ship >/dev/null 2>&1
-  check "$E shared under the ship profile allowed (profile fills the gate)" "$?" "0"
-  P="$(mkproj '{"baseUrl":"https://staging.matjar.example.sa","environment":"auto","seedableEnvMarker":"MATJAR_DISPOSABLE","gates":{"dataPolicy":"advise"}}')"
-  auto start checkout --project "$P" --profile ship >/dev/null 2>&1
-  check "$E a set gates.dataPolicy wins over the ship profile" "$?" "1"
-  # a local environment needs no data policy gate
-  P="$(mkproj '{"baseUrl":"http://shop.ddev.site","environment":"auto","gates":{"dataPolicy":"advise"}}')"
-  auto start checkout --project "$P" >/dev/null 2>&1
-  check "$E local environment does not need the gate" "$?" "0"
-
-  # known-defects registry rejected by the engine's validator (the command passes the flag)
-  P="$(mkproj)"
-  out="$(auto start checkout --project "$P" --known-defects-invalid 2>&1)"; rc=$?
-  check "$E start_refuses_invalid_known_defects" "$rc|$out" "1|auto: .qa/known-defects.json is not valid"
+  # (what `start` and `resume` refuse about the environment is tested in tests/qa-auto-gate/)
 
   # ---- start_refuses_second_journey ----
   P="$(mkproj)"
@@ -731,7 +676,6 @@ if command -v jq >/dev/null 2>&1; then
     cp "$FX/coverage-exclusions.json" "$P/.qa/specs/checkout/coverage-exclusions.json"
     cp "$FX/known-defects.json" "$P/.qa/known-defects.json"
     printf '{"profile":"ship","humanInteraction":{"maxOptOutRate":0.1}}\n' > "$P/.qa/specs/checkout/run-config.json"
-    printf '[{"id":"D1","needsPerson":true}]\n' > "$P/.qa/specs/checkout/decisions.seed"
     printf '%s' "$P"
   }
   XJ="$(build_x)"; XP="$(build_x)"
@@ -741,11 +685,11 @@ if command -v jq >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     op="$(E=python3; auto $v --project "$XP" 2>&1; echo "rc=$?")"
     check "cross-engine output identical: $v" "$oj" "$op"
-    check "cross-engine journey.json identical after: $v" "$(cat "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cat "$XP/.qa/specs/checkout/auto/journey.json")"
-    check "cross-engine baseline.json identical after: $v" "$(cat "$XJ/.qa/specs/checkout/auto/baseline.json")" "$(cat "$XP/.qa/specs/checkout/auto/baseline.json")"
+    check "cross-engine journey.json identical after: $v" "$(cksum < "$XJ/.qa/specs/checkout/auto/journey.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/journey.json")"
+    check "cross-engine baseline.json identical after: $v" "$(cksum < "$XJ/.qa/specs/checkout/auto/baseline.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/baseline.json")"
   done
   check "numbers are written one way" "$(grep -c '"humanInteraction.maxOptOutRate": 0.2,$' "$XJ/.qa/specs/checkout/auto/baseline.json")/$(grep -c '"weight": 1$' "$XP/.qa/specs/checkout/auto/baseline.json")" "1/1"
-  check "cross-engine history identical" "$(cat "$XJ/.qa/specs/checkout/auto/history/1/journey.json")" "$(cat "$XP/.qa/specs/checkout/auto/history/1/journey.json")"
+  check "cross-engine history identical" "$(cksum < "$XJ/.qa/specs/checkout/auto/history/1/journey.json")" "$(cksum < "$XP/.qa/specs/checkout/auto/history/1/journey.json")"
   for v in "start" "start checkout --profile fast" "stop checkout --reason tired --detail x" "status nothing-here" "resume nothing-here"; do
     # shellcheck disable=SC2086
     oj="$(E=jq; auto $v --project "$XJ" 2>&1; echo "rc=$?")"
@@ -767,7 +711,7 @@ if command -v jq >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     op="$(E=python3; auto $2 --project "$YP" 2>&1; echo "rc=$?")"
     check "cross-engine $1 output identical: $2" "$oj" "$op"
-    check "cross-engine $1 journey.json identical after: $2" "$(cat "$YJ/.qa/specs/checkout/auto/journey.json" 2>/dev/null)" "$(cat "$YP/.qa/specs/checkout/auto/journey.json" 2>/dev/null)"
+    check "cross-engine $1 journey.json identical after: $2" "$(cat "$YJ/.qa/specs/checkout/auto/journey.json" 2>/dev/null | cksum)" "$(cat "$YP/.qa/specs/checkout/auto/journey.json" 2>/dev/null | cksum)"
   }
   YJ="$(build_y analyze)"; YP="$(build_y analyze)"
   for v in "next checkout" "start checkout --max-hours 2" "signin checkout" "next checkout" "step-done checkout run --run r1" "step-start checkout analyze" "step-start checkout analyze" "status checkout" "step-done checkout analyze" "next checkout" "step-done checkout run" "step-done checkout run --run r9" "step-start checkout run" "step-done checkout run --run r1" "step-done checkout verify" "status checkout" "next checkout" "next checkout" "step-start checkout verify" "signin checkout"; do
@@ -789,7 +733,7 @@ if command -v jq >/dev/null 2>&1; then
   oj="$(E=jq; NOW="2026-11-27T12:00:00Z" auto next checkout --project "$YJ" 2>&1; echo "rc=$?")"
   op="$(E=python3; NOW="2026-11-27T12:00:00Z" auto next checkout --project "$YP" 2>&1; echo "rc=$?")"
   check "cross-engine time-limit output identical" "$oj" "$op"
-  check "cross-engine time-limit journey.json identical" "$(cat "$YJ/.qa/specs/checkout/auto/journey.json")" "$(cat "$YP/.qa/specs/checkout/auto/journey.json")"
+  check "cross-engine time-limit journey.json identical" "$(cksum < "$YJ/.qa/specs/checkout/auto/journey.json")" "$(cksum < "$YP/.qa/specs/checkout/auto/journey.json")"
 fi
 
 echo "qa-auto: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]

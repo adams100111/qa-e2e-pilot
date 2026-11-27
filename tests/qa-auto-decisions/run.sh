@@ -14,7 +14,7 @@ PY="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; [ -x "$PY" ]
 case "$PY" in */python3) PATH="${PY%/python3}:$PATH"; export PATH ;; esac
 pass=0; fail=0
 ROOT="$(mktemp -d)"
-trap 'rm -rf "$ROOT"' EXIT
+trap 'chmod -R u+rwx "$ROOT" 2>/dev/null; rm -rf "$ROOT"' EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
 
 E=jq
@@ -315,6 +315,21 @@ run_engine() {
     check "$E second --unavailable on a broken decisions.json [$c]" "$rc|$out" "1|auto: decisions.json for checkout is not readable"
     check "$E a broken decisions.json is left as it is [$c]" "$(snapshot "$P")" "$before"
   done
+  # ---- a write that fails stops the verb, with one line and no id ----
+  if [ "$(id -u)" != 0 ]; then
+    P="$(newj)"; dec "$P" journeys low "resources/js/cart.js:8" >/dev/null 2>&1
+    chmod 555 "$P/.qa/specs/checkout/auto"; before="$(snapshot "$P")"
+    out="$(dec "$P" scope high "routes/web.php:12" 2>&1)"; rc=$?
+    check "$E decide on a journey directory it cannot write" "$rc|$out" "1|auto: could not write .qa/specs/checkout/auto/decisions.json"
+    out="$(auto note checkout --kind seed-not-run --text "The seed command was not run." --project "$P" 2>&1)"; rc=$?
+    check "$E note on a journey directory it cannot write" "$rc|$out" "1|auto: could not write .qa/specs/checkout/auto/notes.json"
+    out="$(auto second checkout D1 ask --reason "no source" --project "$P" 2>&1)"; rc=$?
+    check "$E second on a journey directory it cannot write" "$rc|$out" "1|auto: could not write .qa/specs/checkout/auto/decisions.json"
+    out="$(auto second checkout --unavailable --project "$P" 2>&1)"; rc=$?
+    check "$E second --unavailable on a journey directory it cannot write" "$rc|$out" "1|auto: could not write .qa/specs/checkout/auto/decisions.json"
+    check "$E the failed writes changed nothing" "$(snapshot "$P")" "$before"
+    chmod 755 "$P/.qa/specs/checkout/auto"
+  fi
   P="$(newj)"; N="$P/.qa/specs/checkout/auto/notes.json"; printf '{"notes":[]}\n' > "$N"; before="$(snapshot "$P")"
   out="$(auto note checkout --kind seed-not-run --text "x" --project "$P" 2>&1)"; rc=$?
   check "$E note on a broken notes.json" "$rc|$out|$([ "$(snapshot "$P")" = "$before" ] && echo same || echo changed)" "1|auto: notes.json for checkout is not readable|same"
