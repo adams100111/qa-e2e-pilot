@@ -20,9 +20,19 @@
 #   auto.sh resume <target> [--max-hours <n>]
 #   auto.sh stop   <target> --reason <reason> --detail <text>
 #   auto.sh status <target>
+#   auto.sh next       <target>                    -> {"next":"<step>"} | {"next":"done"}
+#                                                     | {"detail":…,"next":"stopped","reason":…}
+#   auto.sh step-start <target> <step>
+#   auto.sh step-done  <target> <step> [--run <run-id>]
+#   auto.sh signin     <target>                    -> {"missing":[…],"ok":[…]}
 #
-#   start, resume, stop and status print ONE JSON line: journey.json plus {"needsPerson": n}.
-#   status writes nothing.
+#   start, resume, stop, status, step-start and step-done print ONE JSON line: journey.json plus
+#   {"needsPerson": n}. status writes nothing. next and signin print their own one line.
+#
+# STEP ORDER: `next` names the first step that is not done; `step-start` and `step-done` take only
+# that step. `step-done` looks for the step's result on disk (the checks /qa-status makes) and
+# never takes the caller's word. A step's `attempts` counts its `step-start` calls, so a second
+# `step-start` on a running step is a redo.
 #
 # EXIT CODES: 0 ok; 1 refused or failed (one line on stderr, `auto: <reason>`); 2 usage.
 #
@@ -33,8 +43,9 @@
 # overrides). Both engines give byte-identical files and output. No node/perl/grep -P.
 #
 # ADDING A VERB: write `cmd_<verb>`, add it to the dispatch `case` at the bottom, and reuse the
-# helpers below (parse_common, journey_load, journey_require_open, json_get/json_strs/json_pick/json_merge,
-# stop_journey, print_status, now_iso, iso_add_hours, step_artifact_done, read_lines).
+# helpers below (parse_common, journey_load, journey_read, journey_require_open, json_get/json_strs/
+# json_pick/json_merge, journey_stepset, stop_journey, print_status, print_stopped, now_iso,
+# iso_add_hours, iso_epoch, step_artifact_done, step_state, first_open_step, signin_json, read_lines).
 set -uo pipefail
 
 # ---------------------------------------------------------------------------------------------
@@ -57,6 +68,10 @@ usage: auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--m
        auto.sh resume <target> [--max-hours <n>] [--project <dir>]
        auto.sh stop   <target> --reason time-limit|step-failed|until|blocked|audit|no-sign-in|tracker --detail <text> [--project <dir>]
        auto.sh status <target> [--project <dir>]
+       auto.sh next   <target> [--project <dir>]
+       auto.sh step-start <target> <step> [--project <dir>]
+       auto.sh step-done  <target> <step> [--run <run-id>] [--project <dir>]
+       auto.sh signin <target> [--project <dir>]
 EOF
   exit 2
 }
@@ -159,6 +174,46 @@ try:
             if isinstance(ex, dict) and ex.get("oracleSource") == "human" and isinstance(r.get("id"), str):
                 ids.add(r["id"])
         emit(sorted(ids))
+    elif op == "journey":
+        d = load(a[0])
+        if not isinstance(d, dict):
+            sys.exit(1)
+        def s(v):
+            return v.replace("\r", " ").replace("\n", " ") if isinstance(v, str) else ""
+        def n(v):
+            return math.floor(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+        st = d.get("stop") if isinstance(d.get("stop"), dict) else {}
+        steps = d.get("steps") if isinstance(d.get("steps"), list) else []
+        out = [s(d.get("state")), s(st.get("reason")), s(st.get("detail")), s(d.get("deadline")), s(d.get("until")),
+               s(d.get("runId")), s(d.get("startedAt")), str(n(d.get("analyzeRounds"))),
+               " ".join("%s:%s:%d" % (s(x.get("name")), s(x.get("state")), n(x.get("attempts"))) for x in steps if isinstance(x, dict))]
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+    elif op == "stepset":
+        d = load(a[0])
+        p = json.loads(a[1])
+        if not isinstance(d, dict) or not isinstance(d.get("steps"), list):
+            sys.exit(1)
+        d.update(p.get("set") or {})
+        for x in d["steps"]:
+            u = (p.get("steps") or {}).get(x.get("name")) if isinstance(x, dict) else None
+            if u:
+                if u.get("state"):
+                    x["state"] = u["state"]
+                if u.get("bump"):
+                    x["attempts"] = (x.get("attempts") or 0) + 1
+        emit(d, pretty=True)
+    elif op == "personas":
+        d = load(a[0])
+        if not isinstance(d, dict):
+            sys.exit(1)
+        def s(v):
+            return v.replace("\r", " ").replace("\n", " ").replace("\t", " ") if isinstance(v, str) else ""
+        au = d.get("auth")
+        out = [s(au.get("storageState")) if isinstance(au, dict) else ""]
+        for x in (d.get("personas") if isinstance(d.get("personas"), list) else []):
+            if isinstance(x, dict) and isinstance(x.get("id"), str):
+                out.append(json.dumps(x["id"], ensure_ascii=False) + "\t" + s(x.get("auth")))
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
     elif op == "counttrue":
         rows = load(a[0])
         emit(len([r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict) and r.get(a[1]) is True]))
@@ -351,7 +406,8 @@ $text
 EOT
 }
 # target_json — the target as a JSON string literal (worked out once per call site).
-target_json() { json_quote "$TARGET"; }
+TARGET_JSON=""
+target_json() { if [ -n "$TARGET_JSON" ]; then printf '%s\n' "$TARGET_JSON"; else json_quote "$TARGET"; fi; }
 # journey_load — reads the journey once into J_STATE (`open`, `done`, `stopped`, or empty when
 # there is no readable journey) and J_REASON (the stop reason, or empty).
 J_STATE=""; J_REASON=""
@@ -395,6 +451,198 @@ print_status() {
   out="$(json_patch "$JOURNEY" "{\"needsPerson\":$(needs_person_count)}")" && [ -n "$out" ] || die "journey.json for $TARGET is not readable"
   printf '%s\n' "$out"
 }
+# journey_read — reads the whole journey once: J_STATE, J_REASON, J_DETAIL (line breaks as spaces),
+# J_DEADLINE, J_UNTIL, J_RUN, J_STARTED, J_ROUNDS and J_STEPS (`name:state:attempts` words in
+# journey order). All empty when there is no readable journey.
+J_DETAIL=""; J_DEADLINE=""; J_UNTIL=""; J_RUN=""; J_STARTED=""; J_ROUNDS=0; J_STEPS=""
+journey_read() {
+  local out=""
+  J_STATE=""; J_REASON=""; J_DETAIL=""; J_DEADLINE=""; J_UNTIL=""; J_RUN=""; J_STARTED=""; J_ROUNDS=0; J_STEPS=""
+  [ -f "$JOURNEY" ] || return 0
+  if [ "$ENGINE" = jq ]; then
+    out="$(jq -rs 'def s: if type == "string" then gsub("[\r\n]"; " ") else "" end;
+      def n: if type == "number" then floor else 0 end;
+      '"$JQ_ONE"' | if type != "object" then error("not an object") else . end
+      | (.stop | if type == "object" then . else {} end) as $st
+      | (.state | s), ($st.reason | s), ($st.detail | s), (.deadline | s), (.until | s), (.runId | s), (.startedAt | s),
+        (.analyzeRounds | n | tostring),
+        ([ (.steps | if type == "array" then .[] else empty end) | select(type == "object")
+           | "\(.name | s):\(.state | s):\(.attempts | n)" ] | join(" "))' < "$JOURNEY" 2>/dev/null)" || return 0
+  else
+    out="$(py journey "$JOURNEY" 2>/dev/null)" || return 0
+  fi
+  read_lines "$out" J_STATE J_REASON J_DETAIL J_DEADLINE J_UNTIL J_RUN J_STARTED J_ROUNDS J_STEPS
+  case "$J_ROUNDS" in ""|*[!0-9]*) J_ROUNDS=0 ;; esac
+}
+# journey_read_open — journey_read, then die unless the journey is open.
+journey_read_open() {
+  journey_read
+  [ "$J_STATE" = open ] || die "no open journey for $TARGET"
+  [ -n "$J_STEPS" ] || die "journey.json for $TARGET is not readable"
+}
+# step_state <step> — the step's state as journey_read saw it (empty when the step is not there).
+step_state() {
+  local w r
+  for w in $J_STEPS; do
+    if [ "${w%%:*}" = "$1" ]; then r="${w#*:}"; printf '%s\n' "${r%%:*}"; return 0; fi
+  done
+  return 0
+}
+# step_index <step> — its place in STEPS, from 1.
+step_index() {
+  local s i=0
+  for s in $STEPS; do i=$((i + 1)); [ "$s" = "$1" ] && break; done
+  printf '%s\n' "$i"
+}
+# first_open_step — the first step, in J1 order, that is not done; empty when all are done.
+first_open_step() {
+  local s
+  for s in $STEPS; do
+    if [ "$(step_state "$s")" != done ]; then printf '%s\n' "$s"; return 0; fi
+  done
+  return 0
+}
+# require_next_step <step> — die unless this is the step `next` would name.
+require_next_step() {
+  local first
+  [ "$(step_state "$1")" = done ] && die "$1 is already done"
+  first="$(first_open_step)"
+  [ "$first" = "$1" ] || die "$1 is not the next step; next is $first"
+}
+# journey_stepset <json> — change the journey in place. The JSON is
+# {"set": {<top-level keys>}, "steps": {"<name>": {"state": "<state>", "bump": true}}}; both parts
+# are optional, `bump` adds one to the step's attempts.
+journey_stepset() {
+  local tmp="$JOURNEY.tmp.$$" rc
+  if [ "$ENGINE" = jq ]; then
+    jq -S --argjson p "$1" "$JQ_DEFS"' if type == "object" and (.steps | type) == "array" then . else error("not a journey") end
+      | . + ($p.set // {})
+      | .steps |= map(. as $x | (if type == "object" then ($p.steps // {})[$x.name // ""] else null end) as $u
+          | if $u then (if $u.state then .state = $u.state else . end)
+                       | (if $u.bump then .attempts = ((.attempts // 0) + 1) else . end)
+            else . end)
+      | norm' "$JOURNEY" > "$tmp" 2>/dev/null; rc=$?
+  else
+    py stepset "$JOURNEY" "$1" > "$tmp" 2>/dev/null; rc=$?
+  fi
+  if [ "$rc" -ne 0 ] || [ ! -s "$tmp" ]; then rm -f "$tmp"; die "could not update ${JOURNEY#"$PROJECT"/}"; fi
+  mv -f "$tmp" "$JOURNEY" || { rm -f "$tmp"; die "could not update ${JOURNEY#"$PROJECT"/}"; }
+}
+# print_stopped <reason> — the `next` line of a stopped journey:
+# {"detail":…,"next":"stopped","reason":…}. Writes nothing.
+print_stopped() {
+  local st
+  st="$(json_get "$JOURNEY" stop)"
+  case "$st" in
+    '{"detail":'*",\"reason\":\"$1\"}") printf '%s,"next":"stopped","reason":"%s"}\n' "${st%,\"reason\":*}" "$1" ;;
+    *) die "journey.json for $TARGET is not readable" ;;
+  esac
+}
+# iso_epoch <YYYY-MM-DDTHH:MM:SS…> — seconds since 1970 of the first 19 characters read as UTC.
+# Plain arithmetic, so both engines agree. Fails on a field out of range.
+iso_epoch() {
+  local y m d H M S era yoe doy doe
+  y=$((10#${1:0:4})); m=$((10#${1:5:2})); d=$((10#${1:8:2}))
+  H=$((10#${1:11:2})); M=$((10#${1:14:2})); S=$((10#${1:17:2}))
+  [ "$m" -ge 1 ] && [ "$m" -le 12 ] && [ "$d" -ge 1 ] && [ "$d" -le 31 ] && [ "$H" -le 23 ] && [ "$M" -le 59 ] && [ "$S" -le 60 ] || return 1
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$((y / 400)); yoe=$((y - era * 400))
+  doy=$(( (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1 ))
+  doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  printf '%s\n' $(( (era * 146097 + doe - 719468) * 86400 + H * 3600 + M * 60 + S ))
+}
+# time_epoch <text> — seconds since 1970 of a timestamp that names its zone:
+# `YYYY-MM-DD(T| )HH:MM:SS[.fff](Z|±HH:MM|±HHMM)`. Fails on anything else (a time without a zone
+# is not readable: it cannot be compared).
+time_epoch() {
+  local re='^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$'
+  local t="$1" z e off=0
+  [[ "$t" =~ $re ]] || return 1
+  e="$(iso_epoch "$t")" || return 1
+  case "$t" in
+    *Z) ;;
+    *)  z="${t:$((${#t} - 6))}"
+        case "$z" in
+          [+-][0-9][0-9]:[0-9][0-9]) z="${z:0:3}${z:4:2}" ;;
+          *) z="${t:$((${#t} - 5))}" ;;
+        esac
+        off=$(( 10#${z:1:2} * 3600 + 10#${z:3:2} * 60 ))
+        [ "${z:0:1}" = "-" ] && off=$(( -off )) ;;
+  esac
+  printf '%s\n' $((e - off))
+}
+# analysis_verdict <analysis.md> — `blocked`, `clear`, or `none` when the file has no `## Verdict`
+# section with a line in it. The verdict is the first non-empty line under the heading: BLOCKED
+# when it has that word and does not open with PASS.
+analysis_verdict() {
+  local line in=0 t
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    if [ "$in" -eq 0 ]; then
+      case "$line" in '## Verdict'|'## Verdict '*) in=1 ;; esac
+      continue
+    fi
+    case "$line" in '#'*) break ;; esac
+    t="${line#"${line%%[!	 *_\`>-]*}"}"
+    [ -n "$t" ] || continue
+    case "$t" in
+      PASS*) echo clear ;;
+      *BLOCKED*) echo blocked ;;
+      *) echo clear ;;
+    esac
+    return 0
+  done < "$1"
+  echo none
+}
+# auth_configured <auth text> — exit 0 when a persona's `auth` entry says how it signs in: any
+# text other than empty or `unknown…`; when the text names a `.json` file (a captured
+# storageState), that file must exist. Presence only; nothing is opened or signed in.
+auth_configured() {
+  local a="$1" w f=""
+  a="${a#"${a%%[! ]*}"}"
+  case "$a" in ""|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]*) return 1 ;; esac
+  set -f
+  for w in $a; do
+    while :; do case "$w" in [\"\'\(\[\<\`]*) w="${w#?}" ;; *) break ;; esac; done
+    while :; do case "$w" in *[\"\'\)\]\>\`,.\;:]) w="${w%?}" ;; *) break ;; esac; done
+    case "$w" in *.json) f="$w"; break ;; esac
+  done
+  set +f
+  [ -n "$f" ] || return 0
+  case "$f" in /*) ;; *) f="$PROJECT/$f" ;; esac
+  [ -f "$f" ]
+}
+# signin_json — one line, {"missing":[…],"ok":[…]}: the personas of .qa/config.json (ids, in the
+# config's order) by whether their sign-in is configured (auth_configured on `personas[].auth`).
+# A config without personas has one sign-in, `auth.storageState`, reported as the persona
+# `default`: configured when that file exists. Fails when the config is not one JSON object.
+signin_json() {
+  local facts ss line idj ok="" missing="" n=0
+  if [ "$ENGINE" = jq ]; then
+    facts="$(jq -rs 'def s: if type == "string" then gsub("[\r\n\t]"; " ") else "" end;
+      '"$JQ_ONE"' | if type != "object" then error("not an object") else . end
+      | ((.auth | if type == "object" then .storageState else null end) | s),
+        ((.personas | if type == "array" then .[] else empty end)
+          | select(type == "object" and (.id | type) == "string") | "\(.id | tojson)\t\(.auth | s)")' < "$CONFIG" 2>/dev/null)" || return 1
+  else
+    facts="$(py personas "$CONFIG" 2>/dev/null)" || return 1
+  fi
+  {
+    IFS= read -r ss || true
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      n=$((n + 1)); idj="${line%%	*}"
+      if auth_configured "${line#*	}"; then ok="$ok,$idj"; else missing="$missing,$idj"; fi
+    done
+  } <<EOT
+$facts
+EOT
+  if [ "$n" -eq 0 ]; then
+    case "$ss" in ""|/*) ;; *) ss="$PROJECT/$ss" ;; esac
+    if [ -n "$ss" ] && [ -f "$ss" ]; then ok=',"default"'; else missing=',"default"'; fi
+  fi
+  printf '{"missing":[%s],"ok":[%s]}\n' "${missing#,}" "${ok#,}"
+}
 # stop_journey <reason> <detail> — close the journey as stopped. Reason must be a J2 reason.
 stop_journey() {
   in_list "$1" "$RESUMABLE_REASONS $FINAL_REASONS" || die "internal: unknown stop reason $1"
@@ -402,13 +650,17 @@ stop_journey() {
   now="$(now_iso)" || exit 1
   json_merge "$JOURNEY" "{\"state\":\"stopped\",\"stop\":{\"reason\":\"$1\",\"detail\":$(json_quote "$2")},\"endedAt\":\"$now\"}"
 }
-# step_artifact_done <step> — exit 0 when the step's artifact is on disk. Only the three steps a
-# new journey can inherit are known here; the others are never done at start.
+# step_artifact_done <step> [run id] — exit 0 when the step's result is on disk (the checks
+# /qa-status makes). `run` and `verify` need the run id. `start` asks only for the three steps a
+# new journey can inherit.
 step_artifact_done() {
   case "$1" in
     constitution) [ -f "$QA_DIR/constitution.state.json" ] ;;
     spec)         [ -f "$SPEC_DIR/qa-spec.md" ] && [ -f "$SPEC_DIR/spec-roles.json" ] ;;
     scenarios)    [ -f "$SPEC_DIR/scenarios.md" ] && [ -f "$SPEC_DIR/checklist.json" ] ;;
+    analyze)      [ -f "$SPEC_DIR/analysis.md" ] && ! [ "$SPEC_DIR/analysis.md" -ot "$SPEC_DIR/checklist.json" ] ;;
+    run)          [ -n "${2:-}" ] && [ -f "$QA_DIR/runs/$2/run-manifest.json" ] && [ -f "$QA_DIR/runs/$2/checkpoint.json" ] && [ -f "$QA_DIR/runs/$2/report.md" ] ;;
+    verify)       [ -n "${2:-}" ] && [ -f "$QA_DIR/runs/$2/verification.json" ] ;;
     *) return 1 ;;
   esac
 }
@@ -572,14 +824,16 @@ cmd_start() {
 
   local now deadline base steps sep s st until_json
   now="$(now_iso)" || exit 1
+  TARGET_JSON="$(json_quote "$TARGET")"
   deadline="$(iso_add_hours "$now" "$hours")"
   [ -n "$deadline" ] || die "could not work out the deadline"
   base="$(baseline_json "$profile" "$now")" || exit 1
   steps=""; sep=""
   for s in $STEPS; do
     st=pending
-    step_artifact_done "$s" && st=done
-    steps="$steps$sep{\"name\":\"$s\",\"state\":\"$st\"}"; sep=","
+    # Only these three can be inherited; analyze, run and verify are always this journey's own.
+    in_list "$s" "constitution spec scenarios" && step_artifact_done "$s" && st=done
+    steps="$steps$sep{\"name\":\"$s\",\"state\":\"$st\",\"attempts\":0}"; sep=","
   done
   until_json=null; [ -z "$until" ] || until_json="\"$until\""
 
@@ -651,6 +905,132 @@ cmd_status() {
   print_status
 }
 
+cmd_next() {
+  parse_common "$@"
+  [ "${#REST[@]}" -eq 0 ] || usage "next does not take: ${REST[0]}"
+  need_engine
+  journey_read
+  [ -n "$J_STATE" ] || die "no journey for $TARGET"
+  case "$J_STATE" in
+    stopped) print_stopped "$J_REASON"; return 0 ;;
+    done)    printf '{"next":"done"}\n'; return 0 ;;
+    open)    ;;
+    *)       die "journey.json for $TARGET is not readable" ;;
+  esac
+  [ -n "$J_STEPS" ] || die "journey.json for $TARGET is not readable"
+  local step now
+  step="$(first_open_step)"
+  now="$(now_iso)" || exit 1
+  if [ -z "$step" ]; then
+    # Nothing is left to do, so a passed deadline no longer matters.
+    json_merge "$JOURNEY" "{\"state\":\"done\",\"endedAt\":\"$now\"}"
+    printf '{"next":"done"}\n'
+    return 0
+  fi
+  # The stop the person asked for comes before the time limit: the asked-for work is complete.
+  if in_list "$J_UNTIL" "$STEPS" && [ "$(step_index "$step")" -gt "$(step_index "$J_UNTIL")" ]; then
+    stop_journey until "stopped after $J_UNTIL, as asked"
+    print_stopped until
+    return 0
+  fi
+  if [[ "$now" > "$J_DEADLINE" ]]; then
+    stop_journey time-limit "the deadline $J_DEADLINE has passed"
+    print_stopped time-limit
+    return 0
+  fi
+  printf '{"next":"%s"}\n' "$step"
+}
+
+cmd_step_start() {
+  parse_common "$@"
+  set -- ${REST[@]+"${REST[@]}"}
+  [ "$#" -ge 1 ] || usage "step-start needs a step"
+  [ "$#" -eq 1 ] || usage "step-start does not take: $2"
+  in_list "$1" "$STEPS" || usage "the step must be one of: $STEPS"
+  need_engine
+  journey_read_open
+  require_next_step "$1"
+  journey_stepset "{\"steps\":{\"$1\":{\"state\":\"running\",\"bump\":true}}}"
+  print_status
+}
+
+cmd_step_done() {
+  parse_common "$@"
+  local step="" run="" have_run=0
+  set -- ${REST[@]+"${REST[@]}"}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --run) [ "$#" -ge 2 ] || usage "--run needs a run id"; run="$2"; have_run=1; shift 2 ;;
+      --*)   usage "step-done does not take: $1" ;;
+      *)     [ -z "$step" ] || usage "step-done does not take: $1"; step="$1"; shift ;;
+    esac
+  done
+  [ -n "$step" ] || usage "step-done needs a step"
+  in_list "$step" "$STEPS" || usage "the step must be one of: $STEPS"
+  if [ "$step" = run ]; then
+    [ "$have_run" -eq 1 ] || usage "step-done run needs --run <run-id>"
+    case "$run" in ""|.|..|*/*|-*) usage "not a usable run id: $run" ;; esac
+  else
+    [ "$have_run" -eq 0 ] || usage "--run goes with the run step only"
+  fi
+  need_engine
+  journey_read_open
+  require_next_step "$step"
+
+  local top="" verdict now started j_epoch r_epoch rounds
+  case "$step" in
+    run)
+      step_artifact_done run "$run" || die "run has no result yet"
+      # The run must have started inside this journey; an earlier run is another plan's result.
+      started="$(json_strs "$QA_DIR/runs/$run/run-manifest.json" started_at)" || die "that run has no start time"
+      r_epoch="$(time_epoch "$started")" || die "that run has no start time"
+      j_epoch="$(time_epoch "$J_STARTED")" || die "journey.json for $TARGET is not readable"
+      [ "$r_epoch" -ge "$j_epoch" ] || die "that run started before this journey"
+      top="\"runId\":$(json_quote "$run")"
+      ;;
+    verify)
+      [ -n "$J_RUN" ] || die "no run is recorded for this journey"
+      step_artifact_done verify "$J_RUN" || die "verify has no result yet"
+      ;;
+    analyze)
+      step_artifact_done analyze || die "analyze has no result yet"
+      verdict="$(analysis_verdict "$SPEC_DIR/analysis.md")"
+      [ "$verdict" != none ] || die "analyze has no result yet"
+      if [ "$verdict" = blocked ]; then
+        rounds=$((J_ROUNDS + 1))
+        if [ "$rounds" -ge 2 ]; then
+          # Still BLOCKED after the second round: the journey stops; a person has to act.
+          now="$(now_iso)" || exit 1
+          journey_stepset "{\"set\":{\"analyzeRounds\":$rounds,\"state\":\"stopped\",\"stop\":{\"reason\":\"blocked\",\"detail\":\"the analysis is still BLOCKED after $rounds rounds\"},\"endedAt\":\"$now\"},\"steps\":{\"analyze\":{\"state\":\"done\"}}}"
+        else
+          journey_stepset "{\"set\":{\"analyzeRounds\":$rounds},\"steps\":{\"scenarios\":{\"state\":\"pending\"},\"analyze\":{\"state\":\"pending\"}}}"
+        fi
+        print_status
+        return 0
+      fi
+      ;;
+    *)
+      step_artifact_done "$step" || die "$step has no result yet"
+      ;;
+  esac
+  journey_stepset "{\"set\":{$top},\"steps\":{\"$step\":{\"state\":\"done\"}}}"
+  print_status
+}
+
+cmd_signin() {
+  parse_common "$@"
+  [ "${#REST[@]}" -eq 0 ] || usage "signin does not take: ${REST[0]}"
+  need_engine
+  journey_read_open
+  [ -f "$CONFIG" ] || die "no .qa/config.json; set the project up first"
+  local out
+  out="$(signin_json)" || die ".qa/config.json is not valid JSON"
+  case "$out" in
+    *'"ok":[]}') stop_journey no-sign-in "no persona has sign-in configured" ;;
+  esac
+  printf '%s\n' "$out"
+}
+
 # ---------------------------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------------------------
@@ -661,5 +1041,9 @@ case "$VERB" in
   resume) cmd_resume "$@" ;;
   stop)   cmd_stop "$@" ;;
   status) cmd_status "$@" ;;
+  next)       cmd_next "$@" ;;
+  step-start) cmd_step_start "$@" ;;
+  step-done)  cmd_step_done "$@" ;;
+  signin)     cmd_signin "$@" ;;
   *)      usage ;;
 esac

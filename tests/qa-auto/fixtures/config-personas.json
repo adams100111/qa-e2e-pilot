@@ -1,0 +1,16 @@
+{
+  "baseUrl": "http://localhost:3000",
+  "auth": { "storageState": ".qa/auth/storageState.json" },
+  "allowApiWrites": false,
+  "seedableEnvMarker": "",
+  "environment": "auto",
+  "humanInteraction": { "enforce": true, "maxOptOutRate": 0.2 },
+  "profile": "full",
+  "personas": [
+    { "id": "admin", "role": "admin", "plane": "global", "auth": "qa.admin@matjar.test (seeded credential; password via a named constant)" },
+    { "id": "cashier", "role": "cashier", "plane": "global", "auth": "use the captured storageState at .qa/auth/cashier.json." },
+    { "id": "branch-manager", "role": "manager", "plane": "contextual", "auth": "unknown — reached by logging in as the account holding this branch membership" },
+    { "id": "visitor", "role": "anonymous", "plane": "global", "auth": "none needed" },
+    { "id": "accountant", "role": "accountant", "plane": "global" }
+  ]
+}

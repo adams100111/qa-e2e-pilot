@@ -14,7 +14,10 @@ command -v python3 >/dev/null 2>&1 || { echo "ERROR: qa-auto: python3 is needed 
 PY="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; [ -x "$PY" ] || PY=python3
 case "$PY" in */python3) PATH="${PY%/python3}:$PATH"; export PATH ;; esac
 pass=0; fail=0
-TMPDIRS=()
+# Every fixture project lives under one root: mkproj runs inside $(…), so a list kept in a
+# variable would be lost with the subshell and the directories would stay behind.
+ROOT="$(mktemp -d)"
+TMPDIRS=("$ROOT")
 cleanup() { for d in "${TMPDIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
 trap cleanup EXIT
 check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $1 got=[$2] want=[$3]"; fi; }
@@ -35,7 +38,7 @@ v=eval(sys.argv[1])
 print(json.dumps(v,sort_keys=True,ensure_ascii=False) if isinstance(v,(dict,list,bool)) or v is None else v)' "$2" 2>/dev/null || echo "<unreadable>"; }
 # mkproj [config json] — a project with .qa/config.json (the local fixture by default).
 mkproj() {
-  local P; P="$(mktemp -d)"; TMPDIRS+=("$P"); mkdir -p "$P/.qa"
+  local P; P="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$P/.qa"
   if [ "$#" -ge 1 ]; then printf '%s' "$1" > "$P/.qa/config.json"; else cp "$FX/config-local.json" "$P/.qa/config.json"; fi
   printf '%s' "$P"
 }
@@ -348,6 +351,351 @@ json.dump(d,open(p,"w"))' "$J"
 command -v jq >/dev/null 2>&1 && run_engine jq
 run_engine python3
 
+# ---------------------------------------------------------------------------------------------
+# next, step-start, step-done, signin
+# ---------------------------------------------------------------------------------------------
+T_OLD=202611270700; T_MID=202611270710; T_NEW=202611270720
+# artifact <project> <step> [run id] [run start] — put a step's result on disk, as its command would.
+# `blocked` is an analysis whose verdict is BLOCKED.
+artifact() {
+  local P="$1" S="$1/.qa/specs/checkout" R="$1/.qa/runs/${3:-r1}"
+  mkdir -p "$S"
+  case "$2" in
+    constitution) printf '{"version":"c1"}\n' > "$P/.qa/constitution.state.json" ;;
+    spec)         printf '# QA spec\n' > "$S/qa-spec.md"; printf '{"roles":[]}\n' > "$S/spec-roles.json" ;;
+    scenarios)    printf '# Scenarios\n' > "$S/scenarios.md"; cp "$FX/checklist.json" "$S/checklist.json"; touch -t "$T_OLD" "$S/checklist.json" ;;
+    analyze)      cp "$FX/analysis-pass.md" "$S/analysis.md"; touch -t "$T_MID" "$S/analysis.md" ;;
+    blocked)      cp "$FX/analysis-blocked.md" "$S/analysis.md"; touch -t "$T_MID" "$S/analysis.md" ;;
+    run)          mkdir -p "$R"
+                  printf '{"run_id":"%s","target_feature":"checkout","started_at":"%s","status":"complete"}\n' "${3:-r1}" "${4-2026-11-27T08:30:00Z}" > "$R/run-manifest.json"
+                  printf '{"criteria":[]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
+    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+  esac
+}
+# done_step <project> <step> — put the artifact on disk and mark the step done.
+done_step() {
+  artifact "$1" "$2"
+  if [ "$2" = run ]; then auto step-done checkout run --run r1 --project "$1" >/dev/null 2>&1
+  else auto step-done checkout "$2" --project "$1" >/dev/null 2>&1; fi
+}
+# upto <project> <step>… — mark those steps done, in order.
+upto() { local P="$1" s; shift; for s in "$@"; do done_step "$P" "$s" || return 1; done; }
+# journey_at <next step|end> [start flags…] — a project whose open journey has every step before
+# <next step> done (`end`: all six). The first three are on disk before `start`, which takes them as done.
+journey_at() {
+  local want="$1" P s tpl; shift
+  # Built once per engine and shape, then copied (with file times): `start` is the slow verb.
+  tpl="$ROOT/tpl-$E-$want$(printf '%s' "$*" | tr -c 'a-z0-9' '-')"
+  if [ ! -d "$tpl" ]; then
+    P="$(mkproj)"
+    for s in constitution spec scenarios; do [ "$s" = "$want" ] && break; artifact "$P" "$s"; done
+    auto start checkout --project "$P" "$@" >/dev/null 2>&1
+    case "$want" in run|verify|end) done_step "$P" analyze ;; esac
+    case "$want" in verify|end) done_step "$P" run ;; esac
+    [ "$want" = end ] && done_step "$P" verify
+    mv "$P" "$tpl"
+  fi
+  P="$(mktemp -d "$ROOT/p.XXXXXX")"; rmdir "$P"; cp -Rp "$tpl" "$P"
+  printf '%s' "$P"
+}
+nx() { auto next checkout --project "$1" 2>&1; }
+verdict_file() { printf '# Analysis\n\n## Coverage\n\nx\n\n## Verdict\n\n%s\n\n## After\n\nBLOCKED is a word here too.\n' "$2" > "$1/.qa/specs/checkout/analysis.md"; touch -t "$T_MID" "$1/.qa/specs/checkout/analysis.md"; }
+
+run_engine_steps() {
+  E="$1"
+  local P J out rc before s Q
+
+  # ---- next_walks_six_steps ----
+  P="$(journey_at constitution)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  check "$E start gives every step an attempts count of 0" "$(jv "$J" '[s.get("attempts") for s in d["steps"]]')" "[0, 0, 0, 0, 0, 0]"
+  for s in constitution spec scenarios analyze run verify; do
+    out="$(nx "$P")"; rc=$?
+    check "$E next_walks_six_steps: next is $s" "$rc|$out" "0|{\"next\":\"$s\"}"
+    out="$(auto step-start checkout "$s" --project "$P" 2>&1)"; rc=$?
+    check "$E step-start $s marks it running" "$rc|$(js "$out" '[[x["state"],x["attempts"]] for x in d["steps"] if x["name"]=="'"$s"'"][0]')" "0|[\"running\", 1]"
+    check "$E next still names the running step $s" "$(nx "$P")" "{\"next\":\"$s\"}"
+    artifact "$P" "$s"
+    if [ "$s" = run ]; then out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+    else out="$(auto step-done checkout "$s" --project "$P" 2>&1)"; rc=$?; fi
+    check "$E step-done $s" "$rc|$(js "$out" '[x["state"] for x in d["steps"] if x["name"]=="'"$s"'"][0]+"/"+str(d["needsPerson"])')" "0|done/0"
+  done
+  check "$E every step done" "$(steps "$J")" "constitution=done,spec=done,scenarios=done,analyze=done,run=done,verify=done"
+  check "$E step-done run records the run id" "$(jv "$J" 'd["runId"]')" "r1"
+  check "$E the journey is still open until next is asked" "$(jv "$J" 'd["state"]')" "open"
+
+  # ---- all_done_sets_state_done ----
+  out="$(NOW="2026-11-27T09:00:00Z" nx "$P")"; rc=$?
+  check "$E all_done_sets_state_done: next says done" "$rc|$out" '0|{"next":"done"}'
+  check "$E all_done_sets_state_done: journey state" "$(jv "$J" '[d["state"],d["endedAt"],d["stop"]]')" '["done", "2026-11-27T09:00:00Z", null]'
+  before="$(snapshot "$P")"
+  out="$(NOW="2026-11-27T23:00:00Z" nx "$P")"; rc=$?
+  check "$E next on a done journey repeats done" "$rc|$out" '0|{"next":"done"}'
+  check "$E next on a done journey writes nothing" "$(snapshot "$P")" "$before"
+  out="$(auto step-start checkout verify --project "$P" 2>&1)"; rc=$?
+  check "$E step-start on a done journey" "$rc|$out" "1|auto: no open journey for checkout"
+  out="$(auto step-done checkout verify --project "$P" 2>&1)"; rc=$?
+  check "$E step-done on a done journey" "$rc|$out" "1|auto: no open journey for checkout"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin on a done journey" "$rc|$out" "1|auto: no open journey for checkout"
+  # all steps done wins over a passed deadline: nothing is left to do
+  P="$(journey_at end)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  check "$E done wins over a passed deadline" "$(NOW="2026-11-28T08:00:00Z" nx "$P")/$(jv "$J" 'd["state"]')" '{"next":"done"}/done'
+
+  # ---- no journey ----
+  P="$(mkproj)"
+  out="$(nx "$P")"; rc=$?
+  check "$E next without a journey" "$rc|$out" "1|auto: no journey for checkout"
+  out="$(auto step-start checkout spec --project "$P" 2>&1)"; rc=$?
+  check "$E step-start without a journey" "$rc|$out" "1|auto: no open journey for checkout"
+  out="$(auto step-done checkout spec --project "$P" 2>&1)"; rc=$?
+  check "$E step-done without a journey" "$rc|$out" "1|auto: no open journey for checkout"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin without a journey" "$rc|$out" "1|auto: no open journey for checkout"
+  check "$E verbs without a journey write nothing" "$([ -e "$P/.qa/specs" ] && echo yes || echo no)" "no"
+
+  # ---- usage ----
+  auto start checkout --project "$P" >/dev/null 2>&1
+  before="$(snapshot "$P")"
+  auto next checkout extra --project "$P" >/dev/null 2>&1;                 check "$E next with an extra word is usage" "$?" "2"
+  auto step-start checkout --project "$P" >/dev/null 2>&1;                 check "$E step-start without a step is usage" "$?" "2"
+  auto step-start checkout deploy --project "$P" >/dev/null 2>&1;          check "$E step-start with an unknown step is usage" "$?" "2"
+  auto step-done checkout --project "$P" >/dev/null 2>&1;                  check "$E step-done without a step is usage" "$?" "2"
+  auto step-done checkout deploy --project "$P" >/dev/null 2>&1;           check "$E step-done with an unknown step is usage" "$?" "2"
+  auto step-done checkout spec --run r1 --project "$P" >/dev/null 2>&1;    check "$E --run on a step other than run is usage" "$?" "2"
+  auto step-done checkout run --project "$P" >/dev/null 2>&1;              check "$E step-done run without --run is usage" "$?" "2"
+  auto step-done checkout run --run ../r1 --project "$P" >/dev/null 2>&1;  check "$E a run id with a slash is usage" "$?" "2"
+  auto signin checkout extra --project "$P" >/dev/null 2>&1;               check "$E signin with an extra word is usage" "$?" "2"
+  check "$E usage errors of the step verbs write nothing" "$(snapshot "$P")" "$before"
+
+  # ---- step_done_requires_artifact ----
+  P="$(journey_at constitution)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  before="$(snapshot "$P")"
+  out="$(auto step-done checkout scenarios --project "$P" 2>&1)"; rc=$?
+  check "$E a step out of order is refused (step-done)" "$rc|$out" "1|auto: scenarios is not the next step; next is constitution"
+  out="$(auto step-start checkout run --project "$P" 2>&1)"; rc=$?
+  check "$E a step out of order is refused (step-start)" "$rc|$out" "1|auto: run is not the next step; next is constitution"
+  out="$(auto step-done checkout constitution --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: constitution" "$rc|$out" "1|auto: constitution has no result yet"
+  check "$E refused step verbs write nothing" "$(snapshot "$P")" "$before"
+  done_step "$P" constitution
+  out="$(auto step-done checkout constitution --project "$P" 2>&1)"; rc=$?
+  check "$E a done step is not done twice" "$rc|$out" "1|auto: constitution is already done"
+  out="$(auto step-start checkout constitution --project "$P" 2>&1)"; rc=$?
+  check "$E a done step is not started again" "$rc|$out" "1|auto: constitution is already done"
+  mkdir -p "$P/.qa/specs/checkout"; printf '# QA spec\n' > "$P/.qa/specs/checkout/qa-spec.md"
+  out="$(auto step-done checkout spec --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: half a spec" "$rc|$out" "1|auto: spec has no result yet"
+  done_step "$P" spec
+  printf '# Scenarios\n' > "$P/.qa/specs/checkout/scenarios.md"
+  out="$(auto step-done checkout scenarios --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: scenarios without a checklist" "$rc|$out" "1|auto: scenarios has no result yet"
+  done_step "$P" scenarios
+  out="$(auto step-done checkout analyze --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: analyze" "$rc|$out" "1|auto: analyze has no result yet"
+  printf '# Analysis\n\nNothing decided.\n' > "$P/.qa/specs/checkout/analysis.md"; touch -t "$T_MID" "$P/.qa/specs/checkout/analysis.md"
+  out="$(auto step-done checkout analyze --project "$P" 2>&1)"; rc=$?
+  check "$E an analysis without a Verdict section is no result" "$rc|$out" "1|auto: analyze has no result yet"
+  done_step "$P" analyze
+  out="$(auto step-done checkout verify --project "$P" 2>&1)"; rc=$?
+  check "$E verify before the run is refused" "$rc|$out" "1|auto: verify is not the next step; next is run"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: run without files" "$rc|$out" "1|auto: run has no result yet"
+  artifact "$P" run; rm -f "$P/.qa/runs/r1/report.md"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E a run without report.md has no result" "$rc|$out" "1|auto: run has no result yet"
+  artifact "$P" run; rm -f "$P/.qa/runs/r1/checkpoint.json"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E a run without checkpoint.json has no result" "$rc|$out" "1|auto: run has no result yet"
+  artifact "$P" run; rm -f "$P/.qa/runs/r1/run-manifest.json"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E a run without run-manifest.json has no result" "$rc|$out" "1|auto: run has no result yet"
+  # the run must have started inside this journey (startedAt 08:00:00Z)
+  artifact "$P" run r1 "2026-11-27T07:59:59Z"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E a run from before the journey is refused" "$rc|$out" "1|auto: that run started before this journey"
+  artifact "$P" run r1 "2026-11-27T10:30:00+03:00"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E a start time with an offset is compared in UTC" "$rc|$out" "1|auto: that run started before this journey"
+  artifact "$P" run r1 "2026-11-26T23:30:00-09:00"
+  out="$(auto step-done checkout run --run r1 --project "$P" 2>&1)"; rc=$?
+  check "$E an offset that moves the run into the journey is accepted" "$rc|$(jv "$J" 'd["runId"]')" "0|r1"
+  for s in "" "yesterday" "2026-11-27T08:30:00" "2026-11-27"; do
+    Q="$(journey_at run)"
+    artifact "$Q" run r1 "$s"
+    out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+    check "$E a run with the start time [$s] is refused" "$rc|$out|$(jv "$Q/.qa/specs/checkout/auto/journey.json" 'd["runId"]')" "1|auto: that run has no start time|null"
+  done
+  Q="$(journey_at run)"
+  artifact "$Q" run; printf '{"run_id":"r1","started_at":null}\n' > "$Q/.qa/runs/r1/run-manifest.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a manifest with a null start time is refused" "$rc|$out" "1|auto: that run has no start time"
+  printf '{"run_id":' > "$Q/.qa/runs/r1/run-manifest.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a manifest that is not JSON is refused" "$rc|$out" "1|auto: that run has no start time"
+  for s in "2026-11-27T08:00:00Z" "2026-11-27T08:30:00.250Z" "2026-11-27 11:30:00+0300"; do
+    Q="$(journey_at run)"
+    artifact "$Q" run r1 "$s"
+    auto step-done checkout run --run r1 --project "$Q" >/dev/null 2>&1
+    check "$E a run with the start time [$s] is accepted" "$?" "0"
+  done
+  out="$(auto step-done checkout verify --project "$P" 2>&1)"; rc=$?
+  check "$E step_done_requires_artifact: verify" "$rc|$out" "1|auto: verify has no result yet"
+  # the verify result is looked for in the recorded run only
+  artifact "$P" verify r2
+  out="$(auto step-done checkout verify --project "$P" 2>&1)"; rc=$?
+  check "$E another run's verification.json does not count" "$rc|$out" "1|auto: verify has no result yet"
+  # a journey whose run step is done with no run id recorded
+  Q="$(journey_at verify)"
+  artifact "$Q" verify
+  "$PY" -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["runId"]=None; json.dump(d,open(p,"w"))' "$Q/.qa/specs/checkout/auto/journey.json"
+  out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify without a recorded run id is refused" "$rc|$out" "1|auto: no run is recorded for this journey"
+
+  # ---- step-start counts attempts ----
+  P="$(journey_at constitution)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto step-start checkout constitution --project "$P" >/dev/null 2>&1
+  out="$(auto step-start checkout constitution --project "$P" 2>&1)"; rc=$?
+  check "$E starting a running step again is a redo" "$rc|$(jv "$J" '[d["steps"][0]["state"],d["steps"][0]["attempts"],d["steps"][1]["attempts"]]')" '0|["running", 2, 0]'
+  check "$E status prints the attempts" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["steps"][0]["attempts"]')" "2"
+  done_step "$P" constitution
+  check "$E a done step keeps its attempts" "$(jv "$J" '[d["steps"][0]["state"],d["steps"][0]["attempts"]]')" '["done", 2]'
+  done_step "$P" spec
+  check "$E step-done without step-start leaves attempts at 0" "$(jv "$J" '[d["steps"][1]["state"],d["steps"][1]["attempts"]]')" '["done", 0]'
+
+  # ---- stale_analysis_is_not_done ----
+  P="$(journey_at analyze)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  artifact "$P" analyze; touch -t "$T_NEW" "$P/.qa/specs/checkout/checklist.json"
+  out="$(auto step-done checkout analyze --project "$P" 2>&1)"; rc=$?
+  check "$E stale_analysis_is_not_done" "$rc|$out" "1|auto: analyze has no result yet"
+  check "$E a stale analysis leaves the step as it was" "$(steps "$J")" "constitution=done,spec=done,scenarios=done,analyze=pending,run=pending,verify=pending"
+  touch -t "$T_NEW" "$P/.qa/specs/checkout/analysis.md"
+  auto step-done checkout analyze --project "$P" >/dev/null 2>&1
+  check "$E an analysis as new as the checklist is done" "$?|$(jv "$J" 'd["steps"][3]["state"]')" "0|done"
+
+  # ---- blocked_analysis_reopens_scenarios_once ----
+  P="$(journey_at analyze)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto step-start checkout analyze --project "$P" >/dev/null 2>&1
+  artifact "$P" blocked
+  out="$(auto step-done checkout analyze --project "$P" 2>&1)"; rc=$?
+  check "$E blocked_analysis_reopens_scenarios_once rc" "$rc" "0"
+  check "$E blocked: scenarios and analyze go back to pending" "$(steps "$J")" "constitution=done,spec=done,scenarios=pending,analyze=pending,run=pending,verify=pending"
+  check "$E blocked: one round counted, journey open" "$(jv "$J" '[d["analyzeRounds"],d["state"],d["stop"]]')" '[1, "open", null]'
+  check "$E blocked: step-done prints the journey" "$(js "$out" '[d["analyzeRounds"],d["state"]]')" '[1, "open"]'
+  check "$E blocked: next goes back to scenarios" "$(nx "$P")" '{"next":"scenarios"}'
+  # a second analysis that passes lets the journey go on
+  Q="$(journey_at analyze)"
+  artifact "$Q" blocked; auto step-done checkout analyze --project "$Q" >/dev/null 2>&1
+  upto "$Q" scenarios analyze
+  check "$E an analysis that passes in the second round goes on to the run" "$(nx "$Q")/$(jv "$Q/.qa/specs/checkout/auto/journey.json" '[d["analyzeRounds"],d["state"]]')" '{"next":"run"}/[1, "open"]'
+
+  # ---- blocked_twice_stops_blocked ----
+  done_step "$P" scenarios
+  artifact "$P" blocked
+  out="$(NOW="2026-11-27T09:40:00Z" auto step-done checkout analyze --project "$P" 2>&1)"; rc=$?
+  check "$E blocked_twice_stops_blocked rc" "$rc" "0"
+  check "$E blocked twice: journey stopped" "$(jv "$J" '[d["analyzeRounds"],d["state"],d["stop"]["reason"],d["stop"]["detail"],d["endedAt"]]')" '[2, "stopped", "blocked", "the analysis is still BLOCKED after 2 rounds", "2026-11-27T09:40:00Z"]'
+  check "$E blocked twice: next repeats the stop" "$(nx "$P")" '{"detail":"the analysis is still BLOCKED after 2 rounds","next":"stopped","reason":"blocked"}'
+  out="$(auto resume checkout --project "$P" 2>&1)"; rc=$?
+  check "$E a blocked journey cannot be resumed" "$rc|$out" "1|auto: nothing to resume"
+
+  # ---- how the Verdict is read ----
+  for s in "**BLOCKED** when the Coverage gate blocks; otherwise **PASS (advisory)**." "Verdict: BLOCKED (no census)" "The gate reads \`BLOCKED\`: 3 uncovered pairs."; do
+    Q="$(journey_at analyze)"
+    verdict_file "$Q" "$s"
+    auto step-done checkout analyze --project "$Q" >/dev/null 2>&1
+    check "$E verdict line [$s] is BLOCKED" "$?|$(jv "$Q/.qa/specs/checkout/auto/journey.json" 'd["analyzeRounds"]')" "0|1"
+  done
+  for s in "**PASS (advisory)**" "PASS (advisory). The coverage gate is not BLOCKED." "Advisory only; 2 oracle gaps."; do
+    Q="$(journey_at analyze)"
+    verdict_file "$Q" "$s"
+    auto step-done checkout analyze --project "$Q" >/dev/null 2>&1
+    check "$E verdict line [$s] is not BLOCKED" "$?|$(jv "$Q/.qa/specs/checkout/auto/journey.json" '[d["analyzeRounds"],d["steps"][3]["state"]]')" '0|[0, "done"]'
+  done
+
+  # ---- deadline_stops_time_limit ----
+  P="$(journey_at spec)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  check "$E the deadline itself has not passed" "$(NOW="2026-11-27T14:00:00Z" nx "$P")" '{"next":"spec"}'
+  out="$(NOW="2026-11-27T14:00:01Z" nx "$P")"; rc=$?
+  check "$E deadline_stops_time_limit" "$rc|$out" '0|{"detail":"the deadline 2026-11-27T14:00:00Z has passed","next":"stopped","reason":"time-limit"}'
+  check "$E deadline: journey stopped" "$(jv "$J" '[d["state"],d["stop"]["reason"],d["endedAt"]]')" '["stopped", "time-limit", "2026-11-27T14:00:01Z"]'
+  check "$E deadline: steps untouched" "$(steps "$J")" "constitution=done,spec=pending,scenarios=pending,analyze=pending,run=pending,verify=pending"
+  NOW="2026-11-27T15:00:00Z" auto resume checkout --project "$P" >/dev/null 2>&1
+  check "$E after resume the journey continues from the same step" "$(NOW="2026-11-27T15:00:01Z" nx "$P")" '{"next":"spec"}'
+
+  # ---- until_scenarios_stops_before_analyze ----
+  P="$(journey_at scenarios --until scenarios)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  check "$E until: the until step itself is still next" "$(nx "$P")" '{"next":"scenarios"}'
+  done_step "$P" scenarios
+  out="$(NOW="2026-11-27T08:45:00Z" nx "$P")"; rc=$?
+  check "$E until_scenarios_stops_before_analyze" "$rc|$out" '0|{"detail":"stopped after scenarios, as asked","next":"stopped","reason":"until"}'
+  check "$E until: journey stopped" "$(jv "$J" '[d["state"],d["stop"]["reason"],d["endedAt"]]')" '["stopped", "until", "2026-11-27T08:45:00Z"]'
+  auto resume checkout --project "$P" >/dev/null 2>&1
+  check "$E until: resumed, the journey goes on to analyze" "$(nx "$P")" '{"next":"analyze"}'
+  # the asked-for stop wins over the time limit when both hold
+  Q="$(mkproj)"; artifact "$Q" constitution; artifact "$Q" spec; artifact "$Q" scenarios
+  auto start checkout --project "$Q" --until scenarios >/dev/null 2>&1
+  check "$E until wins over a passed deadline" "$(NOW="2026-11-28T08:00:00Z" nx "$Q")" '{"detail":"stopped after scenarios, as asked","next":"stopped","reason":"until"}'
+
+  # ---- next_after_stop_does_not_advance ----
+  P="$(journey_at scenarios)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto stop checkout --project "$P" --reason step-failed --detail 'تعذر إكمال الخطوة "scenarios"' >/dev/null 2>&1
+  before="$(snapshot "$P")"
+  out="$(nx "$P")"; rc=$?
+  check "$E next_after_stop_does_not_advance" "$rc|$out" '0|{"detail":"تعذر إكمال الخطوة \"scenarios\"","next":"stopped","reason":"step-failed"}'
+  check "$E next after a stop, asked again" "$(NOW="2026-11-29T08:00:00Z" nx "$P")" "$out"
+  check "$E next after a stop writes nothing" "$(snapshot "$P")" "$before"
+  out="$(auto step-start checkout scenarios --project "$P" 2>&1)"; rc=$?
+  check "$E step-start on a stopped journey" "$rc|$out" "1|auto: no open journey for checkout"
+  artifact "$P" scenarios
+  out="$(auto step-done checkout scenarios --project "$P" 2>&1)"; rc=$?
+  check "$E step-done on a stopped journey" "$rc|$out" "1|auto: no open journey for checkout"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin on a stopped journey" "$rc|$out" "1|auto: no open journey for checkout"
+  check "$E a stopped journey keeps its steps" "$(steps "$J")" "constitution=done,spec=done,scenarios=pending,analyze=pending,run=pending,verify=pending"
+
+  # ---- signin_partial_lists_missing ----
+  P="$(mkproj "$(cat "$FX/config-personas.json")")"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto start checkout --project "$P" >/dev/null 2>&1
+  before="$(snapshot "$P")"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin_partial_lists_missing" "$rc|$out" '0|{"missing":["cashier","branch-manager","accountant"],"ok":["admin","visitor"]}'
+  check "$E signin with some personas ready writes nothing" "$(snapshot "$P")" "$before"
+  mkdir -p "$P/.qa/auth"; printf '{"cookies":[]}\n' > "$P/.qa/auth/cashier.json"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E a persona whose named file now exists is ready" "$rc|$out" '0|{"missing":["branch-manager","accountant"],"ok":["admin","cashier","visitor"]}'
+  check "$E the journey stays open" "$(jv "$J" 'd["state"]')" "open"
+
+  # ---- signin_none_stops ----
+  P="$(mkproj '{"baseUrl":"http://localhost:3000","personas":[{"id":"admin","role":"admin","plane":"global","auth":"unknown"},{"id":"cashier","role":"cashier","plane":"global","auth":"Unknown: no seeded login found"},{"id":"auditor","role":"auditor","plane":"global","auth":".qa/auth/auditor.json"}]}')"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto start checkout --project "$P" >/dev/null 2>&1
+  out="$(NOW="2026-11-27T08:20:00Z" auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin_none_stops" "$rc|$out" '0|{"missing":["admin","cashier","auditor"],"ok":[]}'
+  check "$E signin none: journey stopped no-sign-in" "$(jv "$J" '[d["state"],d["stop"]["reason"],d["stop"]["detail"],d["endedAt"]]')" '["stopped", "no-sign-in", "no persona has sign-in configured", "2026-11-27T08:20:00Z"]'
+  check "$E signin none: next repeats the stop" "$(nx "$P")" '{"detail":"no persona has sign-in configured","next":"stopped","reason":"no-sign-in"}'
+  out="$(auto resume checkout --project "$P" 2>&1)"; rc=$?
+  check "$E a no-sign-in stop cannot be resumed" "$rc|$out" "1|auto: nothing to resume"
+  # a project with no personas has one sign-in: auth.storageState
+  P="$(journey_at constitution)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  mkdir -p "$P/.qa/auth"; printf '{"cookies":[]}\n' > "$P/.qa/auth/storageState.json"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E no personas: the project's storageState file is the sign-in" "$rc|$out|$(jv "$J" 'd["state"]')" '0|{"missing":[],"ok":["default"]}|open'
+  rm -f "$P/.qa/auth/storageState.json"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E no personas and no storageState file stops" "$rc|$out|$(jv "$J" 'd["state"]+"/"+d["stop"]["reason"]')" '0|{"missing":["default"],"ok":[]}|stopped/no-sign-in'
+  P="$(journey_at constitution)"
+  printf '{"baseUrl":' > "$P/.qa/config.json"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin on a broken config" "$rc|$out" "1|auto: .qa/config.json is not valid JSON"
+  rm -f "$P/.qa/config.json"
+  out="$(auto signin checkout --project "$P" 2>&1)"; rc=$?
+  check "$E signin without a config" "$rc|$out" "1|auto: no .qa/config.json; set the project up first"
+  check "$E a refused signin leaves the journey open" "$(jv "$P/.qa/specs/checkout/auto/journey.json" 'd["state"]')" "open"
+}
+
+command -v jq >/dev/null 2>&1 && run_engine_steps jq
+run_engine_steps python3
+
 # ---- both engines: byte-identical files and output ----
 if command -v jq >/dev/null 2>&1; then
   build_x() {
@@ -381,6 +729,43 @@ if command -v jq >/dev/null 2>&1; then
     op="$(E=python3; auto $v --project "$XP" 2>&1; echo "rc=$?")"
     check "cross-engine refusal identical: $v" "$oj" "$op"
   done
+
+  # the step verbs: one journey walked to the end, one blocked twice, one without sign-in
+  build_y() {
+    local P; P="$(mkproj "$(cat "$FX/config-personas.json")")"
+    artifact "$P" constitution; artifact "$P" spec; artifact "$P" scenarios; artifact "$P" "$1"
+    artifact "$P" run; artifact "$P" verify
+    printf '%s' "$P"
+  }
+  cross() {
+    # shellcheck disable=SC2086
+    oj="$(E=jq; auto $2 --project "$YJ" 2>&1; echo "rc=$?")"
+    # shellcheck disable=SC2086
+    op="$(E=python3; auto $2 --project "$YP" 2>&1; echo "rc=$?")"
+    check "cross-engine $1 output identical: $2" "$oj" "$op"
+    check "cross-engine $1 journey.json identical after: $2" "$(cat "$YJ/.qa/specs/checkout/auto/journey.json" 2>/dev/null)" "$(cat "$YP/.qa/specs/checkout/auto/journey.json" 2>/dev/null)"
+  }
+  YJ="$(build_y analyze)"; YP="$(build_y analyze)"
+  for v in "next checkout" "start checkout --max-hours 2" "signin checkout" "next checkout" "step-done checkout run --run r1" "step-start checkout analyze" "step-start checkout analyze" "status checkout" "step-done checkout analyze" "next checkout" "step-done checkout run" "step-done checkout run --run r9" "step-start checkout run" "step-done checkout run --run r1" "step-done checkout verify" "status checkout" "next checkout" "next checkout" "step-start checkout verify" "signin checkout"; do
+    cross walk "$v"
+  done
+  YJ="$(build_y blocked)"; YP="$(build_y blocked)"
+  for v in "start checkout" "step-done checkout analyze" "next checkout" "step-start checkout scenarios" "step-done checkout scenarios" "step-done checkout analyze" "next checkout" "status checkout"; do
+    cross blocked "$v"
+  done
+  YJ="$(mkproj '{"baseUrl":"http://localhost:3000","personas":[{"id":"مدير","role":"admin","plane":"global","auth":"unknown"},{"id":"cash\"ier","role":"cashier","plane":"global"}]}')"
+  YP="$(mkproj '{"baseUrl":"http://localhost:3000","personas":[{"id":"مدير","role":"admin","plane":"global","auth":"unknown"},{"id":"cash\"ier","role":"cashier","plane":"global"}]}')"
+  for v in "start checkout --until spec" "signin checkout" "next checkout" "status checkout"; do
+    cross no-sign-in "$v"
+  done
+  YJ="$(build_y analyze)"; YP="$(build_y analyze)"
+  for v in "start checkout --until scenarios --max-hours 0.5" "next checkout" "resume checkout --max-hours 0.5" "next checkout"; do
+    cross until "$v"
+  done
+  oj="$(E=jq; NOW="2026-11-27T12:00:00Z" auto next checkout --project "$YJ" 2>&1; echo "rc=$?")"
+  op="$(E=python3; NOW="2026-11-27T12:00:00Z" auto next checkout --project "$YP" 2>&1; echo "rc=$?")"
+  check "cross-engine time-limit output identical" "$oj" "$op"
+  check "cross-engine time-limit journey.json identical" "$(cat "$YJ/.qa/specs/checkout/auto/journey.json")" "$(cat "$YP/.qa/specs/checkout/auto/journey.json")"
 fi
 
 echo "qa-auto: PASS=$pass FAIL=$fail"; [ "$fail" -eq 0 ]
