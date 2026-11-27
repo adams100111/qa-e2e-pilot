@@ -584,14 +584,16 @@ class RefTests(unittest.TestCase):
         key = hashlib.sha256(f"{TARGET}|2|card|judge-scores-a-submission".encode()).hexdigest()[:12]
         value = cs.ref(TARGET, 2, "card", "judge-scores-a-submission")
         self.assertEqual(value, f"qk1-{key}-t")
-        self.assertEqual(cs.parse_ref(value), {"key": key, "letter": "t", "role": "to_test", "run": None})
+        self.assertEqual(cs.parse_ref(value), {"key": key, "letter": "t", "role": "to_test", "run": None,
+                                                "pending": None})
         self.assertEqual(cs.ref(TARGET, 2, "check", "x", "f")[-2:], "-f")
         run = hashlib.sha256(b"run-2026-11-27").hexdigest()[:8]
         skey = hashlib.sha256(f"{TARGET}|2|summary|summary".encode()).hexdigest()[:12]
         self.assertEqual(cs.ref(TARGET, 2, "summary", "summary"), f"qk1-{skey}-t-open")
         bound = cs.ref(TARGET, 2, "summary", "summary", "p", run="run-2026-11-27")
         self.assertEqual(bound, f"qk1-{skey}-p-{run}")
-        self.assertEqual(cs.parse_ref(bound), {"key": skey, "letter": "p", "role": "passed", "run": run})
+        self.assertEqual(cs.parse_ref(bound), {"key": skey, "letter": "p", "role": "passed", "run": run,
+                                                "pending": None})
         self.assertEqual(cs.parse_ref(f"qk1-{skey}-t-open")["run"], "open")
         for bad in (None, "", "a1b2c3d4e5f6", "qk1-xyz-t", f"qk2-{key}-t", f"qk1-{key}-z", 7):
             self.assertIsNone(cs.parse_ref(bad))

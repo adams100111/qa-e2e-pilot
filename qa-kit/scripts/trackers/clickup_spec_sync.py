@@ -7,39 +7,49 @@ are archived.
 
 What a ticket shows comes only from `spec_runs`: nothing here works a result out, so nothing here
 can make one read better than it was recorded. A ticket whose live status is not the one the tool
-last wrote (its `Ref` letter) was changed by a person: it is left alone and reported, which is
-not a failure. A lint problem, a failed call, a failed upload and a recorded result no ticket
-shows are failures (exit 1).
+last wrote (its `Ref` letter, or either letter of a move in progress) was changed by a person: it
+is left alone and reported, which is not a failure, on a retest too. A run with no result for the
+spec's cards is reported the same way and takes no list. A lint problem, a failed call, a failed
+upload and a recorded result no ticket shows are failures (exit 1).
+
+Before the results are written the run's list is filled like `push-scenarios` fills the open one,
+so a card or check added since has its ticket.
 
 Dry run unless `--apply`: nothing is written or uploaded. Nothing is deleted (lists are
 archived), no assignee is set, comments are sent with `notify_all: false`, and every string sent
-passes the wording lint and the redaction. A screenshot is sent under a neutral name, never its
-local name or path, and only the files `spec_runs` picked are read.
+passes the wording lint and the redaction. A screenshot is sent under a name made from its
+content, never its local name or path, and only the files `spec_runs` picked are read.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from trackers import cards, clickup, core, spec_docs, spec_runs, wording
-from trackers.clickup import _is_closed, _keep_cache, _real, _status_of
+from trackers.clickup import _is_closed, _keep_cache, _real
 from trackers.clickup_api import ApiError
-from trackers.clickup_spec import (CHECKLIST_NAME, OPEN, SUMMARY_ID, SUMMARY_TITLE, SpecSync, check_id, plain_md,
-                                   ref, ref_key, reletter, remote_id, run_hash)
-from trackers.core import WordingError, norm, same_status, status_name
+from trackers.clickup_spec import (CHECKLIST_NAME, OPEN, REMOVED_COMMENT, SUMMARY_ID, SUMMARY_TITLE, SpecSync,
+                                   check_id, plain_md, ref, ref_key, reletter, remote_id, run_hash)
+from trackers.core import WordingError, norm, status_name
 from trackers.ctx import VERSION_RE, _manifest, manifest_build, run_dir_for, run_label
 
 PLAN_CHANGED = "the plan changed since the tickets were made; run push-scenarios"
-RETEST_COMMENT = "Earlier result: {status} ({label})."
-RETEST_PLAIN = "Earlier result: {status}."
+RETEST_PREFIX = "Earlier result:"
+RETEST_COMMENT = RETEST_PREFIX + " {status} ({label})."
+RETEST_PLAIN = RETEST_PREFIX + " {status}."
 RESULTS_PREFIX = "Full results:"   # a line of the Run summary that starts so is kept (push-docs adds it)
 REVIEW_FIELD, BUILD_FIELD = "Needs a person's review", "Build"
-UPLOAD_NAME = "screen-{n}{ext}"
+UPLOAD_NAME = "screen-{digest}{ext}"   # the first 6 hex of the file's sha256, its own extension in lower case
+NO_RESULTS = "this run has no results for this spec; nothing was synced"
+LIST_UNUSED = "a retest uses the list of the newest run; this list is left for the next new run"
 # lint reasons that mean the cards and the plan no longer describe the same checks
 PLAN_REASONS = ("check is not in the plan", "no card for this check", "check is in two cards",
                 "check is repeated in this card", "duplicate card id", "duplicate row in the plan")
 _TICKED = (True, "true", "True", 1, "1")
+_NO_CARDS = SimpleNamespace(cards=[])
 
 
 class SyncError(Exception):
@@ -48,34 +58,24 @@ class SyncError(Exception):
 
 def summary_text(states: List[spec_runs.CheckState], ready: Tuple[Optional[bool], List[str]], cfg: dict) -> str:
     """The Run summary ticket's text: the counts, how many results a person has to confirm, and
-    ready or not with the reasons. Like the Results page it never reads better than its counts."""
-    total = spec_runs.counts(states)
-    n = len(states)
-    head = f"{n} {'check' if n == 1 else 'checks'}"
-    detail = spec_docs._counts_text(total, cfg)
-    parts = [f"{head}: {detail}." if detail else f"{head}."]
-    review = total.get("needs_review", 0)
-    if review:
-        parts.append(f"A person needs to confirm {review} {'result' if review == 1 else 'results'}.")
-    is_ready, reasons = ready if ready else (None, [])
-    if is_ready is True and not spec_docs._all_done(total):
-        is_ready, reasons = False, [spec_docs.NOT_FINISHED]
-    if is_ready is True:
-        parts.append("Ready to ship.")
-    elif is_ready is False:
-        parts.append("Not ready to ship.")
+    ready or not with the reasons.
+
+    It is the head of `spec_docs.results_page` (what stands between the page's title and its
+    first section), so the ticket and the Results page cannot say different things. Only the
+    layout is this function's: each sentence its own paragraph, the reasons one list."""
+    page = spec_docs.results_page("-", states, _NO_CARDS, {}, [], ready, None, cfg)
+    parts: List[str] = []
+    reasons: List[str] = []
+    for line in page.split("\n## ", 1)[0].splitlines()[1:] + [""]:
+        if line.startswith("- "):
+            reasons.append(line)
+            continue
         if reasons:
-            parts.append("\n".join(f"- {r}" for r in reasons))
+            parts.append("\n".join(reasons))
+            reasons = []
+        if line.strip():
+            parts.append(line)
     return "\n\n".join(parts)
-
-
-def _put(t: dict, fid: str, value: Any) -> None:
-    """Keep a task as read in step with a field write just made (or, in a dry run, logged)."""
-    for f in t.setdefault("custom_fields", []):
-        if str(f.get("id")) == fid:
-            f["value"] = value
-            return
-    t["custom_fields"].append({"id": fid, "value": value})
 
 
 class RunSync(SpecSync):
@@ -90,6 +90,7 @@ class RunSync(SpecSync):
         self.build: str = manifest_build(_manifest(self.run_dir))
         self.retest: bool = bool(getattr(ctx.args, "retest", False)) or self.cfg.get("listMode") == "reuse"
         self.earlier: Optional[str] = None   # the label of the run a retest replaces
+        self._reset: set = set()             # tickets whose earlier result this sync commented
         self._lacking_fields: set = set()
         self._build_text: Optional[str] = None
 
@@ -138,13 +139,36 @@ class RunSync(SpecSync):
     def item_name(self, card: cards.Card, ck: cards.Check) -> Optional[str]:
         return self.clean(f"{card.id} check", ck.title, "title")
 
-    def plan_keys(self, n: int) -> List[str]:
-        """The Ref keys of the plan's tickets in list `n`: the summary, every card, every check."""
+    def plan_keys(self, n: int, raised: bool = True) -> List[str]:
+        """The Ref keys of the plan's tickets in list `n`: the summary, every card, every check.
+        With `raised` False the checks of checklist cards are left out: such a check has a ticket
+        only once a sync raised it."""
         out = [self.key(n, "summary", SUMMARY_ID)]
         for card in self.cards.cards:
             out.append(self.key(n, "card", card.id))
-            out += [self.key(n, "check", check_id(card.id, ck.criterion)) for ck in card.checks]
+            if raised or card.as_ != "checklist":
+                out += [self.key(n, "check", check_id(card.id, ck.criterion)) for ck in card.checks]
         return out
+
+    def recent(self, task_id: str) -> List[str]:
+        """The ticket's recent comment texts, newest first (ClickUp gives the newest 25, in that
+        order; `date` decides when every row has one)."""
+        if not _real(task_id):
+            return []
+        rows = self.tr.request("GET", f"/v2/task/{task_id}/comment").get("comments") or []
+        if all(str(c.get("date") or "").isdigit() for c in rows):
+            rows = sorted(rows, key=lambda c: int(c["date"]), reverse=True)
+        return [str(c.get("comment_text") or "").strip() for c in rows]
+
+    def bring_back(self, t: dict, title: str) -> None:
+        """On a run's list `skipped` is also what a check left for a later run shows. Only a
+        ticket whose newest plan note says it left the plan is taken back into it here."""
+        p = self.ref_of(t)
+        if p is not None and p["role"] == "skipped" and self.standing(t) == "skipped":
+            removed = self.fixed(REMOVED_COMMENT, "body")
+            if removed is None or self.last_note(str(t["id"])) != removed:
+                return
+        super().bring_back(t, title)
 
     # -- the run's list (decision P6)
 
@@ -171,35 +195,30 @@ class RunSync(SpecSync):
 
     def bind(self, run_id: Optional[str] = None) -> Optional[dict]:
         """The run's list, a `run_lists` entry: the one whose Run summary names the run; on a
-        retest the spec's newest list; else the open list; else a new list N+1, filled. None after
-        a logged skip. Nothing is tied here: `tie` writes the list's name and the summary's Ref."""
+        retest the spec's newest list that has a run (a list no run is tied to is left unused and
+        reported); else the open list; else a new list N+1. None after a logged skip. Nothing is
+        filled or tied here: `run` fills the list and `tie` writes its name and the summary's Ref."""
         run = run_hash(run_id or self.run_id)
         entries = self.run_lists()
         entry = next((e for e in entries if e["run"] == run), None)
-        if entry is None and self.retest and entries and entries[-1]["run"] != OPEN:
-            entry = entries[-1]
+        bound = [e for e in entries if e["run"] != OPEN]
+        if entry is None and self.retest and bound:
+            entry = bound[-1]
             self.earlier = self.label_of(entry)
+            for e in entries:
+                if e["run"] == OPEN:
+                    self.left("list-unused", f"{e['name']}: {LIST_UNUSED}")
         if entry is None:
             if self.archived(run):
                 return None
             entry = self.open_list()
         if entry is None:
             entry = self.new_list()
-            if entry is not None:
-                before = self.log.counts.get("skip", 0)
-                self.fill(entry["id"], entry["n"])
-                if self.log.counts.get("skip", 0) != before:
-                    return None  # the fill is reported; the next sync finds the list and goes on
         return entry
 
     def lacking(self, have: Dict[str, dict], n: int) -> bool:
         """The list has no ticket (or checklist item) for something the plan holds now."""
-        wanted = [self.key(n, "summary", SUMMARY_ID)]
-        for card in self.cards.cards:
-            wanted.append(self.key(n, "card", card.id))
-            if card.as_ != "checklist":
-                wanted += [self.key(n, "check", check_id(card.id, ck.criterion)) for ck in card.checks]
-        if any(k not in have for k in wanted):
+        if any(k not in have for k in self.plan_keys(n, raised=False)):
             return True
         for card in self.cards.cards:
             if card.as_ != "checklist":
@@ -231,20 +250,20 @@ class RunSync(SpecSync):
                 return False
         if not fresh:
             return True
-        fid = self.fid("Ref")
-        value = reletter(self.live_field(summary, fid), self.ref_of(summary)["role"], run=self.run_id)
+        fid, p = self.fid("Ref"), self.ref_of(summary)
+        value = reletter(self.live_field(summary, fid), p["role"], run=self.run_id, pending=p["pending"])
         if not self.did(self.write("bind", name or entry["name"], lambda: self.tr.request(
                 "POST", f"/v2/task/{summary['id']}/field/{fid}", {"value": value}) or True)):
             return False
-        _put(summary, fid, value)
+        self.put_local(summary, fid, value)
         return True
 
     # -- a retest
 
     def reset(self, have: Dict[str, dict], n: int) -> bool:
         """Before a retest's results: each ticket of the plan gets its earlier result as a
-        comment and goes back to the first status, a person's own status included (the comment
-        keeps what it said). Checklist items are opened again. False when a write failed."""
+        comment and goes back to the first status. A ticket a person changed is left as it is and
+        reported. Checklist items are opened again. False when a write failed."""
         before = self.log.counts.get("skip", 0)
         for key in self.plan_keys(n):
             if key in have:
@@ -258,32 +277,39 @@ class RunSync(SpecSync):
         return self.log.counts.get("skip", 0) == before
 
     def reset_ticket(self, t: dict) -> None:
-        p, live = self.ref_of(t), _status_of(t)
-        first = same_status(live, self.case_to_test)
-        if p["role"] == "to_test" and first:
+        p, at = self.ref_of(t), self.standing(t)
+        title, tid, fid = t.get("name") or "", str(t["id"]), self.fid("Ref")
+        if at is None:
+            self.person_changed(title, t)  # no comment, no reset: what the person set stays
             return
-        title, tid = t.get("name") or "", str(t["id"])
-        text = None
-        if not first:  # in the first status with another letter: a reset that stopped before its last step
-            shown = next((x for x in self.cfg["statuses"]["case"] if same_status(x, live)), live)
+        if at == "to_test" and p["role"] == "to_test" and p["pending"] is None:
+            return
+        now = self.live_field(t, fid)
+        final = reletter(now, "to_test")
+        text = mark = None
+        if at != "to_test":  # in the first status already: a move that stopped before its last step
+            shown = status_name(self.cfg, "case", at)
             # the label is read from the list's name, which a person may have changed: when it does
             # not pass the writing rules the comment goes without it
             text = (self.run_text(title, RETEST_COMMENT.format(status=shown, label=self.earlier), quiet=True)
                     or self.run_text(title, RETEST_PLAIN.format(status=shown)))
             if text is None:
                 return
-        value = reletter(self.live_field(t, self.fid("Ref")), "to_test")
+            mark = reletter(now, at, pending="to_test")
 
         def go():
-            if text is not None:
-                if (self.comments(tid) or [""])[0] != text:
+            if mark is not None:
+                if now != mark:  # first, so a reset that stopped half way is told from a person's change
+                    self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": mark})
+                if text not in self.recent(tid):
                     self.comment(tid, text)  # notify_all: false
                 self.tr.request("PUT", f"/v2/task/{tid}", {"status": self.case_to_test})
-            # last, so a reset that stopped half way is done again
-            self.tr.request("POST", f"/v2/task/{tid}/field/{self.fid('Ref')}", {"value": value})
+            self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": final})
             return True
         if self.did(self.write("retest", title, go)):
-            self.note_local(t, self.case_to_test, value)
+            self.note_local(t, self.case_to_test, final)
+            if text is not None:
+                self._reset.add(tid)
 
     # -- one ticket
 
@@ -329,7 +355,7 @@ class RunSync(SpecSync):
         detail = f"{title}: needs a person's review = {'yes' if want else 'no'}"
         if self.did(self.write("set-field", detail, lambda: self.tr.request(
                 "POST", f"/v2/task/{t['id']}/field/{fid}", {"value": want}) or True)):
-            _put(t, fid, want)
+            self.put_local(t, fid, want)
 
     def set_build(self, t: dict, title: str) -> None:
         if not self.build:
@@ -340,44 +366,60 @@ class RunSync(SpecSync):
         if self._build_text is None:
             self._build_text = core.outbound(self.build, self.cfg)
         if self.set_field(t, fid, self._build_text, f"{title}: build = {self._build_text}"):
-            _put(t, fid, self._build_text)
+            self.put_local(t, fid, self._build_text)
 
     def note(self, t: dict, text: str, title: str) -> None:
-        """One of `spec_runs`' fixed sentences as a comment, once."""
+        """One of `spec_runs`' fixed sentences as a comment, once; and once more after a retest,
+        when the ticket's newest earlier-result comment is newer than the last such note."""
         text = self.fixed(text, "body")
-        if text is None or text in self.comments(str(t["id"])):
+        if text is None:
             return
+        tid = str(t["id"])
+        rows = self.recent(tid)
+        if text in rows and tid not in self._reset:
+            earlier = next((i for i, row in enumerate(rows) if row.startswith(RETEST_PREFIX)), None)
+            if earlier is None or earlier > rows.index(text):
+                return
         self.say_comment(t, text, f"{title}: note")
 
     def attached(self, task_id: str) -> set:
-        """The file names already on a ticket (`title`, with its `extension` when left out)."""
+        """The file names already on a ticket: each `title`, with and without its `extension`."""
         out = set()
         for a in self.tr.request("GET", f"/v2/task/{task_id}").get("attachments") or []:
-            title, ext = str(a.get("title") or ""), str(a.get("extension") or "")
+            title, ext = str(a.get("title") or ""), str(a.get("extension") or "").lower()
             out.add(title)
-            if ext and not title.lower().endswith(f".{ext.lower()}"):
-                out.add(f"{title}.{ext.lower()}")
+            if ext and title.lower().endswith(f".{ext}"):
+                out.add(title[:-len(ext) - 1])
         return out
 
     def attach(self, t: dict, evidence: List[Path], title: str) -> None:
-        """Upload the screenshots `spec_runs` picked, each once, as `screen-<n>.<ext>`: a name
-        already on the ticket is skipped. The local name and path are never sent."""
+        """Upload the screenshots `spec_runs` picked for this sync, each under a name made from
+        its content (`screen-<6 hex>.<ext>`): a file already on the ticket under that name is not
+        sent again, and another result's screenshot gets its own name. The local name and path
+        are never sent."""
         tid = str(t["id"])
         if not evidence or not _real(tid):
             return
         have: Optional[set] = None
-        for i, path in enumerate(evidence, 1):
-            name = UPLOAD_NAME.format(n=i, ext=Path(path).suffix.lower())
+        for path in evidence:
+            path = Path(path)
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                self.log.skip("upload-failed", f"{title}: a screenshot could not be read")
+                continue
+            name = UPLOAD_NAME.format(digest=digest[:6], ext=path.suffix.lower())
             if have is None:
                 have = self.attached(tid)
-            if name in have:
+            if name in have or name[:len(name) - len(path.suffix)] in have:
                 continue
+            have.add(name)
 
             def go(path=path, name=name):
                 try:
-                    self.tr.upload(f"/v2/task/{tid}/attachment", Path(path), name)
+                    self.tr.upload(f"/v2/task/{tid}/attachment", path, name)
                 except OSError:
-                    self.log.skip("upload-failed", f"{title}: {name} could not be read")
+                    self.log.skip("upload-failed", f"{title}: a screenshot could not be read")
                     return None
                 return True
             self.write("attach", f"{title}: {name}", go)
@@ -403,7 +445,9 @@ class RunSync(SpecSync):
         for card in self.cards.cards:
             mine = by_card.get(card.id, [])
             by_check = {s.criterion: s for s in mine}
-            t = have[self.key(n, "card", card.id)]
+            t = have.get(self.key(n, "card", card.id))
+            if t is None:
+                continue  # a dry run: the card's ticket is still to be made, as logged
             listed = card.as_ == "checklist"
             checklist = self.checklist_of(t) if listed else None
             for ck in card.checks:
@@ -441,10 +485,11 @@ class RunSync(SpecSync):
         if self.did(self.write("update", f"{title} [description]", go)):
             t["markdown_description"] = desc
 
-    def report(self, states: List[spec_runs.CheckState]) -> None:
+    def report(self, states: List[spec_runs.CheckState]) -> int:
         """What the run recorded and no ticket can show: a result with no card (a failure) and a
-        screenshot that is not there (reported only, P11)."""
-        for criterion, persona, verdict in spec_runs.unjoined(self.run_dir, self.cards):
+        screenshot that is not there (reported only, P11). Returns how many results have no card."""
+        orphans = spec_runs.unjoined(self.run_dir, self.cards)
+        for criterion, persona, verdict in orphans:
             who = f"{criterion} ({persona})" if persona else criterion
             self.log.skip("no-ticket", f"{who}: recorded as {verdict}, and no scenario ticket shows it; "
                                        f"add it to a card, then run push-scenarios")
@@ -456,6 +501,7 @@ class RunSync(SpecSync):
         for criterion, persona in spec_runs.missing_evidence(self.run_dir, self.cards, self.cfg):
             self.log.act("evidence-missing", f"{by_row.get((criterion, persona)) or criterion}: "
                                              f"a recorded screenshot is not there or cannot be used")
+        return len(orphans)
 
     def bugs_home(self) -> Optional[Tuple[str, str]]:
         """`(Bugs list id, its Ref field id)` when the project keeps its bugs in the QA folder."""
@@ -529,35 +575,45 @@ class RunSync(SpecSync):
             self.write("archive-list", e["name"],
                        lambda e=e: self.tr.request("PUT", f"/v2/list/{e['id']}", {"archived": True}) or True)
 
-    def run(self) -> None:
-        states = spec_runs.states(self.run_dir, self.cards, self.cfg)
-        if not any(s.role for s in states) and spec_runs.unjoined(self.run_dir, self.cards):
-            # e.g. the newest run is another spec's: tying a list to it would use up this spec's list
-            self.log.skip("other-run", "none of this run's results belongs to this spec's cards; "
-                                       "name the run with --run")
-            return
-        self.report(states)
+    def run(self, states: Optional[List[spec_runs.CheckState]] = None) -> None:
+        if states is None:
+            states = spec_runs.states(self.run_dir, self.cards, self.cfg)
+        orphans = self.report(states)
         entry = self.bind()
         if entry is None:
             return
         lid, n = entry["id"], entry["n"]
+        before = self.log.counts.get("skip", 0)
+        # every card and check of the cards file gets its ticket first, as push-scenarios would
+        # make it. Nothing is retired while a recorded result has no card: its ticket may be the
+        # one that would go.
+        self.fill(lid, n, retire=not orphans)
         if not _real(lid):
             return  # a dry run with no list yet: its creates are logged
         have = self.tickets(lid)
+        summary = have.get(self.key(n, "summary", SUMMARY_ID))
         if self.lacking(have, n):
-            raise SyncError(PLAN_CHANGED)
+            if self.log.apply:
+                if self.log.counts.get("skip", 0) == before:
+                    self.log.skip("not-filled", f"{entry['name']}: a ticket of the plan could not be made; run again")
+                return  # reported; the next sync fills the rest and goes on
+            if summary is None:
+                return
         if not self.tie(entry, have):
             return
         self.show_all(states, lid, n, have)
-        self.summarise(states, have[self.key(n, "summary", SUMMARY_ID)])
+        self.summarise(states, summary)
         self.link_bugs(n, have)
         if self.log.apply and not self.log.counts.get("skip"):
             self.archive(lid)
 
 
 def sync_run(ctx) -> None:
-    """`tracker.sh sync-run [--run <id>] [--retest]`. A plan the cards no longer cover stops it
-    before anything is written; a wording problem in the cards stops it before ClickUp is contacted."""
+    """`tracker.sh sync-run [--run <id>] [--retest]`. Cards and plan that disagree stop it before
+    anything is written; a wording problem in the cards stops it before ClickUp is contacted. A
+    run none of whose recorded results belongs to one of the spec's cards (another spec's run,
+    or one that has only started) is reported in one line and takes no list: nothing is read
+    from or written to ClickUp, and it is not a failure."""
     target = ctx.args.spec
     c = cards.load(ctx.project, target)
     found = cards.problems(c, cards.plan_rows(ctx.project, target), ctx.cfg)
@@ -568,7 +624,11 @@ def sync_run(ctx) -> None:
     if found:
         return
     s = RunSync(ctx, c)
+    states = spec_runs.states(s.run_dir, c, s.cfg)
+    if not any(state.role for state in states):
+        s.left("no-results", NO_RESULTS)
+        return
     if not s.ready():
         return
     with _keep_cache(ctx):
-        s.run()
+        s.run(states)
