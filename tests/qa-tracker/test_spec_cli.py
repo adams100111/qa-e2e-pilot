@@ -232,6 +232,26 @@ class SpecVerbTests(CliBase):
         self.assertIn("SKIP\twording\tcard 3: title\n", out)
         self.assertIn('SUMMARY {"skip": 1} dry-run', out)
 
+    def test_spec_status_prints_one_json_line_and_nothing_else(self):
+        self.write_cfg(specs={"checkout": {"enabled": True}})
+        answer = {"spec": "checkout", "folderUrl": None, "docUrl": None, "list": None, "behind": True,
+                  "reasons": ["there is no run list yet"]}
+
+        def status(ctx):
+            ctx.log.out.write("")   # the handler logs nothing of its own
+            sys.stdout.write(json.dumps(answer, ensure_ascii=False) + "\n")
+        rc, out, err = self.run_cli("spec-status", fn=status)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertTrue(out.endswith("\n"))
+        self.assertEqual(len(out.splitlines()), 1, out)
+        self.assertEqual(json.loads(out), answer)
+        self.assertNotIn("SUMMARY", out)
+        # every other spec verb still ends with its summary line
+        for verb in ("lint", "spec-init", "push-scenarios", "sync-run", "push-docs", "spec-note"):
+            with self.subTest(verb=verb):
+                rc, out, _ = self.run_cli(verb)
+                self.assertEqual((rc, out), (0, "SUMMARY {} dry-run\n"))
+
     def test_handler_errors_are_one_clean_line(self):
         self.write_cfg(specs={"checkout": {"enabled": True}})
 
