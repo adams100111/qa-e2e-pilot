@@ -144,7 +144,10 @@ Space
 | Project | `docs/agents/qa-tracker.json` (exists) | everything today, plus optional `templates.list`, and any machine key to override |
 | Spec | the same project file, under `specs.<target>` | `enabled`, `folder` (id of the spec's subfolder), `list` (an existing list to use), `listMode`, and any key to override |
 
-A key is read from the spec entry first, then the project file, then the machine file. The token
+A key is read from the spec entry first, then the project file's `specDefaults`, then the project
+file, then the machine file. `specDefaults.enabled: true` makes every new spec tracked from the
+start without a question (used by the unattended journey; see
+`2026-11-27-qa-kit-unattended-journey-design.md` D8). The token
 is only ever read from the environment. Spec settings live in the committed project file because
 `.qa/` is often git-ignored (builder's call recorded here: the author's).
 

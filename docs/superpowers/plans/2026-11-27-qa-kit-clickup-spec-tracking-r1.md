@@ -40,7 +40,7 @@ in this plan.
 
 | # | Decision | Why |
 |---|---|---|
-| P1 | Settings order: template < machine file < project file < `specs.<target>`. Machine file is `~/.config/qa-kit/tracker.json`, overridable by env `QA_KIT_TRACKER_CONFIG` (tests use it). | D2 |
+| P1 | Settings order: template < machine file < project file < project `specDefaults` < `specs.<target>`. A target with no `specs` entry is enabled when `specDefaults.enabled` is true. Machine file is `~/.config/qa-kit/tracker.json`, overridable by env `QA_KIT_TRACKER_CONFIG` (tests use it). | D2 |
 | P2 | New verbs: `lint`, `spec-init`, `push-scenarios`, `sync-run`, `push-docs`, `spec-note`, `spec-status`. All take `--spec <target>`. If omitted and exactly one spec is enabled, that one; else exit 1 `error: name the spec with --spec`. | D5; no guessing a run's spec |
 | P3 | A spec verb on a spec that is not enabled prints `SKIP	not-set-up	<target>` and exits 0. On a backend other than `clickup` it exits 2. | D7, optional when not set up |
 | P4 | A spec verb exits 1 when any item was skipped for wording, lint or a failed call, after printing the summary. | D7, required once set up |
@@ -103,7 +103,7 @@ in this plan.
 
 **Exact values:** new template keys and defaults: `"tokenEnv": "CLICKUP_API_TOKEN"`,
 `"language": "en"`, `"evidence": "standard"`, `"evidenceCap": 3`, `"keepRuns": 3`, `"notify": null`,
-`"reportUrl": null`, `"specs": {}`. Allowed: `evidence` ∈ `standard|failures|none`; spec keys
+`"reportUrl": null`, `"specs": {}`, `"specDefaults": {}`. Allowed: `evidence` ∈ `standard|failures|none`; spec keys
 `enabled` (bool), `folder`, `doc`, `list`, `layout` (`subfolder|flat`), `listMode` (`fresh|reuse`),
 `title`.
 
@@ -119,6 +119,7 @@ in this plan.
 **Tests (write first):**
 - `test_project_overrides_machine` — machine `language: ar`, project `language: en` → `en`.
 - `test_spec_overrides_project` — `specs.judging.evidence: none` → `spec_settings(...)["evidence"] == "none"`.
+- `test_spec_defaults_enable_new_spec` — `specDefaults.enabled: true`, no `specs.judging` → `spec_settings(cfg, "judging")["enabled"] is True`; `specs.judging.enabled: false` wins over it.
 - `test_machine_file_cannot_set_specs` — raises `ConfigError`.
 - `test_token_env_rejects_token_value` — `tokenEnv: "pk_123…"` raises, message does not echo the value.
 - `test_case_results_unchanged` — the existing fixtures give byte-identical `case_results` JSON.
