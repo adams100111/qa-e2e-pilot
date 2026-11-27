@@ -148,7 +148,12 @@ When a person runs this command while a journey is open for the target, tell the
    or record an exclusion with a reason, plus every `uxMissing` surface). Under `ship` (gate mode `block`)
    the Verdict is **`BLOCKED`** until uncovered = 0 and `uxMissing` is empty; set it from the gate's exit code (and from the fail-closed rules in step 4b: no
    census, an unresolvable engine script, exit 2), never from your own count. Under `advise` the Verdict
-   stays advisory. This coverage gate is the only blocking analyze check besides
+   stays advisory.
+
+   **The verdict line.** The first line under `## Verdict` (one blank line after the heading) is exactly
+   `Verdict: BLOCKED` or `Verdict: PASS (advisory)`, with nothing else on the line. Decide it as above:
+   the coverage gate's exit code and the fail-closed rules, never your own count. Programs read this
+   one line. The ClickUp step's `--blocked` follows that same line. This coverage gate is the only blocking analyze check besides
    plan defects.
 
 5b. **ClickUp note (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.

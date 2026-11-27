@@ -383,5 +383,15 @@ for f in "$PROFJ" "$CC/qa-auto.md" "$CC/qa-constitution.md" "$CC/qa-spec.md" "$C
   check "no_auto_mode_$(basename "$f")" "$(grep -ci 'auto mode' "$f" 2>/dev/null || true)" "0"
 done
 
+# --- Verdict line: one machine-readable line under ## Verdict ---
+TPL="$ROOT/qa-kit/templates/qa-analyze-template.md"
+check "vl_template_verdict_line_first" "$(awk '/^## Verdict$/{f=1;next} f&&NF{print;exit}' "$TPL")" "Verdict: {{VERDICT}}"
+has "$CC/qa-analyze.md" '`Verdict: BLOCKED`' && has "$CC/qa-analyze.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-analyze.md" 'nothing else on the line'; check "vl_analyze_names_both_values" "$?" "0"
+has "$CC/qa-status.md" '`Verdict: BLOCKED`' && has "$CC/qa-status.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-status.md" 'not finished'; check "vl_status_reads_the_line" "$?" "0"
+has "$CC/qa-auto.md" 'reads that one line'; check "vl_auto_reads_the_line" "$?" "0"
+for f in qa-analyze qa-status; do
+  has "$ROOT/qa-kit/commands/$f.md" 'Verdict: PASS (advisory)'; check "vl_rendered_$f" "$?" "0"
+done
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

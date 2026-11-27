@@ -109,7 +109,8 @@ one where the harness can.
 
    **When analyze ends `BLOCKED`**, `step-done` reopens `scenarios` and `analyze` itself, and stops the
    journey after the second round. Follow `next`; never mark the analysis anything other than what the
-   gate's exit code says.
+   gate's exit code says. The journey script reads that one line, `Verdict: BLOCKED` or
+   `Verdict: PASS (advisory)`, the first under `## Verdict` in `analysis.md`.
 
    **A scenarios step on a plan that exists only appends.** A reopened scenarios round, and any scenarios
    step on a plan that existed when the journey started, adds the rows (and the matching storyline text
