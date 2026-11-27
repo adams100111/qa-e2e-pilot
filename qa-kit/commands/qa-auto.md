@@ -29,7 +29,8 @@ one where the harness can.
    process id; on another system use its equivalent, or go on without one. Release it at the end
    (step 12), whatever the outcome.
 
-2. **Check the known-defect registry.** Only when `.qa/known-defects.json` exists, run the engine's
+2. **Check the known-defect registry.** At the start of every `/qa-auto` invocation (a new journey, a
+   continued one and a resumed one alike), and only when `.qa/known-defects.json` exists, run the engine's
    `known-defects.sh validate .qa/known-defects.json` (an engine script: resolve it against the engine's
    checkout or plugin root, ADR-0022; qa-kit cannot address it). Remember whether it exited 0. Do not
    change the file, whatever it says.
@@ -44,6 +45,10 @@ one where the harness can.
 
    If `start` or `resume` exits 1, print its one line, release the machine (step 12) and end. There is
    no journey, so there is nothing to audit or hand off. Do not try to remove the cause yourself.
+
+   On a continued or resumed journey, when step 2 exited non-zero:
+   `auto.sh stop <target> --reason step-failed --detail "the known-defect registry is not valid"`, then go
+   to the end (step 9).
 
 4. **Pre-flight.** Run the engine's pre-flight (`scripts/preflight.sh` of its `driving-browser-qa`
    skill; an engine script, resolved as in step 2). If the application is down or the pre-flight aborts,
@@ -78,12 +83,22 @@ one where the harness can.
 
       Each of those commands treats the open journey as `autonomousSetup` on, so it asks nobody. Where
       it would have asked a person, answer by the rules below and record the answer (step 7).
-   5. `auto.sh step-done <target> <step>`; for the run step `auto.sh step-done <target> run --run <run-id>`.
-      It refuses (`auto: <step> has no result yet`) when the step's files are missing.
+   5. `auto.sh step-done <target> <step>`. It refuses (`auto: <step> has no result yet`) when the step's
+      files are missing. For the run step: `auto.sh step-done <target> run --run <run-id>`, and
+      only after the engine's end-of-run order has completed and the run's rendered report
+      (`.qa/runs/<run-id>/report.md`) exists. The script refuses a run without `report.md`, and refuses a
+      run that started before the journey with `auto: that run started before this journey`. If the
+      engine's agent returns before the run is finished, resume it (step 6); never mark it done.
    6. After `spec` and after `scenarios`, take the second look (step 8), then go back to 5.1.
 
-   **A step that fails** (its command stops on an error, or `step-done` refuses) is redone once from
-   5.3. If it fails again: `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end.
+   **A step that fails** (its command stops on an error, or `step-done` refuses). Do not keep the count
+   of attempts in your memory: run `auto.sh status <target>`. Redo the step once from 5.3 only when it
+   shows that step still `running` after the first attempt. A second failure of the same step is `step-failed`:
+   `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end.
+
+   **An `auto.sh` verb that exits 1** where no rule here says what to do (`step-start`, `next`, `signin`, `decide`):
+   stop the loop. If `auto.sh status <target>` still shows `state: open`, run
+   `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`. Then go to the end (step 9).
 
    **A required ClickUp step that fails.** The step commands sync a spec that is tracked in ClickUp.
    When a sync fails, the step command still gives its own result first and then says ClickUp was not
@@ -96,16 +111,25 @@ one where the harness can.
    journey after the second round. Follow `next`; never mark the analysis anything other than what the
    gate's exit code says.
 
+   **A scenarios step on a plan that exists only appends.** A reopened scenarios round, and any scenarios
+   step on a plan that existed when the journey started, adds the rows (and the matching storyline text
+   and card checks) that close the gaps analyze listed, and nothing else. Never rewrite, remove, reorder or re-derive an existing row, its tags or its expected value,
+   and do not follow the parts of `/qa-scenarios` that write `scenarios.md` or `checklist.json` whole.
+   The audit fails the journey if a row from the starting plan is gone or a person-confirmed expected value is no longer marked as confirmed.
+
 6. **The run step.** It has no qa-kit command source. Follow the engine's run command,
    /qa-e2e-pilot:qa-run, with the arguments `"<target>" .qa/specs/<target>/checklist.json` (the hand-off
    `/qa-spec` step 8 describes), exactly as a person typing it would: every step of that command, in
    this session, including where it starts the engine's agent and its whole end-of-run order
    (`qa-verify` → re-adjudication → `qa-verify` again → bug export → render report). Skip none of it
    and reorder none of it. The run id is the run directory that command reports.
-   - **An interrupted run is continued, never started again.** When the step is `run` and a run of this
-     plan is already in progress under `.qa/runs/` (its `checkpoint.json` holds this checklist's
-     criteria and it has no finished report), follow the engine's resume command (`/qa-resume <run-id>`)
-     the same way, including its end-of-run order. Never start a second run for the same journey.
+   - **An interrupted run of this journey is continued, never started again.** When the step is `run` and
+     a run of this plan is already in progress under `.qa/runs/` (its `checkpoint.json` holds this
+     checklist's criteria and it has no finished report), follow
+     the engine's resume command (`/qa-resume <run-id>`; on a harness that prefixes plugin commands, the same prefix as the run command above)
+     the same way, including its end-of-run order. Resume only a run whose `started_at` in its
+     `run-manifest.json` is not earlier than `startedAt` in `auto.sh status <target>`. An older run is not
+     this journey's: leave it as it is and start a new run. Never start a second run for the same journey.
    - **The time limit.** Each time the run hands control back to you before it has finished, run
      `auto.sh next <target>`. If it says `stopped` with `time-limit`, leave the run where it is (it is
      resumable) and go to the end.
@@ -153,7 +177,9 @@ one where the harness can.
 
    **The profile is the person's choice.** When the journey was started with `--profile`, the spec step
    writes that value as `profile` in the spec's run-config, as `/qa-spec` does. Without the flag write
-   no `profile`. Never pick a profile yourself and never change one that exists.
+   no `profile`. Never pick a profile yourself and never change one that exists. When `--profile` was
+   given and the spec already existed, write nothing to the existing run-config, and say so at the close
+   (step 12).
 
    **Files that exist are kept.** A step whose files exist is already done, whoever wrote them. Do not
    regenerate a spec, a plan or a constitution, and leave existing exclusions, an existing `seed.json`
@@ -195,7 +221,13 @@ one where the harness can.
    step just done and whose `second` is `null`. If there are none, skip the second look for this step.
 
    Start one fresh agent for this step (the Agent/Task tool, a general-purpose agent; one agent per
-   step, never one shared between steps). Give it ONLY:
+   step, never one shared between steps). Its prompt opens with these rules, word for word:
+   ```
+   You only read. Change no file. Run no script or command that writes. Do not run auto.sh.
+   Do not correct or rewrite an answer. Your whole reply is one line per decision id:
+   the id, then `stands` or `ask a person`, then a short reason.
+   ```
+   After the rules, give it ONLY:
    - those decisions, each with its `id`, `class`, `question`, `answer`, `evidence` and `confidence`;
    - the evidence each decision names, as paths and lines it reads itself;
    - the step's artifact: after `spec`, `.qa/specs/<target>/qa-spec.md`, `spec-roles.json` and, when they
@@ -203,7 +235,6 @@ one where the harness can.
      and `checklist.json`.
 
    It never receives this conversation, a summary of it, your reasoning, or what you expect it to say.
-   Ask it for one line per decision: the decision id, then `stands` or `ask a person`, then a reason.
    Record each line as it answered, changing nothing:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" second <target> <decision-id> stands --reason "<its reason>"
@@ -212,8 +243,10 @@ one where the harness can.
    `ask a person` is recorded as `ask`. A decision it did not answer, or answered with anything else, is
    recorded as `ask` with the reason `no answer from the second look`.
 
-   If the fresh agent cannot be started (for example this command is itself running inside an agent),
-   do not review the decisions yourself. Say so with the line below and run the command under it:
+   The lines below are allowed only when the tool for starting a fresh agent is absent or its call fails
+   (for example this command is itself running inside an agent); never because of time, cost or the number of decisions.
+   In that case do not review the decisions yourself. Say so with the line below and run the command
+   under it:
    ```
    SECOND LOOK UNAVAILABLE: this harness cannot start a fresh agent; every low-confidence decision is left for a person.
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" second <target> --unavailable
@@ -237,10 +270,19 @@ one where the harness can.
     writes `.qa/specs/<target>/auto/handoff.md` and prints `{"result":…,"needsPerson":n}`. The journey
     deletes none of those records.
 
-11. **ClickUp note.** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. Write one
-    sentence to a file under the session's temp directory, nothing else and none of your own words:
-    `<n> items need a person's review. See the results page.` with `<n>` from step 10, or
-    `Nothing needs a person's review.` when it is 0. Then:
+11. **ClickUp note.** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. Post the
+    comment only when the journey has a run (`runId` in `auto.sh status <target>`) and the stop reason is not `tracker`.
+    Otherwise post nothing and keep one line for step 12: `No ClickUp comment was posted: <the journey has
+    no run | ClickUp could not be updated during the journey>`.
+
+    Write one sentence to a file under the session's temp directory, nothing else and none of your own
+    words. Choose it from what `auto.sh handoff` printed in step 10, first match wins:
+    - `result` is `stopped` → `This run was stopped before it finished. See the results page.`
+    - `needsPerson` is more than 0 → `<n> items need a person's review. See the results page.`, with `<n>`
+      the printed `needsPerson`
+    - otherwise → `Nothing needs a person's review.`
+
+    Then:
     ```
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
     ```
@@ -250,8 +292,11 @@ one where the harness can.
 12. **Close.** Release the machine (stop the `caffeinate` process from step 1). Print the `Result`
     section of `handoff.md` word for word and the path `.qa/specs/<target>/auto/handoff.md`. Add
     nothing that reads better than that section: the result is the one `auto.sh handoff` computed from
-    the files, never your own summary of how the journey went. When step 11 failed, end with one more
-    line: `The ClickUp comment was not posted: <its one-line error>`.
+    the files, never your own summary of how the journey went. Then, one line each, only where it applies:
+    - step 11 posted nothing: its `No ClickUp comment was posted: …` line;
+    - step 11 failed: `The ClickUp comment was not posted: <its one-line error>`;
+    - `--profile` was given and the spec already existed:
+      `The launch profile was not applied: the spec already had its own settings.`
 
 Guardrails: one journey per project at a time; the journey's files are written only by `auto.sh`; every
 answer given in place of a person is recorded with `decide` before it is used; the never list holds for

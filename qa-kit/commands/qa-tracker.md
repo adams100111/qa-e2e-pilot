@@ -12,6 +12,15 @@ answers first and change only what the user changes.
 This is a conversation, not a script. Explore, say what you found, ask one question at a time, then
 write. Never write a file before the user has seen what goes into it.
 
+## The token
+
+The ClickUp token is only ever referenced as the environment variable that holds it (default
+`CLICKUP_API_TOKEN`) inside a command. Never read it into the conversation, print, echo, paste, log or store it,
+and never ask the person for it. Step 3 (first setup) is the one place where you call the ClickUp API
+yourself: to list workspaces, spaces and folders, and to create the QA folder after a yes. For
+everything else (checking a pasted folder or list URL, creating the spec's subfolder, lists and
+tickets) only the tracker script talks to ClickUp.
+
 ## Machine and spec levels
 
 With `--global`, do only this: ask for the ClickUp workspace and the name of the environment variable
@@ -20,8 +29,6 @@ after showing the user the content. Never ask for the token, never write it anyw
 
 With `--spec <target>`, do only this. First read `docs/agents/qa-tracker.json`. If it is missing or
 its `backend` is not `clickup`, stop and tell the person to run `/qa-tracker` first.
-
-Never read, print, paste or pass the ClickUp token yourself; only the tracker script uses it.
 
 Ask one question: create a subfolder for the spec in the QA folder, or use a ClickUp folder or list
 URL the person pastes.
@@ -65,8 +72,8 @@ answer before the next question.
 - GitHub: recommended when the remote is GitHub. Not yet available in this version: the rules are
   written and the config is saved, but the scripts exit 2 until the adapter ships. Say so plainly.
 - ClickUp: ask these follow-ups one at a time. You may list workspaces, spaces and folders through
-  the ClickUp API with the token in `CLICKUP_API_TOKEN`. Never ask the user to paste the token, and
-  never write it into any file.
+  the ClickUp API, under the token rule above: name the token only as its environment variable inside
+  the command.
   1. The workspace.
   2. The space in that workspace.
   3. The folder in that space. If there is no folder for QA yet, offer to create one and say the

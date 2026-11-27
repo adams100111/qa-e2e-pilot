@@ -103,12 +103,48 @@ done
 # (j) fix round 1: the token rule, the dry spec-init and the lint exception reach every harness
 for h in claude pi codex opencode; do
   check "$h qa-tracker has no curl or API host" "$(grep -ci 'curl\|api\.clickup\.com' "$D/$h/commands/qa-tracker.md" 2>/dev/null || true)" "0"
-  grep -q 'only the tracker script uses it' "$D/$h/commands/qa-tracker.md" 2>/dev/null; check "$h qa-tracker states the token rule" "$?" "0"
   grep -Eq 'tracker\.sh"? spec-init --spec <target>$' "$D/$h/commands/qa-tracker.md" 2>/dev/null; check "$h qa-tracker has the dry spec-init" "$?" "0"
   grep -q '`lint` is the exception' "$D/$h/commands/qa-scenarios.md" 2>/dev/null; check "$h qa-scenarios has the lint exception" "$?" "0"
   grep -Eq 'tracker\.sh"? push-bug --spec <target> --run <run-id> --apply' "$D/$h/commands/qa-verify.md" 2>/dev/null; check "$h qa-verify push-bug names the run" "$?" "0"
   grep -Eq 'auto\.sh"? note <target> --kind' "$D/$h/commands/qa-auto.md" 2>/dev/null; check "$h qa-auto has the note verb" "$?" "0"
   check "$h no residual token in any command" "$(cat "$D/$h/commands/"*.md 2>/dev/null | grep -c '{{' || true)" "0"
+done
+
+# (k) fix round 2: F1-F6, the minors and the safety sentences reach every harness's render
+M3='When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.'
+for h in claude pi codex opencode; do
+  f="$D/$h/commands/qa-auto.md"
+  has(){ grep -qF -- "$1" "$f" 2>/dev/null; }
+  has 'only appends' && has 'Never rewrite, remove, reorder or re-derive an existing row, its tags or its expected value' && has 'a row from the starting plan is gone'; check "$h F1 scenarios round only appends" "$?" "0"
+  has "only after the engine's end-of-run order has completed" && has 'auto: that run started before this journey' && has 'never mark it done'; check "$h F2 run done only when finished" "$?" "0"
+  has 'is not earlier than `startedAt` in `auto.sh status <target>`'; check "$h F3 resume only a run of this journey" "$?" "0"
+  has 'This run was stopped before it finished. See the results page.' && has "<n> items need a person's review. See the results page." && has "Nothing needs a person's review." && has 'the stop reason is not `tracker`'; check "$h F5 three sentences and the no-comment rule" "$?" "0"
+  check "$h F6 no unavailable call before the audit" "$(grep -ci 'once more just before the audit' "$f" 2>/dev/null || true)" "0"
+  a="$(grep -n '^9\. \*\*Audit\.\*\*' "$f" 2>/dev/null | cut -d: -f1)"; b="$(grep -n '^10\. \*\*Handoff\.\*\*' "$f" 2>/dev/null | cut -d: -f1)"
+  check "$h audit before handoff" "$([ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo y)" "y"
+  has '(`step-start`, `next`, `signin`, `decide`)'; check "$h M1 unruled exit 1" "$?" "0"
+  has 'The launch profile was not applied: the spec already had its own settings.'; check "$h M2 launch profile not applied" "$?" "0"
+  has 'the same prefix as the run command above'; check "$h M4 resume wording" "$?" "0"
+  has 'shows that step still `running`'; check "$h M5 redo count from status" "$?" "0"
+  has -- '--detail "the known-defect registry is not valid"'; check "$h M6 registry on every invocation" "$?" "0"
+  for c in qa-constitution qa-spec qa-scenarios qa-analyze; do
+    grep -qF "$M3" "$D/$h/commands/$c.md" 2>/dev/null; check "$h $c M3 person told first" "$?" "0"
+  done
+  grep -qF 'only the tracker script talks to ClickUp' "$D/$h/commands/qa-tracker.md" 2>/dev/null; check "$h qa-tracker F7 token rule" "$?" "0"
+  check "$h no bare autonomous in any command" "$(cat "$D/$h/commands/"*.md 2>/dev/null | grep -oi 'autonomous[A-Za-z]*' | grep -vc '^autonomousSetup$' || true)" "0"
+done
+# F4 + the safety sentences: the Claude prompt for the fresh agent
+f="$D/claude/commands/qa-auto.md"
+for s in 'You only read.' 'Change no file.' 'Run no script or command that writes.' 'Do not run auto.sh.' 'Do not correct or rewrite an answer.' 'Your whole reply is one line per decision id' \
+         'allowed only when the tool for starting a fresh agent is absent or its call fails' 'never because of time, cost or the number of decisions' \
+         'It never receives this conversation' 'do not review the decisions yourself' 'recorded as `ask` with the reason `no answer from the second look`'; do
+  grep -qF -- "$s" "$f" 2>/dev/null; check "claude second look: $s" "$?" "0"
+done
+for h in pi codex opencode; do
+  f="$D/$h/commands/qa-auto.md"
+  check "$h F6 unavailable verb called once" "$(grep -c -- 'second <target> --unavailable' "$f" 2>/dev/null || true)" "1"
+  grep -qF 'Run it only here, after `spec` and after `scenarios`' "$f" 2>/dev/null; check "$h F6 only after spec and scenarios" "$?" "0"
+  check "$h F4 no fresh-agent prompt" "$(grep -c 'You only read\.' "$f" 2>/dev/null || true)" "0"
 done
 
 echo "qakit-adapters: PASS=$pass FAIL=$fail"

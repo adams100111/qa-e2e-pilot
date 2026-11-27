@@ -10,6 +10,7 @@ the constitution's roles into an **immutable, version-stamped snapshot** the run
 feature/page/flow); an optional `--overrides <file.json>` narrows/patches roles for this spec only.
 
 An open unattended journey for this target (`bash ${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.
 
 ## What to do
 

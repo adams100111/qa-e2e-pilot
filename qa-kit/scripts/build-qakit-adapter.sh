@@ -7,8 +7,9 @@
 #   {{PLUGIN_ROOT}}      -> the profile's pluginRoot                              (qa-kit's OWN scripts/templates root)
 #   {{SKILL_REF_GENERIC}}-> the profile's skillRefGeneric string (literal replace) (generic "invoke an engine skill" instruction, per harness dialect)
 #   {{SECOND_LOOK}}      -> the profile's secondLook string (literal replace)      (/qa-auto: the fresh-agent dispatch instruction where
-#                           the profile's subagentDispatch is true, the unavailable banner elsewhere; rendered BEFORE
-#                           {{PLUGIN_ROOT}}, so the string may carry that token)
+#                           the profile's subagentDispatch is true, the unavailable banner elsewhere; substituted AFTER the skill and engine-run tokens
+#                           ({{SKILL_REF:<name>}}, {{ENGINE_RUN}}), so the string must not contain them, and BEFORE
+#                           {{PLUGIN_ROOT}}, so it may carry that one)
 #   {{PERSONA_BODY}}     -> qa-kit/core/persona-body.md (agent manifest only)
 # Bare /qa-<step> command refs are intentionally NOT tokenized (they read fine on every harness).
 # NEVER modifies the engine. Output qa-kit/dist/<h>/ is git-ignored.

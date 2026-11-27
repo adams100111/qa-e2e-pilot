@@ -235,8 +235,7 @@ check "i6_tracker_cmd_has_no_curl" "$(grep -ci 'curl' "$QT" || true)" "0"
 check "i6_tracker_cmd_has_no_api_host" "$(grep -c 'api\.clickup\.com' "$QT" || true)" "0"
 check "i6_no_get_through_the_api" "$(grep -c 'GET through the API' "$QT" || true)" "0"
 grep -Eq 'tracker\.sh"? spec-init --spec <target>$' "$QT"; check "i6_dry_spec_init_line" "$?" "0"
-grep -q 'Never read, print, paste or pass the ClickUp token yourself; only the tracker script uses it' "$QT"; check "i6_token_rule_stated" "$?" "0"
-check "i6_token_rule_stated_once" "$(grep -c 'only the tracker script uses it' "$QT" || true)" "1"
+# (the token rule itself was reworded in fix round 2: see f7_* below)
 grep -q 'remove the saved id and ask again' "$QT" && grep -q '`folder` for a folder URL, `list` for a list URL' "$QT"; check "i6_wrong_id_is_removed_and_asked_again" "$?" "0"
 grep -q 'tell the person to run `/qa-tracker` first' "$QT"; check "i6_other_backend_stops" "$?" "0"
 # minors
@@ -316,6 +315,73 @@ for h in ("claude", "pi", "codex", "opencode"):
 print(",".join(bad) or "ok")
 PYEOF
 )" "ok"
+
+# --- Fix round 2 (Task 17): F1-F7, M1-M7, the safety sentences, the words ---
+QAU="$CC/qa-auto.md"; PROFJ="$ROOT/qa-kit/harness-profiles.qakit.json"
+has(){ grep -qF -- "$2" "$1" 2>/dev/null; }
+# sl <harness>: that harness's secondLook string
+sl(){ python3 -c "import json,sys;sys.stdout.write(json.load(open(sys.argv[1]))['harnesses'][sys.argv[2]]['secondLook'])" "$PROFJ" "$1"; }
+slhas(){ sl "$1" | grep -qF -- "$2"; }
+# F1: a scenarios step on an existing plan only appends
+has "$QAU" 'only appends' && has "$QAU" 'Never rewrite, remove, reorder or re-derive an existing row, its tags or its expected value'; check "f1_scenarios_round_only_appends" "$?" "0"
+has "$QAU" 'a plan that existed when the journey started' && has "$QAU" 'that close the gaps analyze listed'; check "f1_covers_reopened_round_and_starting_plan" "$?" "0"
+has "$QAU" 'a row from the starting plan is gone' && has "$QAU" 'a person-confirmed expected value is no longer marked as confirmed'; check "f1_audit_fails_on_lost_row_or_confirmation" "$?" "0"
+# F2: the run step is marked done only on a finished run
+has "$QAU" "only after the engine's end-of-run order has completed" && has "$QAU" 'report.md'; check "f2_step_done_run_needs_finished_run" "$?" "0"
+has "$QAU" 'auto: that run started before this journey'; check "f2_names_the_script_refusal" "$?" "0"
+has "$QAU" 'resume it (step 6); never mark it done'; check "f2_unfinished_run_is_resumed_never_marked_done" "$?" "0"
+# F3: only a run of this journey is resumed
+has "$QAU" 'is not earlier than `startedAt` in `auto.sh status <target>`' && has "$QAU" 'started_at'; check "f3_resume_only_a_run_of_this_journey" "$?" "0"
+has "$QAU" 'start a new run'; check "f3_older_run_means_a_new_run" "$?" "0"
+# F4: the fresh agent is told it only reads; the banner is not a way out
+for s in 'You only read.' 'Change no file.' 'Run no script or command that writes.' 'Do not run auto.sh.' 'Do not correct or rewrite an answer.' 'Your whole reply is one line per decision id'; do
+  slhas claude "$s"; check "f4_claude_prompt_says_${s// /_}" "$?" "0"
+done
+slhas claude 'allowed only when the tool for starting a fresh agent is absent or its call fails' && slhas claude 'never because of time, cost or the number of decisions'; check "f4_banner_only_when_no_fresh_agent" "$?" "0"
+# F5: three fixed sentences, and when no comment is posted
+has "$QAU" 'This run was stopped before it finished. See the results page.'; check "f5_stopped_sentence" "$?" "0"
+has "$QAU" '`result` is `stopped`' && has "$QAU" '`needsPerson` is more than 0'; check "f5_sentence_chosen_from_result_and_needs_person" "$?" "0"
+has "$QAU" 'the stop reason is not `tracker`' && has "$QAU" 'No ClickUp comment was posted'; check "f5_no_comment_without_run_or_after_tracker_stop" "$?" "0"
+# F6: --unavailable runs only where the second look would have run
+for h in claude pi codex opencode; do
+  check "f6_${h}_no_run_before_the_audit" "$(sl "$h" | grep -ci 'once more\|before the audit' || true)" "0"
+done
+for h in pi codex opencode; do
+  check "f6_${h}_unavailable_called_once" "$(sl "$h" | grep -c -- 'second <target> --unavailable' || true)" "1"
+  slhas "$h" 'Run it only here, after `spec` and after `scenarios`'; check "f6_${h}_only_after_spec_and_scenarios" "$?" "0"
+done
+# F7: one token rule in /qa-tracker, nothing against it
+QT="$CC/qa-tracker.md"
+has "$QT" 'only ever referenced as the environment variable' && has "$QT" 'Never read it into the conversation, print, echo, paste, log or store it'; check "f7_token_rule" "$?" "0"
+has "$QT" 'only the tracker script talks to ClickUp' && has "$QT" 'checking a pasted folder or list URL'; check "f7_everything_else_goes_through_the_tracker" "$?" "0"
+check "f7_token_rule_stated_once" "$(grep -c 'only the tracker script talks to ClickUp' "$QT" || true)" "1"
+has "$QT" 'list workspaces, spaces and folders through'; check "f7_first_setup_still_lists_through_the_api" "$?" "0"
+check "f7_no_contradicting_sentence" "$(grep -c 'pass the ClickUp token yourself\|with the token in `CLICKUP_API_TOKEN`' "$QT" || true)" "0"
+# safety sentences that had no test
+slhas claude 'It never receives this conversation'; check "safety_fresh_agent_never_gets_the_conversation" "$?" "0"
+slhas claude 'do not review the decisions yourself'; check "safety_no_self_review" "$?" "0"
+slhas claude 'recorded as `ask` with the reason `no answer from the second look`'; check "safety_odd_answer_is_ask" "$?" "0"
+a="$(grep -n '^9\. \*\*Audit\.\*\*' "$QAU" | cut -d: -f1)"; b="$(grep -n '^10\. \*\*Handoff\.\*\*' "$QAU" | cut -d: -f1)"
+check "safety_audit_before_handoff" "$([ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo y)" "y"
+has "$QAU" 'Go on to step 10 either way'; check "safety_handoff_follows_a_failed_audit" "$?" "0"
+# minors
+has "$QAU" '(`step-start`, `next`, `signin`, `decide`)' && has "$QAU" '--detail "<the script'"'"'s line>"'; check "m1_unruled_exit_1_stops_the_loop" "$?" "0"
+has "$QAU" 'The launch profile was not applied: the spec already had its own settings.' && has "$QAU" 'write nothing to the existing run-config'; check "m2_launch_profile_not_applied_to_existing_spec" "$?" "0"
+M3='When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.'
+for f in qa-constitution qa-spec qa-scenarios qa-analyze; do
+  grep -A1 -F "$OJ" "$CC/$f.md" | tail -1 | grep -qF "$M3"; check "m3_person_told_first_${f}" "$?" "0"
+done
+has "$CC/qa-constitution.md" 'run it for each directory under `.qa/specs/`'; check "m3_constitution_finds_the_target" "$?" "0"
+has "$QAU" "the engine's resume command (\`/qa-resume <run-id>\`; on a harness that prefixes plugin commands, the same prefix as the run command above)"; check "m4_resume_wording" "$?" "0"
+has "$QAU" 'shows that step still `running`' && has "$QAU" 'A second failure of the same step is `step-failed`'; check "m5_redo_count_comes_from_status" "$?" "0"
+has "$QAU" 'At the start of every `/qa-auto` invocation' && has "$QAU" '--reason step-failed --detail "the known-defect registry is not valid"'; check "m6_registry_checked_every_invocation" "$?" "0"
+grep -q 'substituted AFTER the skill and engine-run tokens' "$ROOT/qa-kit/scripts/build-qakit-adapter.sh" && grep -q 'must not contain them' "$ROOT/qa-kit/scripts/build-qakit-adapter.sh"; check "m7_token_order_comment" "$?" "0"
+check "m7_second_look_has_no_earlier_token" "$(grep -c '{{SKILL_REF\|{{ENGINE_RUN' "$PROFJ" || true)" "0"
+# the words, in the profile strings and every command source this lane edited
+for f in "$PROFJ" "$CC/qa-auto.md" "$CC/qa-constitution.md" "$CC/qa-spec.md" "$CC/qa-scenarios.md" "$CC/qa-analyze.md" "$CC/qa-status.md" "$CC/qa-tracker.md"; do
+  check "no_bare_autonomous_$(basename "$f")" "$(grep -oi 'autonomous[A-Za-z]*' "$f" 2>/dev/null | grep -vc '^autonomousSetup$' || true)" "0"
+  check "no_auto_mode_$(basename "$f")" "$(grep -ci 'auto mode' "$f" 2>/dev/null || true)" "0"
+done
 
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]
