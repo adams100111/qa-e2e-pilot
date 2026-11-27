@@ -1,0 +1,6 @@
+[
+  {"criterionId": "C-001", "persona": "cashier", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C-003", "persona": "", "inRunVerdict": "pass", "verifierVerdict": "fail", "confidence": "high",
+   "reasons": ["evidence artifact 'evidence/C-003/bake-read-back.json' shows match:false"]},
+  {"criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a", "verifierVerdict": "pass", "confidence": "high", "reasons": []}
+]

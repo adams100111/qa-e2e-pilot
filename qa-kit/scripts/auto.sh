@@ -9,6 +9,7 @@
 #   .qa/specs/<target>/auto/baseline.json    the snapshot taken at start that the audit compares against
 #   .qa/specs/<target>/auto/decisions.json   every answer the journey gave in place of a person (an array)
 #   .qa/specs/<target>/auto/notes.json       things left for a person that are not decisions (an array)
+#   .qa/specs/<target>/auto/handoff.md       what a person reads at the end (written by `handoff`)
 #   .qa/specs/<target>/auto/history/<n>/     earlier journeys of the same target
 #
 # It NEVER writes outside `.qa/specs/<target>/auto/` and never edits `.qa/config.json`, the spec's
@@ -36,9 +37,11 @@
 #   auto.sh note   <target> --kind seed-not-run|check-left-out --text <text>
 #                                                  -> the new note's id (`N<n>`)
 #   auto.sh audit  <target>                        -> {"ok":bool,"violations":[…]}; exit 1 when not ok
+#   auto.sh handoff <target> [--records <file>]    -> writes auto/handoff.md; {"result":…,"needsPerson":n}
 #
 #   start, resume, stop, status, step-start and step-done print ONE JSON line: journey.json plus
-#   {"needsPerson": n}. status writes nothing. next and signin print their own one line.
+#   {"needsPerson": n} (the decisions that need a person; see HANDOFF). status writes nothing.
+#   next and signin print their own one line.
 #
 # THE GATE (`start`, and again on every `resume`), in this order; nothing is written before all hold:
 #   - `.qa/config.json` is there and is one JSON document (a leading byte order mark is accepted).
@@ -127,6 +130,17 @@
 # to an explicit null (both read as null); a plan row without a string id; a tracker command
 # replaced through the environment.
 #
+# HANDOFF: `handoff` writes auto/handoff.md, the plain list a person reads at the end: the result,
+# the scope chosen, what was decided without a person, what still needs a person, the records the
+# run created (`--records <file>`: the output of the engine's `data-policy.sh list`, passed in by
+# the command) and how to confirm. It prints {"result":…,"needsPerson":n}; `needsPerson` is the
+# number of items listed under "Needs a person". The result is one of ready, not confirmed, not
+# ready, verified, not verified, stopped; it is worked out from files only and is never better
+# than what the engine recorded (the exact rule is above cmd_handoff). It may run on any journey
+# and more than once; it changes no other file and never the state of the journey. A decision
+# needs a person when it is marked `needsPerson`, when the second look said `ask`, or when it was
+# made at low confidence and no second look let it stand; `status` counts with the same rule.
+#
 # STEP ORDER: `next` names the first step that is not done; `step-start` and `step-done` take only
 # that step. `step-done` looks for the step's result on disk (the checks /qa-status makes) and
 # never takes the caller's word. A step's `attempts` counts its `step-start` calls, so a second
@@ -188,6 +202,7 @@ usage: auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--m
        auto.sh second <target> --unavailable [--project <dir>]
        auto.sh note   <target> --kind seed-not-run|check-left-out --text <text> [--project <dir>]
        auto.sh audit  <target> [--project <dir>]
+       auto.sh handoff <target> [--records <file>] [--project <dir>]
 EOF
   exit 2
 }
@@ -214,7 +229,14 @@ need_engine() { [ -n "$ENGINE" ] || die "this script needs either jq or python3"
 
 # The python3 side of every JSON helper, one small program with sub-commands. Output is always
 # UTF-8, keys sorted, so it matches `jq -S` byte for byte.
-PY_HELPERS='
+# PY_NEEDS — a decision a person still has to look at: marked `needsPerson`, sent on by the second
+# look, or made at low confidence with no second look that let it stand. `status` and `handoff`
+# both count with this one rule (the jq side is JQ_NEEDS).
+PY_NEEDS='
+def needs_person(r):
+    return r.get("needsPerson") is True or r.get("second") == "ask" or (r.get("confidence") == "low" and r.get("second") != "stands")
+'
+PY_HELPERS="$PY_NEEDS"'
 import calendar, hashlib, json, math, re, sys, time
 op, a = sys.argv[1], sys.argv[2:]
 def load(p):
@@ -357,7 +379,7 @@ try:
         sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
     elif op == "needs":
         # how many decisions of the array on stdin need a person
-        emit(len([r for r in rows_in() if isinstance(r, dict) and r.get("needsPerson") is True]))
+        emit(len([r for r in rows_in() if isinstance(r, dict) and needs_person(r)]))
     elif op == "audit":
         # The file checks of `audit`, in one pass. Arguments: journey, then a state (1 there,
         # 0 absent, ! there but not a readable file) and a path for each of baseline, config,
@@ -696,11 +718,13 @@ json_merge() {
   out="$(json_patch "$1" "$2")" && [ -n "$out" ] || die "could not update ${1#"$PROJECT"/}"
   json_write "$1" "$out"
 }
+# JQ_NEEDS — the jq side of PY_NEEDS: a decision a person still has to look at.
+JQ_NEEDS='def needs_person: .needsPerson == true or .second == "ask" or (.confidence == "low" and .second != "stands");'
 # json_needs_person <decisions.json> — how many of its decisions need a person. Fails when the
 # file is not one JSON array (an empty file is an empty array, as for `decide`).
 json_needs_person() {
   if [ "$ENGINE" = jq ]; then
-    jq -cs "$JQ_ROWS"' rows_in | [ .[] | objects | select(.needsPerson == true) ] | length' < "$1" 2>/dev/null
+    jq -cs "$JQ_ROWS $JQ_NEEDS"' rows_in | [ .[] | objects | select(needs_person) ] | length' < "$1" 2>/dev/null
   else py needs < "$1" 2>/dev/null; fi
 }
 # JQ_PLAN — jq side of the plan readers. `plan_rows` is the rows of a plan that have a string id;
@@ -1131,7 +1155,7 @@ auth_configured() {
 # A config without personas has one sign-in, `auth.storageState`, reported as the persona
 # `default`: configured when that file exists. Fails when the config is not one JSON object.
 signin_json() {
-  local facts ss line idj ok="" missing="" n=0
+  local facts
   if [ "$ENGINE" = jq ]; then
     facts="$(jq -rs 'def s: if type == "string" then gsub("[\r\n\t]"; " ") else "" end;
       '"$JQ_ONE"' | if type != "object" then error("not an object") else . end
@@ -1141,6 +1165,12 @@ signin_json() {
   else
     facts="$(py personas "$CONFIG" 2>/dev/null)" || return 1
   fi
+  signin_from "$facts"
+}
+# signin_from <facts> — the {"missing":[…],"ok":[…]} line from the sign-in facts of the config: a
+# first line with `auth.storageState`, then one line per persona, `<id as JSON><tab><auth text>`.
+signin_from() {
+  local facts="$1" ss line idj ok="" missing="" n=0
   {
     IFS= read -r ss || true
     while IFS= read -r line; do
@@ -1979,6 +2009,715 @@ cmd_audit() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# The handoff (design B6): what a person reads at the end, worked out from files only
+# ---------------------------------------------------------------------------------------------
+NL='
+'
+US="$(printf '\037')"
+# The jq side of the handoff facts (the python side is the `facts` op of PY_HANDOFF; the two are
+# kept alike). One fact per line, fields split by U+001F, every text made one line by `clean`:
+#   S <file> <ok|absent|bad>      decisions, notes, plan, results (checkpoint.json), second
+#                                 (verification.json; also `override`: a row that is not about a
+#                                 recorded non-pass does not say pass)
+#   J <1|0>                       the journey was restarted
+#   V <code word> <text>          one audit violation; the text is its key, step, check title or question
+#   D <step> <class> <needs 1|0> <a top priority check rests on it 1|0> <no evidence 1|0> <question> <answer> <evidence>
+#   O <top priority 1|0> <title>            an expected value that is only a proposal
+#   L <top priority 1|0> <title> <persona>  a check that passed at low confidence
+#   P <persona id>                sign-in is not set up
+#   N <kind> <text>               a note
+#   R <type> <id>                 a record the run created
+JQ_HANDOFF='
+  def b: if . then "1" else "0" end;
+  def clean: if type == "string"
+    then (explode | map(if . < 32 or (. >= 127 and . < 160) then 32 else . end) | implode | gsub(" +"; " ") | sub("^ "; "") | sub(" $"; ""))
+    else "" end;
+  def low: if type == "string" then ascii_downcase else "" end;
+  def isverdict: . == "pass" or . == "fail" or . == "blocked" or . == "deferred" or . == "error";
+  def rd($state; $text; $empty_ok):
+    ($text | ltrimstr("﻿")) as $t
+    | if $state != "1" then {ok: false, v: null}
+      elif ($t | test("\\A[ \t\r\n]*\\z")) then (if $empty_ok then {ok: true, v: []} else {ok: false, v: null} end)
+      else (try {ok: true, v: ($t | fromjson)} catch {ok: false, v: null}) end;
+  def rows_of($keys): . as $d
+    | if type == "array" then . elif type == "object" then (first($keys[] | $d[.] | select(type == "array")) // null) else null end;
+  def cid: first((.criterion_id, .criterionId, .id) | select(type == "string" and length > 0)) // null;
+  def who: .persona | if type == "string" then . else "" end;
+  def rtext: if type == "string" then clean elif type == "number" then (. + 0 | tojson) else "" end;
+  rd("1"; $jt; false) as $jr
+  | (if $jr.ok and ($jr.v | type) == "object" then $jr.v else error("not a journey") end) as $j
+  | rd($ds; $dt; true) as $d | rd($ns; $nt; true) as $n | rd($ps; $pt; false) as $p | rd($cs; $ct; false) as $c
+  | rd($ks; $kt; false) as $k | rd($vs; $vt; false) as $v | rd($rs; $rt; true) as $r | rd($ys; $yt; false) as $y
+  # the plan: of two rows with one id the first counts
+  | (reduce ((if $p.ok and ($p.v | type) == "array" then $p.v else [] end)[] | select(type == "object" and (.id | type) == "string")) as $x
+       ({ids: [], by: {}}; if (.by | has($x.id)) then . else (.ids += [$x.id] | .by[$x.id] = $x) end)) as $plan
+  # the title of a check: the cards file, else the row itself, else its id
+  | (reduce ((if $c.ok and ($c.v | type) == "object" and ($c.v.cards | type) == "array" then $c.v.cards else [] end)[]
+             | select(type == "object") | .checks | select(type == "array") | .[]
+             | select(type == "object" and (.criterion | type) == "string" and (.title | clean) != "")) as $x
+       ({}; if has($x.criterion) then . else .[$x.criterion] = ($x.title | clean) end)) as $titles
+  # top priority, failing closed: a row of the plan marked P1, a row with no priority, a step of a
+  # P1 journey of the run, and any id the plan does not have
+  | (reduce ((if $y.ok and ($y.v | type) == "array" then $y.v else [] end)[]
+             | select(type == "object" and .priority == "P1" and (.steps | type) == "array") | .steps[]
+             | (if type == "object" then .criterionId else . end) | strings) as $s ({}; .[$s] = true)) as $jp1
+  | def title: . as $i
+      | if ($titles | has($i)) then $titles[$i]
+        else (if ($plan.by | has($i)) then ($plan.by[$i] | (.title | clean) as $t | if $t != "" then $t else (.label | clean) end) else "" end) as $t
+             | if $t != "" then $t else ($i | clean) end
+        end;
+    def p1: . as $i
+      | if ($plan.by | has($i)) then (($plan.by[$i].priority | (type != "string" or . == "P1")) or ($jp1 | has($i))) else true end;
+    (if $ds == "0" then "absent" elif $d.ok and ($d.v | type) == "array" then "ok" else "bad" end) as $dstat
+  | (if $dstat == "ok" then [ $d.v[] | select(type == "object") ] else [] end) as $decs
+  | (if $ns == "0" then "absent" elif $n.ok and ($n.v | type) == "array" then "ok" else "bad" end) as $nstat
+  | (if $ps == "0" then "absent" elif $p.ok and ($p.v | type) == "array" then "ok" else "bad" end) as $pstat
+  | (if $k.ok then ($k.v | rows_of(["criteria"])) else null end) as $krows
+  | (if $ks == "0" then "absent" elif $krows != null then "ok" else "bad" end) as $kstat
+  | (if $v.ok then ($v.v | rows_of(["rows", "criteria"])) else null end) as $vrows
+  # the second check: `override` when a row that is not about a recorded non-pass does not say pass
+  | (if $vs == "0" then "absent"
+     elif $vrows == null or any($vrows[]; type != "object") then "bad"
+     elif any($vrows[]; (.inRunVerdict | low) as $in
+                | (($in == "fail" or $in == "blocked" or $in == "deferred" or $in == "error") | not) and ((.verifierVerdict | low) != "pass"))
+     then "override" else "ok" end) as $vstat
+  # expected values that are only a proposal: a calculated check, or any check that names a source,
+  # whose source is neither a person nor a cited spec line
+  | ($plan.ids | map(select(. as $i | $plan.by[$i] as $x
+        | (if ($x.fixture | type) == "object" and ($x.fixture.expect | type) == "object" then $x.fixture.expect.oracleSource else null end) as $src
+        | (($x.kind == "computed-logic" or $x.kind == "business-rule") or $src != null) and $src != "human" and $src != "spec"))) as $oids
+  | (reduce $oids[] as $i ({}; .[$i] = true)) as $oset
+  # checks that passed at low confidence: the latest record of each check and role, after the
+  # second check; a confidence is never read as better than either file says
+  | (reduce (($vrows // [])[] | select(type == "object") | select(cid != null and (.verifierVerdict | type) == "string")) as $x
+       ({}; .[[($x | cid), ($x | who)] | tojson] = $x)) as $ov
+  | (reduce (($krows // [])[] | select(type == "object") | select(cid != null)) as $x
+       ({keys: [], by: {}}; ([($x | cid), ($x | who)] | tojson) as $key
+          | (if (.by | has($key)) then . else .keys += [$key] end) | .by[$key] = $x)) as $cp
+  | [ ["S", "decisions", $dstat], ["S", "notes", $nstat], ["S", "plan", $pstat], ["S", "results", $kstat], ["S", "second", $vstat],
+      ["J", ($j.restartedFrom != null | b)],
+      # what the audit found: the code word, and its key, step, check title or question
+      ( ($j.auditViolations | if type == "array" then .[] else empty end) | strings
+        | split(":") as $parts | ($parts[0] // "") as $w | ($parts[1:] | join(":")) as $arg
+        | ["V", ($w | clean),
+           (if $w == "human-oracle-added" or $w == "human-oracle-removed" or $w == "human-oracle-changed" or $w == "plan-row-removed" then ($arg | title)
+            elif $w == "forbidden-decision" then ((first($decs[] | select(.id == $arg) | .question) // null) | clean)
+            else ($arg | clean) end)] ),
+      # decisions: needs a person, and whether a top priority check rests on it (no checks named
+      # means the whole spec)
+      ( $decs[] | needs_person as $needs
+        | [ (.criteria | if type == "array" then .[] else empty end) | strings ] as $ids
+        | ($needs and (($ids | length) == 0 or any($ids[]; p1))) as $rests
+        | ["D", (.step | clean), (.class | clean), ($needs | b), ($rests | b), (.evidence == null | b),
+           (.question | clean), (.answer | clean), (.evidence | clean)] ),
+      ( $oids[] | ["O", (p1 | b), title] ),
+      ( $cp.keys[] as $key | $cp.by[$key] as $x | ($x | cid) as $i | ($x | who) as $persona
+        | ($x.verdict | low) as $v0 | ($ov[$key] // null) as $o
+        | ($o != null and $o.inRunVerdict == $v0) as $applies
+        | (if $applies and ($o.verifierVerdict | isverdict) then $o.verifierVerdict else $v0 end) as $verdict
+        | ($x.confidence != "high"
+           or ($applies and ($o.confidence | type) == "string" and $o.confidence != "" and $o.confidence != "high")) as $lowc
+        | select($verdict == "pass" and $lowc and ($oset | has($i) | not))
+        | ["L", ($i | p1 | b), ($i | title), ($persona | clean)] ),
+      ( (try ($signin | fromjson) catch null) | (if type == "object" then .missing else null end)
+        | (if type == "array" then .[] else empty end) | strings | ["P", clean] ),
+      ( (if $nstat == "ok" then $n.v else [] end)[] | select(type == "object" and (.text | clean) != "") | ["N", (.kind | clean), (.text | clean)] ),
+      ( (if $r.ok and ($r.v | type) == "array" then $r.v else [] end)[] | select(type == "object") | [(.entity | rtext), (.id | rtext)]
+        | select(.[0] != "" or .[1] != "") | ["R", .[0], .[1]] )
+    ] | .[] | join("\u001f")'
+# The python side of the handoff, a program of its own (the other verbs do not pay for compiling
+# it). `head`: what cmd_handoff needs first (HANDOFF_HEAD below). `facts`: the lines JQ_HANDOFF
+# describes.
+PY_HANDOFF='
+import json, re, sys
+op, a = sys.argv[1], sys.argv[2:]
+def num(v):
+    # whole-valued floats print as integers, as jq prints them
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e17:
+        v = int(v)
+    return json.dumps(v)
+try:
+    if op == "head":
+        # journey, the state of the config (1 there), the config
+        def load(p):
+            with open(p, encoding="utf-8-sig") as f:
+                return json.load(f)
+        def s(v):
+            return v.replace("\r", " ").replace("\n", " ") if isinstance(v, str) else ""
+        def s2(v):
+            return s(v).replace("\t", " ")
+        j = load(a[0])
+        if not isinstance(j, dict):
+            sys.exit(1)
+        st = j.get("stop") if isinstance(j.get("stop"), dict) else {}
+        sb = j.get("stopBeforeAudit") if isinstance(j.get("stopBeforeAudit"), dict) else {}
+        out = [s(j.get("state")), s(st.get("reason")), s(j.get("profile")), s(j.get("runId")), s(sb.get("reason"))]
+        c = None
+        if a[1] == "1":
+            try:
+                c = load(a[2])
+            except Exception:
+                c = None
+        if not isinstance(c, dict):
+            out.append("0")
+        else:
+            out.append("1")
+            au = c.get("auth")
+            out.append(s2(au.get("storageState")) if isinstance(au, dict) else "")
+            for x in (c.get("personas") if isinstance(c.get("personas"), list) else []):
+                if isinstance(x, dict) and isinstance(x.get("id"), str):
+                    out.append(json.dumps(x["id"], ensure_ascii=False) + "\t" + s2(x.get("auth")))
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+    elif op == "facts":
+        # What `handoff` writes its list from: one fact per line, fields split by U+001F, every
+        # text on one line (clean). Arguments: journey, then a state (1 there, 0 absent, ! there
+        # but not a readable file) and a path for each of decisions, notes, the plan, the cards
+        # file, the checkpoint and the verification of the run, the records file and the journeys
+        # of the run, then the sign-in line. The jq side is JQ_HANDOFF; the two are kept alike.
+        jf = a[0]
+        ds, df, ns, nf, ps, pf, cs, cf, ks, kf, vs, vf, rs, rf, ys, yf, signin = a[1:18]
+        out = []
+        def put(*f):
+            out.append("\x1f".join(f))
+        def rd(state, path, empty_ok=False):
+            if state != "1":
+                return False, None
+            try:
+                with open(path, "rb") as f:
+                    t = f.read().decode("utf-8")
+                if t.startswith("﻿"):
+                    t = t[1:]
+                if t.strip(" \t\r\n") == "":
+                    return (True, []) if empty_ok else (False, None)
+                return True, json.loads(t)
+            except Exception:
+                return False, None
+        def clean(v):
+            # one line of text: control characters are blanks, runs of blanks are one, none at the ends
+            if not isinstance(v, str):
+                return ""
+            s = "".join(" " if (ord(c) < 32 or 127 <= ord(c) < 160) else ("�" if 0xD800 <= ord(c) < 0xE000 else c) for c in v)
+            return re.sub(" +", " ", s).strip(" ")
+        def low(v):
+            return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in v) if isinstance(v, str) else ""
+        def b(x):
+            return "1" if x else "0"
+        def rows_of(doc, keys):
+            if isinstance(doc, list):
+                return doc
+            if isinstance(doc, dict):
+                for k in keys:
+                    if isinstance(doc.get(k), list):
+                        return doc[k]
+            return None
+        def cid(r):
+            for k in ("criterion_id", "criterionId", "id"):
+                if isinstance(r.get(k), str) and r[k] != "":
+                    return r[k]
+            return None
+        def who(r):
+            return r["persona"] if isinstance(r.get("persona"), str) else ""
+        def rtext(v):
+            if isinstance(v, str):
+                return clean(v)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return num(v)
+            return ""
+        ok, j = rd("1", jf)
+        if not ok or not isinstance(j, dict):
+            sys.exit(1)
+        okd, dec = rd(ds, df, True)
+        okn, notes = rd(ns, nf, True)
+        okp, plan = rd(ps, pf)
+        okc, cards = rd(cs, cf)
+        okk, cp = rd(ks, kf)
+        okv, ver = rd(vs, vf)
+        okr, recs = rd(rs, rf, True)
+        oky, jour = rd(ys, yf)
+        # the plan: of two rows with one id the first counts
+        prow = {}
+        for r in (plan if okp and isinstance(plan, list) else []):
+            if isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"] not in prow:
+                prow[r["id"]] = r
+        # the title of a check: the cards file, else the row itself, else its id
+        titles = {}
+        cl = cards.get("cards") if okc and isinstance(cards, dict) else None
+        for c in (cl if isinstance(cl, list) else []):
+            ch = c.get("checks") if isinstance(c, dict) else None
+            for x in (ch if isinstance(ch, list) else []):
+                if isinstance(x, dict) and isinstance(x.get("criterion"), str) and clean(x.get("title")) != "" and x["criterion"] not in titles:
+                    titles[x["criterion"]] = clean(x["title"])
+        def title(i):
+            if i in titles:
+                return titles[i]
+            r = prow.get(i)
+            t = (clean(r.get("title")) or clean(r.get("label"))) if r is not None else ""
+            return t or clean(i)
+        # top priority, failing closed: a row of the plan marked P1, a row with no priority, a
+        # step of a P1 journey of the run, and any id the plan does not have
+        jp1 = set()
+        for x in (jour if oky and isinstance(jour, list) else []):
+            if isinstance(x, dict) and x.get("priority") == "P1" and isinstance(x.get("steps"), list):
+                for s in x["steps"]:
+                    s = s.get("criterionId") if isinstance(s, dict) else s
+                    if isinstance(s, str):
+                        jp1.add(s)
+        def p1(i):
+            r = prow.get(i)
+            return r is None or not isinstance(r.get("priority"), str) or r["priority"] == "P1" or i in jp1
+        dstat = "absent" if ds == "0" else ("ok" if okd and isinstance(dec, list) else "bad")
+        decs = [r for r in dec if isinstance(r, dict)] if dstat == "ok" else []
+        nstat = "absent" if ns == "0" else ("ok" if okn and isinstance(notes, list) else "bad")
+        pstat = "absent" if ps == "0" else ("ok" if okp and isinstance(plan, list) else "bad")
+        krows = rows_of(cp, ["criteria"]) if okk else None
+        kstat = "absent" if ks == "0" else ("ok" if krows is not None else "bad")
+        vrows = rows_of(ver, ["rows", "criteria"]) if okv else None
+        # the second check: `override` when a row that is not about a recorded non-pass does not say pass
+        if vs == "0":
+            vstat = "absent"
+        elif vrows is None or any(not isinstance(r, dict) for r in vrows):
+            vstat = "bad"
+        elif any(low(r.get("inRunVerdict")) not in ("fail", "blocked", "deferred", "error") and low(r.get("verifierVerdict")) != "pass" for r in vrows):
+            vstat = "override"
+        else:
+            vstat = "ok"
+        put("S", "decisions", dstat)
+        put("S", "notes", nstat)
+        put("S", "plan", pstat)
+        put("S", "results", kstat)
+        put("S", "second", vstat)
+        put("J", b(j.get("restartedFrom") is not None))
+        # what the audit found: the code word, and its key, step, check title or question
+        av = j.get("auditViolations")
+        for code in (av if isinstance(av, list) else []):
+            if not isinstance(code, str):
+                continue
+            parts = code.split(":")
+            w, arg = parts[0], ":".join(parts[1:])
+            if w in ("human-oracle-added", "human-oracle-removed", "human-oracle-changed", "plan-row-removed"):
+                arg = title(arg)
+            elif w == "forbidden-decision":
+                arg = clean(next((r.get("question") for r in decs if r.get("id") == arg), None))
+            else:
+                arg = clean(arg)
+            put("V", clean(w), arg)
+        # decisions: needs a person, and whether a top priority check rests on it (no checks named
+        # means the whole spec)
+        for r in decs:
+            needs = needs_person(r)
+            cr = r.get("criteria")
+            ids = [c for c in cr if isinstance(c, str)] if isinstance(cr, list) else []
+            rests = needs and (len(ids) == 0 or any(p1(c) for c in ids))
+            put("D", clean(r.get("step")), clean(r.get("class")), b(needs), b(rests), b(r.get("evidence") is None),
+                clean(r.get("question")), clean(r.get("answer")), clean(r.get("evidence")))
+        # expected values that are only a proposal: a calculated check, or any check that names a
+        # source, whose source is neither a person nor a cited spec line
+        oset = set()
+        for i, r in prow.items():
+            fx = r.get("fixture")
+            ex = fx.get("expect") if isinstance(fx, dict) else None
+            src = ex.get("oracleSource") if isinstance(ex, dict) else None
+            if (r.get("kind") in ("computed-logic", "business-rule") or src is not None) and src not in ("human", "spec"):
+                oset.add(i)
+                put("O", b(p1(i)), title(i))
+        # checks that passed at low confidence: the latest record of each check and role, after
+        # the second check; a confidence is never read as better than either file says
+        ov = {}
+        for r in (vrows or []):
+            if isinstance(r, dict) and cid(r) is not None and isinstance(r.get("verifierVerdict"), str):
+                ov[(cid(r), who(r))] = r
+        latest = {}
+        for r in (krows or []):
+            if isinstance(r, dict) and cid(r) is not None:
+                latest[(cid(r), who(r))] = r
+        for (i, persona), r in latest.items():
+            verdict = low(r.get("verdict"))
+            lowc = r.get("confidence") != "high"
+            o = ov.get((i, persona))
+            if o is not None and o.get("inRunVerdict") == verdict:
+                if o["verifierVerdict"] in ("pass", "fail", "blocked", "deferred", "error"):
+                    verdict = o["verifierVerdict"]
+                if isinstance(o.get("confidence"), str) and o["confidence"] not in ("", "high"):
+                    lowc = True
+            if verdict == "pass" and lowc and i not in oset:
+                put("L", b(p1(i)), title(i), clean(persona))
+        try:
+            si = json.loads(signin)
+        except Exception:
+            si = None
+        ms = si.get("missing") if isinstance(si, dict) else None
+        for x in (ms if isinstance(ms, list) else []):
+            if isinstance(x, str):
+                put("P", clean(x))
+        for r in (notes if nstat == "ok" else []):
+            if isinstance(r, dict) and clean(r.get("text")) != "":
+                put("N", clean(r.get("kind")), clean(r.get("text")))
+        for r in (recs if okr and isinstance(recs, list) else []):
+            if isinstance(r, dict):
+                e, i = rtext(r.get("entity")), rtext(r.get("id"))
+                if e != "" or i != "":
+                    put("R", e, i)
+        sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
+    else:
+        sys.exit(2)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+'
+py_handoff() { PYTHONUTF8=1 python3 -c "$PY_NEEDS$PY_HANDOFF" "$@"; }
+# The jq side of `head`. Lines: the journey state, its stop reason, its launch profile, its run
+# id, the stop it had before a failed audit; then 1 or 0 (the project config is one JSON object);
+# then, after a 1, the lines signin_from reads (the storageState, then one line per persona).
+JQ_HANDOFF_HEAD='
+  def s: if type == "string" then gsub("[\r\n]"; " ") else "" end;
+  def s2: if type == "string" then gsub("[\r\n\t]"; " ") else "" end;
+  ($jt | ltrimstr("\ufeff") | fromjson) as $j
+  | (if ($j | type) == "object" then $j else error("not a journey") end) as $j
+  | ($j.stop | if type == "object" then . else {} end) as $st
+  | ($j.stopBeforeAudit | if type == "object" then . else {} end) as $sb
+  | ($j.state | s), ($st.reason | s), ($j.profile | s), ($j.runId | s), ($sb.reason | s),
+    ((if $cs == "1" then (try ($ct | ltrimstr("\ufeff") | fromjson) catch null) else null end) as $c
+     | if ($c | type) != "object" then "0"
+       else "1", (($c.auth | if type == "object" then .storageState else null end) | s2),
+            (($c.personas | if type == "array" then .[] else empty end)
+             | select(type == "object" and (.id | type) == "string") | "\(.id | tojson)\t\(.auth | s2)") end)'
+# handoff_head — the journey and the sign-in facts of the config, in one engine call.
+handoff_head() {
+  file_state "$CONFIG"
+  if [ "$ENGINE" = jq ]; then
+    jq -rn --rawfile jt "$JOURNEY" --rawfile ct "$FS_PATH" --arg cs "$FS_STATE" "$JQ_HANDOFF_HEAD" 2>/dev/null
+  else
+    py_handoff head "$JOURNEY" "$FS_STATE" "$FS_PATH" 2>/dev/null
+  fi
+}
+# handoff_facts <run id or empty> <records file or empty> <sign-in line or empty> — every fact the
+# handoff is written from, in one engine call (the lines JQ_HANDOFF describes).
+handoff_facts() {
+  local run="$1" records="$2" signin="$3" ds df ns nf ps pf cs cf ks=0 kf=/dev/null vs=0 vf=/dev/null rs=0 rf=/dev/null ys=0 yf=/dev/null
+  file_state "$DECISIONS"; ds="$FS_STATE"; df="$FS_PATH"
+  file_state "$NOTES"; ns="$FS_STATE"; nf="$FS_PATH"
+  file_state "$SPEC_DIR/checklist.json"; ps="$FS_STATE"; pf="$FS_PATH"
+  file_state "$SPEC_DIR/tracker-cards.json"; cs="$FS_STATE"; cf="$FS_PATH"
+  if [ -n "$run" ]; then
+    file_state "$QA_DIR/runs/$run/checkpoint.json"; ks="$FS_STATE"; kf="$FS_PATH"
+    file_state "$QA_DIR/runs/$run/verification.json"; vs="$FS_STATE"; vf="$FS_PATH"
+    file_state "$QA_DIR/runs/$run/journeys.json"; ys="$FS_STATE"; yf="$FS_PATH"
+  fi
+  if [ -n "$records" ]; then file_state "$records"; rs="$FS_STATE"; rf="$FS_PATH"; fi
+  if [ "$ENGINE" = jq ]; then
+    jq -rn --rawfile jt "$JOURNEY" --rawfile dt "$df" --rawfile nt "$nf" --rawfile pt "$pf" --rawfile ct "$cf" --rawfile kt "$kf" \
+      --rawfile vt "$vf" --rawfile rt "$rf" --rawfile yt "$yf" --arg ds "$ds" --arg ns "$ns" --arg ps "$ps" --arg cs "$cs" \
+      --arg ks "$ks" --arg vs "$vs" --arg rs "$rs" --arg ys "$ys" --arg signin "$signin" "$JQ_NEEDS $JQ_HANDOFF" 2>/dev/null
+  else
+    py_handoff facts "$JOURNEY" "$ds" "$df" "$ns" "$nf" "$ps" "$pf" "$cs" "$cf" "$ks" "$kf" "$vs" "$vf" "$rs" "$rf" "$ys" "$yf" "$signin" 2>/dev/null
+  fi
+}
+# ship_read <report.md> — the engine's ship verdict as it rendered it into the run's report, never
+# worked out here. Sets SHIP to `ready`, `notready`, `none` (the report has no "## Ship readiness"
+# section) or `odd` (no report, a section that is not in the engine's shape, or more than one
+# section), and SHIP_WHY to the plain words of the listed conditions (one per line). The heading
+# and the verdict line are matched at the start of the line, as scripts/render-report.js writes
+# them; a section that says NOT SHIP-READY anywhere, or lists a condition, is never read as ready
+# (the rules of `ready` in trackers/spec_runs.py). Pure bash, so both engines agree.
+SHIP=none; SHIP_WHY=""
+S_OPEN=0; S_NOT=0; S_HEAD=""; S_PHASE=""; S_CONDS=""; SHIP_NOT=0; SHIP_READY_N=0; SHIP_SECTIONS=0
+ship_close() {
+  [ "$S_OPEN" -eq 1 ] || return 0
+  SHIP_SECTIONS=$((SHIP_SECTIONS + 1))
+  if [ "$S_HEAD" = ok ]; then
+    if [ "$S_NOT" -eq 1 ] || [ -n "$S_CONDS" ]; then SHIP_NOT=1; SHIP_WHY="$SHIP_WHY$S_CONDS"; else SHIP_READY_N=$((SHIP_READY_N + 1)); fi
+  elif [ "$S_NOT" -eq 1 ]; then SHIP_NOT=1
+  fi
+  S_OPEN=0
+}
+# ship_clause <condition> — an engine ship condition (scripts/render-report.js buildShip) in plain
+# words; first match wins. The engine's own text, and any id in it, is never shown.
+ship_clause() {
+  case "$1" in
+    *"census surface(s) uncovered") echo "some screens have not been checked yet" ;;
+    "census is empty"|"census coverage unknown"|"census adapter failed") echo "the list of screens to check is not complete" ;;
+    "no P1 journeys declared") echo "no main user journey is listed for this run" ;;
+    "P1 journey "*) echo "a main user journey did not pass" ;;
+    "coding-layer fail on P1 "*|"fail on P1 with unknown layer "*) echo "a top priority check failed" ;;
+    "not independently verified") echo "the results have not had their second check yet" ;;
+    "verifier override on P1 "*) echo "the second check did not confirm a top priority result" ;;
+    "verification out of date on P1 "*) echo "the second check is out of date for a top priority result" ;;
+    "verifier disputed P1 "*) echo "a reviewer did not confirm a top priority result" ;;
+    *"P1 low-confidence pass(es) not re-judged"*|*"P1 low-confidence pass(es) unreviewed"*) echo "a top priority result still needs a person to confirm it" ;;
+    "re-adjudication decision on P1 "*" was not applied") echo "a review of a top priority result was not recorded" ;;
+    "adjudication/decisions.json is not a JSON array") echo "the review of the results could not be read" ;;
+    *) echo "another condition is not met (see the report of the run)" ;;
+  esac
+}
+ship_read() {
+  local LC_ALL=C line t clause re='^#{1,6}([[:space:]]|$)'
+  SHIP=none; SHIP_WHY=""; S_OPEN=0; SHIP_NOT=0; SHIP_READY_N=0; SHIP_SECTIONS=0
+  if [ ! -f "$1" ] || [ ! -r "$1" ]; then SHIP=odd; return 0; fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    t="${line%"${line##*[![:space:]]}"}"
+    if [[ "$line" =~ $re ]]; then
+      ship_close
+      if [ "$t" = "## Ship readiness" ]; then S_OPEN=1; S_NOT=0; S_HEAD=""; S_PHASE=head; S_CONDS=""; fi
+      continue
+    fi
+    [ "$S_OPEN" -eq 1 ] || continue
+    case "$line" in *"NOT SHIP-READY"*) S_NOT=1 ;; esac
+    case "$S_PHASE" in
+      head)
+        [ -n "$t" ] || continue
+        case "$t" in
+          '**SHIP-READY**'|'**NOT SHIP-READY**') S_HEAD=ok; S_PHASE=conds ;;
+          *) S_HEAD=bad; S_PHASE=end ;;
+        esac ;;
+      conds)
+        if [ -z "$t" ]; then
+          [ -z "$S_CONDS" ] || S_PHASE=end
+        elif [ -z "$S_CONDS" ] && { [ "$t" = '**SHIP-READY**' ] || [ "$t" = '**NOT SHIP-READY**' ]; }; then
+          :
+        elif [ "${t#- }" != "$t" ]; then
+          t="${t#- }"; t="${t#"${t%%[![:space:]]*}"}"
+          clause="$(ship_clause "$t")"
+          case "$NL$SHIP_WHY$S_CONDS" in *"$NL$clause$NL"*) [ -n "$S_CONDS" ] || S_CONDS="$NL" ;; *) S_CONDS="$S_CONDS$clause$NL" ;; esac
+        else
+          S_PHASE=end
+        fi ;;
+    esac
+  done < "$1"
+  ship_close
+  if [ "$SHIP_NOT" -eq 1 ]; then SHIP=notready
+  elif [ "$SHIP_SECTIONS" -eq 0 ]; then SHIP=none
+  elif [ "$SHIP_SECTIONS" -eq 1 ] && [ "$SHIP_READY_N" -eq 1 ]; then SHIP=ready
+  else SHIP=odd; fi
+}
+# stop_plain <J2 reason> — why a journey stopped, in plain words (empty for an unknown reason).
+stop_plain() {
+  case "$1" in
+    time-limit)  echo "the time limit was reached" ;;
+    step-failed) echo "a step could not be completed" ;;
+    until)       echo "it was asked to stop before the run" ;;
+    blocked)     echo "coverage could not be reached" ;;
+    audit)       echo "a limit was broken" ;;
+    no-sign-in)  echo "no role has sign-in set up" ;;
+    tracker)     echo "ClickUp could not be updated" ;;
+  esac
+}
+# step_plain <step> — a step's name for people (empty for anything that is not a step).
+step_plain() {
+  case "$1" in
+    constitution) echo "project rules" ;;
+    spec)         echo "spec" ;;
+    scenarios)    echo "scenarios" ;;
+    analyze)      echo "analysis" ;;
+    run)          echo "run" ;;
+    verify)       echo "verification" ;;
+  esac
+}
+# violation_plain <code word> <text> — one audit violation as a sentence. The text is what
+# handoff_facts found for the part after the colon: a setting name, a check title, a question.
+violation_plain() {
+  local s="" a="$2"
+  case "$1" in
+    baseline-missing)       s="The record of the starting settings is missing."; a="" ;;
+    baseline-changed)       s="The record of the starting settings was changed during the journey."; a="" ;;
+    base-url-changed)       s="The address of the application under test was changed during the journey."; a="" ;;
+    safety-setting-changed) s="A safety setting was changed during the journey" ;;
+    run-config-safety)      s="A safety setting was changed in the run settings of this spec" ;;
+    known-defects-changed)  s="The list of known defects was changed during the journey."; a="" ;;
+    human-oracle-added)     s="An expected result was marked as confirmed by a person during the journey" ;;
+    human-oracle-removed)   s="An expected result that a person had confirmed is no longer marked as confirmed" ;;
+    human-oracle-changed)   s="An expected result that a person had confirmed was changed" ;;
+    plan-row-removed)       s="A check from the starting plan was removed" ;;
+    plan-unreadable)        s="The plan of checks could not be read."; a="" ;;
+    seed-added)             s="A data setup command was added during the journey."; a="" ;;
+    exclusion-added)        s="A screen was left out of coverage during the journey."; a="" ;;
+    forbidden-decision)     s="A decision was recorded that this journey may not make" ;;
+    decisions-unreadable)   s="The record of decisions could not be read."; a="" ;;
+    step-without-result)    s="A step was marked as done without its result"; a="$(step_plain "$a")"; [ -z "$a" ] || a="the $a step" ;;
+    not-verified)           s="The run was not verified."; a="" ;;
+    tracker-behind)         s="ClickUp is behind the results."; a="" ;;
+    *)                      s="A limit was broken; see the journey record."; a="" ;;
+  esac
+  case "$s" in
+    *.) printf '%s\n' "$s" ;;
+    *)  if [ -n "$a" ]; then printf '%s: %s\n' "$s" "$a"; else printf '%s.\n' "$s"; fi ;;
+  esac
+}
+
+# cmd_handoff — writes auto/handoff.md and prints {"result":…,"needsPerson":n}. It reads files only,
+# changes no other file and never the journey's state, and may run on any journey, any number of
+# times (the last write wins). THE RESULT is never better than what the engine recorded:
+#   stopped        the journey's state is `stopped`, for any reason (the audit included)
+#   not verified   the journey is still open; or it has no run; or a file the result is decided
+#                  from cannot be read (see below); or, with no ship verdict in the report, the
+#                  run has no verification.json or it records a pass that verification did not
+#                  leave a pass
+#   not ready      the run's report says NOT SHIP-READY (ship_read), with its conditions in plain words
+#   verified       the report has no ship section, the journey was not launched as `ship`, and
+#                  verification.json is there, readable and records no such override
+#   not confirmed  the report says SHIP-READY and a top priority check rests on a person: a
+#                  decision that needs a person (JQ_NEEDS) and names no check, or names a top
+#                  priority check; or a top priority expected value that is only a proposal
+#   ready          the report says SHIP-READY and none of that holds
+# Under a SHIP-READY report the result is `not verified` when verification.json is absent or
+# unreadable, or checkpoint.json, decisions.json (when there is one) or the plan cannot be read.
+cmd_handoff() {
+  parse_common "$@"
+  local records=""
+  set -- ${REST[@]+"${REST[@]}"}
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --records) [ "$#" -ge 2 ] || usage "--records needs a file"; records="$2"; shift 2 ;;
+      *) usage "handoff does not take: $1" ;;
+    esac
+  done
+  need_engine
+  [ -f "$JOURNEY" ] || die "no journey for $TARGET"
+  local facts v state="" reason="" profile="" run="" before="" cfgok=0 signin=""
+  facts="$(handoff_head)" && [ -n "$facts" ] || die "journey.json for $TARGET is not readable"
+  for v in state reason profile run before cfgok; do
+    printf -v "$v" '%s' "${facts%%"$NL"*}"
+    case "$facts" in *"$NL"*) facts="${facts#*"$NL"}" ;; *) facts="" ;; esac
+  done
+  one_of "$state" "open done stopped" || die "journey.json for $TARGET is not readable"
+  # A run id is one plain directory name; anything else is no run.
+  case "$run" in ""|.|..|*/*|-*) run="" ;; esac
+  # Personas whose sign-in is not set up (nothing is said about them when the config cannot be read).
+  [ "$cfgok" != 1 ] || signin="$(signin_from "$facts")"
+  facts="$(handoff_facts "$run" "$records" "$signin")" && [ -n "$facts" ] || die "journey.json for $TARGET is not readable"
+
+  # ---- read the facts ----
+  local k f1 f2 f3 f4 f5 f6 f7 f8 item
+  local dstat=absent nstat=absent pstat=absent kstat=absent vstat=absent restarted=0
+  local viol="" scope="" needs="" recs="" count=0 noev=0 p1pending=0
+  local d_constitution="" d_spec="" d_scenarios="" d_analyze="" d_run="" d_verify="" d_other=""
+  while IFS="$US" read -r k f1 f2 f3 f4 f5 f6 f7 f8; do
+    case "$k" in
+      S) case "$f1" in
+           decisions) dstat="$f2" ;; notes) nstat="$f2" ;; plan) pstat="$f2" ;; results) kstat="$f2" ;; second) vstat="$f2" ;;
+         esac ;;
+      J) restarted="$f1" ;;
+      V) viol="$viol- $(violation_plain "$f1" "$f2")$NL" ;;
+      D) # step class needs rests no-evidence question answer evidence
+         [ "$f5" = 1 ] && noev=1
+         [ -n "$f8" ] || f8="nothing written"
+         item="- Asked: $f6; decided: $f7; based on: $f8$NL"
+         case "$f1" in
+           constitution) d_constitution="$d_constitution$item" ;; spec) d_spec="$d_spec$item" ;;
+           scenarios) d_scenarios="$d_scenarios$item" ;; analyze) d_analyze="$d_analyze$item" ;;
+           run) d_run="$d_run$item" ;; verify) d_verify="$d_verify$item" ;; *) d_other="$d_other$item" ;;
+         esac
+         [ "$f2" = scope ] && scope="$scope- $f7$NL"
+         if [ "$f3" = 1 ]; then
+           needs="$needs- Decision to confirm. Asked: $f6; decided: $f7$NL"; count=$((count + 1))
+           [ "$f4" = 1 ] && p1pending=1
+         fi ;;
+      O) needs="$needs- Expected result to confirm: $f2$NL"; count=$((count + 1))
+         [ "$f1" = 1 ] && p1pending=1 ;;
+      L) if [ -n "$f3" ]; then needs="$needs- Passed with low confidence: $f2 (as $f3)$NL"; else needs="$needs- Passed with low confidence: $f2$NL"; fi
+         count=$((count + 1)) ;;
+      P) needs="$needs- Sign-in is not set up for this role: $f1$NL"; count=$((count + 1)) ;;
+      N) case "$f1" in
+           seed-not-run)   needs="$needs- A data setup command was proposed and not run: $f2$NL" ;;
+           check-left-out) needs="$needs- A check was left out because it expects the application to fail: $f2$NL" ;;
+           *)              needs="$needs- $f2$NL" ;;
+         esac
+         count=$((count + 1)) ;;
+      R) if [ -z "$f1" ]; then recs="$recs- $f2$NL"; elif [ -z "$f2" ]; then recs="$recs- $f1$NL"; else recs="$recs- $f1: $f2$NL"; fi ;;
+    esac
+  done <<EOT
+$facts
+EOT
+  # A file that cannot be read is itself something a person has to look at.
+  if [ "$dstat" = bad ]; then needs="$needs- The record of decisions could not be read.$NL"; count=$((count + 1)); fi
+  if [ "$nstat" = bad ]; then needs="$needs- The notes of this journey could not be read.$NL"; count=$((count + 1)); fi
+  if [ -n "$run" ] && [ "$pstat" != ok ]; then needs="$needs- The plan of checks could not be read.$NL"; count=$((count + 1)); fi
+  if [ -n "$run" ] && [ "$kstat" != ok ]; then needs="$needs- The results of the run could not be read.$NL"; count=$((count + 1)); fi
+
+  # ---- the result (see the rule above) ----
+  local result="not verified" line="Not verified." why="" clause
+  if [ "$state" = stopped ]; then
+    result=stopped
+    clause="$(stop_plain "$reason")"
+    [ -n "$clause" ] || clause="the reason was not recorded"
+    line="Stopped: $clause."
+  elif [ "$state" = open ]; then
+    why="This journey has not finished."
+  elif [ -z "$run" ]; then
+    why="This journey has no run."
+  else
+    ship_read "$QA_DIR/runs/$run/report.md"
+    case "$SHIP" in
+      notready)
+        result="not ready"; clause=""
+        while IFS= read -r k; do
+          [ -n "$k" ] || continue
+          clause="$clause; $k"
+        done <<EOT
+$SHIP_WHY
+EOT
+        [ -n "$clause" ] || clause="; the report does not say why"
+        line="Not ready: ${clause#; }." ;;
+      odd)
+        why="The readiness result in the report of the run could not be read." ;;
+      none)
+        if [ "$profile" = ship ]; then why="The report of the run has no readiness result."
+        elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
+        elif [ "$vstat" = absent ]; then why="The results have not had their second check."
+        elif [ "$vstat" = override ]; then why="The second check did not confirm every passed result."
+        elif [ "$vstat" != ok ]; then why="The second check could not be read."
+        else result=verified; line="Verified."; fi ;;
+      ready)
+        if [ "$vstat" = absent ]; then why="The results have not had their second check."
+        elif [ "$vstat" = bad ]; then why="The second check could not be read."
+        elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
+        elif [ "$dstat" = bad ] || [ "$pstat" != ok ]; then why="The decisions or the plan of checks could not be read."
+        elif [ "$p1pending" -eq 1 ]; then result="not confirmed"; line="Not confirmed: $count items need a person."
+        else
+          result=ready; line="Ready."
+          [ "$count" -eq 0 ] || why="Some items still need a person. They are listed below, and none rests on a top priority check."
+        fi ;;
+    esac
+  fi
+
+  # ---- the file: blocks separated by one empty line ----
+  local out="" decided=""
+  [ "$noev" -eq 0 ] || out="No written requirements were found for this target. Expected results were taken from the application and need a person.$NL$NL"
+  out="$out## Result$NL$NL$line"
+  if [ "$state" = stopped ] && [ "$reason" = audit ]; then
+    [ -z "$viol" ] || out="$out$NL$NL${viol%"$NL"}"
+    clause="$(stop_plain "$before")"
+    [ -z "$clause" ] || out="$out$NL${NL}Before the limits were checked, this journey had stopped because $clause."
+  fi
+  [ -z "$why" ] || out="$out$NL$NL$why"
+  [ "$restarted" != 1 ] || out="$out$NL${NL}This journey was restarted; the earlier one is kept in its history."
+  out="$out$NL$NL## Scope chosen for this spec$NL$NL"
+  if [ -n "$scope" ]; then out="$out${scope%"$NL"}"; else out="${out}No scope was recorded."; fi
+  out="$out$NL$NL## Decided without a person"
+  for k in constitution spec scenarios analyze run verify other; do
+    case "$k" in
+      constitution) item="$d_constitution" ;; spec) item="$d_spec" ;; scenarios) item="$d_scenarios" ;; analyze) item="$d_analyze" ;;
+      run) item="$d_run" ;; verify) item="$d_verify" ;; *) item="$d_other" ;;
+    esac
+    [ -n "$item" ] || continue
+    clause="$(step_plain "$k")"
+    if [ -n "$clause" ]; then clause="$(printf '%s' "${clause:0:1}" | tr "$LOWER" "$UPPER")${clause:1} step:"; else clause="Other:"; fi
+    decided="$decided$NL$NL$clause$NL$NL${item%"$NL"}"
+  done
+  [ -n "$decided" ] || decided="$NL${NL}Nothing was decided without a person."
+  out="$out$decided$NL$NL## Needs a person$NL$NL"
+  if [ -n "$needs" ]; then out="$out${needs%"$NL"}"; else out="${out}Nothing needs a person."; fi
+  out="$out$NL$NL## Records created$NL$NL"
+  if [ -n "$recs" ]; then out="$out${recs%"$NL"}"; else out="${out}None recorded."; fi
+  out="$out$NL$NL## How to confirm$NL$NL"
+  out="$out- Expected results: run \`oracle-confirm.sh render\` and confirm each value on the page it writes.$NL"
+  out="$out- Who may reach each screen: run \`surface-access.sh confirm-table\` and confirm the table.$NL"
+  out="$out- Then run \`/qa-auto $TARGET\` again. It starts a new journey on the confirmed plan."
+  atomic_write "$AUTO_DIR/handoff.md" "$out"
+  printf '{"result":"%s","needsPerson":%s}\n' "$result" "$count"
+}
+
+# ---------------------------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------------------------
 VERB="${1:-}"
@@ -1996,5 +2735,6 @@ case "$VERB" in
   second)     cmd_second "$@" ;;
   note)       cmd_note "$@" ;;
   audit)      cmd_audit "$@" ;;
+  handoff)    cmd_handoff "$@" ;;
   *)      usage ;;
 esac

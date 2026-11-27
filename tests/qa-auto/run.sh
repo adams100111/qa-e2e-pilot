@@ -206,8 +206,10 @@ run_engine() {
   check "$E status is one line" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1"
   check "$E status prints the journey plus needsPerson" "$(js "$out" '[d["target"],d["state"],d["needsPerson"],len(d["steps"])]')" '["checkout", "open", 0, 6]'
   check "$E status writes nothing" "$(snapshot "$P")" "$before"
-  printf '[{"id":"D1","needsPerson":true},{"id":"D2","needsPerson":false},{"id":"D3","needsPerson":true}]\n' > "$P/.qa/specs/checkout/auto/decisions.json"
-  check "$E status counts decisions that need a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "2"
+  # A decision needs a person when it is marked so, or when it was made at low confidence and no
+  # second look let it stand (D4); a second look that stands (D5) or high confidence (D6) does not.
+  printf '[{"id":"D1","needsPerson":true},{"id":"D2","needsPerson":false},{"id":"D3","needsPerson":true},{"id":"D4","needsPerson":false,"confidence":"low","second":null},{"id":"D5","needsPerson":false,"confidence":"low","second":"stands"},{"id":"D6","needsPerson":false,"confidence":"high","second":null}]\n' > "$P/.qa/specs/checkout/auto/decisions.json"
+  check "$E status counts decisions that need a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "3"
   rm -f "$P/.qa/specs/checkout/auto/decisions.json"
 
   # ---- stop_rejects_unknown_reason ----

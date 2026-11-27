@@ -1,0 +1,9 @@
+[
+  {"criterionId": "C-001", "persona": "cashier", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C-002", "persona": "cashier", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C-003", "persona": "", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C-004", "persona": "cashier", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "C-005", "persona": "cashier", "inRunVerdict": "pass", "verifierVerdict": "pass", "confidence": "high", "reasons": []},
+  {"criterionId": "__run-checks__", "persona": "", "inRunVerdict": "n/a", "verifierVerdict": "pass", "confidence": "high", "reasons": [],
+   "runChecks": {"ledgerComplete": true, "classificationsAgree": true, "loadWindowCovered": true, "knownDefectsOk": true}}
+]

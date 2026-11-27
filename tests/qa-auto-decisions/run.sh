@@ -92,7 +92,8 @@ run_engine() {
   check "$E J4 keys exactly" "$(jv "$D" '",".join(sorted(d[1].keys()))')" "answer,assumption,class,confidence,criteria,evidence,id,needsPerson,question,second,secondReason,step"
   check "$E decide writes only decisions.json" "$(ls "$P/.qa/specs/checkout/auto" | LC_ALL=C sort | tr '\n' ' ')|$(cksum "$J")|$(cd "$P" && find . -type f -not -path './.qa/specs/checkout/auto/*' | tr '\n' ' ')" "baseline.json decisions.json journey.json |$before|./.qa/config.json "
   check "$E the file is pretty-printed with sorted keys" "$(sed -n '1,3p' "$D" | tr '\n' '|')" '[|  {|    "answer": "Cart and payment",|'
-  check "$E status counts no decision for a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "0"
+  # a low-confidence decision that has had no second look counts for a person (the rule `handoff` uses)
+  check "$E status counts the low-confidence decision that had no second look" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "1"
   # the next id follows the highest one, not the count
   printf '[{"id":"D7","needsPerson":false},{"id":"note"},{"id":"D2"}]\n' > "$D"
   out="$(dec "$P" roles high "config/permission.php:3" 2>&1)"
@@ -229,7 +230,8 @@ run_engine() {
   check "$E a repeated stands keeps the first reason" "$?|$(jv "$D" '[d[2]["second"],d[2]["secondReason"]]')" '0|["stands", "Cited line agrees."]'
   out="$(auto second checkout D3 ask --reason "The cited line is about another screen." --project "$P" 2>&1)"; rc=$?
   check "$E stands is replaced by ask" "$rc|$out|$(jv "$D" '[d[2]["second"],d[2]["needsPerson"],d[2]["secondReason"]]')" '0|{"id":"D3","needsPerson":true,"second":"ask"}|["ask", true, "The cited line is about another screen."]'
-  check "$E status counts every decision for a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "3"
+  # D1 and D3 were sent to a person, D2 has no evidence, D4 is low confidence with no second look
+  check "$E status counts every decision for a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "4"
   # an id that is not there
   before="$(snapshot "$P")"
   out="$(auto second checkout D9 ask --reason "x" --project "$P" 2>&1)"; rc=$?

@@ -1,0 +1,10 @@
+{
+  "run_id": "r1",
+  "criteria": [
+    {"criterion_id": "C-001", "persona": "cashier", "verdict": "pass", "confidence": "high", "kinds": ["computed"], "checkpointed_at": "2026-11-27T08:40:00Z"},
+    {"criterion_id": "C-002", "persona": "cashier", "verdict": "pass", "confidence": "high", "kinds": ["computed"], "checkpointed_at": "2026-11-27T08:42:00Z"},
+    {"criterion_id": "C-003", "persona": "", "verdict": "pass", "confidence": "high", "kinds": ["bake"], "checkpointed_at": "2026-11-27T08:44:00Z"},
+    {"criterion_id": "C-004", "persona": "cashier", "verdict": "pass", "confidence": "high", "kinds": ["computed"], "checkpointed_at": "2026-11-27T08:46:00Z"},
+    {"criterion_id": "C-005", "persona": "cashier", "verdict": "pass", "confidence": "high", "kinds": ["computed"], "checkpointed_at": "2026-11-27T08:48:00Z"}
+  ]
+}
