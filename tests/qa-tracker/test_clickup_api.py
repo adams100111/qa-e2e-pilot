@@ -222,9 +222,6 @@ class TokenTests(unittest.TestCase):
             self.assertEqual(api.token_from_env(), "pk_x")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OfflineGuardTests(unittest.TestCase):
     """The suite never reaches ClickUp: a transport with the real opener refuses, loudly."""
@@ -275,3 +272,7 @@ class OfflineGuardTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0, proc.stdout)
         self.assertIn(api.OFFLINE_ENV, proc.stderr)
         self.assertIn("RuntimeError", proc.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
