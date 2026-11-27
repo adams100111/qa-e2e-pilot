@@ -13,6 +13,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import cards, core, spec_runs, wording  # noqa: E402
 

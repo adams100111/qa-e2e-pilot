@@ -263,7 +263,7 @@ class DocSync(SpecSync):
         entry = {"id": page["id"], "hash": content_hash(text)}
         if keep_text:
             entry["text"] = text
-        self.ctx.cache.data.setdefault(DOC_CACHE, {})[f"{self.target}:{key}"] = entry
+        self.ctx.cache.bucket(DOC_CACHE)[f"{self.target}:{key}"] = entry
 
     # -- reading the spec's lists and tickets
 
@@ -835,16 +835,17 @@ def _run_behind(qctx, c: cards.Cards, reasons: List[str]) -> None:
 
 
 def spec_status(ctx) -> None:
-    """`tracker.sh spec-status`: one JSON line, `{"spec", "folderUrl", "docUrl", "list": {"n",
-    "url", "bound"}, "behind", "reasons"}`. It only reads: the other verbs' dry runs go to a log
+    """`tracker.sh spec-status`: one JSON line, `{"spec", "setUp": true, "folderUrl", "docUrl",
+    "list": {"n", "url", "bound"}, "behind", "reasons"}` (for a spec that is not tracked the CLI
+    prints `{"setUp": false, "target"}` and this is not called). It only reads: the other verbs' dry runs go to a log
     of its own, so nothing is written to ClickUp, the config or the cache, and being behind is an
     answer, not a failure."""
     target = ctx.args.spec
     quiet = core.ActionLog(apply=False, out=io.StringIO())
     qctx = Ctx(project=ctx.project, cfg=ctx.cfg, catalog=None, log=quiet, cache=ctx.cache, args=ctx.args)
     reasons: List[str] = []
-    out: Dict[str, Any] = {"spec": target, "folderUrl": None, "docUrl": None, "list": None, "behind": True,
-                           "reasons": reasons}
+    out: Dict[str, Any] = {"spec": target, "setUp": True, "folderUrl": None, "docUrl": None, "list": None,
+                           "behind": True, "reasons": reasons}
     try:
         c: Optional[cards.Cards] = cards.load(ctx.project, target)
     except cards.CardsError:

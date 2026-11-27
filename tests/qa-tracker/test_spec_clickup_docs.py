@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from test_spec_clickup_structure import ADMIN_CARD, JUDGE_CARD, QA, TARGET, TITLE, WS  # noqa: E402
 from test_spec_clickup_sync import ALL_PASS, BUG_TITLE, RUN_1, RUN_2, SyncBase, cs, row  # noqa: E402
@@ -68,7 +69,9 @@ class DocsBase(SyncBase):
         """`spec-status`: its exit code, the one JSON line, and every line it printed."""
         rc, lines, err = self.tracker("spec-status", *extra, apply=False)
         self.assertEqual(len(lines), 1, (lines, err))     # the JSON line and nothing else
-        return rc, json.loads(lines[0]), lines
+        out = json.loads(lines[0])
+        self.assertIs(out.pop("setUp", None), True, lines)   # the spec is tracked, whatever else is said
+        return rc, out, lines
 
     def note(self, text=NOTE, *extra, apply=True):
         path = self.tmp / "analysis-note.md"
@@ -337,6 +340,21 @@ class PushDocsTests(DocsBase):
         self.assertEqual(rc, 1)
         self.assertTrue(any(ln.startswith("SKIP\tnot-ready\t") for ln in lines), lines)
         self.assertEqual(self.fake.calls, [])
+
+
+class CacheShapeTests(DocsBase):
+    def test_cache_bucket_that_is_not_an_object_is_replaced(self):
+        self.synced()
+        cache = self.tmp / ".qa" / "tracker-map.json"
+        for bucket in ([], "text", None):
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            data["spec-doc"] = bucket
+            cache.write_text(json.dumps(data), encoding="utf-8")
+            rc, lines, err = self.docs("--run", RUN_1)
+            self.assertEqual(rc, 0, (lines, err))
+            self.assertNotIn("Traceback", err)
+            kept = json.loads(cache.read_text(encoding="utf-8"))["spec-doc"]
+            self.assertIn(f"{TARGET}:results:1", kept)
 
 
 class RecoveryTests(DocsBase):
@@ -913,7 +931,9 @@ class SpecStatusTests(DocsBase):
                 self.assertEqual(self.fake.calls, [])
                 self.assertEqual(self.frozen(), before)
                 self.assertEqual(list(out), KEYS)
-                self.assertEqual(lines, [json.dumps(out, ensure_ascii=False)])   # one JSON line, nothing else
+                whole = json.loads(lines[0])
+                self.assertEqual(list(whole), ["spec", "setUp"] + KEYS[1:])
+                self.assertEqual(lines, [json.dumps(whole, ensure_ascii=False)])   # one JSON line, nothing else
 
     def test_spec_status_no_list_yet(self):
         self.new_project()

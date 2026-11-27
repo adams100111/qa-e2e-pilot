@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from test_spec_clickup_structure import (ADMIN_CARD, JUDGE_CARD, OWN_STATUSES, QA, TARGET, SpecBase,  # noqa: E402
                                          SpecFake)

@@ -14,6 +14,7 @@ from unittest import mock
 from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import clickup, core  # noqa: E402
 from trackers.clickup_api import ApiError, FakeTransport, Transport  # noqa: E402

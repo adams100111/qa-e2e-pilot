@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import cards, core  # noqa: E402
 from trackers.ctx import Ctx  # noqa: E402
@@ -55,6 +56,26 @@ class CardsTest(Base):
         self.assertEqual([x.id for x in c.cards], ["judge-scores-a-submission", "admin-watches-the-ranking"])
         self.assertEqual(c.cards[1].as_, "checklist")
         self.assertEqual(c.cards[0].checks[0].criterion, "C-SCORE-01")
+
+    def test_duplicate_card_title(self):
+        d = self.raw()
+        d["cards"][1]["title"] = "  " + d["cards"][0]["title"].lower() + " "   # one name to a reader
+        out = self.problems(d)
+        self.assertEqual([p for p in out if p["reason"].startswith("duplicate")],
+                         [{"card": "admin-watches-the-ranking", "criterion": "", "reason": "duplicate card title"}])
+
+    def test_duplicate_check_title_within_a_card(self):
+        clean = self.raw()
+        d = copy.deepcopy(clean)
+        checks = d["cards"][0]["checks"]
+        checks[1]["title"] = checks[0]["title"]
+        out = self.problems(d)
+        self.assertEqual(out, [{"card": "judge-scores-a-submission", "criterion": checks[1]["criterion"],
+                                "reason": "duplicate check title in this card"}])
+        # the same check title in two cards is fine: each card has its own checks
+        d = copy.deepcopy(clean)
+        d["cards"][1]["checks"][0]["title"] = d["cards"][0]["checks"][0]["title"]
+        self.assertEqual(self.problems(d), [])
 
     def test_row_without_card(self):
         d = self.raw()

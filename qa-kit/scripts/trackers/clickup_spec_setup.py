@@ -196,18 +196,23 @@ def save_spec(ctx, target: Optional[str], values: Dict[str, str], fields: Dict[s
 # ---------------------------------------------------------------- spec-init
 
 
-def spec_title(ctx) -> str:
-    """The spec's name in ClickUp: `specs.<target>.title`, else the cards file's title, else the
-    target in plain words."""
+def title_and_source(ctx) -> Tuple[str, str]:
+    """The spec's name in ClickUp and where it comes from: `specs.<target>.title` ("settings"),
+    else the cards file's title ("cards"), else the target in plain words ("target")."""
     title = ctx.cfg.get("title")
     if isinstance(title, str) and title.strip():
-        return title.strip()
+        return title.strip(), "settings"
     target = ctx.args.spec
     try:
-        return cards.load(ctx.project, target).spec["title"].strip()
+        return cards.load(ctx.project, target).spec["title"].strip(), "cards"
     except cards.CardsError:
         words = re.sub(r"[-_.]+", " ", target).strip()
-        return words[:1].upper() + words[1:]
+        return words[:1].upper() + words[1:], "target"
+
+
+def spec_title(ctx) -> str:
+    """The spec's name in ClickUp (`title_and_source`)."""
+    return title_and_source(ctx)[0]
 
 
 def _parent_id(folder: dict) -> str:
@@ -260,10 +265,13 @@ class _SpecInit:
             return None
 
     def run(self) -> None:
+        raw, source = title_and_source(self.ctx)
         try:
-            title = wording.clean(spec_title(self.ctx), "title", self.cfg)
+            title = wording.clean(raw, "title", self.cfg)
         except WordingError as err:
-            self.log.skip("wording", f"spec title: {err.word}")
+            # a name made from the target is nobody's wording: say where a person writes one
+            fix = f"; set specs.{self.target}.title to the name to show in ClickUp" if source == "target" else ""
+            self.log.skip("wording", f"spec title: {err.word}{fix}")
             return
         placed = self.place(title)
         if placed is None:

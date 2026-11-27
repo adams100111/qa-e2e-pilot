@@ -28,6 +28,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import cli, clickup, core  # noqa: E402
 from trackers.clickup_api import ApiError, Transport  # noqa: E402
@@ -376,9 +377,9 @@ class SpecBase(unittest.TestCase):
         data = fn(data) or data
         self.plan_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    def tracker(self, verb, *extra, apply=True):
+    def tracker(self, verb, *extra, apply=True, spec=TARGET):
         """Run `tracker.sh <verb> --spec judge-scoring` through cli.main with the fake transport."""
-        argv = [verb, "--project", str(self.tmp), "--spec", TARGET] + (["--apply"] if apply else []) + list(extra)
+        argv = [verb, "--project", str(self.tmp), "--spec", spec] + (["--apply"] if apply else []) + list(extra)
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(clickup, "transport_for", lambda ctx: self.fake), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -461,6 +462,23 @@ class SpecInitTests(SpecBase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.fake.calls, [])
         self.assertEqual(self.cfg_path.read_text(encoding="utf-8"), text)
+
+    def test_target_name_that_fails_the_title_rules_points_at_the_title_setting(self):
+        # no title in the settings and no cards file yet: the name is made from the target
+        self.edit_cfg(lambda d: d["specs"].update({"checkout_v2": {"enabled": True}}))
+        rc, lines, err = self.tracker("spec-init", spec="checkout_v2")
+        self.assertEqual(rc, 1, (lines, err))
+        self.assertIn("SKIP\twording\tspec title: looks like an id: v2; "
+                      "set specs.checkout_v2.title to the name to show in ClickUp", lines)
+        self.assertEqual(self.fake.writes(), [])
+        self.edit_cfg(lambda d: d["specs"]["checkout_v2"].update(title="Checkout with saved cards"))
+        rc, lines, err = self.tracker("spec-init", spec="checkout_v2")
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual([f["name"] for f in self.subfolders()], ["Checkout with saved cards"])
+        # a title a person wrote (settings or cards file) keeps the plain message
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(title="Judging v2"))
+        rc, lines, _ = self.tracker("spec-init")
+        self.assertIn("SKIP\twording\tspec title: looks like an id: v2", lines)
 
     def test_spec_init_missing_field_prints_clicks_rc1_no_writes(self):
         self.fake.drop_field("Needs a person's review")

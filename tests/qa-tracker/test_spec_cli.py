@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -22,6 +23,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "qa-kit" / "scripts"))
 sys.path.insert(0, str(HERE))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 import test_clickup_init as init_tests  # noqa: E402
 import test_clickup_runs as runs_tests  # noqa: E402
@@ -112,10 +114,47 @@ class SpecVerbTests(CliBase):
     def test_spec_verb_not_set_up_exits_0(self):
         self.write_cfg()
         for verb in SPEC_VERBS:
+            if verb == "spec-status":
+                continue  # its own answer: test_spec_status_not_set_up_is_one_json_line
             rc, out, err = self.run_cli(verb, "--spec", "checkout")
             self.assertEqual(rc, 0, verb)
             self.assertIn("SKIP\tnot-set-up\tcheckout\n", out, verb)
         self.assertEqual(self.seen, [])
+
+    def test_spec_status_not_set_up_is_one_json_line(self):
+        # the journey audit parses this line: no SKIP line, no SUMMARY line, no handler, no call
+        blocked = {"trackers.cards": None, "trackers.clickup_spec": None}
+        for over in ({}, {"specs": {"checkout": {"enabled": False}}}, {"backend": "local"}):
+            self.write_cfg(**over)
+            with mock.patch.dict(sys.modules, blocked), \
+                    mock.patch.object(clickup, "transport_for", side_effect=AssertionError("transport built")):
+                rc, out, err = self.run_cli("spec-status", "--spec", "checkout", stub=False)
+            self.assertEqual((rc, out), (0, '{"setUp": false, "target": "checkout"}\n'), (over, err))
+        self.write_cfg()
+        rc, out, _ = self.run_cli("spec-status")   # no spec can be enabled and none is named
+        self.assertEqual((rc, out), (0, '{"setUp": false, "target": null}\n'))
+        self.assertEqual(self.seen, [])
+
+    def test_run_flag_must_be_a_run_name(self):
+        self.write_cfg(specs={"checkout": {"enabled": True}})
+        bad = ("../x", "a/b", "", "..", "a..b", ".hidden", "-x", "a\\b", "a b", "a\tb", "a\nb", "/abs")
+        for value in bad:
+            for verb in ("sync-run", "push-docs", "spec-note", "spec-status", "push-bug", "update-retest",
+                         "results", "push-run", "push-results"):
+                rc, out, err = self.run_cli(verb, "--spec", "checkout", "--run=" + value)
+                self.assertEqual(rc, 2, (verb, value))
+                self.assertEqual(err, "error: --run must be a run name\n", (verb, value))
+                self.assertEqual(out, "", (verb, value))
+        self.assertEqual(self.seen, [])
+        for value in ("r1", "2026-11-27T10-00-00Z_judge.scoring", "7days"):
+            rc, _, err = self.run_cli("sync-run", "--spec", "checkout", "--run", value)
+            self.assertEqual(rc, 0, value + err)
+            self.assertEqual(self.seen[-1][1].args.run, value)
+
+    def test_bad_run_flag_is_refused_before_the_config_is_read(self):
+        self.cfg_path.write_text("{not json")
+        rc, _, err = self.run_cli("sync-run", "--spec", "checkout", "--run", "../../etc")
+        self.assertEqual((rc, err), (2, "error: --run must be a run name\n"))
 
     def test_no_flag_and_no_spec_can_be_enabled_skips_with_exit_0(self):
         for over in ({}, {"specs": {"checkout": {"enabled": False}}},
@@ -577,6 +616,8 @@ class InitSpecFieldsTests(init_tests.InitBase):
         patcher = mock.patch.dict(os.environ, {"QA_KIT_TRACKER_CONFIG": str(self.tmp / "none.json")})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # the order these tests must not depend on: the real module is loaded before them
+        importlib.import_module("trackers.clickup_spec")
 
     def set_cfg(self, **over):
         data = json.loads(self.cfg_path.read_text())
@@ -600,10 +641,19 @@ class InitSpecFieldsTests(init_tests.InitBase):
                   log=core.ActionLog(apply=False, out=out), cache=core.MapCache(self.tmp),
                   args=argparse.Namespace(only=[], overwrite=[], transport=fake))
         mods = self.spec_module(steps) if module else {"trackers.clickup_spec": None}
+        # `from trackers import clickup_spec` reads the package attribute before sys.modules, so
+        # both are replaced (the attribute is taken away when the import itself is to fail)
+        package = sys.modules["trackers"]
+        real = package.clickup_spec
         with mock.patch.dict(sys.modules, mods):
+            if module:
+                package.clickup_spec = mods["trackers.clickup_spec"]
+            else:
+                del package.clickup_spec
             try:
                 clickup.init(ctx)
             finally:
+                package.clickup_spec = real
                 self.lines = [ln for ln in out.getvalue().splitlines() if ln]
         return self.lines, dict(ctx.log.counts), ctx
 

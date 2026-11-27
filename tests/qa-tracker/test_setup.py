@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 QA_KIT = ROOT / "qa-kit"
 sys.path.insert(0, str(QA_KIT / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import core  # noqa: E402
 

@@ -24,6 +24,8 @@ DEFAULT_TOKEN_ENV = "CLICKUP_API_TOKEN"
 _TOKEN_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")  # the same rule core.load_config applies to tokenEnv
 _TOKEN_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")  # whitespace or a control character
 UPLOAD_FIELD = "attachment"
+# set by the test suite: a transport with the real opener then refuses every call before it is sent
+OFFLINE_ENV = "QA_KIT_TRACKER_OFFLINE"
 
 
 class ApiError(Exception):
@@ -78,6 +80,7 @@ class HttpTransport(Transport):
     def __init__(self, token: str, opener: Optional[Callable] = None,
                  sleep: Callable[[float], None] = time.sleep):
         self._token = token
+        self._real = opener is None  # the real opener: the only one that reaches ClickUp
         self._open = opener or urllib.request.urlopen
         self._sleep = sleep
 
@@ -97,6 +100,9 @@ class HttpTransport(Transport):
         return self._send("POST", path, data, ctype)
 
     def _send(self, method: str, path: str, data: Optional[bytes], content_type: str) -> dict:
+        if self._real and os.environ.get(OFFLINE_ENV):
+            # not an ApiError: nothing may catch this and carry on
+            raise RuntimeError("%s is set: no call is made to ClickUp (%s %s)" % (OFFLINE_ENV, method, path))
         for n in range(1, MAX_TRIES + 1):
             req = urllib.request.Request(BASE_URL + path, data=data, method=method)
             req.add_header("Authorization", self._token)
