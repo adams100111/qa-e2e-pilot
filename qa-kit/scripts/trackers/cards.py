@@ -56,6 +56,11 @@ def spec_dir(project: Path, target: str) -> Path:
     return Path(project) / ".qa" / "specs" / target
 
 
+def exists(project: Path, target: str) -> bool:
+    """The spec has a cards file (`/qa-scenarios` writes it; a spec starts without one)."""
+    return (spec_dir(project, target) / CARDS_NAME).is_file()
+
+
 def _str(obj: dict, key: str, where: str, path: Path) -> str:
     v = obj.get(key)
     if not isinstance(v, str) or not v.strip():
@@ -146,11 +151,25 @@ def problems(c: Cards, checklist_rows: List[dict], cfg) -> List[dict]:
                 continue
             plan[_row_id(row)] = _row_roles(row)
 
-    seen_ids = set()
+    def name(title: str) -> str:
+        """A title as a reader tells it from another: spacing and case aside."""
+        return " ".join(title.split()).casefold()
+
+    seen_ids, seen_titles = set(), set()
     for card in c.cards:
         if card.id in seen_ids:
             add(card.id, "", "duplicate card id")
         seen_ids.add(card.id)
+        # a card is a ticket and a Doc page, a check a subtask or a checklist item: each is found
+        # by its title, so two alike cannot both be shown
+        if name(card.title) in seen_titles:
+            add(card.id, "", "duplicate card title")
+        seen_titles.add(name(card.title))
+        check_titles: Dict[str, str] = {}  # title -> the first check that has it
+        for ck in card.checks:
+            # the same check twice is reported below as repeated, once
+            if check_titles.setdefault(name(ck.title), ck.criterion) != ck.criterion:
+                add(card.id, ck.criterion, "duplicate check title in this card")
 
     held: Dict[str, List[Card]] = {}  # criterion -> cards (one entry per check)
     for card in c.cards:

@@ -40,7 +40,7 @@ _SPEC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _spec_name_ok(value) -> bool:
-    """`--spec` is a plain name: it is used in paths, so no separators and no `..`."""
+    """`--spec` and `--run` are plain names: they are used in paths, so no separators and no `..`."""
     return isinstance(value, str) and bool(_SPEC_NAME_RE.match(value)) and ".." not in value
 
 
@@ -113,6 +113,8 @@ def _spec_target(cfg, named):
 
 def _spec_verb(args, project: Path, cfg) -> int:
     """Run one SPEC_VERBS handler. Exit 0 ok or not set up, 1 error or any skipped item, 2 backend.
+    A spec that is not set up prints `SKIP\tnot-set-up\t<target>` and the summary; `spec-status`
+    prints the one line `{"setUp": false, "target": "<target>"}` instead.
     Without `--spec` on a project where a spec is or can be enabled but cannot be told: exit 1.
 
     The handler gets a Ctx with: `args.spec` = the resolved target, `cfg` =
@@ -128,6 +130,10 @@ def _spec_verb(args, project: Path, cfg) -> int:
         return 1
     settings = core.spec_settings(cfg, target) if target else None
     if settings is None or settings.get("enabled") is not True:
+        if args.verb in NO_SUMMARY_VERBS:
+            # spec-status answers in its one JSON line here too (the journey audit parses it)
+            sys.stdout.write(json.dumps({"setUp": False, "target": target}) + "\n")
+            return 0
         log.skip("not-set-up", target or "no spec is set up for the tracker")
         sys.stdout.write(log.summary() + "\n")
         return 0
@@ -170,6 +176,9 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.spec is not None and not _spec_name_ok(args.spec):
         sys.stderr.write("error: --spec must be a spec name\n")  # the value is never echoed
+        return 2
+    if args.run is not None and not _spec_name_ok(args.run):
+        sys.stderr.write("error: --run must be a run name\n")  # used in a path, like --spec
         return 2
     project = Path(args.project).resolve()
     try:

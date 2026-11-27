@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import core  # noqa: E402
 
@@ -99,6 +100,15 @@ class SettingsTests(Base):
         with self.assertRaises(core.ConfigError) as ctx:
             self.cfg()
         self.assertIn(str(self.machine), str(ctx.exception))
+
+    def test_machine_file_cannot_set_spec_defaults(self) -> None:
+        # `specDefaults.enabled` would turn tracking on for every spec of every project
+        for value in ({"enabled": True}, {}, {"tokenEnv": "OTHER_TOKEN"}):
+            self.machine_file({"specDefaults": value})
+            with self.assertRaises(core.ConfigError) as ctx:
+                self.cfg()
+            self.assertIn(str(self.machine), str(ctx.exception))
+            self.assertIn("specDefaults", str(ctx.exception))
 
     def test_machine_file_cannot_set_ids_folder(self) -> None:
         self.machine_file({"ids": {"folder": "9"}})

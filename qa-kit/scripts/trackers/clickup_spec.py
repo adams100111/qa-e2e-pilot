@@ -24,7 +24,7 @@ from trackers.clickup_spec_setup import (FOLDER_FIELDS, KINDS, LETTERS, LIST_OUT
                                          ROLE_OF, SUMMARY_ID, check_folder, check_id, folder_field_key, nested,
                                          parse_ref, ref, ref_key, reletter, remote_id, report_folder_fields,
                                          run_hash, save_spec, spec_init, spec_title)
-from trackers.core import WordingError, content_hash, norm, same_status, status_name
+from trackers.core import ConfigError, WordingError, content_hash, norm, same_status, status_name
 
 CACHE_KIND = "spec"
 # the tool's own fixed strings; each is sent through `SpecSync.fixed`, so it is linted like any text
@@ -36,9 +36,10 @@ NEXT_LABEL = "next"
 MAX_RUNS = 999          # run numbers a list's summary Ref is matched against
 POLL_TRIES = 10         # a list made from a template appears after a moment
 POLL_STEP = 2.0
+COMMENT_PAGE, COMMENT_PAGES = 25, 40   # ClickUp gives 25 comments a read; at most 1000 are looked through
 _RUN_NAME_RE = re.compile(r"(?:^| · )Run (\d+) · ")
 VIEW_STATUS, VIEW_ROLE, VIEW_FAILED = "By status", "By role", "Failed and blocked"
-_MD_LINK = re.compile(r"https?://\S+|\]\([^)\s]*\)")
+_MD_LINK = re.compile(r"https?://\S+|" + wording.MD_TARGET_RE.pattern)
 _MD_LEAD = re.compile(r"^([ \t]*)(#{1,6}(?=[ \t]|$)|>|[-+](?=[ \t])|\d+[.)](?=[ \t]))", re.M)
 
 
@@ -55,6 +56,17 @@ def plain_md(text: str) -> str:
         mark = m.group(2)
         return f"{m.group(1)}{mark[:-1]}\\{mark[-1]}" if mark[0].isdigit() else f"{m.group(1)}\\{mark}"
     return _MD_LEAD.sub(lead, "".join(out))
+
+
+def plain_id(value: Any) -> Optional[str]:
+    """`value` as an id that may stand in a link or a query: plain id characters only (the guard
+    of `remote_id`), else None."""
+    if value is None or isinstance(value, (bool, dict, list)) or str(value) == "":
+        return None
+    try:
+        return remote_id(value, "id")
+    except ConfigError:
+        return None
 
 
 def _grouping(field: str) -> dict:
@@ -618,7 +630,8 @@ class SpecSync(clickup._Mirror):
 
     def retire_removed(self, have: Dict[str, dict], wanted: set) -> None:
         """A card or check ticket that left the plan: comment once, status `skipped`, Ref letter
-        `s`. Never deleted. One a person moved to another status is left and reported."""
+        `s` (`<from>s` while the move is in progress, as `set_role` writes it). Never deleted. One
+        a person moved to another status is left and reported."""
         text = None
         for key, t in have.items():
             p = self.ref_of(t)
@@ -636,16 +649,51 @@ class SpecSync(clickup._Mirror):
                 return
 
             def go(t=t, done=done):
-                tid = str(t["id"])
+                tid, fid = str(t["id"]), self.fid("Ref")
+                now = self.live_field(t, fid)
+                if not done:
+                    # first, so a retire that stopped half way is told from a person's change
+                    mark = reletter(now, self.standing(t), pending="skipped")
+                    if now != mark:
+                        self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": mark})
                 if self.last_note(tid) != text:
                     self.comment(tid, text)  # notify_all: false
                 if not done:
                     self.tr.request("PUT", f"/v2/task/{tid}", {"status": self.case_skipped})
                 # last, so a run that stopped half way is redone
-                self.tr.request("POST", f"/v2/task/{tid}/field/{self.fid('Ref')}",
-                                {"value": reletter(self.live_field(t, self.fid("Ref")), "skipped")})
+                self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": reletter(now, "skipped")})
                 return True
             self.write("retire", title, go)
+
+    def comments(self, task_id: str) -> List[dict]:
+        """The ticket's comments as ClickUp gives them, newest first. ClickUp gives the newest 25;
+        older ones are asked for with the `date` and `id` of the last one read, up to
+        `COMMENT_PAGES` reads, so a note of the tool's is found behind a long discussion."""
+        if not _real(task_id):
+            return []
+        path = f"/v2/task/{task_id}/comment"
+        page = list(self.tr.request("GET", path).get("comments") or [])
+        rows, seen = list(page), {str(c.get("id")) for c in page}
+        for _ in range(COMMENT_PAGES - 1):
+            if len(page) < COMMENT_PAGE:
+                break
+            start, start_id = str(page[-1].get("date") or ""), plain_id(page[-1].get("id"))
+            if not start.isdigit() or start_id is None:
+                break
+            older = self.tr.request("GET", f"{path}?start={start}&start_id={start_id}").get("comments") or []
+            page = [c for c in older if str(c.get("id")) not in seen]
+            if not page:
+                break
+            seen |= {str(c.get("id")) for c in page}
+            rows += page
+        return rows
+
+    def recent(self, task_id: str) -> List[str]:
+        """The ticket's comment texts, newest first (`date` decides when every row has one)."""
+        rows = self.comments(task_id)
+        if all(str(c.get("date") or "").isdigit() for c in rows):
+            rows = sorted(rows, key=lambda c: int(c["date"]), reverse=True)
+        return [str(c.get("comment_text") or "").strip() for c in rows]
 
     def last_note(self, task_id: str) -> Optional[str]:
         """The newer of the tool's two plan notes on a ticket (`No longer part of the plan.`,
@@ -653,7 +701,7 @@ class SpecSync(clickup._Mirror):
         if not _real(task_id):
             return None
         notes = {x for x in (self.fixed(REMOVED_COMMENT, "body"), self.fixed(BACK_COMMENT, "body")) if x}
-        rows = self.tr.request("GET", f"/v2/task/{task_id}/comment").get("comments") or []
+        rows = self.comments(task_id)
         ours = [c for c in rows if str(c.get("comment_text") or "").strip() in notes]
         if not ours:
             return None
@@ -662,16 +710,27 @@ class SpecSync(clickup._Mirror):
 
     def bring_back(self, t: dict, title: str) -> None:
         """A ticket whose card or check is in the plan again. Only one the tool itself retired
-        (live status `skipped` and Ref letter `s`) goes back to `to test`, with letter `t` and one
-        comment. Where status and letter disagree a person moved it: left alone and reported."""
+        (live status `skipped` and Ref letter `s`) goes back to `to test`, with letter `t` (`st`
+        while the move is in progress) and one comment. Where status and letter disagree a person
+        moved it: left alone and reported."""
         p = self.ref_of(t)
-        if p is None or p["pending"] is not None:
-            return  # a status move of a run sync is in progress: that sync finishes it
+        if p is None:
+            return
+        tid, fid = str(t["id"]), self.fid("Ref")
         skipped = same_status(_status_of(t), self.case_skipped)
         lettered = p["role"] == "skipped"
+        moving = p["pending"]
+        if moving == "skipped" and skipped:
+            # a retire that stopped before its last letter (its note says so) is a retired ticket;
+            # any other move to `skipped` is a run sync's, and that sync finishes it
+            removed = self.fixed(REMOVED_COMMENT, "body")
+            if removed is None or self.last_note(tid) != removed:
+                return
+            lettered = True
+        elif moving is not None and not (lettered and moving == "to_test"):
+            return  # a status move of a run sync is in progress: that sync finishes it
         if not skipped and not lettered:
             return
-        tid = str(t["id"])
         text = self.fixed(BACK_COMMENT, "body")
         if text is None:
             return
@@ -679,17 +738,23 @@ class SpecSync(clickup._Mirror):
             # the one disagreement that is ours: a return that stopped before its last step
             half = lettered and same_status(_status_of(t), self.case_to_test) and self.last_note(tid) == text
             if not half:
-                self.person_changed(t.get("name") or title, t)
-                return
+                if moving is None:
+                    self.person_changed(t.get("name") or title, t)
+                return  # with a move in progress: the sync that began it says what it finds
 
         def go():
+            now = self.live_field(t, fid)
+            if skipped:
+                # first, so a return that stopped half way is told from a person's change
+                mark = reletter(now, "skipped", pending="to_test")
+                if now != mark:
+                    self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": mark})
             if self.last_note(tid) != text:
                 self.comment(tid, text)  # notify_all: false
             if skipped:
                 self.tr.request("PUT", f"/v2/task/{tid}", {"status": self.case_to_test})
             # last, so a run that stopped half way is redone
-            self.tr.request("POST", f"/v2/task/{tid}/field/{self.fid('Ref')}",
-                            {"value": reletter(self.live_field(t, self.fid("Ref")), "to_test")})
+            self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": reletter(now, "to_test")})
             return True
         self.write("return", title, go)
 

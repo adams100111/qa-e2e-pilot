@@ -14,6 +14,9 @@ cd "$ROOT" || exit 1
 if [ -z "${QA_KIT_TRACKER_CONFIG:-}" ]; then
   export QA_KIT_TRACKER_CONFIG="$OUT.no-machine-config.json"
 fi
+# no test reaches the network: a transport with the real opener refuses under this variable
+# (tests/qa-tracker/offline_guard.py sets it too, for a test file run on its own)
+export QA_KIT_TRACKER_OFFLINE=1
 python3 -m unittest discover -s tests/qa-tracker -p 'test_*.py' -v > "$OUT" 2>&1
 rc=$?
 cat "$OUT"

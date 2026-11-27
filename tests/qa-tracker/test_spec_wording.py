@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import core, wording  # noqa: E402
 
@@ -101,6 +102,16 @@ class WordingFixRound1Test(unittest.TestCase):
     def test_doc_url_and_markdown_target_pass(self):
         text = "Read [the scoring guide](https://app.clickup.com/9012/v/dc/8cr3-4512/3fa9c1d4e) first."
         self.assertEqual(lint(text), [])
+
+    def test_markdown_target_with_a_space_or_a_bracket_passes(self):
+        for target in ("/guides/scoring guide v2.pdf", "https://example.org/wiki/Score_(v2)_3fa9c1d4e",
+                       "notes (C-012) draft", "<https://example.org/a b>"):
+            self.assertEqual(lint(f"Read [the scoring guide]({target}) first."), [], target)
+        # what follows the link is still linted, and so is the link's text
+        self.assertIn("looks like an id: C-012", lint("Read [the guide](/a b.pdf) and C-012 first."))
+        self.assertIn("looks like an id: C-012", lint("Read [C-012](/a b.pdf) first."))
+        # an unclosed target hides nothing
+        self.assertIn("looks like an id: C-012", lint("Read [the guide](/a b.pdf and C-012 first."))
 
     def test_same_hash_outside_url_fails(self):
         self.assertIn(f"looks like an id: {self.HASH}", lint(f"Fixed in {self.HASH} last week"))

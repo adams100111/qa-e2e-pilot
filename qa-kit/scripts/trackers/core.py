@@ -122,8 +122,9 @@ def _machine_data() -> dict:
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: expected a JSON object")
     ids = data.get("ids")
-    if "specs" in data or (isinstance(ids, dict) and "folder" in ids):
-        raise ConfigError(f"{path}: the machine file may not set specs or ids.folder; they belong to the project")
+    if "specs" in data or "specDefaults" in data or (isinstance(ids, dict) and "folder" in ids):
+        raise ConfigError(f"{path}: the machine file may not set specs, specDefaults or ids.folder; "
+                          f"they belong to the project")
     return data
 
 
@@ -754,8 +755,16 @@ class MapCache:
             return dict(entry) if isinstance(entry, dict) else None
         return None
 
+    def bucket(self, kind: str) -> Dict[str, Any]:
+        """The entries of one kind, to write into. Anything there that is not an object (a file
+        edited by hand, say) is replaced by an empty one: this is only a cache."""
+        found = self.data.get(kind)
+        if not isinstance(found, dict):
+            found = self.data[kind] = {}
+        return found
+
     def put(self, kind: str, key: str, remote_id: Any, hash: Optional[str]) -> None:  # noqa: A002
-        self.data.setdefault(kind, {})[key] = {"id": remote_id, "hash": hash}
+        self.bucket(kind)[key] = {"id": remote_id, "hash": hash}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

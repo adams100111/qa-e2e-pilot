@@ -13,6 +13,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import cards, core, spec_runs, wording  # noqa: E402
 
@@ -90,6 +91,23 @@ class Mapping(Base):
             {"criterionId": "C-SCORE-01", "persona": "judge", "inRunVerdict": "pass", "verifierVerdict": "fail",
              "confidence": "high", "reasons": ["no read-back"]}]), encoding="utf-8")
         self.assertEqual(self.state(JUDGE, "C-SCORE-01").role, "failed")
+
+    def test_verification_row_cannot_make_a_recorded_result_better(self):
+        # a verification row may only downgrade: the worse of the recorded and the adjusted verdict
+        for recorded, role in (("fail", "failed"), ("blocked", "blocked"), ("error", "blocked"),
+                               ("deferred", "skipped"), ("nonsense", "blocked")):
+            self.record([{"criterion_id": "C-SCORE-01", "persona": "judge", "verdict": recorded, "confidence": "high"}])
+            in_run = recorded if recorded in core.VERDICT_RANK else "error"
+            (self.run_dir / "verification.json").write_text(json.dumps([
+                {"criterionId": "C-SCORE-01", "persona": "judge", "inRunVerdict": in_run, "verifierVerdict": "pass",
+                 "confidence": "high"}]), encoding="utf-8")
+            s = self.state(JUDGE, "C-SCORE-01")
+            self.assertEqual((s.role, s.needs_review), (role, False), recorded)
+
+    def test_counts_take_an_unknown_role_as_not_tested(self):
+        out = spec_runs.counts([st("passed"), st("archived"), st(None), st("failed", needs_review=True)])
+        self.assertEqual((out["passed"], out["to_test"], out["failed"], out["needs_review"]), (1, 2, 1, 1))
+        self.assertEqual(set(out), set(core.CASE_ROLES) | {"needs_review"})
 
     def test_unrun_check_is_to_test(self):
         s = self.state(ADMIN, LOAD)
@@ -363,6 +381,22 @@ class Containment(Base):
         self.assertNotIn("screenshot-leak.png", self.names(self.state(JUDGE, "C-SCORE-02", evidenceCap=50)))
         self.assert_nothing_leaves_the_run()
 
+    def test_link_named_like_an_image_to_a_file_that_is_not_one_is_dropped(self):
+        # the name that counts is the resolved file's: it is what gets read and uploaded
+        notes = self.run_dir / "run-manifest.json"
+        notes.write_text('{"build": "1.4.46"}', encoding="utf-8")
+        (self.folder / "after-notes.png").symlink_to(notes)
+        (self.folder / "screenshot-notes.png").symlink_to(notes)
+        self.sidecar(self.folder, "screenshot-notes.json", "screenshot-notes.png")
+        self.record([{"criterion_id": "C-SCORE-02", "persona": "judge", "verdict": "fail", "confidence": "high",
+                      "evidence_refs": ["evidence/judge/C-SCORE-02/after-notes.png"]}])
+        picked = self.state(JUDGE, "C-SCORE-02", evidenceCap=50).evidence
+        self.assertTrue(picked)
+        for path in picked:
+            self.assertRegex(path.name, r"\.png$")
+            self.assertNotEqual(path.resolve(), notes.resolve())
+        self.assertIn(("C-SCORE-02", "judge"), spec_runs.missing_evidence(self.run_dir, self.cards, cfg(evidenceCap=50)))
+
     def test_ref_through_a_linked_folder_is_dropped(self):
         (self.run_dir / "shots").symlink_to(self.outside, target_is_directory=True)
         self.record([{"criterion_id": "C-SCORE-02", "persona": "judge", "verdict": "fail", "confidence": "high",
@@ -441,6 +475,18 @@ class HashOnce(Base):
             self.states(evidence="failures")
         self.assertGreater(len(seen), 0)
         self.assertEqual(len(seen), len(set(seen)))
+
+    def test_image_changed_with_the_same_size_and_time_is_read_again(self):
+        img = self.run_dir / "evidence" / "judge" / "C-SCORE-02" / "screenshot-after.png"
+        self.assertIn("screenshot-after.png", self.names(self.state(JUDGE, "C-SCORE-02")))
+        before = img.stat()
+        data = bytearray(img.read_bytes())
+        data[-1] ^= 0xFF
+        img.write_bytes(bytes(data))
+        os.utime(img, ns=(before.st_atime_ns, before.st_mtime_ns))   # the change time still moves
+        after = img.stat()
+        self.assertEqual((after.st_size, after.st_mtime_ns), (before.st_size, before.st_mtime_ns))
+        self.assertNotIn("screenshot-after.png", self.names(self.state(JUDGE, "C-SCORE-02")))
 
     def test_changed_image_is_read_again(self):
         img = self.run_dir / "evidence" / "judge" / "C-SCORE-02" / "screenshot-after.png"

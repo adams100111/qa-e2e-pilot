@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import cards, spec_docs, spec_runs, wording  # noqa: E402
 
@@ -194,6 +195,15 @@ class SpecDocsTests(unittest.TestCase):
             [{"title": "Rank ] jumps [twice", "severity": "high", "url": "https://app.clickup.com/t/86b3xk9m1"}], CFG)
         self.assertIn("[Scores \\[draft\\] round](https://app.clickup.com/9012/v/dc/8cr-41)", page)
         self.assertIn("[Rank \\] jumps \\[twice](https://app.clickup.com/t/86b3xk9m1)", page)
+
+    def test_link_text_ending_in_a_backslash_keeps_the_link(self):
+        url = "https://app.clickup.com/t/86b3xk9m1"
+        for title, shown in (("Path ends with \\", "Path ends with \\\\"),           # one -> two
+                             ("Two at the end \\\\", "Two at the end \\\\"),       # an escaped one stays
+                             ("Three \\\\\\", "Three \\\\\\\\"),
+                             ("Mid \\ dle", "Mid \\ dle")):
+            page = spec_docs.project_page([], [{"title": title, "severity": "high", "url": url}], CFG)
+            self.assertIn(f"[{shown}]({url})", page, title)
 
     def test_pipe_in_a_table_cell_is_escaped_not_replaced(self):
         page = spec_docs.scenario_page(CARDS.cards[0], [{"run": "Run 1 | morning", "result": "failed"},
