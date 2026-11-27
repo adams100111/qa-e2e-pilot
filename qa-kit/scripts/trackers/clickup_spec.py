@@ -5,9 +5,10 @@ Identity is the `Ref` custom field (decision P5), never a title: a run list is f
 of its Run summary ticket and a ticket by its Ref key. `.qa/tracker-map.json` (kind `spec`) only
 remembers the description last pushed, to tell a person's edit from a change of plan.
 
-Dry run unless `--apply`. Nothing is deleted: a check that left the plan is set to `skipped`.
-No assignee is set and every comment is sent with `notify_all: false`. Every string sent passes
-`wording.clean`. The one-time side (Ref helpers, folder check, `spec-init`) is in
+Dry run unless `--apply`. Nothing is deleted: a check that left the plan is set to `skipped`
+and comes back to `to test` when the plan holds it again. No assignee is set and every comment is
+sent with `notify_all: false`. Every string sent passes `wording.clean`, the tool's own fixed
+strings included; plan text sent as markdown is escaped so it renders as written. The one-time side (Ref helpers, folder check, `spec-init`) is in
 `clickup_spec_setup`; its public names are re-exported here.
 """
 from __future__ import annotations
@@ -19,22 +20,41 @@ from typing import Any, Callable, Dict, List, Optional
 from trackers import cards, clickup, wording
 from trackers.clickup import PRIORITY, Folder, _arg, _keep_cache, _maybe_landed, _real, _status_of
 from trackers.clickup_api import ApiError
-from trackers.clickup_spec_setup import (FOLDER_FIELDS, KINDS, LETTERS, OPEN, ROLE_OF, SUMMARY_ID,  # noqa: F401
-                                         check_folder, check_id, folder_field_key, parse_ref, ref, ref_key,
-                                         reletter, remote_id, report_folder_fields, run_hash, save_spec, spec_init,
-                                         spec_title)
+from trackers.clickup_spec_setup import (FOLDER_FIELDS, KINDS, LETTERS, LIST_OUTSIDE, NOT_NESTED, OPEN,  # noqa: F401
+                                         ROLE_OF, SUMMARY_ID, check_folder, check_id, folder_field_key, nested,
+                                         parse_ref, ref, ref_key, reletter, remote_id, report_folder_fields,
+                                         run_hash, save_spec, spec_init, spec_title)
 from trackers.core import WordingError, content_hash, norm, same_status, status_name
 
 CACHE_KIND = "spec"
+# the tool's own fixed strings; each is sent through `SpecSync.fixed`, so it is linted like any text
 SUMMARY_TITLE = "Run summary"
 CHECKLIST_NAME = "Checks"
-NEXT_LABEL = "next"
 REMOVED_COMMENT = "No longer part of the plan."
+BACK_COMMENT = "Back in the plan."
+NEXT_LABEL = "next"
 MAX_RUNS = 999          # run numbers a list's summary Ref is matched against
 POLL_TRIES = 10         # a list made from a template appears after a moment
 POLL_STEP = 2.0
 _RUN_NAME_RE = re.compile(r"(?:^| · )Run (\d+) · ")
 VIEW_STATUS, VIEW_ROLE, VIEW_FAILED = "By status", "By role", "Failed and blocked"
+_MD_LINK = re.compile(r"https?://\S+|\]\([^)\s]*\)")
+_MD_LEAD = re.compile(r"^([ \t]*)(#{1,6}(?=[ \t]|$)|>|[-+](?=[ \t])|\d+[.)](?=[ \t]))", re.M)
+
+
+def plain_md(text: str) -> str:
+    """Plan text for `markdown_content`, escaped so ClickUp shows the characters the person wrote:
+    `*` and `_` anywhere outside a link, and a `#`, `>` or list marker that starts a line."""
+    out, pos = [], 0
+    for m in _MD_LINK.finditer(text):
+        out += [re.sub(r"([*_])", r"\\\1", text[pos:m.start()]), m.group(0)]
+        pos = m.end()
+    out.append(re.sub(r"([*_])", r"\\\1", text[pos:]))
+
+    def lead(m):
+        mark = m.group(2)
+        return f"{m.group(1)}{mark[:-1]}\\{mark[-1]}" if mark[0].isdigit() else f"{m.group(1)}\\{mark}"
+    return _MD_LEAD.sub(lead, "".join(out))
 
 
 def _grouping(field: str) -> dict:
@@ -74,6 +94,7 @@ class SpecSync(clickup._Mirror):
         self._tasks: Dict[str, List[dict]] = {}
         self._summary_keys: Optional[Dict[str, int]] = None
         self._dupes: set = set()
+        self._fixed: Dict[str, Optional[str]] = {}
 
     # -- small helpers
 
@@ -95,7 +116,21 @@ class SpecSync(clickup._Mirror):
             missing.insert(0, "the spec's folder")
         if missing:
             self.log.skip("not-ready", f"{', '.join(missing)}: run spec-init --spec {self.target} --apply")
-        return not missing
+        return not missing and self.placed()
+
+    def placed(self) -> bool:
+        """The spec's folder is (still) inside the QA folder, and a pasted list is in the QA
+        folder's tree. Read on every run: nothing is built anywhere else."""
+        qa = self.folder_id
+        if self.layout != "flat" and self.spec_folder != qa and not nested(self.tr, qa, self.spec_folder):
+            self.log.skip("subfolder-not-nested", f"{self.title}: {NOT_NESTED}")
+            return False
+        if self.pasted:
+            home = str((self.get_list(self.pasted).get("folder") or {}).get("id") or "")
+            if home not in (qa, self.spec_folder) and not (home and nested(self.tr, qa, home)):
+                self.log.skip("list-outside", f"specs.{self.target}.list: {LIST_OUTSIDE}")
+                return False
+        return True
 
     def clean(self, item: str, value: str, kind: str = "body") -> Optional[str]:
         """`wording.clean`, or None after logging the skip."""
@@ -104,6 +139,13 @@ class SpecSync(clickup._Mirror):
         except WordingError as err:
             self.log.skip("wording", f"{item}: {err.word}")
             return None
+
+    def fixed(self, value: str, kind: str = "title") -> Optional[str]:
+        """One of the tool's own fixed strings, through the same `clean` as any other text
+        (checked once per run); None after the skip is logged."""
+        if value not in self._fixed:
+            self._fixed[value] = self.clean(f'"{value}"', value, kind)
+        return self._fixed[value]
 
     def person_changed(self, title: str) -> None:
         """Report a ticket a person changed; it is left alone and is not a failure (P4)."""
@@ -169,13 +211,27 @@ class SpecSync(clickup._Mirror):
         taken = {e["n"] for e in out}
         for l in unfilled:
             m = _RUN_NAME_RE.search(l["name"])
-            n = int(m.group(1)) if m and l["name"] == self.list_name(int(m.group(1))) else None
+            n = int(m.group(1)) if m else None
+            # ours by the Ref of a ticket it already holds, else by the tool's own exact name
+            if n is not None and l["name"] != self.list_name(n) and not self.holds_ours(l["id"], n):
+                n = None
             if n is None and l["id"] == pasted:
                 n = 1
             if n is not None and n not in taken:
                 taken.add(n)
                 out.append(dict(l, n=n, run=OPEN, summary=None))
         return sorted(out, key=lambda e: e["n"])
+
+    def holds_ours(self, list_id: str, n: int) -> bool:
+        """A list with no Run summary ticket yet holds a card or check ticket of this spec's run
+        `n` (a first fill that stopped half way): it is ours whatever its name says now."""
+        try:
+            plan = self.cards.cards
+        except cards.CardsError:
+            return False
+        keys = {ref_key(self.target, n, "card", c.id) for c in plan}
+        keys |= {ref_key(self.target, n, "check", check_id(c.id, ck.criterion)) for c in plan for ck in c.checks}
+        return any((self.ref_of(t) or {}).get("key") in keys for t in self.list_tasks(list_id))
 
     def open_list(self) -> Optional[dict]:
         """The list no run is tied to yet (the newest, should there be two), else None."""
@@ -249,8 +305,9 @@ class SpecSync(clickup._Mirror):
         have = set()
         if _real(list_id):
             have = {norm(v.get("name")) for v in self.tr.request("GET", f"/v2/list/{list_id}/view").get("views") or []}
-        for vname, extra in views:
-            if norm(vname) in have:
+        for fixed_name, extra in views:
+            vname = self.fixed(fixed_name)
+            if vname is None or norm(vname) in have:
                 continue
             body = dict({"name": vname, "type": "list"}, **extra)
             self.write("create-view", f"{name}: {vname}",
@@ -352,7 +409,7 @@ class SpecSync(clickup._Mirror):
         summary_key = ref_key(self.target, n, "summary", SUMMARY_ID)
         wanted = {summary_key}
         if summary_key not in have:
-            title = self.clean("run summary", SUMMARY_TITLE, "title")
+            title = self.fixed(SUMMARY_TITLE)
             if title is not None:
                 self.create_ticket(list_id, summary_key, ref(self.target, n, "summary", SUMMARY_ID), {"name": title})
         for card in self.cards.cards:
@@ -366,6 +423,7 @@ class SpecSync(clickup._Mirror):
         wanted.update(ref_key(self.target, n, "check", check_id(card.id, ck.criterion)) for ck in card.checks)
         title = self.clean(card.id, card.title, "title")
         desc = self.clean(card.id, card.storyline) if title is not None else None
+        desc = plain_md(desc) if desc is not None else None
         role = self.clean(card.id, card.roleName, "title") if desc is not None else None
         if role is None:
             return
@@ -376,6 +434,7 @@ class SpecSync(clickup._Mirror):
             if t is None and self.log.apply:
                 return  # the create failed and is reported: its checks wait for the next run
         else:
+            self.bring_back(t, title)
             self.update_ticket(t, key, title, desc, card.id, PRIORITY[card.priority])
             self.set_field(t, self.fid("Role"), role, f"{title}: Role = {role}")
         if card.as_ == "checklist":
@@ -395,17 +454,19 @@ class SpecSync(clickup._Mirror):
         expect = self.clean(item, ck.expect) if do is not None else None
         if expect is None:
             return
-        desc = f"{do}\n\n{expect}"
+        desc = f"{plain_md(do)}\n\n{plain_md(expect)}"
         t = have.get(key)
         if t is None:
             self.create_ticket(list_id, key, ref(self.target, n, "check", local),
                                {"name": title, "markdown_content": desc, "parent": parent}, role)
         else:
+            self.bring_back(t, title)
             self.update_ticket(t, key, title, desc, card.id)
 
     def _reread_checklist(self, task_id: str) -> Optional[dict]:
+        """The task's `Checks` checklist from a fresh read of the task itself, or None."""
         t = self.tr.request("GET", f"/v2/task/{task_id}")
-        return next((c for c in t.get("checklists") or [] if c.get("name") == CHECKLIST_NAME), None)
+        return next((c for c in t.get("checklists") or [] if c.get("name") == self.fixed(CHECKLIST_NAME)), None)
 
     def _landed(self, send: Callable[[], Any], find: Callable[[], Any], detail: str) -> Callable[[], Any]:
         """A create that is looked for again before any retry when it may have landed."""
@@ -425,12 +486,20 @@ class SpecSync(clickup._Mirror):
     def fill_checklist(self, t: Optional[dict], card: cards.Card, title: str) -> None:
         """A `checklist` card: one item per check in the ticket's `Checks` checklist, found by
         name. An item that left the plan stays (nothing is deleted) and is reported."""
+        cname = self.fixed(CHECKLIST_NAME)
+        if cname is None:
+            return
         names = [x for x in (self.clean(f"{card.id} check", ck.title, "title") for ck in card.checks) if x is not None]
         task_id = str(t["id"]) if t else ""
-        checklist = next((c for c in (t or {}).get("checklists") or [] if c.get("name") == CHECKLIST_NAME), None)
+        checklist = None
+        if t is not None and _real(task_id):
+            if "checklists" in t:
+                checklist = next((c for c in t["checklists"] or [] if c.get("name") == cname), None)
+            else:  # this read did not say: ask the task itself before making a second checklist
+                checklist = self._reread_checklist(task_id)
         if checklist is None:
             r = self.write("checklist", title, self._landed(
-                lambda: self.tr.request("POST", f"/v2/task/{task_id}/checklist", {"name": CHECKLIST_NAME}),
+                lambda: self.tr.request("POST", f"/v2/task/{task_id}/checklist", {"name": cname}),
                 lambda: self._reread_checklist(task_id), title))
             checklist = (r.get("checklist") or r) if r else None
             if self.log.apply and not (checklist and checklist.get("id")):
@@ -439,6 +508,7 @@ class SpecSync(clickup._Mirror):
         for name in names:
             if name in items:
                 continue
+            items.append(name)  # two checks with one title are one item, in this run and the next
             cid = (checklist or {}).get("id")
             self.write("checklist-item", f"{title}: {name}", self._landed(
                 lambda name=name: self.tr.request("POST", f"/v2/checklist/{cid}/checklist_item", {"name": name}),
@@ -463,13 +533,13 @@ class SpecSync(clickup._Mirror):
             if not done and not same_status(_status_of(t), status_name(self.cfg, "case", p["role"])):
                 self.person_changed(title)
                 continue
-            text = text or self.clean("retire", REMOVED_COMMENT)
+            text = text or self.fixed(REMOVED_COMMENT, "body")
             if text is None:
                 return
 
             def go(t=t, done=done):
                 tid = str(t["id"])
-                if text not in self.comments(tid):
+                if self.last_note(tid) != text:
                     self.comment(tid, text)  # notify_all: false
                 if not done:
                     self.tr.request("PUT", f"/v2/task/{tid}", {"status": self.case_skipped})
@@ -478,6 +548,52 @@ class SpecSync(clickup._Mirror):
                                 {"value": reletter(self.live_field(t, self.fid("Ref")), "skipped")})
                 return True
             self.write("retire", title, go)
+
+    def last_note(self, task_id: str) -> Optional[str]:
+        """The newer of the tool's two plan notes on a ticket (`No longer part of the plan.`,
+        `Back in the plan.`), or None. ClickUp lists comments newest first; `date` decides when given."""
+        if not _real(task_id):
+            return None
+        notes = {x for x in (self.fixed(REMOVED_COMMENT, "body"), self.fixed(BACK_COMMENT, "body")) if x}
+        rows = self.tr.request("GET", f"/v2/task/{task_id}/comment").get("comments") or []
+        ours = [c for c in rows if str(c.get("comment_text") or "").strip() in notes]
+        if not ours:
+            return None
+        newest = max(ours, key=lambda c: int(c["date"]) if str(c.get("date") or "").isdigit() else 0)
+        return str(newest["comment_text"]).strip()
+
+    def bring_back(self, t: dict, title: str) -> None:
+        """A ticket whose card or check is in the plan again. Only one the tool itself retired
+        (live status `skipped` and Ref letter `s`) goes back to `to test`, with letter `t` and one
+        comment. Where status and letter disagree a person moved it: left alone and reported."""
+        p = self.ref_of(t)
+        if p is None:
+            return
+        skipped = same_status(_status_of(t), self.case_skipped)
+        lettered = p["role"] == "skipped"
+        if not skipped and not lettered:
+            return
+        tid = str(t["id"])
+        text = self.fixed(BACK_COMMENT, "body")
+        if text is None:
+            return
+        if skipped != lettered:
+            # the one disagreement that is ours: a return that stopped before its last step
+            half = lettered and same_status(_status_of(t), self.case_to_test) and self.last_note(tid) == text
+            if not half:
+                self.person_changed(t.get("name") or title)
+                return
+
+        def go():
+            if self.last_note(tid) != text:
+                self.comment(tid, text)  # notify_all: false
+            if skipped:
+                self.tr.request("PUT", f"/v2/task/{tid}", {"status": self.case_to_test})
+            # last, so a run that stopped half way is redone
+            self.tr.request("POST", f"/v2/task/{tid}/field/{self.fid('Ref')}",
+                            {"value": reletter(self.live_field(t, self.fid("Ref")), "to_test")})
+            return True
+        self.write("return", title, go)
 
 
 # ---------------------------------------------------------------- push-scenarios
@@ -488,7 +604,7 @@ def push_scenarios(ctx) -> None:
     cards file. Any lint problem stops it before ClickUp is contacted."""
     target = ctx.args.spec
     c = cards.load(ctx.project, target)
-    found = cards.problems(c, cards._plan_rows(ctx.project, target), ctx.cfg)
+    found = cards.problems(c, cards.plan_rows(ctx.project, target), ctx.cfg)
     for p in found:
         ctx.log.skip("lint", f"{p['card'] or '-'}\t{p['criterion'] or '-'}\t{p['reason']}")
     if found:
@@ -497,6 +613,10 @@ def push_scenarios(ctx) -> None:
     if not s.ready():
         return
     with _keep_cache(ctx):
-        entry = s.open_list() or s.new_list()
+        entry = s.open_list()
+        if entry is None:
+            entry = s.new_list()
+        elif _real(entry["id"]) and not s.await_list(entry["id"], entry["name"]):
+            return  # an adopted list (one made from a template, say) without the folder's statuses
         if entry is not None:
             s.fill(entry["id"], entry["n"])

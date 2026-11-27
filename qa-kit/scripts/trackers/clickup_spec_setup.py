@@ -43,8 +43,11 @@ def run_hash(run_id: Optional[str]) -> str:
 
 
 def check_id(card_id: str, criterion: str) -> str:
-    """The local id of a check: its card and its criterion (a criterion may sit in two cards)."""
-    return f"{card_id}/{criterion}"
+    """The local id of a check: its card and its criterion (a criterion may sit in two cards).
+
+    The card id is length-prefixed (`<len>:<card id>/<criterion>`): a card id is any non-empty
+    string, so no separator is safe on its own, and two different pairs must never join alike."""
+    return f"{len(card_id)}:{card_id}/{criterion}"
 
 
 def ref(target: str, n: int, kind: str, local_id: str, status_letter: str = "t",
@@ -88,6 +91,9 @@ FOLDER_FIELDS = [
 ]
 FOLDER_PARENT_TYPE = 5  # a Doc whose parent is a folder
 EVERY_LIST = "Add it at folder level so every list gets it."
+# one plain line each, wherever a spec folder or a pasted list turns out to be in the wrong place
+NOT_NESTED = "the spec's folder is not inside the QA folder; move it into the QA folder, then run again"
+LIST_OUTSIDE = "the list is not in the QA folder or one of its subfolders; move it there, then run again"
 
 
 def remote_id(value: Any, what: str) -> str:
@@ -204,6 +210,14 @@ def _parent_id(folder: dict) -> str:
     return str(parent) if parent else ""
 
 
+def nested(tr: Transport, qa: str, folder_id: str, folder: Optional[dict] = None) -> bool:
+    """The folder sits directly inside the QA folder. It is read back, never assumed: custom
+    fields and statuses come from the QA folder, so a spec folder anywhere else has neither."""
+    if folder is not None and _parent_id(folder) == qa:
+        return True
+    return _parent_id(tr.request("GET", f"/v2/folder/{folder_id}")) == qa
+
+
 class _SpecInit:
     """One spec-init pass, after the QA folder check passed."""
 
@@ -214,6 +228,19 @@ class _SpecInit:
         self.qa_folder = qa_folder
         self.found = found
         self.target = ctx.args.spec
+        self.known = {k: str(self.cfg[k]) for k in ("layout", "doc", "folder") if self.cfg.get(k)}
+
+    def save(self, values: Dict[str, Any], fields: Optional[Dict[str, str]] = None) -> None:
+        """Write what is not in the config yet under `specs.<target>` (and the field ids)."""
+        values = {k: str(v) for k, v in values.items() if v and self.known.get(k) != str(v)}
+        fields = {k: v for k, v in (fields or {}).items() if (self.cfg.get("fields") or {}).get(k) != v}
+        if not values and not fields:
+            return
+        what = ", ".join(sorted(values) + (["field ids"] if fields else []))
+        self.log.act("save-config", f"specs.{self.target}: {what}",
+                     lambda: save_spec(self.ctx, self.target, values, fields))
+        if self.log.apply:
+            self.known.update(values)
 
     def gone(self, key: str, path: str) -> Optional[dict]:
         """GET an id a person put in the config; a 4xx other than a token problem is reported."""
@@ -236,14 +263,9 @@ class _SpecInit:
             return
         folder_id, layout = placed
         doc_id = self.cfg.get("doc") or self.doc(title, folder_id if layout == "subfolder" else self.qa)
-        values = {"layout": layout, "doc": doc_id,
-                  "folder": folder_id if layout == "subfolder" and clickup._real(folder_id or "<") else None}
-        values = {k: str(v) for k, v in values.items() if v and str(self.cfg.get(k) or "") != str(v)}
-        fields = {k: v for k, v in self.found.items() if (self.cfg.get("fields") or {}).get(k) != v}
-        if values or fields:
-            what = ", ".join(sorted(values) + (["field ids"] if fields else []))
-            self.log.act("save-config", f"specs.{self.target}: {what}",
-                         lambda: save_spec(self.ctx, self.target, values, fields))
+        self.save({"layout": layout, "doc": doc_id,
+                   "folder": folder_id if layout == "subfolder" and clickup._real(folder_id or "<") else None},
+                  self.found)
 
     def place(self, title: str) -> Optional[Tuple[Optional[str], str]]:
         """Where the spec's lists live: (subfolder id, "subfolder") or (None, "flat")."""
@@ -257,12 +279,23 @@ class _SpecInit:
             if not home:
                 self.log.skip("not-found", f"specs.{self.target}.list: the list is not in a folder")
                 return None
-            return (None, "flat") if home == self.qa else (home, "subfolder")
+            if home == self.qa:
+                return None, "flat"
+            if not nested(self.tr, self.qa, home):  # exempt from one-folder-per-spec, not from the tree
+                self.log.skip("list-outside", f"specs.{self.target}.list: {LIST_OUTSIDE}")
+                return None
+            return home, "subfolder"
         if folder_id:  # adopted by id, never by name
             folder_id = remote_id(folder_id, f"specs.{self.target}.folder")
             if str(folder_id) == self.qa:
                 return None, "flat"
-            return None if self.gone("folder", f"/v2/folder/{folder_id}") is None else (str(folder_id), "subfolder")
+            info = self.gone("folder", f"/v2/folder/{folder_id}")
+            if info is None:
+                return None
+            if _parent_id(info) != self.qa:  # one this tool made outside, or one a person pasted
+                self.log.skip("subfolder-not-nested", f"{info.get('name') or title}: {NOT_NESTED}")
+                return None
+            return str(folder_id), "subfolder"
         if self.cfg.get("layout") == "flat":
             return None, "flat"
         if _parent_id(self.qa_folder):
@@ -300,10 +333,12 @@ class _SpecInit:
         if not folder_id:
             self.log.skip("api-error", f"{title}: ClickUp returned no folder id")
             return None
-        if _parent_id(r) != self.qa and _parent_id(self.tr.request("GET", f"/v2/folder/{folder_id}")) != self.qa:
-            # the id is still saved, so a second run adopts this folder and never makes another
-            self.log.skip("subfolder-not-nested", f"{title}: ClickUp made the folder outside the QA folder; "
-                                                  f"move it into the QA folder by hand")
+        # saved at once: whatever fails next, the following run adopts this folder by its id and
+        # never makes a second one
+        self.save({"folder": folder_id, "layout": "subfolder"})
+        if not nested(self.tr, self.qa, folder_id, r):
+            self.log.skip("subfolder-not-nested", f"{title}: {NOT_NESTED}")
+            return None
         return folder_id, "subfolder"
 
     def find_docs(self, title: str, parent: str) -> List[dict]:
