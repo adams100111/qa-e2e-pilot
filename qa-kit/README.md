@@ -177,7 +177,7 @@ a `.qa/config.json` and working sign-in for the roles. Run it in the main sessio
 - **The audit and its limits.** `auto.sh audit` runs at the end of every journey and fails it when a
   safety setting, the registry, a seed file, an exclusion, a person-confirmed expected value or a row
   of the starting plan changed, a step has no result, the run was not verified, or ClickUp is behind
-  (<<AUDIT_CODES>>). It reads files the agent can also write. It cannot see a change that was changed
+  (eighteen codes: `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`). It reads files the agent can also write. It cannot see a change that was changed
   back, a baseline and journey rewritten together, or a fresh baseline taken with `--restart` after a
   change (the new journey says `restartedFrom`). It is a tripwire against drift and mistakes, not
   protection against an agent set on defeating it.
@@ -200,7 +200,7 @@ a `.qa/config.json` and working sign-in for the roles. Run it in the main sessio
 - `auto.sh` — the state machine of an unattended journey: `start` / `resume` / `stop` / `status` / `next` / `step-start` / `step-done` / `signin` / `decide` / `second` / `note` / `audit` / `handoff`. Writes only under `.qa/specs/<target>/auto/`; calls no engine script.
 - `oracle-confirm.sh` — `render <checklist> <out.html>`: an offline page (works from `file://`, no network) grouping unconfirmed expected values by business rule, with accept / edit / unknown per row or per group, saving `oracle-decisions.json`; `apply <checklist> <decisions>`: accepted and edited values become `oracleSource: "human"` (backup `checklist.json.bak`), unknown stays as it was. `check-fixtures.sh` also accepts `oracleSource: "spec"` with a contained `citation` `<path>:<line>`. Only `human`/`spec` can ground a high-confidence pass (the engine's ORACLE GATE, ADR-0032).
 
-All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases,surface-access,ship-criteria,coverage-gate,oracle-confirm,qa-tracker,qa-auto,qa-auto-decisions,qa-auto-audit,qa-auto-gate,qa-auto-handoff}/run.sh`
+All are covered by dual-engine tests under `tests/{constitution,spec-snapshot,qa-kit-enforcement,runconfig-merge,data-baseline,check-fixtures,detect-seed,auto-seed,qa-kit-phases,surface-access,ship-criteria,coverage-gate,oracle-confirm,qa-tracker,qa-auto,qa-auto-decisions,qa-auto-audit,qa-auto-gate,qa-auto-handoff,qa-auto-steps,qa-auto-limits,qa-auto-settings,qa-auto-lock,qa-auto-audit-plan,qa-auto-audit-journey}/run.sh`
 (cross-engine byte-identity + malformed-input symmetry). The full **phased ≡ one-shot** verdict
 equivalence needs a live browser agent and is the **manual accuracy run**'s job (`docs/harness-adapters.md`),
 not a headless test.

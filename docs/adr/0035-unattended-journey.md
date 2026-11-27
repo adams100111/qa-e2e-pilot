@@ -84,7 +84,7 @@ application, the known-defect registry, a seed file, a coverage exclusion, a per
 value (added, removed or its expected value changed), a row of the starting plan (removed), or when a
 decision of a forbidden class is on record, a step is marked done without its result, the run has no
 `verification.json`, or ClickUp is behind the results (`tracker.sh spec-status`). The codes are
-<<AUDIT_CODES>>. Once failed it stays failed.
+`baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`. Once failed it stays failed.
 
 What the audit cannot detect, stated plainly. It reads files on the same machine the agent can write.
 It does not see:
