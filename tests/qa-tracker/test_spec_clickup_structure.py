@@ -5,6 +5,12 @@ custom fields, subfolders, lists and their views, tasks with subtasks and checkl
 and Docs. Statuses and custom fields belong to the QA folder's tree: a folder outside it, and
 every list in such a folder, has none. It reflects every write and records every non-GET call.
 Later spec tests import it.
+
+Docs: a new Doc gets one empty page (unless `create_page` is false), pages nest under
+`parent_page_id`, and a page's content is read back re-rendered (blank lines collapsed, the end
+trimmed), as ClickUp gives markdown back in its own layout. A Doc and a page carry a `url` only
+with `doc_urls` on: the reference lists none. A comment sent as parts (`comment`) is read back as
+one text, a `tag` part as `@<user id>`.
 """
 from __future__ import annotations
 
@@ -59,6 +65,8 @@ class SpecFake(Transport):
         self.fail_lands = False        # ... after it landed (True) or before (False)
         self.pending: dict = {}        # list id -> GETs still answered 404 (a list made from a template)
         self.template_statuses = None  # statuses of a list made from a template, when not the folder's
+        self.pages: dict = {}          # doc id -> its pages, in order: {"id", "name", "content", "parent"}
+        self.doc_urls = False          # True: Docs and pages are read back with a `url`
         self.add_list("905", "Bugs", QA)
 
     # -- seeding
@@ -125,6 +133,37 @@ class SpecFake(Transport):
                                 else dict(f) for f in self.fields_of(self.lists[t["list"]["id"]]["folder"])]
         out["checklists"] = [copy.deepcopy(c) for c in self.checklists.values() if c["task_id"] == t["id"]]
         return out
+
+    def comment_text(self, body):
+        """A stored comment as ClickUp reads it back: one text, a mention as `@<user id>`."""
+        if "comment" not in body:
+            return body["comment_text"]
+        return "".join(f"@{part['user']['id']}" if part.get("type") == "tag" else part.get("text", "")
+                       for part in body["comment"])
+
+    def doc_view(self, d):
+        out = copy.deepcopy(d)
+        if self.doc_urls:
+            out["url"] = f"https://app.clickup.com/{WS}/v/dc/{d['id']}"
+        return out
+
+    def page_view(self, doc_id, p, deep=True):
+        out = {"id": p["id"], "doc_id": doc_id, "name": p["name"],
+               "content": re.sub(r"\n{3,}", "\n\n", p["content"]).rstrip()}
+        if p["parent"]:
+            out["parent_page_id"] = p["parent"]
+        if self.doc_urls:
+            out["url"] = f"https://app.clickup.com/{WS}/v/dc/{doc_id}/{p['id']}"
+        if deep:
+            out["pages"] = [self.page_view(doc_id, c) for c in self.pages[doc_id] if c["parent"] == p["id"]]
+        return out
+
+    def page_named(self, doc_id, name, parent=None):
+        """The one page of a Doc with this name under this parent page (by name; None is the top)."""
+        top = None if parent is None else self.page_named(doc_id, parent)["id"]
+        found = [p for p in self.pages[doc_id] if p["name"] == name and p["parent"] == top]
+        assert len(found) == 1, f"{name}: {len(found)} pages"
+        return found[0]
 
     def bad(self, method, path, why):
         raise ApiError(method, path, 400, why)
@@ -237,7 +276,7 @@ class SpecFake(Transport):
                 self.comments.setdefault(t["id"], []).append(body)
                 return {"id": self.new_id("c")}
             if sub == "/comment" and method == "GET":  # newest first, as ClickUp answers
-                rows = [{"comment_text": c["comment_text"], "date": str(1795000000000 + i)}
+                rows = [{"comment_text": self.comment_text(c), "date": str(1795000000000 + i)}
                         for i, c in enumerate(self.comments.get(t["id"], []))]
                 return {"comments": rows[::-1]}
             if sub == "/checklist" and method == "POST":
@@ -260,7 +299,34 @@ class SpecFake(Transport):
             did = self.new_id("d")
             self.docs[did] = {"id": did, "name": body.get("name", ""), "parent": copy.deepcopy(body.get("parent")),
                               "deleted": False, "archived": False}
-            return copy.deepcopy(self.docs[did])
+            self.pages[did] = []
+            if body.get("create_page", True):
+                self.pages[did].append({"id": self.new_id("p"), "name": "", "content": "", "parent": None})
+            return self.doc_view(self.docs[did])
+        m = re.fullmatch(rf"/v3/workspaces/{WS}/docs/(\w+)(/pages(?:\?.*)?|/pages/(\w+))?", path)
+        if m and m.group(1) in self.docs:
+            did, sub, pid = m.group(1), m.group(2), m.group(3)
+            pages = self.pages.setdefault(did, [])
+            if sub is None and method == "GET":
+                return self.doc_view(self.docs[did])
+            if sub and pid is None and method == "GET":
+                return [self.page_view(did, p) for p in pages if p["parent"] is None]
+            if sub == "/pages" and method == "POST":
+                parent = body.get("parent_page_id")
+                if parent is not None and parent not in {p["id"] for p in pages}:
+                    self.bad(method, path, "Parent page not found")
+                if body.get("content_format", "text/md") != "text/md":
+                    self.bad(method, path, "Unknown content format")
+                page = {"id": self.new_id("p"), "name": body.get("name", ""), "content": body.get("content", ""),
+                        "parent": parent}
+                pages.append(page)
+                return self.page_view(did, page, deep=False)
+            page = next((p for p in pages if p["id"] == pid), None)
+            if page is not None and method == "PUT":
+                if body.get("content_edit_mode", "replace") != "replace":
+                    self.bad(method, path, "Only a whole replace is expected")
+                page.update({k: body[k] for k in ("name", "content") if k in body})
+                return {}
         raise ApiError(method, path, 404, "unhandled in SpecFake")
 
 
