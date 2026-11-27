@@ -35,6 +35,7 @@
 #   auto.sh second <target> --unavailable          -> {"marked":[<ids newly left for a person>]}
 #   auto.sh note   <target> --kind seed-not-run|check-left-out --text <text>
 #                                                  -> the new note's id (`N<n>`)
+#   auto.sh audit  <target>                        -> {"ok":bool,"violations":[…]}; exit 1 when not ok
 #
 #   start, resume, stop, status, step-start and step-done print ONE JSON line: journey.json plus
 #   {"needsPerson": n}. status writes nothing. next and signin print their own one line.
@@ -49,6 +50,49 @@
 # and writes `secondLook: "unavailable"` into journey.json. `note` appends {id, kind, text, at} to
 # notes.json. All three verbs need an open journey. Free text is passed to the engines as
 # arguments, never as program text, so it is stored exactly as given.
+#
+# AUDIT: `audit` compares the files as they are now with baseline.json and with the journey's own
+# record, and never takes the caller's word. It may run on an open, done or stopped journey. Every
+# check runs; the codes are printed sorted. A passing audit writes nothing. A failed audit makes
+# the journey `stopped` / `audit` (also a journey that was done), with the codes joined by `, ` in
+# `stop.detail`, the list in `auditViolations` and the earlier stop, if any, in `stopBeforeAudit`.
+# Once failed it stays failed: a later audit reports the earlier codes plus what it finds. Codes:
+#   baseline-missing                    there is no baseline.json
+#   baseline-changed                    baseline.json is not the file `start` wrote (its SHA-256 is kept
+#                                       in journey.json as `baselineHash`), or it no longer parses
+#   safety-setting-changed:<key>        a SAFETY_KEYS value of .qa/config.json differs from the baseline
+#                                       (by value: key order and number spelling do not count; a
+#                                       changed type does). An unreadable config fails every key.
+#   run-config-safety:<key>             the spec's run-config.json differs from the baseline in that
+#                                       safety key (added, changed or removed), except `profile` set
+#                                       to the launch profile
+#   known-defects-changed               .qa/known-defects.json has other bytes, appeared or is gone
+#   human-oracle-added:<criterion id>   a plan row is `oracleSource: "human"` and was not at the start
+#   human-oracle-removed:<criterion id> a row that was `human` at the start still exists and is not now
+#   plan-row-removed:<criterion id>     a row of the starting plan is gone (adding rows is allowed)
+#   plan-unreadable                     checklist.json is not one JSON array
+#   seed-added                          seed.json exists and did not at the start
+#   exclusion-added                     coverage-exclusions.json has an entry the baseline does not
+#                                       (or is unreadable, or no longer an array)
+#   forbidden-decision:<id>             decisions.json holds a record whose class is not one a journey
+#                                       may decide (`#<n>`, its place in the file, when it has no id)
+#   decisions-unreadable                decisions.json is not one JSON array
+#   step-without-result:<step>          a step other than verify is marked done and its result is not
+#                                       on disk (the checks `step-done` makes)
+#   not-verified                        the journey is done, or its verify step is, and the recorded
+#                                       run has no verification.json
+#   tracker-behind                      `${QA_AUTO_TRACKER_CMD:-bash <this directory>/tracker.sh}
+#                                       spec-status --spec <target> --project <dir>` failed, gave no
+#                                       answer, or printed a JSON line whose `behind` is not false.
+#                                       Output with `not-set-up` and exit 0 is not a violation. The
+#                                       command's stderr is never shown. It is stopped after
+#                                       QA_AUTO_TRACKER_TIMEOUT seconds (default 60) when `timeout` or
+#                                       `gtimeout` is installed; without either there is no time guard.
+# What the audit cannot see: a value changed and changed back before the audit; a baseline.json
+# and journey.json rewritten together to agree (or a new baseline taken with `start --restart`
+# after a change); a safety key that went from absent to an explicit null (both read as null); a
+# changed expected value on a row that stays `human`; a plan row without a string id; a tracker
+# command replaced through the environment.
 #
 # STEP ORDER: `next` names the first step that is not done; `step-start` and `step-done` take only
 # that step. `step-done` looks for the step's result on disk (the checks /qa-status makes) and
@@ -67,7 +111,9 @@
 # helpers below (parse_common, journey_load, journey_read, journey_require_open, journey_require_open_strict,
 # rows_commit, one_of, text_given, json_get/json_strs/
 # json_pick/json_merge, journey_stepset, stop_journey, print_status, print_stopped, now_iso,
-# iso_add_hours, iso_epoch, step_artifact_done, step_state, first_open_step, signin_json, read_lines).
+# iso_add_hours, iso_epoch, step_artifact_done, step_state, first_open_step, signin_json, read_lines,
+# checklist_ids, file_state, hash_or). A new audit check goes into BOTH JQ_AUDIT and the `audit` op
+# of PY_HELPERS, or, when it needs no JSON, into audit_steps with `code <fixed word>`.
 set -uo pipefail
 
 # ---------------------------------------------------------------------------------------------
@@ -102,6 +148,7 @@ usage: auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--m
        auto.sh second <target> <decision-id> stands|ask --reason <text> [--project <dir>]
        auto.sh second <target> --unavailable [--project <dir>]
        auto.sh note   <target> --kind seed-not-run|check-left-out --text <text> [--project <dir>]
+       auto.sh audit  <target> [--project <dir>]
 EOF
   exit 2
 }
@@ -171,6 +218,18 @@ def rows_out(line, rows):
     # the result line, then the whole array as it goes back to the file
     sys.stdout.buffer.write((line + "\n").encode("utf-8"))
     emit(rows, pretty=True)
+def plan_ids(rows):
+    # (ids of the rows whose expected value a person confirmed, every row id) of a plan
+    human, every = set(), set()
+    for r in (rows if isinstance(rows, list) else []):
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str):
+            continue
+        every.add(r["id"])
+        fx = r.get("fixture")
+        ex = fx.get("expect") if isinstance(fx, dict) else None
+        if isinstance(ex, dict) and ex.get("oracleSource") == "human":
+            human.add(r["id"])
+    return human, every
 def walk(d, path):
     if path == "":
         return True, d
@@ -218,17 +277,139 @@ try:
     elif op == "addhours":
         t = calendar.timegm(time.strptime(a[0], "%Y-%m-%dT%H:%M:%SZ")) + math.floor(float(a[1]) * 3600)
         sys.stdout.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) + "\n")
-    elif op == "humanids":
-        rows = load(a[0])
-        ids = set()
-        for r in (rows if isinstance(rows, list) else []):
-            if not isinstance(r, dict):
+    elif op == "planids":
+        # two lines: the ids of the person-confirmed rows, then every row id
+        human, every = plan_ids(load(a[0]))
+        emit(sorted(human))
+        emit(sorted(every))
+    elif op == "audit":
+        # The file checks of `audit`, in one pass. Arguments: journey, then a state (1 there,
+        # 0 absent, ! there but not a readable file) and a path for each of baseline, config,
+        # run-config, plan, exclusions and decisions, then: the hash of the baseline now, the
+        # hash of the known-defect registry now (empty when absent), 1|0 seed.json exists, now, the
+        # safety keys, the decidable classes, and the codes the shell already found (space lists).
+        # Prints the result line, then (only when the journey changes) the new journey.json.
+        jf, bs, bf, cs, cf, rs, rf, ps, pf, es, ef, ds, df, bhash, kdhash, seed, now, keys, classes, extra = a[:20]
+        keys = keys.split(" ")
+        classes = classes.split(" ")
+        def rd(state, path, empty_ok=False):
+            # (readable, value) of one JSON document
+            if state != "1":
+                return False, None
+            try:
+                with open(path, "rb") as f:
+                    t = f.read().decode("utf-8")
+                if t.startswith("﻿"):
+                    t = t[1:]
+                if t.strip(" \t\r\n") == "":
+                    return (True, []) if empty_ok else (False, None)
+                return True, json.loads(t)
+            except Exception:
+                return False, None
+        def same(x, y):
+            # equality as jq has it: no bool/number mixing, numbers by value, objects by content
+            if isinstance(x, bool) or isinstance(y, bool):
+                return isinstance(x, bool) and isinstance(y, bool) and x == y
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                return x == y
+            if isinstance(x, dict) and isinstance(y, dict):
+                return x.keys() == y.keys() and all(same(x[k], y[k]) for k in x)
+            if isinstance(x, list) and isinstance(y, list):
+                return len(x) == len(y) and all(same(p, q) for p, q in zip(x, y))
+            return type(x) == type(y) and x == y
+        def strs(v):
+            return set(x for x in v if isinstance(x, str)) if isinstance(v, list) else None
+        ok, j = rd("1", jf)
+        if not ok or not isinstance(j, dict):
+            sys.exit(1)
+        codes = set(x for x in extra.split(" ") if x)
+        if bs == "0":
+            codes.add("baseline-missing")
+        else:
+            ok, b = rd(bs, bf)
+            ok = ok and isinstance(b, dict)
+            if not ok or j.get("baselineHash") != bhash:
+                codes.add("baseline-changed")
+            if ok:
+                # safety settings of the project config
+                okc, c = rd(cs, cf)
+                bsaf = b.get("safety") if isinstance(b.get("safety"), dict) else None
+                for k in keys:
+                    found, v = walk(c, k)
+                    if not okc or bsaf is None or k not in bsaf or not same(v if found else None, bsaf[k]):
+                        codes.add("safety-setting-changed:" + k)
+                # safety keys of the run-config of the spec
+                okr, r = (True, {}) if rs == "0" else rd(rs, rf)
+                brc = b.get("runConfigSafety") if isinstance(b.get("runConfigSafety"), dict) else None
+                for k in keys:
+                    found, v = walk(r, k)
+                    if not okr or brc is None:
+                        codes.add("run-config-safety:" + k)
+                    elif k == "profile" and found and isinstance(b.get("profile"), str) and same(v, b["profile"]):
+                        pass
+                    elif found != (k in brc) or (found and not same(v, brc[k])):
+                        codes.add("run-config-safety:" + k)
+                # the known-defect registry, by its bytes
+                if not same(kdhash if kdhash else None, b.get("knownDefectsHash")):
+                    codes.add("known-defects-changed")
+                # the plan
+                okp, rows = (True, []) if ps == "0" else rd(ps, pf)
+                if not okp or not isinstance(rows, list):
+                    codes.add("plan-unreadable")
+                else:
+                    bh = strs(b.get("humanOracleIds")) or set()
+                    br = strs(b.get("planRowIds"))
+                    ch, cr = plan_ids(rows)
+                    gone = (br - cr) if br is not None else set()
+                    codes.update("human-oracle-added:" + i for i in ch - bh)
+                    codes.update("plan-row-removed:" + i for i in gone)
+                    codes.update("human-oracle-removed:" + i for i in bh - ch - gone)
+                if seed == "1" and b.get("seedExists") is not True:
+                    codes.add("seed-added")
+                if es != "0":
+                    oke, cur = rd(es, ef)
+                    base = b.get("exclusions")
+                    if not oke:
+                        codes.add("exclusion-added")
+                    elif isinstance(base, list) and isinstance(cur, list):
+                        if any(not any(same(x, y) for y in base) for x in cur):
+                            codes.add("exclusion-added")
+                    elif not same(cur, base):
+                        codes.add("exclusion-added")
+        if ds != "0":
+            okd, rows = rd(ds, df, empty_ok=True)
+            if not okd or not isinstance(rows, list):
+                codes.add("decisions-unreadable")
+            else:
+                for n, r in enumerate(rows):
+                    if isinstance(r, dict) and not (isinstance(r.get("class"), str) and r["class"] in classes):
+                        i = r.get("id")
+                        codes.add("forbidden-decision:" + (i if isinstance(i, str) else "#%d" % (n + 1)))
+        st = j.get("stop")
+        failed = j.get("state") == "stopped" and isinstance(st, dict) and st.get("reason") == "audit"
+        if failed:
+            codes.update(strs(j.get("auditViolations")) or set())
+        allc = sorted(codes)
+        bad = failed or len(allc) > 0
+        line = "{\"ok\":%s,\"violations\":%s}" % ("false" if bad else "true", json.dumps(allc, separators=(",", ":"), ensure_ascii=False).replace("\x7f", "\\u007f"))
+        if not bad or (failed and j.get("auditViolations") == allc):
+            sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+        else:
+            if not failed:
+                j.update({"state": "stopped", "endedAt": now, "stopBeforeAudit": st})
+            j.update({"stop": {"reason": "audit", "detail": ", ".join(allc)}, "auditViolations": allc})
+            rows_out(line, j)
+    elif op == "behind":
+        # tracker output on stdin -> behind | ok | none
+        seen = []
+        for line in sys.stdin.buffer.read().decode("utf-8", "replace").split("\n"):
+            try:
+                v = json.loads(line)
+            except Exception:
                 continue
-            fx = r.get("fixture")
-            ex = fx.get("expect") if isinstance(fx, dict) else None
-            if isinstance(ex, dict) and ex.get("oracleSource") == "human" and isinstance(r.get("id"), str):
-                ids.add(r["id"])
-        emit(sorted(ids))
+            if isinstance(v, dict) and "behind" in v:
+                seen.append(v["behind"])
+        sys.stdout.write("none\n" if not seen else ("ok\n" if all(x is False for x in seen) else "behind\n"))
     elif op == "journey":
         d = load(a[0])
         if not isinstance(d, dict):
@@ -423,14 +604,18 @@ json_count_true() {
     jq -c --arg k "$2" '[ (if type == "array" then .[] else empty end) | select(type == "object") | select(.[$k] == true) ] | length' "$1" 2>/dev/null
   else py counttrue "$1" "$2" 2>/dev/null; fi
 }
-# checklist_human_ids <checklist.json> — sorted ids of the rows whose fixture.expect.oracleSource is "human".
-checklist_human_ids() {
+# JQ_PLAN — jq side of the plan readers. `plan_rows` is the rows of a plan that have a string id;
+# `human_ids` the sorted ids of those whose fixture.expect.oracleSource is "human"; `row_ids` all ids.
+JQ_PLAN='def plan_rows: [ (if type == "array" then .[] else empty end) | select(type == "object" and (.id | type) == "string") ];
+  def human_ids: [ .[] | select((.fixture | type) == "object" and (.fixture.expect | type) == "object"
+                                and .fixture.expect.oracleSource == "human") | .id ] | unique;
+  def row_ids: [ .[] | .id ] | unique;'
+# checklist_ids <checklist.json> — two lines: the sorted ids of the rows whose
+# fixture.expect.oracleSource is "human", then the sorted ids of every row.
+checklist_ids() {
   if [ "$ENGINE" = jq ]; then
-    jq -c '[ (if type == "array" then .[] else empty end) | select(type == "object")
-             | select((.fixture | type) == "object" and (.fixture.expect | type) == "object"
-                      and .fixture.expect.oracleSource == "human")
-             | .id | strings ] | unique' "$1" 2>/dev/null
-  else py humanids "$1" 2>/dev/null; fi
+    jq -c "$JQ_PLAN"' plan_rows | human_ids, row_ids' "$1" 2>/dev/null
+  else py planids "$1" 2>/dev/null; fi
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -896,7 +1081,7 @@ file_sha256() {
 }
 # baseline_json <profile> <now> — prints the baseline (compact JSON) from the files as they are now.
 baseline_json() {
-  local profile="$1" now="$2" safety rcs ids excl kd seed
+  local profile="$1" now="$2" safety rcs ids rows excl kd seed
   # shellcheck disable=SC2086
   safety="$(json_pick "$CONFIG" all $SAFETY_KEYS)"
   [ -n "$safety" ] || die ".qa/config.json is not valid JSON"
@@ -906,10 +1091,11 @@ baseline_json() {
     rcs="$(json_pick "$SPEC_DIR/run-config.json" present $SAFETY_KEYS)"
     [ -n "$rcs" ] || die ".qa/specs/$TARGET/run-config.json is not valid JSON"
   fi
-  ids="[]"
+  # planRowIds is null when there is no plan yet: the audit then has no starting rows to miss.
+  ids="[]"; rows=null
   if [ -f "$SPEC_DIR/checklist.json" ]; then
-    ids="$(checklist_human_ids "$SPEC_DIR/checklist.json")"
-    [ -n "$ids" ] || die ".qa/specs/$TARGET/checklist.json is not valid JSON"
+    read_lines "$(checklist_ids "$SPEC_DIR/checklist.json")" ids rows
+    [ -n "$ids" ] && [ -n "$rows" ] || die ".qa/specs/$TARGET/checklist.json is not valid JSON"
   fi
   excl="[]"
   if [ -f "$SPEC_DIR/coverage-exclusions.json" ]; then
@@ -918,8 +1104,8 @@ baseline_json() {
   fi
   seed=false; [ -f "$SPEC_DIR/seed.json" ] && seed=true
   kd=null; [ -f "$QA_DIR/known-defects.json" ] && kd="\"$(file_sha256 "$QA_DIR/known-defects.json")\""
-  printf '{"version":1,"target":%s,"takenAt":"%s","profile":"%s","safety":%s,"runConfigSafety":%s,"humanOracleIds":%s,"seedExists":%s,"exclusions":%s,"knownDefectsHash":%s}\n' \
-    "$(target_json)" "$now" "$profile" "$safety" "$rcs" "$ids" "$seed" "$excl" "$kd"
+  printf '{"version":1,"target":%s,"takenAt":"%s","profile":"%s","safety":%s,"runConfigSafety":%s,"humanOracleIds":%s,"planRowIds":%s,"seedExists":%s,"exclusions":%s,"knownDefectsHash":%s}\n' \
+    "$(target_json)" "$now" "$profile" "$safety" "$rcs" "$ids" "$rows" "$seed" "$excl" "$kd"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -995,8 +1181,11 @@ cmd_start() {
   archive_journey
   mkdir -p "$AUTO_DIR" || die "could not create .qa/specs/$TARGET/auto"
   printf '%s\n' "$base" | json_write "$BASELINE"
-  printf '{"version":1,"target":%s,"profile":"%s","startedAt":"%s","deadline":"%s","until":%s,"steps":[%s],"analyzeRounds":0,"runId":null,"state":"open","stop":null,"endedAt":null}\n' \
-    "$(target_json)" "$profile" "$now" "$deadline" "$until_json" "$steps" \
+  # The journey keeps the hash of the baseline as written, so the audit can tell a rewritten one.
+  local bhash
+  bhash="$(file_sha256 "$BASELINE")" || exit 1
+  printf '{"version":1,"target":%s,"profile":"%s","startedAt":"%s","deadline":"%s","until":%s,"steps":[%s],"analyzeRounds":0,"runId":null,"state":"open","stop":null,"endedAt":null,"baselineHash":"%s"}\n' \
+    "$(target_json)" "$profile" "$now" "$deadline" "$until_json" "$steps" "$bhash" \
     | json_write "$JOURNEY"
   print_status
 }
@@ -1325,6 +1514,202 @@ cmd_note() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# The audit (design B5): files against the baseline, never the caller's account
+# ---------------------------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The codes the shell finds itself (steps, tracker): fixed words only, kept as one space list.
+CODES=""
+code() { CODES="$CODES $1"; }
+# hash_or <file> — the file's SHA-256, or the word `unreadable` (never dies).
+hash_or() {
+  local h
+  h="$(file_sha256 "$1" 2>/dev/null)" || h=""
+  [ -n "$h" ] || h=unreadable
+  printf '%s\n' "$h"
+}
+# file_state <path> — sets FS_STATE (`1` a file, `0` nothing there, `!` there but not a file that
+# can be read, such as a link that leads nowhere) and FS_PATH (the path, or /dev/null).
+FS_STATE=0; FS_PATH=/dev/null
+file_state() {
+  if [ -f "$1" ] && [ -r "$1" ]; then FS_STATE=1; FS_PATH="$1"
+  elif [ -e "$1" ] || [ -L "$1" ]; then FS_STATE="!"; FS_PATH=/dev/null
+  else FS_STATE=0; FS_PATH=/dev/null; fi
+}
+# The jq side of the audit's file checks (the python side is the `audit` op of PY_HELPERS; the two
+# are kept line for line alike). See the header for what each code means.
+JQ_AUDIT='
+  def rd($state; $text):
+    if $state != "1" or ($text | test("^[ \t\r\n]*$")) then {ok: false, v: null}
+    else (try {ok: true, v: ($text | fromjson)} catch {ok: false, v: null}) end;
+  def look($d; $p): ($p | split(".")) as $k
+    | if (try ($d | getpath($k[:-1]) | (type == "object" and has($k[-1]))) catch false)
+      then {found: true, v: ($d | getpath($k))} else {found: false, v: null} end;
+  def strs: if type == "array" then map(strings) else null end;
+  rd("1"; $jt) as $jr
+  | (if $jr.ok and ($jr.v | type) == "object" then $jr.v else error("not a journey") end) as $j
+  | ($keys | split(" ")) as $keys
+  | ($classes | split(" ")) as $classes
+  | [ $extra | split(" ")[] | select(length > 0) ] as $extra
+  | (if $bs == "0" then ["baseline-missing"]
+     else
+       rd($bs; $bt) as $b
+       | ($b.ok and ($b.v | type) == "object") as $ok
+       | (if ($ok | not) or $j.baselineHash != $bhash then ["baseline-changed"] else [] end)
+       + (if ($ok | not) then [] else
+           $b.v as $base
+           # safety settings of the project config
+           | rd($cs; $ct) as $c
+           | ($base.safety | if type == "object" then . else null end) as $bsaf
+           | [ $keys[] | . as $k | look($c.v; $k) as $l
+               | select(($c.ok | not) or $bsaf == null or ($bsaf | has($k) | not) or $l.v != $bsaf[$k])
+               | "safety-setting-changed:" + $k ]
+           # safety keys of the spec run-config
+           + ((if $rs == "0" then {ok: true, v: {}} else rd($rs; $rt) end) as $r
+              | ($base.runConfigSafety | if type == "object" then . else null end) as $brc
+              | [ $keys[] | . as $k | look($r.v; $k) as $l
+                  | select(if ($r.ok | not) or $brc == null then true
+                           elif $k == "profile" and $l.found and ($base.profile | type) == "string" and $l.v == $base.profile then false
+                           else ($l.found != ($brc | has($k))) or ($l.found and $l.v != $brc[$k]) end)
+                  | "run-config-safety:" + $k ])
+           # the known-defect registry, by its bytes
+           + (if (if $kdhash == "" then null else $kdhash end) != $base.knownDefectsHash then ["known-defects-changed"] else [] end)
+           # the plan
+           + ((if $ps == "0" then {ok: true, v: []} else rd($ps; $pt) end) as $pl
+              | if ($pl.ok and ($pl.v | type) == "array") | not then ["plan-unreadable"]
+                else
+                  (($base.humanOracleIds | strs) // []) as $bh
+                  | ($base.planRowIds | strs) as $br
+                  | ($pl.v | plan_rows) as $rows
+                  | ($rows | human_ids) as $ch
+                  | ($rows | row_ids) as $cr
+                  | (if $br == null then [] else $br - $cr end) as $gone
+                  | [ ($ch - $bh)[] | "human-oracle-added:" + . ] + [ $gone[] | "plan-row-removed:" + . ]
+                    + [ ($bh - $ch - $gone)[] | "human-oracle-removed:" + . ]
+                end)
+           + (if $seed == "1" and $base.seedExists != true then ["seed-added"] else [] end)
+           + (if $es == "0" then []
+              else
+                rd($es; $et) as $e
+                | $base.exclusions as $be
+                | if ($e.ok | not) then ["exclusion-added"]
+                  elif ($be | type) == "array" and ($e.v | type) == "array"
+                  then (if any($e.v[]; . as $x | all($be[]; . != $x)) then ["exclusion-added"] else [] end)
+                  elif $e.v != $be then ["exclusion-added"] else [] end
+              end)
+         end)
+     end) as $files
+  | (if $ds == "0" then []
+     else
+       (if $ds == "1" and ($dt | test("^[ \t\r\n]*$")) then {ok: true, v: []} else rd($ds; $dt) end) as $d
+       | if ($d.ok and ($d.v | type) == "array") | not then ["decisions-unreadable"]
+         else [ $d.v | to_entries[] | select(.value | type == "object")
+                | select(.value.class as $c | (($c | type) == "string" and any($classes[]; . == $c)) | not)
+                | "forbidden-decision:" + (if (.value.id | type) == "string" then .value.id else "#\(.key + 1)" end) ]
+         end
+     end) as $decided
+  | ($j.state == "stopped" and ($j.stop | type) == "object" and $j.stop.reason == "audit") as $failed
+  | ($files + $decided + $extra + (if $failed then (($j.auditViolations | strs) // []) else [] end) | unique) as $all
+  | ($failed or ($all | length) > 0) as $bad
+  | "{\"ok\":\($bad | not),\"violations\":\($all | tojson)}",
+    (if ($bad | not) or ($failed and $j.auditViolations == $all) then empty
+     else
+       $j + (if $failed then {} else {state: "stopped", endedAt: $now, stopBeforeAudit: $j.stop} end)
+          + {stop: {reason: "audit", detail: ($all | join(", "))}, auditViolations: $all}
+       | norm
+     end)'
+# audit_files — every check that reads the project's files against baseline.json and the journey's
+# own record, in one engine call. Prints the result line and, when the journey changes, the new
+# journey.json after it (the shape rows_commit takes).
+audit_files() {
+  local bs bf cs cf rs rf ps pf es ef ds df bhash="" kdhash="" seed=0 now
+  file_state "$BASELINE"; bs="$FS_STATE"; bf="$FS_PATH"
+  [ "$bs" = 1 ] && bhash="$(hash_or "$BASELINE")"
+  file_state "$CONFIG"; cs="$FS_STATE"; cf="$FS_PATH"
+  file_state "$SPEC_DIR/run-config.json"; rs="$FS_STATE"; rf="$FS_PATH"
+  file_state "$SPEC_DIR/checklist.json"; ps="$FS_STATE"; pf="$FS_PATH"
+  file_state "$SPEC_DIR/coverage-exclusions.json"; es="$FS_STATE"; ef="$FS_PATH"
+  file_state "$DECISIONS"; ds="$FS_STATE"; df="$FS_PATH"
+  file_state "$QA_DIR/known-defects.json"; [ "$FS_STATE" = 0 ] || kdhash="$(hash_or "$QA_DIR/known-defects.json")"
+  file_state "$SPEC_DIR/seed.json"; [ "$FS_STATE" = 0 ] || seed=1
+  now="$(now_iso)" || exit 1
+  if [ "$ENGINE" = jq ]; then
+    jq -rnS --rawfile jt "$JOURNEY" --rawfile bt "$bf" --rawfile ct "$cf" --rawfile rt "$rf" --rawfile pt "$pf" \
+      --rawfile et "$ef" --rawfile dt "$df" --arg bs "$bs" --arg cs "$cs" --arg rs "$rs" --arg ps "$ps" --arg es "$es" \
+      --arg ds "$ds" --arg bhash "$bhash" --arg kdhash "$kdhash" --arg seed "$seed" --arg now "$now" \
+      --arg keys "$SAFETY_KEYS" --arg classes "$DECIDABLE_CLASSES" --arg extra "$CODES" "$JQ_DEFS $JQ_PLAN $JQ_AUDIT" 2>/dev/null
+  else
+    py audit "$JOURNEY" "$bs" "$bf" "$cs" "$cf" "$rs" "$rf" "$ps" "$pf" "$es" "$ef" "$ds" "$df" \
+      "$bhash" "$kdhash" "$seed" "$now" "$SAFETY_KEYS" "$DECIDABLE_CLASSES" "$CODES" 2>/dev/null
+  fi
+}
+# audit_steps — a step marked done whose result is not on disk; a finished journey nobody verified.
+# A step the journey never reached is not looked at.
+audit_steps() {
+  local s
+  for s in constitution spec scenarios analyze run; do
+    [ "$(step_state "$s")" = done ] || continue
+    step_artifact_done "$s" "$J_RUN" || code "step-without-result:$s"
+  done
+  if [ "$J_STATE" = done ] || [ "$(step_state verify)" = done ]; then
+    step_artifact_done verify "$J_RUN" || code not-verified
+  fi
+}
+# audit_tracker — ask the tracker whether the spec's cards are behind. Only its exit code and its
+# stdout are used; its stderr is dropped, because it can carry an API error line.
+audit_tracker() {
+  local out rc guard="" secs="${QA_AUTO_TRACKER_TIMEOUT:-60}" verdict
+  case "$secs" in ""|*[!0-9]*) secs=60 ;; esac
+  # A time guard only where one is installed (macOS has no `timeout` of its own).
+  if command -v timeout >/dev/null 2>&1; then guard=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then guard=gtimeout; fi
+  if [ -n "${QA_AUTO_TRACKER_CMD+x}" ]; then
+    set -f
+    # shellcheck disable=SC2086
+    set -- $QA_AUTO_TRACKER_CMD
+    set +f
+  else
+    set -- bash "$SCRIPT_DIR/tracker.sh"
+  fi
+  if [ "$#" -eq 0 ]; then code tracker-behind; return 0; fi
+  if [ -n "$guard" ]; then
+    out="$("$guard" "$secs" "$@" spec-status --spec "$TARGET" --project "$PROJECT" 2>/dev/null </dev/null)"; rc=$?
+  else
+    out="$("$@" spec-status --spec "$TARGET" --project "$PROJECT" 2>/dev/null </dev/null)"; rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then code tracker-behind; return 0; fi
+  case "$out" in
+    *'"behind"'*)
+      if [ "$ENGINE" = jq ]; then
+        verdict="$(printf '%s\n' "$out" | jq -Rrn '[ inputs | (try fromjson catch null) | objects | select(has("behind")) | .behind ]
+          | if length == 0 then "none" elif all(.[]; . == false) then "ok" else "behind" end' 2>/dev/null)" || verdict=none
+      else
+        verdict="$(printf '%s\n' "$out" | py behind 2>/dev/null)" || verdict=none
+      fi
+      [ "$verdict" = ok ] || code tracker-behind ;;
+    *not-set-up*) ;;
+    *) code tracker-behind ;;
+  esac
+}
+
+cmd_audit() {
+  parse_common "$@"
+  [ "${#REST[@]}" -eq 0 ] || usage "audit does not take: ${REST[0]}"
+  need_engine
+  [ -f "$JOURNEY" ] || die "no journey for $TARGET"
+  journey_read
+  in_list "$J_STATE" "open done stopped" || die "journey.json for $TARGET is not readable"
+  CODES=""
+  audit_steps
+  audit_tracker
+  local out
+  out="$(audit_files)" && [ -n "$out" ] || die "journey.json for $TARGET is not readable"
+  # A failed audit closes the journey as stopped / audit; a passing one writes nothing.
+  rows_commit "$JOURNEY" "$out"
+  printf '%s\n' "$ROWS_LINE"
+  case "$ROWS_LINE" in '{"ok":true,'*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------------------------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------------------------
 VERB="${1:-}"
@@ -1341,5 +1726,6 @@ case "$VERB" in
   decide)     cmd_decide "$@" ;;
   second)     cmd_second "$@" ;;
   note)       cmd_note "$@" ;;
+  audit)      cmd_audit "$@" ;;
   *)      usage ;;
 esac

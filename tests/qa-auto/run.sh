@@ -65,7 +65,7 @@ run_engine() {
   check "$E profile defaults to the config's" "$(jv "$J" 'd["profile"]')" "full"
   check "$E startedAt is the injected now" "$(jv "$J" 'd["startedAt"]')" "$NOW_DEFAULT"
   check "$E deadline is six hours later" "$(jv "$J" 'd["deadline"]')" "2026-11-27T14:00:00Z"
-  check "$E J3 keys exactly" "$(jv "$J" '",".join(sorted(d.keys()))')" "analyzeRounds,deadline,endedAt,profile,runId,startedAt,state,steps,stop,target,until,version"
+  check "$E J3 keys exactly" "$(jv "$J" '",".join(sorted(d.keys()))')" "analyzeRounds,baselineHash,deadline,endedAt,profile,runId,startedAt,state,steps,stop,target,until,version"
   check "$E J3 nulls and zero" "$(jv "$J" '[d["until"],d["runId"],d["stop"],d["endedAt"],d["analyzeRounds"]]')" "[null, null, null, null, 0]"
   check "$E start prints the journey" "$(js "$out" 'd["state"]+"/"+str(d["needsPerson"])')" "open/0"
   check "$E baseline safety keys" "$(jv "$B" '",".join(sorted(d["safety"].keys()))')" "allowApiWrites,allowBlackboxCrawl,environment,gates,humanInteraction.enforce,humanInteraction.maxOptOutRate,profile,seedableEnvMarker"
