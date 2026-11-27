@@ -2,7 +2,9 @@
 
 `SpecFake` models what the spec layout touches: the QA folder with its statuses and folder-level
 custom fields, subfolders, lists and their views, tasks with subtasks and checklists, comments
-and Docs. It reflects every write and records every non-GET call. Later spec tests import it.
+and Docs. Statuses and custom fields belong to the QA folder's tree: a folder outside it, and
+every list in such a folder, has none. It reflects every write and records every non-GET call.
+Later spec tests import it.
 """
 from __future__ import annotations
 
@@ -51,6 +53,7 @@ class SpecFake(Transport):
         self.docs: dict = {}
         self.n = 0
         self.subfolders_ok = True      # False: the subfolder create answers HTTP 400
+        self.nest_subfolders = True    # False: the create ignores the parent and makes a top-level folder
         self.task_creates = 0
         self.fail_task_create_at = 0   # the task create with this number fails with HTTP 500 ...
         self.fail_lands = False        # ... after it landed (True) or before (False)
@@ -92,9 +95,20 @@ class SpecFake(Transport):
 
     # -- views of stored objects
 
+    def in_tree(self, fid):
+        """The QA folder or one of its subfolders: only there do its statuses and fields exist."""
+        return fid == QA or (fid in self.folders and self.folders[fid]["parent"] == QA)
+
+    def fields_of(self, fid):
+        return self.folder_fields if self.in_tree(fid) else []
+
+    def statuses_of(self, lid):
+        l = self.lists[lid]
+        return (l.get("statuses") or self.statuses) if self.in_tree(l["folder"]) else []
+
     def folder_view(self, f):
         out = {"id": f["id"], "name": f["name"], "space": {"id": SPACE},
-               "statuses": [{"status": s} for s in self.statuses],
+               "statuses": [{"status": s} for s in (self.statuses if self.in_tree(f["id"]) else [])],
                "lists": [{"id": l["id"], "name": l["name"]} for l in self.lists.values()
                          if l["folder"] == f["id"] and not l["archived"]]}
         if f["parent"]:
@@ -103,12 +117,12 @@ class SpecFake(Transport):
 
     def list_view(self, l):
         return {"id": l["id"], "name": l["name"], "folder": {"id": l["folder"]}, "archived": l["archived"],
-                "statuses": [{"status": s} for s in l.get("statuses") or self.statuses]}
+                "statuses": [{"status": s} for s in self.statuses_of(l["id"])]}
 
     def view(self, t):
         out = {k: copy.deepcopy(v) for k, v in t.items() if k != "values"}
         out["custom_fields"] = [dict(f, value=copy.deepcopy(t["values"][f["id"]])) if f["id"] in t["values"]
-                                else dict(f) for f in self.folder_fields]
+                                else dict(f) for f in self.fields_of(self.lists[t["list"]["id"]]["folder"])]
         out["checklists"] = [copy.deepcopy(c) for c in self.checklists.values() if c["task_id"] == t["id"]]
         return out
 
@@ -122,13 +136,14 @@ class SpecFake(Transport):
         failing = self.task_creates == self.fail_task_create_at
         if failing and not self.fail_lands:
             raise ApiError(method, path, 500, "internal error")
-        status = body.get("status") or self.statuses[0]
-        if status.lower() not in [s.lower() for s in self.statuses]:
+        live = self.statuses_of(lid)
+        status = body.get("status") or (live[0] if live else "to do")
+        if body.get("status") and status.lower() not in [s.lower() for s in live]:
             self.bad(method, path, "Status not found")
         parent = body.get("parent")
         if parent is not None and (parent not in self.tasks or self.tasks[parent]["list"]["id"] != lid):
             self.bad(method, path, "Parent must be in the same list")
-        known = {f["id"] for f in self.folder_fields}
+        known = {f["id"] for f in self.fields_of(self.lists[lid]["folder"])}
         values = {}
         for cf in body.get("custom_fields") or []:
             if cf["id"] not in known:
@@ -157,7 +172,7 @@ class SpecFake(Transport):
             if not self.subfolders_ok:
                 self.bad(method, path, "Subfolders are not available")
             fid = self.new_id("F")
-            self.add_folder(fid, body["name"], body.get("parent_folder_id"))
+            self.add_folder(fid, body["name"], body.get("parent_folder_id") if self.nest_subfolders else None)
             return self.folder_view(self.folders[fid])
         m = re.fullmatch(r"/v2/folder/(\w+)(/field|/list)?", path)
         if m and m.group(1) in self.folders:
@@ -165,7 +180,7 @@ class SpecFake(Transport):
             if sub is None and method == "GET":
                 return self.folder_view(self.folders[fid])
             if sub == "/field" and method == "GET":
-                return {"fields": copy.deepcopy(self.folder_fields)}
+                return {"fields": copy.deepcopy(self.fields_of(fid))}
             if sub == "/list" and method == "POST":
                 lid = self.new_id("L")
                 self.add_list(lid, body["name"], fid)
@@ -191,7 +206,7 @@ class SpecFake(Transport):
                     raise ApiError(method, path, 404, "List not found")
                 return self.list_view(self.lists[lid])
             if sub == "/field" and method == "GET":
-                return {"fields": copy.deepcopy(self.folder_fields)}
+                return {"fields": copy.deepcopy(self.fields_of(self.lists[lid]["folder"]))}
             if sub == "/view" and method == "GET":
                 return {"views": copy.deepcopy(self.views[lid])}
             if sub == "/view" and method == "POST":
@@ -214,15 +229,17 @@ class SpecFake(Transport):
                 if "priority" in body:
                     t["priority"] = {"id": str(body["priority"])}
                 if "status" in body:
-                    if body["status"].lower() not in [s.lower() for s in self.statuses]:
+                    if body["status"].lower() not in [s.lower() for s in self.statuses_of(t["list"]["id"])]:
                         self.bad(method, path, "Status not found")
                     t["status"] = {"status": body["status"], "type": "custom"}
                 return self.view(t)
             if sub == "/comment" and method == "POST":
                 self.comments.setdefault(t["id"], []).append(body)
                 return {"id": self.new_id("c")}
-            if sub == "/comment" and method == "GET":
-                return {"comments": [{"comment_text": c["comment_text"]} for c in self.comments.get(t["id"], [])]}
+            if sub == "/comment" and method == "GET":  # newest first, as ClickUp answers
+                rows = [{"comment_text": c["comment_text"], "date": str(1795000000000 + i)}
+                        for i, c in enumerate(self.comments.get(t["id"], []))]
+                return {"comments": rows[::-1]}
             if sub == "/checklist" and method == "POST":
                 cid = self.new_id("k")
                 self.checklists[cid] = {"id": cid, "task_id": t["id"], "name": body["name"], "items": []}
@@ -251,15 +268,18 @@ class SpecBase(unittest.TestCase):
     statuses = CASE_STATUSES
 
     def setUp(self):
+        self.new_project()
+
+    def new_project(self):
+        """A fresh copy of the project and an empty ClickUp space; the test works on it from here
+        on (a test that needs a second one calls this again)."""
         self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         shutil.copytree(PROJECT, self.tmp, dirs_exist_ok=True)
         self.cfg_path = self.tmp / "docs/agents/qa-tracker.json"
         self.cards_path = self.tmp / ".qa/specs" / TARGET / "tracker-cards.json"
         self.plan_path = self.tmp / ".qa/specs" / TARGET / "checklist.json"
         self.fake = SpecFake(self.statuses)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def cfg(self):
         return json.loads(self.cfg_path.read_text(encoding="utf-8"))
@@ -307,6 +327,30 @@ class SpecBase(unittest.TestCase):
         self.edit_cards(lambda d: d["cards"][0].update(
             checks=[c for c in d["cards"][0]["checks"] if c["criterion"] != criterion]))
         self.edit_plan(lambda rows: [r for r in rows if r["id"] != criterion])
+
+    def keep_files(self):
+        """The cards and the plan as they are now, to put a removed card or check back later."""
+        saved = {p: p.read_text(encoding="utf-8") for p in (self.cards_path, self.plan_path)}
+        return lambda: [p.write_text(text, encoding="utf-8") for p, text in saved.items()]
+
+    def fail_after(self, method, pattern, status=502, times=1, lands=True):
+        """The next `times` matching calls answer `status`, after they landed (or before)."""
+        real, left = self.fake.request, [times]
+
+        def flaky(m, path, body=None):
+            hit = m.upper() == method and re.search(pattern, path) and left[0] > 0
+            if hit and not lands:
+                left[0] -= 1
+                raise ApiError(m, path, status, "bad gateway")
+            out = real(m, path, body)
+            if hit:
+                left[0] -= 1
+                raise ApiError(m, path, status, "bad gateway")
+            return out
+        self.fake.request = flaky
+
+    def subfolders(self):
+        return [f for f in self.fake.folders.values() if f["id"] != QA]
 
 
 class SpecInitTests(SpecBase):
@@ -425,6 +469,93 @@ class SpecInitTests(SpecBase):
         self.assertEqual(self.push()[0], 0)
         self.assertEqual(self.fake.calls, [])
 
+    def test_folder_id_is_saved_before_anything_else_can_fail(self):
+        self.fail_after("GET", r"/v3/workspaces/\d+/docs", status=503, lands=False)
+        rc, lines, err = self.tracker("spec-init")
+        self.assertEqual(rc, 1, (lines, err))
+        made = self.subfolders()
+        self.assertEqual(len(made), 1)
+        saved = self.cfg()["specs"][TARGET]
+        self.assertEqual((saved.get("folder"), saved.get("layout")), (made[0]["id"], "subfolder"))
+        self.assertNotIn("doc", saved)
+        # the next run adopts that folder by its id and only adds the Doc
+        self.fake.calls.clear()
+        rc, lines, err = self.tracker("spec-init")
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.fake.writes("POST", r"/folder$"), [])
+        self.assertEqual(len(self.subfolders()), 1)
+        self.assertEqual(self.cfg()["specs"][TARGET]["doc"], next(iter(self.fake.docs.values()))["id"])
+
+    def test_folder_made_outside_the_qa_folder_stops_every_run_until_moved(self):
+        self.fake.nest_subfolders = False
+        line = (f"SKIP\tsubfolder-not-nested\t{TITLE}: the spec's folder is not inside the QA folder; "
+                f"move it into the QA folder, then run again")
+        for _ in range(2):  # the first run and the one that adopts the saved id
+            rc, lines, _ = self.tracker("spec-init")
+            self.assertEqual(rc, 1)
+            self.assertIn(line, lines)
+        made = self.subfolders()
+        self.assertEqual(len(made), 1)
+        self.assertEqual(self.cfg()["specs"][TARGET]["folder"], made[0]["id"])
+        self.assertEqual(self.fake.docs, {})
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.fake.calls, [])
+        # moved by hand: both verbs go on
+        made[0]["parent"] = QA
+        self.assertEqual(self.tracker("spec-init")[0], 0)
+        self.assertEqual(self.push()[0], 0)
+        self.assertEqual(len(self.fake.tasks_in(self.run_list()["id"])), 6)
+        self.assertEqual(len(self.subfolders()), 1)
+
+    def test_pasted_folder_outside_the_qa_folder_is_refused(self):
+        self.fake.add_folder("F88", "Judging", None)
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(folder="F88"))
+        before = self.cfg_path.read_text(encoding="utf-8")
+        rc, lines, _ = self.tracker("spec-init")
+        self.assertEqual(rc, 1)
+        self.assertIn("SKIP\tsubfolder-not-nested\tJudging: the spec's folder is not inside the QA folder; "
+                      "move it into the QA folder, then run again", lines)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.cfg_path.read_text(encoding="utf-8"), before)
+
+    def test_pasted_list_must_be_in_the_qa_folder_tree(self):
+        self.fake.add_folder("F88", "Judging", None)
+        self.fake.add_list("L88", "Judging round one", "F88")
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(list="L88"))
+        rc, lines, _ = self.tracker("spec-init")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"SKIP\tlist-outside\tspecs.{TARGET}.list: the list is not in the QA folder or one of "
+                      f"its subfolders; move it there, then run again", lines)
+        self.assertEqual(self.fake.calls, [])
+        # set up while it was inside, moved out afterwards: push-scenarios refuses too
+        self.fake.folders["F88"]["parent"] = QA
+        self.assertEqual(self.tracker("spec-init")[0], 0)
+        self.fake.folders["F88"]["parent"] = None
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.fake.tasks, {})
+
+    def test_flat_list_is_found_again_after_the_spec_title_changed(self):
+        self.fake.folders[QA]["parent"] = "9000"
+        self.assertEqual(self.tracker("spec-init")[0], 0)
+        for failing in (1, 3):  # the Run summary ticket is missing, or it is there and a later one is not
+            with self.subTest(failing=failing):
+                self.new_project()
+                self.fake.folders[QA]["parent"] = "9000"
+                self.assertEqual(self.tracker("spec-init")[0], 0)
+                self.fake.fail_task_create_at = failing
+                self.assertEqual(self.push()[0], 1)
+                self.edit_cfg(lambda d: d["specs"][TARGET].update(title="Judges score the final round"))
+                rc, lines, _ = self.push()
+                self.assertEqual(rc, 0, lines)
+                names = [l["name"] for l in self.fake.lists.values() if l["folder"] == QA]
+                self.assertEqual(names, ["Bugs", f"{TITLE} · Run 1 · next"])
+                self.assertEqual(len(self.fake.tasks), 6)
+
     def test_dry_run_writes_nothing(self):
         before = self.cfg_path.read_text(encoding="utf-8")
         rc, lines, _ = self.tracker("spec-init", apply=False)
@@ -528,7 +659,8 @@ class PushScenariosTests(SpecBase):
     def test_push_scenarios_resumes_after_failure(self):
         for lands in (False, True):
             with self.subTest(lands=lands):
-                self.setUp()
+                self.new_project()
+                self.ready()
                 self.fake.fail_task_create_at, self.fake.fail_lands = 5, lands
                 rc, lines, _ = self.push()
                 if lands:  # the create is re-read by Ref and adopted, never sent twice
@@ -546,7 +678,6 @@ class PushScenariosTests(SpecBase):
                 self.assertEqual(len(set(names)), 6)
                 self.assertEqual(len({r["key"] for r in self.refs(lid).values()}), 6)
                 self.assertEqual(len(self.fake.items_of(self.fake.task(ADMIN_CARD)["id"])), 2)
-                self.tearDown()
 
     def test_list_create_that_failed_before_the_tickets_is_reused(self):
         self.fake.fail_task_create_at = 1  # the list exists, the Run summary ticket does not
@@ -628,7 +759,8 @@ class PushScenariosTests(SpecBase):
                             for ln in lines), lines)
         self.fake.request.assert_not_called()
         # a check with no card is a problem too
-        self.setUp()
+        self.new_project()
+        self.ready()
         self.remove_check("C-SCORE-02")
         self.edit_plan(lambda rows: rows + [{"id": "C-SCORE-02", "persona": "judge"}])
         rc, lines, _ = self.push()
@@ -683,15 +815,19 @@ class PushScenariosTests(SpecBase):
              {"name": "Run 1 · next", "options": {"return_immediately": False, "include_views": True}})])
         self.assertEqual(sleep.call_count, 2)
         self.assertEqual(len(self.fake.tasks_in(self.run_list()["id"])), 6)
-        # a template without the folder's statuses: the list is not filled
-        self.setUp()
+        # a template without the folder's statuses: the list is not filled, on this run or on
+        # the next one, which finds the list again
+        self.new_project()
+        self.ready()
         self.edit_cfg(lambda d: d.update(templates={"list": "t-4410"}))
         self.fake.template_statuses = ["to do", "done"]
-        with mock.patch.object(cs.time, "sleep"):
-            rc, lines, _ = self.push()
-        self.assertEqual(rc, 1)
-        self.assertTrue(any(ln.startswith("SKIP\tlist-statuses\t") for ln in lines), lines)
-        self.assertEqual(self.fake.tasks, {})
+        for _ in range(2):
+            with mock.patch.object(cs.time, "sleep"):
+                rc, lines, _ = self.push()
+            self.assertEqual(rc, 1)
+            self.assertTrue(any(ln.startswith("SKIP\tlist-statuses\t") for ln in lines), lines)
+            self.assertEqual(self.fake.tasks, {})
+        self.assertEqual(len(self.fake.writes("POST", r"/list_template/")), 1)
 
     def test_id_from_the_config_cannot_reach_into_another_path(self):
         self.edit_cfg(lambda d: d["specs"][TARGET].update(folder="9003/../../list/905"))
@@ -699,6 +835,167 @@ class PushScenariosTests(SpecBase):
         self.assertEqual(rc, 1)
         self.assertIn(f"config error: specs.{TARGET}.folder must be a ClickUp id", err)
         self.assertEqual(self.fake.calls, [])
+
+    def test_spec_folder_moved_out_of_the_qa_folder_is_refused(self):
+        folder = self.cfg()["specs"][TARGET]["folder"]
+        self.fake.folders[folder]["parent"] = None
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 1)
+        self.assertIn(f"SKIP\tsubfolder-not-nested\t{TITLE}: the spec's folder is not inside the QA folder; "
+                      f"move it into the QA folder, then run again", lines)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.fake.lists.keys(), {"905"})
+
+    def checklists_of(self, name=ADMIN_CARD):
+        tid = self.fake.task(name)["id"]
+        return [c for c in self.fake.checklists.values() if c["task_id"] == tid]
+
+    def test_checklist_is_not_made_twice_when_list_reads_leave_it_out(self):
+        real = self.fake.request
+
+        def bare(method, path, body=None):
+            out = real(method, path, body)
+            if method == "GET" and re.search(r"/list/\w+/task\?", path):
+                for t in out["tasks"]:
+                    t.pop("checklists", None)
+            if method == "POST" and path.endswith("/task"):
+                out.pop("checklists", None)
+            return out
+        self.fake.request = bare
+        self.assertEqual(self.push()[0], 0)
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(len(self.checklists_of()), 1)
+        self.assertEqual(self.fake.items_of(self.fake.task(ADMIN_CARD)["id"]),
+                         ["Admin sees the ranking", "Hackathon list opens"])
+
+    def test_checklist_and_item_creates_that_landed_are_not_repeated(self):
+        for pattern in (r"/task/\w+/checklist$", r"/checklist_item$"):
+            with self.subTest(pattern=pattern):
+                self.new_project()
+                self.ready()
+                self.fail_after("POST", pattern)
+                self.push()
+                self.fake.calls.clear()
+                rc, lines, _ = self.push()
+                self.assertEqual(rc, 0, lines)
+                self.assertEqual(self.fake.calls, [])
+                self.assertEqual(len(self.checklists_of()), 1)
+                self.assertEqual(self.fake.items_of(self.fake.task(ADMIN_CARD)["id"]),
+                                 ["Admin sees the ranking", "Hackathon list opens"])
+
+    def test_check_back_in_the_plan_returns_to_the_first_status(self):
+        from trackers import clickup_spec as cs
+        self.assertEqual(self.push()[0], 0)
+        put_back = self.keep_files()
+        self.remove_check("C-SCORE-02")
+        self.assertEqual(self.push()[0], 0)
+        t = self.fake.task("Refuse a score above the maximum")
+        self.assertEqual(t["status"]["status"], "skipped")
+        put_back()
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(t["status"]["status"], "to test")
+        self.assertEqual(cs.parse_ref(t["values"]["f-ref"])["letter"], "t")
+        self.assertEqual(self.fake.comments[t["id"]], [
+            {"comment_text": "No longer part of the plan.", "notify_all": False},
+            {"comment_text": "Back in the plan.", "notify_all": False}])
+        self.assertEqual(len(self.fake.calls), 3)
+        self.assertEqual(len(self.fake.tasks), 6)
+        self.fake.calls.clear()
+        self.assertEqual(self.push()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+        # out and back a second time: each move leaves its own comment, once
+        self.remove_check("C-SCORE-02")
+        self.assertEqual(self.push()[0], 0)
+        self.assertEqual(t["status"]["status"], "skipped")
+        put_back()
+        self.assertEqual(self.push()[0], 0)
+        self.assertEqual(t["status"]["status"], "to test")
+        self.assertEqual([c["comment_text"] for c in self.fake.comments[t["id"]]], [
+            "No longer part of the plan.", "Back in the plan.", "No longer part of the plan.", "Back in the plan."])
+
+    def test_card_back_in_the_plan_brings_its_checks_back(self):
+        self.assertEqual(self.push()[0], 0)
+        put_back = self.keep_files()
+        self.edit_cards(lambda d: d.update(cards=d["cards"][1:]))
+        self.edit_plan(lambda rows: [dict(r, personas=["admin"]) if r["id"] == "C-RANK-01" else r
+                                     for r in rows if not r["id"].startswith("C-SCORE")])
+        self.assertEqual(self.push()[0], 0)
+        put_back()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual({t["status"]["status"] for t in self.fake.tasks.values()}, {"to test"})
+        self.assertEqual({r["letter"] for r in self.refs(self.run_list()["id"]).values()}, {"t"})
+
+    def test_retired_check_a_person_moved_stays_when_it_returns(self):
+        from trackers import clickup_spec as cs
+        self.assertEqual(self.push()[0], 0)
+        put_back = self.keep_files()
+        self.remove_check("C-SCORE-02")
+        self.assertEqual(self.push()[0], 0)
+        t = self.fake.task("Refuse a score above the maximum")
+        t["status"] = {"status": "passed", "type": "custom"}  # a person ran it anyway
+        put_back()
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("SKIP\tchanged-by-person\tRefuse a score above the maximum", lines)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(t["status"]["status"], "passed")
+        self.assertEqual(cs.parse_ref(t["values"]["f-ref"])["letter"], "s")
+        # and one a person set to skipped while it was in the plan is not taken back either
+        other = self.fake.task("Save a valid score")
+        other["status"] = {"status": "skipped", "type": "custom"}
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertIn("SKIP\tchanged-by-person\tSave a valid score", lines)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_plan_text_cannot_change_the_ticket_formatting(self):
+        self.edit_cards(lambda d: d["cards"][0].update(
+            storyline="# Final round\n- Noura opens a submission from the smart water metering team\n"
+                      "> and saves a score of 8.\n2. The ranking page at https://judging.innovation-lab.co/final_round "
+                      "then shows it."))
+        self.edit_cards(lambda d: d["cards"][0]["checks"][0].update(
+            do="Open a submission marked *urgent* and type 8 in the score box, _only once_."))
+        rc, lines, err = self.push()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.fake.task(JUDGE_CARD)["markdown_description"],
+                         "\\# Final round\n\\- Noura opens a submission from the smart water metering team\n"
+                         "\\> and saves a score of 8.\n2\\. The ranking page at "
+                         "https://judging.innovation-lab.co/final_round then shows it.")
+        self.assertEqual(self.fake.task("Save a valid score")["markdown_description"],
+                         "Open a submission marked \\*urgent\\* and type 8 in the score box, \\_only once\\_.\n\n"
+                         "The score is saved and shown on the submission page.")
+        self.fake.calls.clear()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_fixed_strings_are_linted_like_any_other_text(self):
+        from trackers import clickup_spec as cs
+        self.assertEqual((cs.CHECKLIST_NAME, cs.SUMMARY_TITLE, cs.VIEW_STATUS, cs.VIEW_ROLE, cs.VIEW_FAILED,
+                          cs.REMOVED_COMMENT, cs.BACK_COMMENT),
+                         ("Checks", "Run summary", "By status", "By role", "Failed and blocked",
+                          "No longer part of the plan.", "Back in the plan."))
+        self.edit_cfg(lambda d: d.update(wording={"forbidden": ["Checks", "blocked"]}))
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 1)
+        self.assertIn('SKIP\twording\t"Checks": forbidden word: Checks', lines)
+        self.assertIn('SKIP\twording\t"Failed and blocked": forbidden word: blocked', lines)
+        self.assertEqual(self.fake.checklists, {})
+        self.assertEqual([v["name"] for v in self.fake.views[self.run_list()["id"]]], ["By status", "By role"])
+
+    def test_check_id_cannot_collide(self):
+        from trackers import clickup_spec as cs
+        self.assertEqual(cs.check_id("judge-scores-a-submission", "C-SCORE-02"),
+                         "25:judge-scores-a-submission/C-SCORE-02")
+        self.assertNotEqual(cs.check_id("ranking/final", "round"), cs.check_id("ranking", "final/round"))
+        self.assertNotEqual(cs.check_id("1", "2:ab/c"), cs.check_id("12:ab", "c"))
 
     def test_bound_list_gets_a_new_list_beside_it(self):
         from trackers import clickup_spec as cs
