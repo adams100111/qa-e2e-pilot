@@ -1,0 +1,8 @@
+{
+  "kind": "screenshot",
+  "phase": "after",
+  "label": "message",
+  "image": "screenshot-after-message.png",
+  "mime": "image/png",
+  "sha256": "41bb63cdb436108df23c1254be4319a5cefb630607f069c0ce969627459fd715"
+}

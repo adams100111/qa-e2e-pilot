@@ -29,11 +29,17 @@ CONFIG_TEMPLATE = QA_KIT / "templates" / "qa-tracker-config.json"
 CATALOG_SCHEMA = QA_KIT / "templates" / "catalog-schema.json"
 CONFIG_REL = Path("docs") / "agents" / "qa-tracker.json"
 MAP_REL = Path(".qa") / "tracker-map.json"
+MACHINE_ENV = "QA_KIT_TRACKER_CONFIG"
+MACHINE_REL = Path(".config") / "qa-kit" / "tracker.json"
 
 BACKENDS = ("local", "clickup", "github", "other")
 STATUS_CEILINGS = ("none", "testing")
 GUIDE_AS = ("tasks", "doc")
 BUGS_TO = ("same", "issue-tracker")
+EVIDENCE_LEVELS = ("standard", "failures", "none")
+SPEC_LAYOUTS = ("subfolder", "flat")
+LIST_MODES = ("fresh", "reuse")
+TOKEN_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # `statuses.case` / `statuses.bug` are the project's own names, read by position as these roles
 CASE_ROLES = ("to_test", "testing", "failed", "blocked", "passed", "skipped")
 BUG_ROLES = ("open", "triaged", "fixing", "retest", "closed")
@@ -102,17 +108,65 @@ def _read_json(path: Path, err: type) -> Any:
         raise err(f"{path}: {exc}") from exc
 
 
+def machine_config_path() -> Path:
+    """The machine-wide settings file: `$QA_KIT_TRACKER_CONFIG`, else `~/.config/qa-kit/tracker.json`."""
+    env = os.environ.get(MACHINE_ENV)
+    return Path(env) if env else Path.home() / MACHINE_REL
+
+
+def _machine_data() -> dict:
+    path = machine_config_path()
+    if not path.exists():
+        return {}
+    data = _read_json(path, ConfigError)
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path}: expected a JSON object")
+    ids = data.get("ids")
+    if "specs" in data or (isinstance(ids, dict) and "folder" in ids):
+        raise ConfigError(f"{path}: the machine file may not set specs or ids.folder; they belong to the project")
+    return data
+
+
+def _settings_problems(settings: dict) -> List[str]:
+    """Problems in the settings a spec may override. One set of rules for `load_config` (the
+    project level) and `spec_settings` (after `specDefaults` and `specs.<target>` are merged in).
+    No message ever echoes a value: `tokenEnv` may hold a pasted token."""
+    problems = []
+    token_env = settings.get("tokenEnv")
+    if not (isinstance(token_env, str) and TOKEN_ENV_RE.match(token_env)):
+        if isinstance(token_env, str) and (token_env.startswith("pk_") or TOKEN_RE.search(token_env)):
+            problems.append("tokenEnv must be the name of an environment variable, not the token")
+        else:
+            problems.append("tokenEnv must be an environment variable name (A-Z, 0-9, _)")
+    if settings.get("evidence") not in EVIDENCE_LEVELS:
+        problems.append(f"evidence must be one of {', '.join(EVIDENCE_LEVELS)}")
+    for key, allowed in (("layout", SPEC_LAYOUTS), ("listMode", LIST_MODES)):
+        if key in settings and settings[key] not in allowed:
+            problems.append(f"{key} must be one of {', '.join(allowed)}")
+    if "enabled" in settings and not isinstance(settings["enabled"], bool):
+        problems.append("enabled must be true or false")
+    for key in ("evidenceCap", "keepRuns"):
+        value = settings.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            problems.append(f"{key} must be a whole number, 1 or more")
+    language = settings.get("language")
+    if not (isinstance(language, str) and language.strip()):
+        problems.append("language must be a non-empty string")
+    return problems
+
+
 def load_config(project: Path) -> Config:
-    """Read `docs/agents/qa-tracker.json` and fill every missing key from the template."""
+    """Merge the template, the machine file and `docs/agents/qa-tracker.json` (later wins)."""
     project = Path(project)
     defaults = _read_json(CONFIG_TEMPLATE, ConfigError)
     path = project / CONFIG_REL
-    merged = defaults
+    machine = _machine_data()
+    merged = _merge(defaults, machine) if machine else defaults
     if path.exists():
         data = _read_json(path, ConfigError)
         if not isinstance(data, dict):
             raise ConfigError(f"{path}: expected a JSON object")
-        merged = _merge(defaults, data)
+        merged = _merge(merged, data)
     problems = []
     if merged.get("backend") not in BACKENDS:
         problems.append(f"backend must be one of {', '.join(BACKENDS)}")
@@ -122,6 +176,10 @@ def load_config(project: Path) -> Config:
         problems.append(f"guideAs must be one of {', '.join(GUIDE_AS)}")
     if merged.get("bugsTo") not in BUGS_TO:
         problems.append(f"bugsTo must be one of {', '.join(BUGS_TO)}")
+    problems.extend(_settings_problems(merged))
+    for key in ("specs", "specDefaults"):
+        if not isinstance(merged.get(key), dict):
+            problems.append(f"{key} must be an object")
     statuses = merged.get("statuses")
     for kind, roles in STATUS_ROLES.items():
         names = statuses.get(kind) if isinstance(statuses, dict) else None
@@ -146,6 +204,42 @@ def load_config(project: Path) -> Config:
     cfg = Config(merged)
     cfg.project = project
     return cfg
+
+
+def spec_settings(cfg: dict, target: str) -> Config:
+    """`cfg` with `specDefaults`, then `specs[target]`, merged over it, plus `"target"`.
+
+    The result keeps `cfg.project`, so redaction still reads the project's guide, and the merged
+    values are checked with the same rules as the project level: a value set under
+    `specDefaults` or `specs.<target>` gets no way around them.
+    """
+    project = getattr(cfg, "project", None)
+    where = f"{Path(project) / CONFIG_REL if project is not None else CONFIG_REL}: specs.{target}"
+    specs = cfg.get("specs")
+    entry = specs.get(target) if isinstance(specs, dict) else None
+    if entry is None:
+        entry = {}
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{where} must be an object")
+    defaults = cfg.get("specDefaults")
+    merged = _merge(dict(cfg), defaults if isinstance(defaults, dict) else {})
+    merged = _merge(merged, entry)
+    merged.setdefault("enabled", False)
+    problems = _settings_problems(merged)
+    if problems:
+        raise ConfigError(f"{where}: " + "; ".join(problems))
+    merged["target"] = target
+    out = Config(merged)
+    out.project = project
+    return out
+
+
+def enabled_specs(cfg: dict) -> List[str]:
+    """Sorted targets under `specs` whose merged settings say `enabled: true`."""
+    specs = cfg.get("specs")
+    if not isinstance(specs, dict):
+        return []
+    return sorted(t for t in specs if spec_settings(cfg, t).get("enabled") is True)
 
 
 def status_name(cfg: dict, kind: str, role: str) -> str:
@@ -445,19 +539,11 @@ def _worst(verdicts: List[str]) -> str:
     return max(verdicts, key=lambda v: VERDICT_RANK.get(v, VERDICT_RANK["error"]))
 
 
-def case_results(run_dir: Path) -> Dict[str, dict]:
-    """Per case: `{verdict, criteria: [{id, verdict, persona}], confidence}` (P3, P4).
-
-    Rows come from `checkpoint.json` (the last row per criterion+persona wins). A
-    `verification.json` row for the same criterion and persona overrides the verdict and
-    confidence. Rows that join no case are ignored. A missing verification.json is fine.
-    """
-    run_dir = Path(run_dir)
+def _load_run(run_dir: Path) -> Tuple[List[dict], Dict[str, List[str]]]:
     cp_path = run_dir / "checkpoint.json"
     if not cp_path.is_file():
         raise RunError(f"{cp_path}: not found")
     checkpoint = _rows(_read_json(cp_path, RunError), "criteria")
-
     refs: Dict[str, List[str]] = {}
     cl_path = run_dir / "checklist.json"
     if cl_path.is_file():
@@ -468,7 +554,10 @@ def case_results(run_dir: Path) -> Dict[str, dict]:
                 for r in _case_refs(row):
                     if r not in refs[cid]:
                         refs[cid].append(r)
+    return checkpoint, refs
 
+
+def _criterion_rows(run_dir: Path, checkpoint: List[dict]) -> Dict[Tuple[str, str], dict]:
     overrides: Dict[Tuple[str, str], dict] = {}
     vf_path = run_dir / "verification.json"
     if vf_path.is_file():
@@ -492,14 +581,8 @@ def case_results(run_dir: Path) -> Dict[str, dict]:
                for (c, p), r in latest.items()):
             del latest[(cid, persona)]
 
-    out: Dict[str, dict] = {}
+    out: Dict[Tuple[str, str], dict] = {}
     for (cid, persona), row in latest.items():
-        cases = list(refs.get(cid, []))
-        for r in _case_refs(row):
-            if r not in cases:
-                cases.append(r)
-        if not cases:
-            continue
         raw = str(row.get("verdict") or "").lower()
         verdict = raw if raw in VERDICT_RANK else "error"
         confidence = row.get("confidence")
@@ -510,10 +593,41 @@ def case_results(run_dir: Path) -> Dict[str, dict]:
                 verdict = ov["verifierVerdict"]
             if ov.get("confidence"):
                 confidence = ov["confidence"]
+        out[(cid, persona)] = {"verdict": verdict, "confidence": confidence, "row": row}
+    return out
+
+
+def criterion_rows(run_dir: Path) -> Dict[Tuple[str, str], dict]:
+    """Per `(criterion id, persona)`: `{verdict, confidence, row}` for a run directory.
+
+    The last checkpoint row per key wins, a persona-less row older than a persona row for the
+    same criterion is dropped, and a `verification.json` row that checked this verdict overrides
+    the verdict and confidence. A missing verification.json is fine; a missing checkpoint.json
+    raises `RunError`.
+    """
+    run_dir = Path(run_dir)
+    checkpoint, _ = _load_run(run_dir)
+    return _criterion_rows(run_dir, checkpoint)
+
+
+def case_results(run_dir: Path) -> Dict[str, dict]:
+    """Per case: `{verdict, criteria: [{id, verdict, persona}], confidence}` (P3, P4).
+
+    Built on `criterion_rows`. Rows that join no case (checklist `catalogRef` or `case:` tag)
+    are ignored.
+    """
+    run_dir = Path(run_dir)
+    checkpoint, refs = _load_run(run_dir)
+    out: Dict[str, dict] = {}
+    for (cid, persona), got in _criterion_rows(run_dir, checkpoint).items():
+        cases = list(refs.get(cid, []))
+        for r in _case_refs(got["row"]):
+            if r not in cases:
+                cases.append(r)
         for case_id in cases:
             entry = out.setdefault(case_id, {"verdict": None, "criteria": [], "confidence": None, "_conf": []})
-            entry["criteria"].append({"id": cid, "verdict": verdict, "persona": persona})
-            entry["_conf"].append(confidence)
+            entry["criteria"].append({"id": cid, "verdict": got["verdict"], "persona": persona})
+            entry["_conf"].append(got["confidence"])
     for entry in out.values():
         entry["verdict"] = _worst([c["verdict"] for c in entry["criteria"]])
         confs = [c for c in entry.pop("_conf") if c in CONFIDENCE_RANK]

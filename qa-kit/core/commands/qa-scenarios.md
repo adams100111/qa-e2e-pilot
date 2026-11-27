@@ -189,7 +189,7 @@ When a person runs this command while a journey is open for the target, tell the
      the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
      for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
 
-7b. **ClickUp cards (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+7c. **ClickUp cards (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
    `lint` is the exception: a non-zero `lint` means fix the cards and run it again. The stop rule applies to `push-scenarios` and `push-docs`.
    Read `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md` first. Then write
    `.qa/specs/<target>/tracker-cards.json` in the `language` set in `docs/agents/qa-tracker.json`
