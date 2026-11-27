@@ -45,6 +45,10 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    [· drift: stale]`. End with the single **next step** for the requested scope. Never invent an
    artifact you did not find; report only what is present on disk.
 
+5. **ClickUp links (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+   Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) and print the links it returns for the spec
+   and its latest run, plus each reason it gives for ClickUp being behind the local files.
+
 ## Going further: the dashboard
 
 `/qa-status` answers "which step is next". For run-level detail — each run's progress, rate and ETA,

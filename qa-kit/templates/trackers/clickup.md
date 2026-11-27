@@ -46,6 +46,18 @@ Run them as `bash <qa-kit>/scripts/tracker.sh <verb>`. Each verb is a dry run un
   is already open gets a "still happens" comment instead of a second task.
 - `update-retest`: for bugs in `retest`, comments whether the linked case passed on this run. It
   never closes the bug.
+- `lint --spec <target>`: checks `tracker-cards.json` against the checklist and the writing rules.
+  Needs no token.
+- `spec-init --spec <target>`: creates the spec's subfolder and Overview doc, or binds the folder or
+  list the person gave.
+- `push-scenarios --spec <target>`: writes the scenario tickets and check subtasks into the spec's
+  run list.
+- `sync-run --spec <target> --run <run-id>`: moves each ticket to the status its result gives and
+  attaches evidence. `--retest` reuses the last list.
+- `push-docs --spec <target> [--run <run-id>]`: writes the Overview, Scenarios and Results pages.
+- `spec-note --spec <target> --file <path> [--blocked]`: comments the coverage note on the run
+  summary ticket. `--blocked` also sets it to `blocked`.
+- `spec-status --spec <target>`: prints the spec's links and whether ClickUp is behind.
 - `status`: shows what each verb would change, including drift.
 - `validate`: checks the catalog against the schema. Exit 0 only when it is clean.
 - `results`: prints each case's result for a run, as JSON.
@@ -73,6 +85,9 @@ Keys in `docs/agents/qa-tracker.json`:
   project's issue tracker, and `push-bug` and `update-retest` do nothing.
 
 ## Rules
+
+- Read `writing-rules.md` (appended to `docs/agents/qa-tracker.md` at setup) before
+  writing any text for ClickUp. `lint` enforces what a script can.
 
 - Text sent to ClickUp is read by testers and customers. It is checked against the forbidden words in
   the config, and passwords are masked. An item that fails is skipped, not sent in part.

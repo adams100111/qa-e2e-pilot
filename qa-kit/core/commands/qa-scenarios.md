@@ -186,6 +186,25 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
      for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
 
+7b. **ClickUp cards (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+   Read `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md` first. Then write
+   `.qa/specs/<target>/tracker-cards.json` in the `language` set in `docs/agents/qa-tracker.json`
+   (default `en`): `{"spec": {"title", "overview", "outOfScope": []}, "cards": [{"id", "role",
+   "roleName", "title", "storyline", "priority": "P1|P2|P3", "as": "subtasks|checklist", "checks":
+   [{"criterion", "title", "do", "expect"}]}]}`. One card per role storyline (one card per role a
+   journey names); every `checklist.json` row sits in exactly one card, one check per role. Rows no
+   storyline covers (generated ship rows) go in one card per role and surface with `as: "checklist"`.
+   Write what a person on the team would say, not criterion ids. Show the file to the operator with the
+   scenarios (skip the question under `autonomousSetup`). Then run, and fix the cards until `"ok": true`:
+   ```
+   bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" lint --spec <target>
+   ```
+   Then send them:
+   ```
+   bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-scenarios --spec <target> --apply
+   bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-docs --spec <target> --apply
+   ```
+
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
    check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent (functional vs sweep), uncovered pairs left, any criterion migrated to
    `.qa/known-defects.json` (naming the `ticket`/`expiry` a human still owes — and stating that the

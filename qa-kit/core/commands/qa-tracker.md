@@ -1,6 +1,6 @@
 ---
 description: Pick where test cases, runs and bugs live (local files, GitHub or ClickUp) and write the project's QA tracker rules and config.
-argument-hint: "[--reconfigure]"
+argument-hint: "[--reconfigure | --global | --spec <target>]"
 disable-model-invocation: false
 ---
 
@@ -11,6 +11,23 @@ answers first and change only what the user changes.
 
 This is a conversation, not a script. Explore, say what you found, ask one question at a time, then
 write. Never write a file before the user has seen what goes into it.
+
+## Machine and spec levels
+
+With `--global`, do only this: ask for the ClickUp workspace and the name of the environment variable
+that holds the token (default `CLICKUP_API_TOKEN`), and write them to `~/.config/qa-kit/tracker.json`
+after showing the user the content. Never ask for the token, never write it anywhere. Then stop.
+
+With `--spec <target>`, do only this, and only for a project whose `docs/agents/qa-tracker.json`
+already has `backend: "clickup"`. Ask one question: create a subfolder for the spec in the QA folder,
+or use a ClickUp folder or list URL the user pastes. For a pasted URL, parse the id from it and
+confirm it with a GET through the API before saving it. Save `specs.<target>.enabled: true` and the
+`folder` or `list` id in `docs/agents/qa-tracker.json`. Then build it, dry first, and show the output:
+```
+bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-init --spec <target>
+```
+Run it again with `--apply` only after the user says yes. Under `autonomousSetup` ask nothing: an
+enabled spec is built, a spec that is not enabled is left alone. Then stop.
 
 ## 1. Explore
 
@@ -82,6 +99,8 @@ Show the user the draft of each file below. Let them edit it. Write only after t
 1. `docs/agents/qa-tracker.md`: copy `{{PLUGIN_ROOT}}/templates/trackers/<backend>.md` for the chosen
    backend, then add this project's answers (workspace and folder names, where bugs go, any custom
    statuses). For "Other", write only this file, with the user's prose in place of the seed.
+   For ClickUp, also append `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md` to
+   `docs/agents/qa-tracker.md`, so the writing rules sit beside the answers.
 2. `docs/agents/qa-tracker.json`: start from `{{PLUGIN_ROOT}}/templates/qa-tracker-config.json` and set
    `backend` (`local`, `clickup`, `github` or `other`), `catalog` if it is not the default, the
    statuses if the user changed them, `ids` and `guideAs` for ClickUp. Keep every other key. For "Other",
