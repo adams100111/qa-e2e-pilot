@@ -58,6 +58,8 @@
 
 ## Verdict
 
+Verdict: {{VERDICT}}
+
 **BLOCKED** when the Coverage gate blocks (ship profile: uncovered pairs > 0, an empty, uncrawled or missing census, or an engine script that cannot be resolved); otherwise **PASS (advisory)**. While BLOCKED the next step is `/qa-scenarios`, never `/qa-run`. Set from `coverage.sh`'s exit code, never from a manual count.
 
 Apart from the Coverage gate this review is advisory only — the run is **not** blocked by it; this does not extend to plan defects. {{GAP_SUMMARY}}

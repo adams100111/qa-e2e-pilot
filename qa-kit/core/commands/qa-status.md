@@ -21,9 +21,11 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    - `scenarios.md` + `checklist.json` → scenarios done. If absent (but spec present) → next step:
      **`/qa-scenarios`**.
    - `analysis.md` → analyze done. If absent (but scenarios present) → next step: **`/qa-analyze`**.
-     If its `## Verdict` reads **`BLOCKED`** (the ship coverage gate), the next step is **`/qa-scenarios`**
-     (add criteria or exclusions) and then `/qa-analyze` again — never `/qa-run` while the analysis is
-     `BLOCKED`. Show it as `analyze BLOCKED`. An `analysis.md` older than `checklist.json` is stale: next
+     Read the first line under its `## Verdict`. `Verdict: BLOCKED` (the ship coverage gate) → show
+     `analyze BLOCKED`; the next step is **`/qa-scenarios`** (add criteria or exclusions) and then
+     `/qa-analyze` again — never `/qa-run` while the analysis is `BLOCKED`. `Verdict: PASS (advisory)` →
+     analyze done. A missing or different line → the analysis is not finished: say so, next step
+     **`/qa-analyze`**. An `analysis.md` older than `checklist.json` is stale: next
      step `/qa-analyze`.
    - a `.qa/runs/<id>/run-manifest.json` whose `target_feature` matches this spec's target (the same
      resolution `/qa-verify` uses) → at least one run happened. If none (but scenarios present) →
