@@ -1,6 +1,7 @@
 """HTTP transport for the ClickUp tracker adapter, plus a replay fake for tests."""
 from __future__ import annotations
 
+import errno
 import json
 import mimetypes
 import os
@@ -21,6 +22,7 @@ WRITE_PAUSE = 0.35
 _TOKEN_RE = re.compile(r"pk_[A-Za-z0-9_]+")
 DEFAULT_TOKEN_ENV = "CLICKUP_API_TOKEN"
 _TOKEN_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")  # the same rule core.load_config applies to tokenEnv
+_TOKEN_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")  # whitespace or a control character
 UPLOAD_FIELD = "attachment"
 
 
@@ -144,6 +146,8 @@ class FakeTransport(Transport):
         return json.loads(f.read_text())
 
     def upload(self, path: str, file_path: Path, filename: str) -> dict:
+        if not Path(file_path).exists():  # the real transport would fail to read it
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(file_path))
         self.calls.append(("UPLOAD", path, filename))
         f = self.dir / ("UPLOAD_%s.json" % re.sub(r"[/?&=]", "_", path.strip("/")))
         return json.loads(f.read_text()) if f.is_file() else {}
@@ -161,10 +165,14 @@ def token_env_name(cfg: Any = None) -> str:
 
 
 def token_from_env(name: str = DEFAULT_TOKEN_ENV) -> str:
-    """The token from the environment variable `name`. The message names the variable only."""
+    """The token from the environment variable `name`, trimmed. A message names the variable only,
+    never the value; a value with whitespace or a control character inside it is refused."""
     if not (isinstance(name, str) and _TOKEN_ENV_RE.match(name)):
         raise ConfigError("tokenEnv must be the name of an environment variable, not the token")
     tok = os.environ.get(name, "").strip()
     if not tok:
         raise ConfigError("set %s (a personal token)" % name)
+    if _TOKEN_UNSAFE_RE.search(tok):
+        # sent as a header it would fail with an error that repeats the value: refuse it here
+        raise ConfigError("%s is not a valid token" % name)
     return tok
