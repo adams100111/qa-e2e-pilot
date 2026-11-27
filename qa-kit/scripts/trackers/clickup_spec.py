@@ -157,6 +157,12 @@ class SpecSync(clickup._Mirror):
         name = f"Run {n} · {label}"
         return f"{self.title} · {name}" if self.layout == "flat" else name
 
+    def label_of(self, entry: dict) -> str:
+        """The run label a run list is named after (`Run <N> · <label>`), else its whole name."""
+        prefix = self.list_name(entry["n"], "")
+        name = entry["name"] or ""
+        return name[len(prefix):] if name.startswith(prefix) and len(name) > len(prefix) else name
+
     def list_tasks(self, list_id: str) -> List[dict]:
         """Every task of a list (subtasks and closed included), read once."""
         if not _real(list_id):
@@ -396,6 +402,57 @@ class SpecSync(clickup._Mirror):
             return True
         self.write("update", f"{title} [{','.join(changed)}]", go)
 
+    # -- a ticket's status (sync-run, spec-note)
+
+    def note_local(self, t: dict, status: str, ref_value: str) -> None:
+        """Keep the task as read in step with a write just made (or, in a dry run, just logged)."""
+        t["status"] = dict(t.get("status") or {}, status=status)
+        for f in t.setdefault("custom_fields", []):
+            if str(f.get("id")) == self.fid("Ref"):
+                f["value"] = ref_value
+                return
+        t["custom_fields"].append({"id": self.fid("Ref"), "value": ref_value})
+
+    def set_role(self, t: dict, role: str, title: Optional[str] = None) -> bool:
+        """Move a ticket to the status of `role` and record it in its Ref letter (written last,
+        so a change that stopped half way is finished on the next run). False when the ticket was
+        left: a person moved it to another status (reported, not a failure) or the write failed."""
+        p = self.ref_of(t)
+        if p is None:
+            return False
+        title = title or t.get("name") or ""
+        want, live = status_name(self.cfg, "case", role), _status_of(t)
+        moved = not same_status(live, want)
+        if moved and not same_status(live, status_name(self.cfg, "case", p["role"])):
+            self.person_changed(title)
+            return False
+        if not moved and p["role"] == role:
+            return True
+        value = reletter(self.live_field(t, self.fid("Ref")), role)
+
+        def go():
+            if moved:
+                self.tr.request("PUT", f"/v2/task/{t['id']}", {"status": want})
+            self.tr.request("POST", f"/v2/task/{t['id']}/field/{self.fid('Ref')}", {"value": value})
+            return True
+        done = bool(self.write("status", f"{title}: {want}", go)) or not self.log.apply
+        if done:
+            self.note_local(t, want, value)
+        return done
+
+    def ticket_links(self, list_id: str) -> Dict[str, str]:
+        """Card id -> the ClickUp link of its ticket in this run list (for the Results page)."""
+        n = next((e["n"] for e in self.run_lists() if e["id"] == list_id), None)
+        if n is None:
+            return {}
+        have = self.tickets(list_id)
+        out = {}
+        for card in self.cards.cards:
+            url = (have.get(ref_key(self.target, n, "card", card.id)) or {}).get("url")
+            if url:
+                out[card.id] = str(url)
+        return out
+
     # -- filling a list
 
     def fill(self, list_id: str, n: int) -> None:
@@ -620,3 +677,10 @@ def push_scenarios(ctx) -> None:
             return  # an adopted list (one made from a template, say) without the folder's statuses
         if entry is not None:
             s.fill(entry["id"], entry["n"])
+
+
+def sync_run(ctx) -> None:
+    """`tracker.sh sync-run`: a run's results, screenshots and bugs on its run list. The code is
+    in `clickup_spec_sync` (imported here on use: that module builds on this one)."""
+    from trackers import clickup_spec_sync
+    clickup_spec_sync.sync_run(ctx)
