@@ -12,22 +12,39 @@ answers first and change only what the user changes.
 This is a conversation, not a script. Explore, say what you found, ask one question at a time, then
 write. Never write a file before the user has seen what goes into it.
 
+## The token
+
+The ClickUp token is only ever referenced as the environment variable that holds it (default
+`CLICKUP_API_TOKEN`) inside a command. Never read it into the conversation, print, echo, paste, log or store it,
+and never ask the person for it. Step 3 (first setup) is the one place where you call the ClickUp API
+yourself: to list workspaces, spaces and folders, and to create the QA folder after a yes. For
+everything else (checking a pasted folder or list URL, creating the spec's subfolder, lists and
+tickets) only the tracker script talks to ClickUp.
+
 ## Machine and spec levels
 
 With `--global`, do only this: ask for the ClickUp workspace and the name of the environment variable
 that holds the token (default `CLICKUP_API_TOKEN`), and write them to `~/.config/qa-kit/tracker.json`
 after showing the user the content. Never ask for the token, never write it anywhere. Then stop.
 
-With `--spec <target>`, do only this, and only for a project whose `docs/agents/qa-tracker.json`
-already has `backend: "clickup"`. Ask one question: create a subfolder for the spec in the QA folder,
-or use a ClickUp folder or list URL the user pastes. For a pasted URL, parse the id from it and
-confirm it with a GET through the API before saving it. Save `specs.<target>.enabled: true` and the
-`folder` or `list` id in `docs/agents/qa-tracker.json`. Then build it, dry first, and show the output:
+With `--spec <target>`, do only this. First read `docs/agents/qa-tracker.json`. If it is missing or
+its `backend` is not `clickup`, stop and tell the person to run `/qa-tracker` first.
+
+Ask one question: create a subfolder for the spec in the QA folder, or use a ClickUp folder or list
+URL the person pastes.
+- Subfolder: save `specs.<target>.enabled: true` in `docs/agents/qa-tracker.json`.
+- Pasted URL: parse the id out of the URL and show it to the person. Save it under `specs.<target>`
+  with `enabled: true`: `folder` for a folder URL, `list` for a list URL.
+
+Then run the build dry, without `--apply`, and show the output:
 ```
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-init --spec <target>
 ```
-Run it again with `--apply` only after the user says yes. Under `autonomousSetup` ask nothing: an
-enabled spec is built, a spec that is not enabled is left alone. Then stop.
+The dry run changes nothing. It reads that folder or list through the tracker's own transport and
+fails with a one-line error when the id is wrong: then remove the saved id and ask again. Do not check
+the id any other way. Run it again with `--apply` only after the person says yes. Under
+`autonomousSetup` ask nothing: an enabled spec is built, a spec that is not enabled is left alone.
+Then stop.
 
 ## 1. Explore
 
@@ -55,8 +72,8 @@ answer before the next question.
 - GitHub: recommended when the remote is GitHub. Not yet available in this version: the rules are
   written and the config is saved, but the scripts exit 2 until the adapter ships. Say so plainly.
 - ClickUp: ask these follow-ups one at a time. You may list workspaces, spaces and folders through
-  the ClickUp API with the token in `CLICKUP_API_TOKEN`. Never ask the user to paste the token, and
-  never write it into any file.
+  the ClickUp API, under the token rule above: name the token only as its environment variable inside
+  the command.
   1. The workspace.
   2. The space in that workspace.
   3. The folder in that space. If there is no folder for QA yet, offer to create one and say the
@@ -100,7 +117,8 @@ Show the user the draft of each file below. Let them edit it. Write only after t
    backend, then add this project's answers (workspace and folder names, where bugs go, any custom
    statuses). For "Other", write only this file, with the user's prose in place of the seed.
    For ClickUp, also append `${CLAUDE_PLUGIN_ROOT}/templates/trackers/writing-rules.md` to
-   `docs/agents/qa-tracker.md`, so the writing rules sit beside the answers.
+   `docs/agents/qa-tracker.md`, only if they are not already there (its `# Writing for ClickUp`
+   heading), so the writing rules sit beside the answers once.
 2. `docs/agents/qa-tracker.json`: start from `${CLAUDE_PLUGIN_ROOT}/templates/qa-tracker-config.json` and set
    `backend` (`local`, `clickup`, `github` or `other`), `catalog` if it is not the default, the
    statuses if the user changed them, `ids` and `guideAs` for ClickUp. Keep every other key. For "Other",

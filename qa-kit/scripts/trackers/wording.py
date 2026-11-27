@@ -20,9 +20,18 @@ EMOJI_RE = re.compile(
     "☀-➿"          # misc symbols and dingbats (includes the check, cross, warning signs)
     "⭐⭕⬛⬜"  # star, circle, squares
     "⌀-⏿"          # misc technical (watch, hourglass, play buttons)
-    "️‍"           # emoji variation selector and zero-width joiner
     "]"
 )
+# a joiner/selector (ZWJ, ZWNJ, VS15/VS16) is flagged only next to a pictograph; bare ones are
+# normal in Arabic and Persian text. A pictograph is already caught above, so the only extra
+# cases are keycaps (digit, VS16, U+20E3) and symbols that need VS16 to show as emoji.
+EMOJI_RE = re.compile(
+    EMOJI_RE.pattern + r"|[0-9#*][\ufe0e\ufe0f]?\u20e3|[©®™‼⁉ℹ↔-↙↩↪][\ufe0e\ufe0f]"
+)
+# a URL up to the next whitespace (linear: one negated class)
+URL_RE = re.compile(r"https?://\S+")
+# a markdown link target "](...)": the link text before it stays linted
+MD_TARGET_RE = re.compile(r"\]\([^)\s]*\)")
 
 ID_RES = [
     # criterion or rule id: 1-5 capitals, optional hyphen, digits (C-012, J1, AC12)
@@ -56,6 +65,23 @@ def _strip_allowed(text: str, allow) -> str:
     return out
 
 
+def _whole_token(text: str, start: int, end: int) -> str:
+    """Grow the match over hyphen/underscore-joined alphanumeric parts so `C-SCORE-01` is
+    reported whole, not as its tail."""
+    def alnum(i: int) -> bool:
+        return 0 <= i < len(text) and text[i].isascii() and text[i].isalnum()
+
+    while start > 1 and text[start - 1] in "-_" and alnum(start - 2) and alnum(start):
+        start -= 1
+        while alnum(start - 1):
+            start -= 1
+    while end < len(text) - 1 and text[end] in "-_" and alnum(end + 1) and alnum(end - 1):
+        end += 1
+        while alnum(end):
+            end += 1
+    return text[start:end]
+
+
 def _headline_case(title: str) -> bool:
     words = title.split()
     if len(words) < 4:
@@ -85,11 +111,13 @@ def lint_text(text: str, kind: str, cfg: dict) -> List[str]:
     for p in wording.get("patterns") or []:
         try:
             patterns.append(re.compile(p))
-        except re.error:
-            continue
+        except (re.error, TypeError):
+            reasons.append("invalid wording pattern")
+    # links are not ids: drop markdown targets and bare URLs before the id and path checks
+    no_links = URL_RE.sub(" ", MD_TARGET_RE.sub("]", probe))
     for rx in patterns:
-        for m in rx.finditer(probe):
-            token = m.group(0).strip()
+        for m in rx.finditer(no_links):
+            token = _whole_token(no_links, m.start(), m.end()).strip() if rx in ID_RES else m.group(0).strip()
             if token and token not in seen:
                 seen.add(token)
                 reasons.append(f"looks like an id: {token}")

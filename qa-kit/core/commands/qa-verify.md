@@ -129,19 +129,25 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
    overrides / unavailable banner / did not run), and the verified/overridden/not-verified state.
 
 4b. **ClickUp sync (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
-   After the checks above, with `<run-id>` from step 1:
+   After `verification.md` is written, with `<run-id>` from step 1 on every line (so an older run
+   files its own bugs), run in this order and stop at the first that fails:
    ```
-   bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-bug --spec <target> --apply
+   bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-bug --spec <target> --run <run-id> --apply
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" sync-run --spec <target> --run <run-id> --apply
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-docs --spec <target> --run <run-id> --apply
    ```
-   Report the run as complete only if all three exit 0. If one fails, say which and how to retry it.
+   A failed step here never hides this command's result. Whatever happens, give the step 5 report first
+   and in full: the out-of-plan acts, the plan drift and the verification summary. When a step failed,
+   add after it one line with that step's name and its one-line error, say that the run is not complete,
+   and say that running `/qa-verify` again retries it. Report the run as complete only if all three
+   exit 0.
 
 5. **Report:** counts — out-of-plan acts, plan-drift findings, overrides, confidence downgrades, verifier overrides —
    plus the run-scoped checks' state (passed / which of the four failed / did not complete / no
    record), whether the run was reported `UNVERIFIED`, whether re-adjudication ran, and the next
    step (`/qa-status "<target>"`). Lead with out-of-plan acts, plan drift, a run-scoped gate failure
    and overrides when any exist. **Never sum the synthetic run-level records into the override count.**
+   When a ClickUp step failed (step 4b), its line and "the run is not complete" come last, after all of this.
 
 Guardrails: read-only w.r.t. artifacts (never edits `checkpoint.json`/`checklist.json`/
 `verification.json`/`report.md`). This is an agent-followed command — it has no exit code; it

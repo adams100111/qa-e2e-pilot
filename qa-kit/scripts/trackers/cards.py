@@ -136,9 +136,15 @@ def problems(c: Cards, checklist_rows: List[dict], cfg) -> List[dict]:
         out.append({"card": card, "criterion": criterion, "reason": reason})
 
     plan: Dict[str, List[str]] = {}
+    dup_rows = set()
     for row in checklist_rows or []:
         if isinstance(row, dict) and _row_id(row):
-            plan.setdefault(_row_id(row), _row_roles(row))
+            if _row_id(row) in plan:
+                if _row_id(row) not in dup_rows:
+                    dup_rows.add(_row_id(row))
+                    add("", _row_id(row), "duplicate row in the plan")
+                continue
+            plan[_row_id(row)] = _row_roles(row)
 
     seen_ids = set()
     for card in c.cards:
@@ -154,20 +160,32 @@ def problems(c: Cards, checklist_rows: List[dict], cfg) -> List[dict]:
             if roles is None or (roles != [""] and card.role not in roles):
                 add(card.id, ck.criterion, "check is not in the plan")
 
+    def crowding(holders: List[Card], cid: str) -> None:
+        """Report a check held more than once: repeated in one card, and/or spread over cards."""
+        distinct: List[Card] = []
+        for k in holders:
+            if not any(k is d for d in distinct):
+                distinct.append(k)
+        for d in distinct:
+            if sum(1 for k in holders if k is d) > 1:
+                add(d.id, cid, "check is repeated in this card")
+        if len(distinct) > 1:
+            add(distinct[1].id, cid, "check is in two cards")
+
     for cid, roles in plan.items():
         cards_of = held.get(cid, [])
         if roles == [""]:
             if not cards_of:
                 add("", cid, "no card for this check")
-            elif len(cards_of) > 1:
-                add(cards_of[1].id, cid, "check is in two cards")
+            else:
+                crowding(cards_of, cid)
             continue
         for role in roles:
             mine = [k for k in cards_of if k.role == role]
             if not mine:
                 add("", cid, "no card for this check")
-            elif len(mine) > 1:
-                add(mine[1].id, cid, "check is in two cards")
+            else:
+                crowding(mine, cid)
 
     for r in wording.lint_text(c.spec["title"], "title", cfg):
         add("", "", r)
@@ -176,6 +194,8 @@ def problems(c: Cards, checklist_rows: List[dict], cfg) -> List[dict]:
             add("", "", r)
     for card in c.cards:
         for r in wording.lint_text(card.title, "title", cfg):
+            add(card.id, "", r)
+        for r in wording.lint_text(card.roleName, "title", cfg):  # sent to ClickUp as the Role field
             add(card.id, "", r)
         for r in wording.lint_text(card.storyline, "body", cfg):
             add(card.id, "", r)
@@ -198,7 +218,8 @@ def card_for(c: Cards, criterion: str, persona: str) -> Optional[Card]:
     return holders[0] if len(holders) == 1 else None
 
 
-def _plan_rows(project: Path, target: str) -> List[dict]:
+def plan_rows(project: Path, target: str) -> List[dict]:
+    """The rows of the spec's frozen plan (`checklist.json`); `CardsError` when unreadable."""
     path = spec_dir(project, target) / "checklist.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -209,7 +230,12 @@ def _plan_rows(project: Path, target: str) -> List[dict]:
             if isinstance(data.get(k), list):
                 data = data[k]
                 break
-    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        raise CardsError(f"{path}: not a plan the tracker can read")
+    return [r for r in data if isinstance(r, dict)]
+
+
+_plan_rows = plan_rows  # kept so callers of the old private name keep working
 
 
 def lint_verb(ctx) -> None:

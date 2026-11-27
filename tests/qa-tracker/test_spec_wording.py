@@ -91,5 +91,48 @@ class WordingLintTest(unittest.TestCase):
             lint("x", "heading")
 
 
+class WordingFixRound1Test(unittest.TestCase):
+    HASH = "3fa9c1d4e"
+
+    def test_url_with_hash_like_token_passes(self):
+        text = f"Open the ticket at https://app.clickup.com/t/{self.HASH} to follow the review."
+        self.assertEqual(lint(text), [])
+
+    def test_doc_url_and_markdown_target_pass(self):
+        text = "Read [the scoring guide](https://app.clickup.com/9012/v/dc/8cr3-4512/3fa9c1d4e) first."
+        self.assertEqual(lint(text), [])
+
+    def test_same_hash_outside_url_fails(self):
+        self.assertIn(f"looks like an id: {self.HASH}", lint(f"Fixed in {self.HASH} last week"))
+
+    def test_markdown_link_text_still_linted(self):
+        out = lint("See [C-012](https://app.clickup.com/t/86c1a2b3d) for details")
+        self.assertIn("looks like an id: C-012", out)
+
+    def test_url_still_checked_for_emoji_and_forbidden(self):
+        self.assertIn("forbidden word: bot", lint("A bot at https://app.clickup.com/t/abc"))
+
+    def test_arabic_joiners_pass(self):
+        text = "يمكن للمحكّم حفظ الدرجة\u200c لكل مشروع\u200d مقدم \ufe0e"
+        self.assertEqual(lint(text), [])
+
+    def test_real_emoji_still_flagged(self):
+        for text in ["Saved \U0001F1F8\U0001F1E6", "Family \U0001F468\u200d\U0001F469\u200d\U0001F467",
+                     "Saved \u2705", "Done \u2713", "Done \u2714", "Press 1\ufe0f\u20e3"]:
+            self.assertIn("emoji", lint(text), text)
+
+    def test_invalid_pattern_reported_once_per_pattern(self):
+        cfg = {"wording": {"forbidden": [], "allow": [], "patterns": ["(unclosed", r"\bPR\b"]}}
+        out = lint("Judge can save a score", "body", cfg)
+        self.assertEqual(out.count("invalid wording pattern"), 1)
+        cfg["wording"]["patterns"] = ["(a", "[b"]
+        self.assertEqual(lint("Judge can save", "body", cfg).count("invalid wording pattern"), 2)
+
+    def test_whole_token_reported(self):
+        self.assertIn("looks like an id: C-SCORE-01", lint("Check C-SCORE-01 today"))
+        self.assertNotIn("looks like an id: SCORE-01", lint("Check C-SCORE-01 today"))
+        self.assertIn("looks like an id: AC-12", lint("Check AC-12 today"))
+
+
 if __name__ == "__main__":
     unittest.main()
