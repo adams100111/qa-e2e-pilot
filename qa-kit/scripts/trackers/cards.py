@@ -56,6 +56,11 @@ def spec_dir(project: Path, target: str) -> Path:
     return Path(project) / ".qa" / "specs" / target
 
 
+def exists(project: Path, target: str) -> bool:
+    """The spec has a cards file (`/qa-scenarios` writes it; a spec starts without one)."""
+    return (spec_dir(project, target) / CARDS_NAME).is_file()
+
+
 def _str(obj: dict, key: str, where: str, path: Path) -> str:
     v = obj.get(key)
     if not isinstance(v, str) or not v.strip():

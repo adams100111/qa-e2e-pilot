@@ -10,7 +10,8 @@ can make one read better than it was recorded. A ticket whose live status is not
 last wrote (its `Ref` letter, or either letter of a move in progress) was changed by a person: it
 is left alone and reported, which is not a failure, on a retest too. A run with no result for the
 spec's cards is reported the same way and takes no list. A lint problem, a failed call, a failed
-upload and a recorded result no ticket shows are failures (exit 1).
+upload, a recorded result no ticket shows and a bug of the run that is not in the Bugs list are
+failures (exit 1).
 
 Before the results are written the run's list is filled like `push-scenarios` fills the open one,
 so a card or check added since has its ticket.
@@ -149,16 +150,6 @@ class RunSync(SpecSync):
             if raised or card.as_ != "checklist":
                 out += [self.key(n, "check", check_id(card.id, ck.criterion)) for ck in card.checks]
         return out
-
-    def recent(self, task_id: str) -> List[str]:
-        """The ticket's recent comment texts, newest first (ClickUp gives the newest 25, in that
-        order; `date` decides when every row has one)."""
-        if not _real(task_id):
-            return []
-        rows = self.tr.request("GET", f"/v2/task/{task_id}/comment").get("comments") or []
-        if all(str(c.get("date") or "").isdigit() for c in rows):
-            rows = sorted(rows, key=lambda c: int(c["date"]), reverse=True)
-        return [str(c.get("comment_text") or "").strip() for c in rows]
 
     def bring_back(self, t: dict, title: str) -> None:
         """On a run's list `skipped` is also what a check left for a later run shows. Only a
@@ -516,7 +507,8 @@ class RunSync(SpecSync):
 
     def link_bugs(self, n: int, have: Dict[str, dict]) -> None:
         """Link each bug of this run, found in the Bugs list by its `Ref` fingerprint, to the
-        scenario ticket that holds its check (decision P10). A bug with no ticket is reported."""
+        scenario ticket that holds its check (decision P10). A bug with no ticket is reported; a
+        bug that is not in the Bugs list, or no Bugs list at all, fails the sync (exit 1)."""
         if self.cfg.get("bugsTo") == "issue-tracker":
             return
         rows = [r for r in clickup._bug_rows(self.run_dir) if not r.get("duplicateOf")]
@@ -524,7 +516,8 @@ class RunSync(SpecSync):
             return
         found = self.bugs_home()
         if found is None:
-            self.log.act("bugs-not-linked", "the Bugs list is not set up; run tracker.sh init")
+            # the run has bugs and there is nowhere to find them: a failure, not a note
+            self.log.skip("bugs-not-linked", "the Bugs list is not set up; run tracker.sh init")
             return
         bid, ref_fid = found
         bugs = self.reread(bid)
@@ -547,7 +540,8 @@ class RunSync(SpecSync):
             matches = [b for b in bugs if str(self.live_field(b, ref_fid) or "") == mark]
             bug = next((b for b in matches if not _is_closed(b, closed)), matches[0] if matches else None)
             if bug is None:
-                self.log.act("bug-not-found", f"{shown}: not in the Bugs list yet; run push-bug first")
+                # a failure: a bug whose push was skipped must not let the run's sync pass quietly
+                self.log.skip("bug-not-found", f"{shown}: not in the Bugs list yet; run push-bug first")
                 continue
             card = cards.card_for(self.cards, criterion, persona)
             ticket = have.get(self.key(n, "card", card.id)) if card is not None else None

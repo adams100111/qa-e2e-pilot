@@ -1007,10 +1007,28 @@ class BugTests(SyncBase):
                     "duplicateOf": "B7"}])
         self.fake.add_bug("Export misses the last row", core.fingerprint("C-EXPORT-01", "admin", "Export misses the last row"))
         rc, lines, _ = self.sync()
-        self.assertEqual(rc, 0, lines)
+        self.assertEqual(rc, 1, lines)   # a bug that was not filed must not pass quietly
         self.assertIn("APPLY\tbug-unlinked\tExport misses the last row: no scenario ticket holds its check", lines)
-        self.assertIn(f"APPLY\tbug-not-found\t{BUG_TITLE}: not in the Bugs list yet; run push-bug first", lines)
+        self.assertIn(f"SKIP\tbug-not-found\t{BUG_TITLE}: not in the Bugs list yet; run push-bug first", lines)
         self.assertEqual(self.fake.writes("POST", r"/link/"), [])
+        # once it is filed the sync links it and passes
+        self.fake.add_bug(BUG_TITLE, core.fingerprint("C-SCORE-02", "judge", BUG_TITLE))
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(len(self.fake.writes("POST", r"/link/")), 1)
+
+    def test_run_with_bugs_and_no_bugs_list_fails_the_sync(self):
+        self.seed()
+        self.edit_cfg(lambda d: (d.pop("listIds"), d.pop("fields")) and d.update(fields={
+            k: v for k, v in self.cfg()["fields"].items() if not k.startswith("Bugs/")}))
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 1, lines)
+        self.assertIn("SKIP\tbugs-not-linked\tthe Bugs list is not set up; run tracker.sh init", lines)
+        # a run without bugs does not need the Bugs list
+        self.bugs([])
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertFalse(any("bugs-not-linked" in ln for ln in lines), lines)
 
     def test_bugs_in_the_issue_tracker_are_not_linked(self):
         self.seed()
@@ -1026,6 +1044,96 @@ class BugTests(SyncBase):
         again = self.fake.add_bug(BUG_TITLE, core.fingerprint("C-SCORE-02", "judge", BUG_TITLE))
         self.assertEqual(self.sync()[0], 0)
         self.assertEqual(set(self.fake.links), {again["id"], self.fake.task(JUDGE_CARD)["id"]})
+
+
+class PlanMoveTests(SyncBase):
+    """A check that leaves the plan or comes back: the Ref says so before the status changes, and
+    the tool's own notes are found however many comments came after them."""
+
+    CHECK = "Refuse a score above the maximum"
+
+    def ref(self):
+        return self.fake.task(self.CHECK)["values"]["f-ref"].split("-")[2]
+
+    def status(self):
+        return self.fake.task(self.CHECK)["status"]["status"]
+
+    def talk(self, count=30):
+        tid = self.fake.task(self.CHECK)["id"]
+        for i in range(count):
+            self.fake.comments.setdefault(tid, []).append(
+                {"comment_text": f"Looked at this with the team, round {i + 1}.", "notify_all": False})
+
+    def notes(self):
+        return [t for t in self.texts(self.CHECK) if t in ("No longer part of the plan.", "Back in the plan.")]
+
+    def test_retire_that_stops_before_the_status_is_marked_and_finished_next_time(self):
+        tid = self.fake.task(self.CHECK)["id"]
+        self.remove_check("C-SCORE-02")
+        self.fail_after("PUT", rf"/v2/task/{tid}$", lands=False)
+        self.assertEqual(self.push()[0], 1)
+        self.assertEqual((self.status(), self.ref()), ("to test", "ts"))   # a move in progress, not a person's
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual((self.status(), self.ref()), ("skipped", "s"))
+        self.assertEqual(self.notes(), ["No longer part of the plan."])
+        self.assertFalse(any("changed-by-person" in ln for ln in lines), lines)
+
+    def test_return_that_stops_before_the_status_is_marked_and_finished_next_time(self):
+        tid = self.fake.task(self.CHECK)["id"]
+        put_back = self.keep_files()
+        self.remove_check("C-SCORE-02")
+        self.assertEqual(self.push()[0], 0)
+        put_back()
+        self.fail_after("PUT", rf"/v2/task/{tid}$", lands=False)
+        self.assertEqual(self.push()[0], 1)
+        self.assertEqual((self.status(), self.ref()), ("skipped", "st"))
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual((self.status(), self.ref()), ("to test", "t"))
+        self.assertEqual(self.notes(), ["No longer part of the plan.", "Back in the plan."])
+        self.fake.calls.clear()
+        self.assertEqual(self.push()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_check_that_returns_while_its_retire_is_half_done_comes_back(self):
+        put_back = self.keep_files()
+        self.remove_check("C-SCORE-02")
+        self.fail_ref(self.CHECK, pending=False)       # the status is skipped; the last letter is not written
+        self.assertEqual(self.push()[0], 1)
+        self.assertEqual((self.status(), self.ref()), ("skipped", "ts"))
+        put_back()
+        rc, lines, _ = self.push()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual((self.status(), self.ref()), ("to test", "t"))
+        self.assertEqual(self.notes(), ["No longer part of the plan.", "Back in the plan."])
+
+    def test_plan_note_is_found_behind_more_than_one_page_of_comments(self):
+        # on a run's list a skipped ticket returns only when its newest plan note says it left
+        self.assertEqual(self.sync()[0], 0)
+        put_back = self.keep_files()
+        self.remove_check("C-SCORE-02")
+        self.record(RUN_1, [r for r in json.loads((self.tmp / ".qa/runs" / RUN_1 / "checkpoint.json").read_text())
+                            ["criteria"] if r.get("criterion_id") != "C-SCORE-02"])
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.status(), "skipped")
+        self.talk()
+        put_back()
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.status(), "to test")
+        self.assertEqual(self.notes(), ["No longer part of the plan.", "Back in the plan."])
+
+    def test_result_note_is_not_posted_again_behind_more_than_one_page_of_comments(self):
+        self.record(RUN_1, [row("C-SCORE-02", "judge", "pass", "low")])
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.texts(self.CHECK).count(REVIEW_NOTE), 1)
+        self.talk()
+        self.fake.calls.clear()
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.texts(self.CHECK).count(REVIEW_NOTE), 1)
+        self.assertEqual(self.fake.calls, [])
 
 
 class RefGrammarTests(unittest.TestCase):

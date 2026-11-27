@@ -342,6 +342,69 @@ class PushDocsTests(DocsBase):
         self.assertEqual(self.fake.calls, [])
 
 
+class NoCardsYetTests(DocsBase):
+    """`/qa-spec` pushes the Docs before `/qa-scenarios` has written the cards file."""
+
+    def start(self):
+        self.new_project()
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(title=TITLE))
+        self.cards_text = self.cards_path.read_text(encoding="utf-8")
+        self.cards_path.unlink()
+        self.ready()   # spec-init --apply
+
+    def test_push_docs_without_the_cards_file_writes_what_needs_no_cards(self):
+        self.start()
+        rc, lines, err = self.docs()
+        self.assertEqual((rc, err), (0, ""), lines)
+        self.assertEqual(self.names(), ["Overview"])           # no Scenarios, no Results yet
+        self.assertEqual(self.page("Overview")["content"], f"# {TITLE}\n")
+        self.assertIn(f"[{TITLE}]", self.dashboard())
+        self.assertIn("No run yet.", self.dashboard())
+        self.assertIn("SKIP\tno-cards\tthe scenario cards are not written yet; "
+                      "the scenario and results pages wait for them", lines)
+        self.assertTrue(lines[-1].startswith("SUMMARY "), lines)
+        self.assertNotIn('"skip"', lines[-1])
+        self.assert_quiet()
+        # again: nothing more to write
+        self.fake.calls.clear()
+        rc, lines, _ = self.docs()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.fake.calls, [])
+        # a dry run says the same and writes nothing
+        self.assertEqual(self.docs(apply=False)[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_pages_are_filled_once_the_cards_are_there(self):
+        self.start()
+        self.assertEqual(self.docs()[0], 0)
+        self.cards_path.write_text(self.cards_text, encoding="utf-8")
+        self.assertEqual(self.push()[0], 0)
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.names(), ["Overview", "Scenarios", "Results"])
+        self.assertEqual(self.page("Overview")["content"], spec_docs.overview_page(self.cards()))
+        self.assertEqual(self.names(parent="Scenarios"), [JUDGE_CARD, ADMIN_CARD])
+
+    def test_overview_written_from_the_cards_is_kept_where_the_cards_file_is_missing(self):
+        self.synced()
+        self.pushed()
+        before = self.page("Overview")["content"]
+        self.cards_path.unlink()
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.page("Overview")["content"], before)
+        # the spec Doc is not written to (the project page is: it no longer knows the list is whole)
+        self.assertEqual([c for c in self.fake.calls if f"/docs/{self.spec_doc()}/" in c[1]], [])
+
+    def test_cards_file_that_cannot_be_read_still_stops_push_docs(self):
+        self.synced()
+        self.cards_path.write_text("{not json", encoding="utf-8")
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 1, lines)
+        self.assertIn("tracker-cards.json", err)
+        self.assertEqual(self.fake.calls, [])
+
+
 class CacheShapeTests(DocsBase):
     def test_cache_bucket_that_is_not_an_object_is_replaced(self):
         self.synced()
@@ -683,6 +746,24 @@ class ResultsPageIdentityTests(DocsBase):
         self.relabel()
         self.assert_renamed(page)
 
+    def test_page_of_a_person_is_not_taken_for_the_run_on_a_machine_without_the_cache(self):
+        # no page has the run's name now and nothing is remembered: a page that only starts
+        # with `Run 1 · ` and is not in the shape of a Results page is a person's
+        self.synced()
+        self.pushed()
+        ours = self.page(RUN_PAGE_1, "Results")
+        ours.update(name="Run 1 · notes from the review", content="We looked at the first run together.\n")
+        self.no_cache()
+        self.fake.calls.clear()
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(ours["content"], "We looked at the first run together.\n")
+        self.assertEqual(ours["name"], "Run 1 · notes from the review")
+        self.assertEqual(sorted(self.names(parent="Results")), sorted([RUN_PAGE_1, "Run 1 · notes from the review"]))
+        self.assertTrue(self.page(RUN_PAGE_1, "Results")["content"].startswith(f"# {RUN_PAGE_1}\n"))
+        self.assertIn("SKIP\tpage-not-ours\tRun 1 · notes from the review: "
+                      "a page under Results that was not made here; it is left as it is", lines)
+
     def test_page_a_person_renamed_is_found_by_the_remembered_id(self):
         self.synced()
         self.pushed()
@@ -707,6 +788,25 @@ class NotifyTests(DocsBase):
 
     def mentions(self):
         return [c for rows in self.fake.comments.values() for c in rows if "comment" in c]
+
+    def test_no_mention_unless_the_verification_is_an_object_and_the_report_has_text(self):
+        self.edit_cfg(lambda d: d.update(notify={"user": LEAD, "on": "verified"}))
+        self.synced()
+        run_dir = self.tmp / ".qa" / "runs" / RUN_1
+        cases = (("{not json", "# Judging report\n"), ("[]", "# Judging report\n"), ("null", "# Judging report\n"),
+                 ('"done"', "# Judging report\n"), ('{"rows": []}', ""), ('{"rows": []}', " \n\t\n"))
+        for verification, report in cases:
+            with self.subTest(verification=verification, report=report):
+                (run_dir / "verification.json").write_text(verification, encoding="utf-8")
+                (run_dir / "report.md").write_text(report, encoding="utf-8")
+                rc, lines, err = self.docs("--run", RUN_1)
+                self.assertEqual(rc, 0, (lines, err))
+                self.assertEqual(self.mentions(), [])
+                self.assertIn(f"SKIP\tnot-verified\t{RUN_PAGE_1}: this run is not verified yet; no one was mentioned",
+                              lines)
+        self.verify()
+        self.assertEqual(self.docs("--run", RUN_1)[0], 0)
+        self.assertEqual(len(self.mentions()), 1)
 
     def test_notify_once_per_run(self):
         self.edit_cfg(lambda d: d["specs"][TARGET].update(notify={"user": LEAD, "on": "verified"}))

@@ -1000,7 +1000,8 @@ class PushScenariosTests(SpecBase):
         self.assertEqual(self.fake.comments[t["id"]], [
             {"comment_text": "No longer part of the plan.", "notify_all": False},
             {"comment_text": "Back in the plan.", "notify_all": False}])
-        self.assertEqual(len(self.fake.calls), 3)
+        # the move marked in the Ref, the comment, the status, the Ref's last letter
+        self.assertEqual([c[0] for c in self.fake.calls], ["POST", "POST", "PUT", "POST"])
         self.assertEqual(len(self.fake.tasks), 6)
         self.fake.calls.clear()
         self.assertEqual(self.push()[0], 0)
