@@ -10,4 +10,6 @@ None.
 
 ## Verdict
 
-**PASS (advisory)**. The next step is the run.
+Verdict: PASS (advisory)
+
+The coverage gate does not block. The next step is the run.

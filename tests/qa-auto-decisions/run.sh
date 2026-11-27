@@ -19,7 +19,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
-auto() { QA_ENGINE="$E" QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
 # jv <file> <python expr over d> — read one value out of a JSON file.
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -37,7 +37,7 @@ d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
 w=sys.argv[3] if len(sys.argv)==4 else sys.argv[3:]
 print("yes" if v==w else "no: "+repr(v))' "$@" 2>/dev/null || echo "<unreadable>"; }
-snapshot() { (cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done); }
+snapshot() { (cd "$1" && find . -type f -exec cksum {} + | LC_ALL=C sort -k3); }
 # newj [open|stopped|done|none] — a project for the target `checkout` whose journey is in that
 # state. Built once per engine, then copied: `start` is the slow verb.
 newj() {
@@ -74,6 +74,9 @@ NASTY="$(printf '%s\n%s\t%s' "--قيمة \"مزدوجة\" و'مفردة' \\ \\\\
 NASTY_NL="$NASTY
 "
 
+# One python process answers jv, js and ed from here on (see tests/qa-auto/lib.sh).
+# shellcheck source=/dev/null
+. "$DIR/../qa-auto/lib.sh"
 run_engine() {
   E="$1"
   local P D N J out rc before c f i
@@ -125,9 +128,17 @@ run_engine() {
   out="$(dec "$P" expected high none 2>&1)"; rc=$?
   check "$E evidence_none_needs_person: rc and id" "$rc|$out" "0|D2"
   check "$E evidence none is stored as null and needs a person" "$(jv "$D" '[d[1]["evidence"],d[1]["needsPerson"],d[1]["confidence"],d[1]["assumption"]]')" '[null, true, "high", true]'
-  dec "$P" expected high None >/dev/null 2>&1; dec "$P" expected high "none " >/dev/null 2>&1
-  check "$E only the literal word none means no evidence" "$(jv "$D" '[[x["evidence"],x["needsPerson"]] for x in d[2:]]')" '[["None", false], ["none ", false]]'
-  check "$E status counts the decision that needs a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "1"
+  # m4: the word none in any letter case, blanks around it ignored, means no evidence
+  dec "$P" expected high None >/dev/null 2>&1; dec "$P" expected high "none " >/dev/null 2>&1; dec "$P" expected high "  NONE	" >/dev/null 2>&1
+  check "$E none in any letter case, with blanks around it, means no evidence" "$(jv "$D" '[[x["evidence"],x["needsPerson"]] for x in d[2:]]')" '[[null, true], [null, true], [null, true]]'
+  dec "$P" expected high "none of the routes mention it" >/dev/null 2>&1; dec "$P" expected high "nonesuch.php:3" >/dev/null 2>&1
+  check "$E a text that only starts with none is evidence" "$(jv "$D" '[[x["evidence"],x["needsPerson"]] for x in d[5:]]')" '[["none of the routes mention it", false], ["nonesuch.php:3", false]]'
+  check "$E status counts the decisions that need a person" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" 'd["needsPerson"]')" "4"
+  for c in "" " " "	" "$(printf ' \n\t ')"; do
+    out="$(dec "$P" expected high "$c" 2>&1)"; rc=$?
+    check "$E an evidence value that is empty after trimming is a usage error [$(printf '%s' "$c" | od -An -c | tr -d ' \n')]" "$rc|$(printf '%s\n' "$out" | sed -n 1p)" "2|auto: --evidence cannot be empty; pass the word none when there is no evidence"
+  done
+  check "$E an empty evidence value adds no decision" "$(jv "$D" 'len(d)')" "7"
 
   # ---- usage ----
   before="$(snapshot "$P")"

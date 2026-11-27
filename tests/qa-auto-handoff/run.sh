@@ -29,12 +29,12 @@ lacks(){ if [ -f "$2" ] && ! grep -qF -- "$3" "$2" 2>/dev/null; then pass=$((pas
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 T_OLD=202611270700; T_MID=202611270710
-auto() { QA_ENGINE="$E" QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@" </dev/null; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@" </dev/null; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
 print(json.dumps(v,sort_keys=True,ensure_ascii=False) if isinstance(v,(dict,list,bool)) or v is None else v)' "$1" "$2" 2>/dev/null </dev/null || echo "<unreadable>"; }
-snapshot() { (cd "$1" && find . \( -type f -o -type l \) ! -name handoff.md | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done); }
+snapshot() { (cd "$1" && find . \( -type f -o -type l \) ! -name handoff.md -exec cksum {} + 2>&1 | LC_ALL=C sort -k3); }
 # ed <json file> <python statements over d> — change a JSON file in place.
 ed() { "$PY" -c 'import json,sys
 p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); exec(sys.argv[2])
@@ -83,6 +83,8 @@ fin() {
     auto decide checkout --project "$P" --step spec --class scope --question "أي الشاشات تدخل في النطاق؟" --answer "شاشات السلة والدفع والفاتورة" --evidence "routes/web.php:12" --confidence high >/dev/null 2>&1
     done_step "$P" analyze; done_step "$P" run; done_step "$P" verify
     [ "$shape" = open ] || auto next checkout --project "$P" >/dev/null 2>&1
+    # the audit has run and passed (T1: without its record the result is never better than not verified)
+    QA_AUTO_TRACKER_CMD="bash $ROOT/trk-skip.sh" auto audit checkout --project "$P" >/dev/null 2>&1
     mv "$P" "$tpl"
   fi
   P="$(mktemp -d "$ROOT/p.XXXXXX")"; rmdir "$P"; cp -Rp "$tpl" "$P"
@@ -104,6 +106,9 @@ NASTY_FLAT="--قيمة \"مزدوجة\" و'مفردة' \\ \\\\n \\u0041 \$HOME \
 TITLES="## Result${NL}## Scope chosen for this spec${NL}## Decided without a person${NL}## Needs a person${NL}## Records created${NL}## How to confirm"
 T1='إجمالي الفاتورة يشمل ضريبة القيمة المضافة'; T2='خصم العميل الدائم يطبق مرة واحدة'; T3='صفحة الطلبات تعرض طلبات العميل'
 
+# One python process answers jv, js and ed from here on (see tests/qa-auto/lib.sh).
+# shellcheck source=/dev/null
+. "$DIR/../qa-auto/lib.sh"
 run_engine() {
   E="$1"
   local P S R H J D out before r want n i
@@ -190,7 +195,7 @@ run_engine() {
   ed "$S/checklist.json" 'd[4]["fixture"]["expect"]["oracleSource"]="llm-suggested"'
   ed "$R/checkpoint.json" 'd["criteria"][2]["confidence"]="low"'
   check "$E ready_when_only_p2_needs_person" "$(ho "$P")" '0|{"result":"ready","needsPerson":3}'
-  check "$E ready with items: the Result section says they do not hold the result back" "$(sec "$H" Result)" "Ready.${NL}Some items still need a person. They are listed below, and none rests on a top priority check."
+  check "$E ready with items: the Result section says they do not hold the result back" "$(sec "$H" Result)" "Ready. 3 items need a person.${NL}Some items still need a person. They are listed below, and none rests on a top priority check."
   check "$E the three items" "$(sec "$H" "Needs a person")" "- Decision to confirm. Asked: ما القيمة المتوقعة لرسوم التوصيل؟; decided: 15 ريالاً${NL}- Expected result to confirm: حد الطلب الأدنى${NL}- Passed with low confidence: $T3"
   check "$E needsPerson is the number of listed items" "$(items "$H" "Needs a person")" "3"
 
@@ -261,10 +266,10 @@ run_engine() {
   # ---- ready needs the files it is decided from ----
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; R="$P/.qa/runs/r1"
   printf '{"decisions":[]}\n' > "$S/auto/decisions.json"
-  check "$E ship-ready with decisions that cannot be read" "$(ho "$P")|$(sec "$H" Result)|$(sec "$H" "Needs a person")" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified.${NL}The decisions or the plan of checks could not be read.|- The record of decisions could not be read."
+  check "$E ship-ready with decisions that cannot be read" "$(ho "$P")|$(sec "$H" Result)|$(sec "$H" "Needs a person")" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified. 1 items need a person.${NL}The decisions or the plan of checks could not be read.|- The record of decisions could not be read."
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; R="$P/.qa/runs/r1"
   printf '{"rows":' > "$S/checklist.json"
-  check "$E ship-ready with a plan that cannot be read" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified.${NL}The decisions or the plan of checks could not be read."
+  check "$E ship-ready with a plan that cannot be read" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified. 1 items need a person.${NL}The decisions or the plan of checks could not be read."
   rm "$S/checklist.json"
   check "$E ship-ready with no plan" "$(ho "$P")" '0|{"result":"not verified","needsPerson":1}'
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; R="$P/.qa/runs/r1"
@@ -273,7 +278,7 @@ run_engine() {
   cp "$HX/verification-override.json" "$R/verification.json"
   check "$E ship-ready stays ready when the second check overrode a check the engine does not count" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
   printf '{"criteria":' > "$R/checkpoint.json"
-  check "$E ship-ready with results that cannot be read" "$(ho "$P")|$(sec "$H" Result)|$(sec "$H" "Needs a person")" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified.${NL}The results of the run could not be read.|- The results of the run could not be read."
+  check "$E ship-ready with results that cannot be read" "$(ho "$P")|$(sec "$H" Result)|$(sec "$H" "Needs a person")" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified. 1 items need a person.${NL}The results of the run could not be read.|- The results of the run could not be read."
 
   # ---- verified_under_full_profile / not_verified_without_verification ----
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; R="$P/.qa/runs/r1"
@@ -282,7 +287,7 @@ run_engine() {
   dec "$P" "{'needsPerson':True}"; ed "$S/checklist.json" 'd[1]["fixture"]["expect"]["oracleSource"]="llm-suggested"'
   check "$E verified is about the run; what waits for a person is counted beside it" "$(ho "$P")" '0|{"result":"verified","needsPerson":2}'
   cp "$HX/verification-override.json" "$R/verification.json"
-  check "$E not verified: the second check turned a pass into a fail" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified.${NL}The second check did not confirm every passed result."
+  check "$E not verified: the second check turned a pass into a fail" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified. 2 items need a person.${NL}The second check did not confirm every passed result."
   ed "$R/verification.json" 'd[1]["verifierVerdict"]="blocked"'
   check "$E not verified: the second check turned a pass into blocked" "$(ho "$P")" '0|{"result":"not verified","needsPerson":2}'
   ed "$R/verification.json" 'd[1]["verifierVerdict"]="pass"; d[2]["verifierVerdict"]="fail"'
@@ -297,12 +302,12 @@ run_engine() {
   for r in '{"overrides":[]}' '[{"criterionId":"C-001"' '' '"pass"' '[["C-001","pass"]]'; do
     n=$((n + 1))
     printf '%s\n' "$r" > "$R/verification.json"
-    check "$E not verified: a second check that cannot be read [$n]" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified.${NL}The second check could not be read."
+    check "$E not verified: a second check that cannot be read [$n]" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified. 2 items need a person.${NL}The second check could not be read."
   done
   rm "$R/verification.json"
-  check "$E not_verified_without_verification" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified.${NL}The results have not had their second check."
+  check "$E not_verified_without_verification" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified. 2 items need a person.${NL}The results have not had their second check."
   cp "$HX/verification-clean.json" "$R/verification.json"; rm "$R/checkpoint.json"
-  check "$E not verified: the run has no results on disk" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":3}|Not verified.${NL}The results of the run could not be read."
+  check "$E not verified: the run has no results on disk" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":3}|Not verified. 3 items need a person.${NL}The results of the run could not be read."
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
   ed "$J" 'd["runId"]=None'
   check "$E not verified: a finished journey with no run" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}This journey has no run."
@@ -371,6 +376,78 @@ Before the limits were checked, this journey had stopped because the time limit 
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
   ed "$J" 'd["restartedFrom"]=2'
   check "$E a restarted journey says so in the Result section" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}This journey was restarted; the earlier one is kept in its history."
+
+  # ---- H5: a journey that was continued, or that took the place of an earlier one, says so ----
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  ed "$J" 'd["replacedFrom"]=3'
+  check "$E a journey that replaced an earlier one says so" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}An earlier journey for this target was replaced; it is kept in the history."
+  ed "$J" 'd["resumes"]=[{"at":"2026-11-27T09:00:00Z","maxHours":6,"from":"time-limit"},{"at":"2026-11-27T10:00:00Z","maxHours":2,"from":"step-failed"}]'
+  check "$E a journey that was continued says how many times" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}An earlier journey for this target was replaced; it is kept in the history.${NL}This journey was continued 2 times after stopping."
+  ed "$J" 'd["restartedFrom"]=3; del d["resumes"][1]'
+  check "$E restarted, replaced and continued once: one sentence each" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}This journey was restarted; the earlier one is kept in its history.${NL}An earlier journey for this target was replaced; it is kept in the history.${NL}This journey was continued 1 times after stopping."
+  ed "$J" 'd["resumes"]="twice"; d["replacedFrom"]=None; del d["restartedFrom"]'
+  check "$E a resumes value that is not a list, and no earlier journey, say nothing" "$(ho "$P")|$(sec "$H" Result)" '0|{"result":"ready","needsPerson":0}|Ready.'
+  # through the verbs: a real stop, resume and restart leave the sentences
+  P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  auto stop checkout --project "$P" --reason time-limit --detail "the deadline has passed" >/dev/null 2>&1
+  auto resume checkout --project "$P" >/dev/null 2>&1
+  check "$E after a real resume the handoff says the journey was continued" "$(ho "$P" | cut -c1-2)$(sec "$H" Result | tail -1)" "0|This journey was continued 1 times after stopping."
+  auto start checkout --project "$P" --restart >/dev/null 2>&1
+  check "$E after a real restart the handoff says both" "$(ho "$P" | cut -c1-2)$(sec "$H" Result | tail -2 | tr '\n' '|')" "0|This journey was restarted; the earlier one is kept in its history.|An earlier journey for this target was replaced; it is kept in the history.|"
+
+  # ---- T1: without a passing audit that is not older than the steps, never better than not verified ----
+  NOAUDIT="The audit has not run for this journey."
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  check "$E the fixture carries a passing audit record" "$(jv "$J" '[d["audit"]["ok"],d["audit"]["at"]>=d["stepsChangedAt"]]')" "[true, true]"
+  ed "$J" 'del d["audit"]'
+  check "$E a finished journey that was never audited is not verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}$NOAUDIT"
+  ed "$J" 'd["audit"]={"ok":True,"at":"2026-11-27T07:59:59Z"}'
+  check "$E an audit older than the last change to the steps does not count" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}$NOAUDIT"
+  ed "$J" 'd["audit"]={"ok":True,"at":d["stepsChangedAt"]}'
+  check "$E an audit as new as the last change to the steps counts" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
+  for v in '{"ok":False,"at":"2026-11-27T12:00:00Z"}' '{"ok":"true","at":"2026-11-27T12:00:00Z"}' '{"ok":True}' '{"ok":True,"at":20261127}' 'True' '"ok"' '[]'; do
+    ed "$J" "d['audit']=$v"
+    check "$E an audit record of $v does not count" "$(ho "$P")" '0|{"result":"not verified","needsPerson":0}'
+  done
+  # a step that changed after the audit
+  P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  ed "$J" 'd["steps"][5]["state"]="pending"'
+  NOW="2026-11-27T09:00:00Z" auto step-start checkout verify --project "$P" >/dev/null 2>&1
+  NOW="2026-11-27T09:05:00Z" auto step-done checkout verify --project "$P" >/dev/null 2>&1
+  NOW="2026-11-27T09:06:00Z" auto next checkout --project "$P" >/dev/null 2>&1
+  check "$E a step finished after the audit makes the audit stale" "$(jv "$J" '[d["state"],d["audit"]["at"],d["stepsChangedAt"]]')|$(ho "$P")|$(sec "$H" Result)" "[\"done\", \"2026-11-27T08:00:00Z\", \"2026-11-27T09:05:00Z\"]|0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}$NOAUDIT"
+  NOW="2026-11-27T09:10:00Z" QA_AUTO_TRACKER_CMD="bash $ROOT/trk-skip.sh" auto audit checkout --project "$P" >/dev/null 2>&1
+  check "$E and a new audit makes the result count again" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
+  # every result that would be better, or as good, becomes not verified; a stop stays a stop
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"; R="$P/.qa/runs/r1"
+  ed "$J" 'del d["audit"]'; cp "$HX/report-not-ready.md" "$R/report.md"
+  check "$E a not ready report without an audit is not verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}$NOAUDIT"
+  cp "$HX/report-plain.md" "$R/report.md"
+  check "$E a verified run without an audit is not verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}$NOAUDIT"
+  stopj "$P" time-limit
+  check "$E a stopped journey without an audit stays stopped, and says so" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"stopped\",\"needsPerson\":0}|Stopped: the time limit was reached.${NL}$NOAUDIT"
+  stopj "$P" audit
+  check "$E a journey stopped by its audit is not told the audit has not run" "$(ho "$P")|$(sec "$H" Result)" '0|{"result":"stopped","needsPerson":0}|Stopped: a limit was broken.'
+  P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  ed "$J" 'del d["audit"]'
+  check "$E an open journey that was never audited says both" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}This journey has not finished.${NL}$NOAUDIT"
+
+  # ---- T2: the count goes with every result ----
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"; R="$P/.qa/runs/r1"
+  ed "$S/checklist.json" 'd[4]["fixture"]["expect"]["oracleSource"]="llm-suggested"'; ed "$R/checkpoint.json" 'd["criteria"][2]["confidence"]="low"'
+  check "$E ready with a count" "$(ho "$P")|$(sec "$H" Result | sed -n 1p)" '0|{"result":"ready","needsPerson":2}|Ready. 2 items need a person.'
+  cp "$HX/report-plain.md" "$R/report.md"
+  check "$E verified with a count" "$(ho "$P")|$(sec "$H" Result)" '0|{"result":"verified","needsPerson":2}|Verified. 2 items need a person.'
+  cp "$HX/report-not-ready.md" "$R/report.md"
+  check "$E not ready with a count" "$(ho "$P" | cut -c1-43)|$(sec "$H" Result | sed -n 1p | sed 's/^Not ready: .*\. \([0-9]* items need a person\.\)$/Not ready: <why>. \1/')" '0|{"result":"not ready","needsPerson":2}|Not ready: <why>. 2 items need a person.'
+  ed "$J" 'del d["audit"]'
+  check "$E not verified with a count" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":2}|Not verified. 2 items need a person.${NL}$NOAUDIT"
+  stopj "$P" step-failed
+  check "$E stopped with a count" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"stopped\",\"needsPerson\":2}|Stopped: a step could not be completed. 2 items need a person.${NL}$NOAUDIT"
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; R="$P/.qa/runs/r1"
+  ed "$S/checklist.json" 'd[1]["fixture"]["expect"]["oracleSource"]="llm-suggested"'
+  check "$E not confirmed says the count once" "$(ho "$P")|$(sec "$H" Result)" '0|{"result":"not confirmed","needsPerson":1}|Not confirmed: 1 items need a person.'
+  check "$E the printed keys are result and needsPerson, in that order" "$(ho "$P" | cut -c3- | sed 's/:[^,}]*//g')" '{"result","needsPerson"}'
 
   # ---- no_requirements_opening_line ----
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"
