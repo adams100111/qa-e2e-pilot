@@ -10,6 +10,9 @@ remediation the human approves; it does not modify artifacts and does not block 
 (step 4b) sets the Verdict to `BLOCKED` until no surface x role pair is uncovered. Fourth qa-kit
 step. Full input: `$ARGUMENTS` — the first token is `<target>`.
 
+An open unattended journey for this target (`bash ${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.
+
 ## What to do
 
 1. **Prereq.** Require `.qa/specs/<target>/scenarios.md` (+ `checklist.json`). If missing, error and
@@ -145,8 +148,27 @@ step. Full input: `$ARGUMENTS` — the first token is `<target>`.
    or record an exclusion with a reason, plus every `uxMissing` surface). Under `ship` (gate mode `block`)
    the Verdict is **`BLOCKED`** until uncovered = 0 and `uxMissing` is empty; set it from the gate's exit code (and from the fail-closed rules in step 4b: no
    census, an unresolvable engine script, exit 2), never from your own count. Under `advise` the Verdict
-   stays advisory. This coverage gate is the only blocking analyze check besides
+   stays advisory.
+
+   **The verdict line.** The first line under `## Verdict` (one blank line after the heading) is exactly
+   `Verdict: BLOCKED` or `Verdict: PASS (advisory)`, with nothing else on the line. Decide it as above:
+   the coverage gate's exit code and the fail-closed rules, never your own count. Programs read this
+   one line. The ClickUp step's `--blocked` follows that same line. This coverage gate is the only blocking analyze check besides
    plan defects.
+
+5b. **ClickUp note (per spec).** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
+   Write the coverage note in plain words (the gaps and whether the plan is ready, no criterion ids,
+   following `${CLAUDE_PLUGIN_ROOT}/templates/trackers/writing-rules.md`), in the configured `language` of
+   `docs/agents/qa-tracker.json`, to a file under the session's temp directory, never into the repo. Then:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
+   ```
+   Add `--blocked` when the Verdict is `BLOCKED`. This writes to ClickUp only; the read-only rule below
+   still holds for the spec's files.
+   A failed step here never hides this command's result. Whatever happens, give the step 6 report first
+   and in full: the Verdict and the gaps. When the step failed, add after it one line with its one-line
+   error and say that ClickUp was not updated.
 
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
    into a single "N gaps" figure — plus the next step. State the Verdict plainly: `BLOCKED` with the

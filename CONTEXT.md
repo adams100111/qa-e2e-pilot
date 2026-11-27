@@ -304,6 +304,30 @@ The increment-7 contract: on Codex/Pi/opencode the engine adapter must be instal
 populate the harness's shared skills dir; qa-kit's generated step commands reference those skills by name and
 each installer aborts if they're absent. On Claude this is the `dependencies:["qa-e2e-pilot"]` plugin model.
 
+**Unattended journey (qa-kit)**:
+One agent driving the whole qa-kit process for a target (constitution → spec → scenarios → analyze → run → verify) with nobody present, started by `/qa-auto`. Its state lives on disk in `.qa/specs/<target>/auto/`, owned by `auto.sh`; every question it answers in place of a person is recorded as a **decision**, a fixed list of things it never decides is checked by `auto.sh audit` (all but a crawl-only census and a seed command run without `seed.json`, which leave no file to compare), and it ends with a **handoff**. A journey that is not finished (open, or stopped for any reason) is replaced only with `--restart`. While it is open, each qa-kit step treats the setup questions as `autonomousSetup` on.
+_Avoid_: autonomous mode, auto mode (the word "autonomous" belongs to the `autonomousSetup` flag).
+
+**Decision (qa-kit, unattended journey)**:
+One recorded answer an unattended journey gave in place of a person: question, answer, evidence (or none), confidence, and the criteria it decides. Always an assumption, never a confirmation. It **needs a person** when it has no evidence, is marked by the second look, or is low confidence with no second look that let it stand.
+_Avoid_: confirmation, approval.
+
+**Second look (qa-kit)**:
+A fresh agent that reads an unattended journey's decisions after the spec and scenarios steps and can only hand one to a person (`ask`) or leave it (`stands`). It never changes or approves an answer. Claude only; elsewhere every low-confidence decision goes to a person.
+_Avoid_: review, verification (it judges no verdict).
+
+**Handoff (qa-kit)**:
+`.qa/specs/<target>/auto/handoff.md`: the list a person reads when an unattended journey ends. It holds the result (`ready`, `not confirmed`, `not ready`, `verified`, `not verified` or `stopped`, never better than what the engine recorded), the scope chosen, what was decided without a person, what still needs one, the records the run created and how to confirm.
+_Avoid_: report (the run's report is the engine's).
+
+**Card (qa-kit tracker)**:
+One scenario in a spec's `tracker-cards.json`: a role, a title, a storyline and its checks (what to do, what should happen), written for the people who follow the QA in ClickUp. Each card becomes a ticket in a run list and each check a subtask. Every check names a criterion of the plan.
+_Avoid_: test case (that is a catalog case), scenario ticket.
+
+**Ref (qa-kit tracker)**:
+The short-text ClickUp field the tool uses to recognise its own tickets: `qk1-<key>-<status letter>`, with a run hash on a Run summary. The key comes from the spec, the list number, the kind and the local id, so a renamed ticket is still found. A second status letter marks a move in progress. A ticket whose status does not match its Ref was changed by a person and is left alone. See ADR-0034.
+_Avoid_: ticket id, ext_key.
+
 ## Flagged ambiguities
 
 - **"backend"** previously named two things: the app under test, and a browser-MCP pool entry. Resolved: **Backend** = app under test only; a pool entry is a **Driver**, and the browser context it spawns is a **Session**.

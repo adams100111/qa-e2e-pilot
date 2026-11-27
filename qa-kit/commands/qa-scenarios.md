@@ -8,6 +8,9 @@ Turn `.qa/specs/<target>/qa-spec.md` into `scenarios.md` (human storylines) + `c
 machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. Full input:
 `$ARGUMENTS` — the first token is `<target>`.
 
+An open unattended journey for this target (`bash ${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.
+When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.
+
 ## What to do
 
 1. **Prereq.** Require `.qa/specs/<target>/qa-spec.md` **and** `.qa/specs/<target>/spec-roles.json`.
@@ -185,6 +188,41 @@ machine plan the run freezes and `verify-plan.sh` enforces). Third qa-kit step. 
      closes a pair under the ship gate. Re-run until `uncovered` is 0 or the operator explicitly excludes
      the pair (with a reason). Under `ship` add `--require-visual-ux` and draft a `visual-ux` row (step 5c)
      for every surface it lists in `uxMissing`. This step drafts; the blocking gate is `/qa-analyze`.
+
+7c. **ClickUp cards (per spec).** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   `lint` is the exception: a non-zero `lint` means fix the cards and run it again. The stop rule applies to `push-scenarios` and `push-docs`.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb. To find out before writing the cards, run
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-status --spec <target>` (it reads only): the one line
+   `{"setUp": false, "target": "<target>"}` means the spec is not tracked, so write no cards file and skip this step.
+   Read `${CLAUDE_PLUGIN_ROOT}/templates/trackers/writing-rules.md` first. Then write
+   `.qa/specs/<target>/tracker-cards.json` in the `language` set in `docs/agents/qa-tracker.json`
+   (default `en`): `{"spec": {"title", "overview", "outOfScope": []}, "cards": [{"id", "role",
+   "roleName", "title", "storyline", "priority": "P1|P2|P3", "as": "subtasks|checklist", "checks":
+   [{"criterion", "title", "do", "expect"}]}]}`.
+   - **Cards.** One card per role storyline (one card per role a journey names). Rows no storyline
+     covers (generated ship rows) go in one card per role and surface with `as: "checklist"`; the
+     other cards use `as: "subtasks"`.
+   - **Roles.** A card has one `role`. A checklist row recorded for several roles (a `personas` or `roles` list
+     on the row) needs one check per role, each inside a card of that role; a row with a single `persona`
+     goes in a card of that role; a row with no role goes in exactly one card.
+   - **Ids.** `criterion` is the one field that holds the checklist row id. `title`, `do`, `expect`, `storyline` and `overview` must contain no ids:
+     write there what a person on the team would say.
+   - **Wording.** A product word the lint wrongly flags can be listed under `wording.allow` in
+     `docs/agents/qa-tracker.json`. Add one only with the operator's yes; in an unattended journey add none.
+
+   Show the file to the operator with the scenarios (skip the question under `autonomousSetup`). Then
+   run the lint, and fix the cards and run it again until it prints `"ok": true` and exits 0:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" lint --spec <target>
+   ```
+   Every reason the lint gives is fixed in the cards, the same way. Two of them are about repeats:
+   `duplicate card title` (give each card its own title) and `duplicate check title in this card`
+   (give each check in a card its own title).
+   Then send them (a `SKIP	page-not-ours	<name>: …` line from `push-docs` does not fail the step; repeat it in the report):
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-scenarios --spec <target> --apply
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-docs --spec <target> --apply
+   ```
 
 8. **Report:** the criterion count, the roles covered, criteria rejected by the alignment check, the
    check-fixtures result (pinned vs unpinned computed), the generated ship rows (load-clean / deny / needs-confirmation counts) and the coverage percent (functional vs sweep), uncovered pairs left, any criterion migrated to

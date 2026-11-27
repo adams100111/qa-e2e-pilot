@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import clickup_api as api  # noqa: E402
 
@@ -217,6 +220,58 @@ class TokenTests(unittest.TestCase):
     def test_token_present(self):
         with mock.patch.dict(os.environ, {"CLICKUP_API_TOKEN": "pk_x"}):
             self.assertEqual(api.token_from_env(), "pk_x")
+
+
+
+class OfflineGuardTests(unittest.TestCase):
+    """The suite never reaches ClickUp: a transport with the real opener refuses, loudly."""
+
+    def test_real_opener_refuses_under_the_offline_variable(self):
+        with mock.patch.dict(os.environ, {api.OFFLINE_ENV: "1"}), \
+                mock.patch.object(api.urllib.request, "urlopen") as opened:
+            t = api.HttpTransport("tok", sleep=lambda s: None)
+            for call in (lambda: t.request("GET", "/v2/team"), lambda: t.request("POST", "/v2/x", {}),
+                         lambda: t.upload("/v2/task/1/attachment", Path(__file__), "a.png")):
+                with self.assertRaises(RuntimeError) as ctx:
+                    call()
+                self.assertIn(api.OFFLINE_ENV, str(ctx.exception))
+            opened.assert_not_called()
+
+    def test_an_injected_opener_still_works_under_the_variable(self):
+        with mock.patch.dict(os.environ, {api.OFFLINE_ENV: "1"}):
+            t = api.HttpTransport("tok", opener=lambda r, timeout=None: _Resp({"ok": 1}), sleep=lambda s: None)
+            self.assertEqual(t.request("GET", "/v2/team"), {"ok": 1})
+
+    def test_the_suite_sets_the_variable_and_blocks_urlopen(self):
+        self.assertEqual(os.environ.get(api.OFFLINE_ENV), "1")
+        with self.assertRaises(AssertionError):
+            api.urllib.request.urlopen("https://api.clickup.com/api/v2/team")
+        # a test that clears the environment is still covered: the real opener is the blocked one
+        with mock.patch.dict(os.environ, {}, clear=True):
+            t = api.HttpTransport("tok", sleep=lambda s: None)
+            with self.assertRaises(AssertionError):
+                t.request("GET", "/v2/team")
+
+    def test_every_test_file_loads_the_guard(self):
+        for path in sorted(Path(__file__).resolve().parent.glob("test_*.py")):
+            self.assertRegex(path.read_text(encoding="utf-8"), r"(?m)^import offline_guard\b", path.name)
+
+    def test_cli_in_a_subprocess_refuses_before_any_call(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "docs/agents").mkdir(parents=True)
+        (tmp / "docs/agents/qa-tracker.json").write_text(json.dumps(
+            {"backend": "clickup", "ids": {"workspace": "9001", "space": "9002", "folder": "9003"}}))
+        dead = "http://127.0.0.1:9"   # a second barrier: nothing listens there
+        env = dict(os.environ, CLICKUP_API_TOKEN="not-a-token", QA_KIT_TRACKER_CONFIG=str(tmp / "none.json"),
+                   https_proxy=dead, HTTPS_PROXY=dead, http_proxy=dead, HTTP_PROXY=dead)
+        self.assertEqual(env.get(api.OFFLINE_ENV), "1")
+        script = Path(__file__).resolve().parents[2] / "qa-kit" / "scripts" / "tracker.sh"
+        proc = subprocess.run(["bash", str(script), "init", "--project", str(tmp)], env=env,
+                              capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn(api.OFFLINE_ENV, proc.stderr)
+        self.assertIn("RuntimeError", proc.stderr)
 
 
 if __name__ == "__main__":

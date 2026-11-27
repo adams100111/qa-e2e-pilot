@@ -1,0 +1,33 @@
+{
+  "run_id": "2026-11-27-judge-scoring",
+  "criteria": [
+    {
+      "criterion_id": "C-SCORE-01",
+      "persona": "judge",
+      "verdict": "pass",
+      "confidence": "high",
+      "checkpointed_at": "2026-11-27T09:00:00Z"
+    },
+    {
+      "criterion_id": "C-SCORE-02",
+      "persona": "judge",
+      "verdict": "fail",
+      "confidence": "high",
+      "checkpointed_at": "2026-11-27T09:05:00Z"
+    },
+    {
+      "criterion_id": "C-RANK-01",
+      "persona": "judge",
+      "verdict": "blocked",
+      "confidence": "high",
+      "checkpointed_at": "2026-11-27T09:10:00Z"
+    },
+    {
+      "criterion_id": "C-RANK-01",
+      "persona": "admin",
+      "verdict": "pass",
+      "confidence": "low",
+      "checkpointed_at": "2026-11-27T09:15:00Z"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from unittest import mock
 from urllib.parse import unquote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import clickup, core  # noqa: E402
 from trackers.clickup_api import ApiError, FakeTransport, Transport  # noqa: E402
@@ -575,7 +576,8 @@ class PullAndStatusTests(PlanTestBase):
         self.assertFalse(out.exists())
         self.run_verb(fake, verb="pull_plan", apply=True)
         text = out.read_text()
-        self.assertIn("draft: true", text)
+        # Without PyYAML the file is written as JSON (valid YAML), so accept both spellings.
+        self.assertRegex(text, r'"?draft"?: true')
         self.assertIn("Insert the key.", text)
         self.assertEqual(catalog_before, sorted((p.name, p.read_text()) for p in (self.tmp / "catalog").iterdir()))
         self.assertEqual(fake.calls, [])

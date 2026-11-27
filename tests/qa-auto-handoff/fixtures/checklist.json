@@ -1,0 +1,11 @@
+[
+  {"id": "C-001", "title": "إجمالي الفاتورة يشمل ضريبة القيمة المضافة", "kind": "computed-logic", "priority": "P1",
+   "fixture": {"expect": {"value": "115.00", "oracleSource": "human"}}},
+  {"id": "C-002", "title": "خصم العميل الدائم يطبق مرة واحدة", "kind": "business-rule", "priority": "P1",
+   "fixture": {"expect": {"value": "90.00", "oracleSource": "spec", "citation": "docs/pricing.md:8"}}},
+  {"id": "C-003", "title": "صفحة الطلبات تعرض طلبات العميل", "kind": "bake", "priority": "P2"},
+  {"id": "C-004", "title": "رسوم التوصيل داخل الرياض", "kind": "computed-logic", "priority": "P2",
+   "fixture": {"expect": {"value": "15.00", "oracleSource": "human"}}},
+  {"id": "C-005", "title": "حد الطلب الأدنى", "kind": "business-rule", "priority": "P2",
+   "fixture": {"expect": {"value": "50.00", "oracleSource": "spec", "citation": "docs/pricing.md:12"}}}
+]

@@ -21,9 +21,11 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    - `scenarios.md` + `checklist.json` → scenarios done. If absent (but spec present) → next step:
      **`/qa-scenarios`**.
    - `analysis.md` → analyze done. If absent (but scenarios present) → next step: **`/qa-analyze`**.
-     If its `## Verdict` reads **`BLOCKED`** (the ship coverage gate), the next step is **`/qa-scenarios`**
-     (add criteria or exclusions) and then `/qa-analyze` again — never `/qa-run` while the analysis is
-     `BLOCKED`. Show it as `analyze BLOCKED`. An `analysis.md` older than `checklist.json` is stale: next
+     Read the first line under its `## Verdict`. `Verdict: BLOCKED` (the ship coverage gate) → show
+     `analyze BLOCKED`; the next step is **`/qa-scenarios`** (add criteria or exclusions) and then
+     `/qa-analyze` again — never `/qa-run` while the analysis is `BLOCKED`. `Verdict: PASS (advisory)` →
+     analyze done. A missing or different line → the analysis is not finished: say so, next step
+     **`/qa-analyze`**. An `analysis.md` older than `checklist.json` is stale: next
      step `/qa-analyze`.
    - a `.qa/runs/<id>/run-manifest.json` whose `target_feature` matches this spec's target (the same
      resolution `/qa-verify` uses) → at least one run happened. If none (but scenarios present) →
@@ -44,6 +46,30 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    one line per spec — `<target>: spec ✓ / scenarios ✓ / analyze ✗ / runs 0 · next: /qa-analyze
    [· drift: stale]`. End with the single **next step** for the requested scope. Never invent an
    artifact you did not find; report only what is present on disk.
+
+5. **ClickUp links (per spec).** Run it for every spec: the tracker says whether the spec is tracked. The one line `{"setUp": false, "target": "<target>"}` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
+   Run `bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) once per spec. A tracked spec's
+   line carries `"setUp": true`; for a spec that is not tracked print no ClickUp line. Print one ClickUp line
+   per tracked spec, under the summary lines and before the final **next step** line: the links it
+   returns for the spec and its latest run, plus each reason it gives for ClickUp being behind the
+   local files.
+
+6. **Unattended journey (per spec).** For each spec run
+   `bash "{{PLUGIN_ROOT}}/scripts/auto.sh" status <target>` (it reads only). Exit 1 with
+   `auto: no journey for <target>` means no unattended journey was started for this spec with
+   `/qa-auto`: add nothing for it. Otherwise it prints the journey plus `needsPerson`, the number of decisions that need a person. Add to that
+   spec's summary line:
+   - `state: open` → `journey: open at <step>`, the first step in `steps` whose `state` is not `done`;
+   - `state: stopped` → `journey: stopped at <step> (<stop.reason>)`, and say whether starting
+     `/qa-auto <target>` again continues it (`time-limit`, `step-failed`, `until`) or a person has to
+     act first (`blocked`, `audit`, `no-sign-in`, `tracker`) and then start a new journey with
+     `/qa-auto <target> --restart` (a plain `/qa-auto <target>` does not replace it);
+   - `state: done` → `journey: done`;
+
+   then `<needsPerson> decisions that need a person` (not the handoff's count of all items for a person, which is never smaller), and point at `.qa/specs/<target>/auto/handoff.md` when that
+   file exists. While a journey is open, the next step for that spec is the journey's own; say so
+   instead of telling a person to run a step by hand.
 
 ## Going further: the dashboard
 

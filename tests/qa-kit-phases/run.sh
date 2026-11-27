@@ -180,5 +180,260 @@ grep -q 'until uncovered = 0 and `uxMissing` is empty' "$QA"; check "analyze_vis
 grep -q 'uxMissing' "$ROOT/qa-kit/templates/qa-analyze-template.md"; check "analyze_template_coverage_lists_ux_missing" "$?" "0"
 grep -q -- '--require-visual-ux' "$ROOT/qa-kit/core/commands/qa-analyze.md" && grep -q 'step 5c' "$ROOT/qa-kit/core/commands/qa-scenarios.md"; check "ux_wiring_in_core_sources" "$?" "0"
 
+# --- ClickUp spec tracking wiring (Task 10): every step command guards, then calls its verb ---
+# The guard (final wave, item 16): run the verb; the tracker says whether the spec is tracked. The
+# not-set-up answer ends the step; any non-zero exit is reported. /qa-status reads the JSON line.
+TAB="$(printf '\t')"
+GUARD="Run it for every spec: the tracker says whether the spec is tracked. \`SKIP${TAB}not-set-up${TAB}<target>\` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently."
+GUARD_STATUS='Run it for every spec: the tracker says whether the spec is tracked. The one line `{"setUp": false, "target": "<target>"}` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.'
+CC="$ROOT/qa-kit/core/commands"
+for pair in qa-spec:spec-init qa-spec:push-docs qa-scenarios:push-scenarios qa-scenarios:lint qa-analyze:spec-note qa-verify:sync-run qa-verify:push-bug qa-verify:push-docs qa-auto:spec-note; do
+  f="${pair%%:*}"; v="${pair##*:}"
+  grep -qF "$GUARD" "$CC/$f.md" && grep -Eq "tracker.sh\"? $v" "$CC/$f.md"; check "tracker_wiring_${f}_${v}" "$?" "0"
+done
+grep -qF "$GUARD_STATUS" "$CC/qa-status.md" && grep -Eq 'tracker.sh"? spec-status' "$CC/qa-status.md"; check "tracker_wiring_qa-status_spec-status" "$?" "0"
+# item 16: no step command decides from the settings file; a spec can be on through specDefaults
+for f in qa-spec qa-scenarios qa-analyze qa-verify qa-status qa-auto; do
+  check "guard_does_not_read_enabled_${f}" "$(grep -c 'has specs.<target>.enabled: true\|`specs.<target>.enabled` is not `true`' "$CC/$f.md" || true)" "0"
+  grep -qF 'A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.' "$CC/$f.md"; check "guard_names_spec_defaults_${f}" "$?" "0"
+done
+# the tracker's lines the commands are written to (final wave)
+grep -qF "SKIP${TAB}no-cards${TAB}the scenario cards are not written yet; the scenario and results pages wait for them" "$CC/qa-spec.md" && grep -q 'That line is expected here, not a failure' "$CC/qa-spec.md"; check "spec_push_docs_no_cards_is_expected" "$?" "0"
+grep -qF "SKIP${TAB}wording${TAB}spec title: <reason>; set specs.<target>.title to the name to show in ClickUp" "$CC/qa-spec.md"; check "spec_init_title_line" "$?" "0"
+grep -qF "SKIP${TAB}bug-not-found${TAB}<title>: not in the Bugs list yet; run push-bug first" "$CC/qa-verify.md" && grep -qF "SKIP${TAB}bugs-not-linked${TAB}the Bugs list is not set up; run tracker.sh init" "$CC/qa-verify.md" && grep -q 'A bug that could not be filed is a failure this command reports' "$CC/qa-verify.md"; check "verify_unfiled_bug_is_a_failure" "$?" "0"
+check "verify_files_bugs_before_sync" "$(grep -nE 'tracker\.sh"? (push-bug|sync-run) ' "$CC/qa-verify.md" | sed -E 's/.*tracker\.sh"? ([a-z-]+) .*/\1/' | tr '\n' ' ')" "push-bug sync-run "
+grep -qF 'error: --run must be a run name' "$CC/qa-verify.md"; check "verify_bad_run_name_line" "$?" "0"
+grep -qF '`duplicate card title`' "$CC/qa-scenarios.md" && grep -qF '`duplicate check title in this card`' "$CC/qa-scenarios.md"; check "scenarios_lint_duplicate_reasons" "$?" "0"
+for f in qa-spec qa-scenarios qa-verify; do
+  grep -qF "SKIP${TAB}page-not-ours${TAB}<name>: " "$CC/$f.md"; check "page_not_ours_does_not_fail_${f}" "$?" "0"
+done
+# final wave: /qa-auto follows the final auto.sh (items 12, 13, 14, 22, 27, 28, 30)
+QAU="$CC/qa-auto.md"
+check "qa_auto_no_anything_else_start" "$(grep -c 'Anything else, no journey included' "$QAU" || true)" "0"
+grep -q 'There is no journey, or it shows `state: done`, or `--restart` was given → `auto.sh start <target>`' "$QAU" && grep -q 'with any other `stop.reason` (`blocked`, `audit`, `no-sign-in`,' "$QAU" && grep -q 'start nothing' "$QAU" && grep -q '`/qa-auto <target> --restart` starts a new journey' "$QAU" && grep -q 'Never' "$QAU"; check "qa_auto_final_stop_needs_restart" "$?" "0"
+grep -qF 'auto: a journey for <target> is stopped (<reason>); pass --restart to start a new one' "$QAU"; check "qa_auto_names_the_start_refusal" "$?" "0"
+grep -q '`auto.sh status` itself fails' "$QAU" && grep -q 'with a line other than `auto: no journey for <target>`' "$QAU" && grep -q 'the end (step 9): audit, then handoff' "$QAU"; check "qa_auto_status_failure_stops_step_failed" "$?" "0"
+grep -qF 'auto: the plan check did not pass for this run' "$QAU" && grep -qF 'auto: the plan drift check did not pass for this run' "$QAU" && grep -q 'A refused' "$QAU" && grep -q 'verify is not redone' "$QAU"; check "qa_auto_refused_verify_stops" "$?" "0"
+grep -qF 'auto: that run has no status' "$QAU" && grep -q 'is not a list of rows (`null`, `{}`); an empty list is a result' "$QAU" && grep -q 'holds only blanks' "$QAU"; check "qa_auto_names_the_new_step_done_refusals" "$?" "0"
+grep -qF 'auto: the second look was recorded as unavailable; a decision cannot be let stand' "$QAU"; check "qa_auto_stands_refused_after_unavailable" "$?" "0"
+grep -q 'It does not check two: a census accepted without the' "$QAU" && grep -q 'It does not check the' "$QAU" && grep -q 'a seed command run without `seed.json`' "$QAU"; check "qa_auto_says_what_the_audit_does_not_check" "$?" "0"
+grep -q 'and then start a new journey with' "$CC/qa-status.md" && grep -q '`/qa-auto <target> --restart`' "$CC/qa-status.md"; check "qa_status_names_restart_after_a_final_stop" "$?" "0"
+# the docs say the same (items 12, 22, 30)
+for f in "$ROOT/CLAUDE.md" "$ROOT/CHANGELOG.md" "$ROOT/qa-kit/README.md"; do
+  grep -q 'crawl-only' "$f" && grep -q 'does not check' "$f" && grep -q 'without writing `seed.json`' "$f"; check "docs_say_what_the_audit_does_not_check_$(basename "$f")" "$?" "0"
+done
+grep -q 'Read its handoff, then run `/qa-auto <target> --restart`' "$ROOT/qa-kit/README.md"; check "readme_continue_or_restart_names_a_command_that_works" "$?" "0"
+grep -q 'A plain `start` is refused for any journey' "$ROOT/docs/adr/0035-unattended-journey.md" && grep -q 'script decides, not the agent' "$ROOT/docs/adr/0035-unattended-journey.md"; check "adr_0035_restart_and_verify_plan" "$?" "0"
+grep -qF -- '--global' "$CC/qa-tracker.md" && grep -qF -- '--spec <target>' "$CC/qa-tracker.md" && grep -q 'spec-init' "$CC/qa-tracker.md"; check "tracker_cmd_global_and_spec_levels" "$?" "0"
+grep -q 'writing-rules.md' "$CC/qa-tracker.md"; check "tracker_cmd_references_writing_rules" "$?" "0"
+[ -f "$ROOT/qa-kit/templates/trackers/writing-rules.md" ]; check "writing_rules_file_exists" "$?" "0"
+grep -q 'writing-rules.md' "$CC/qa-scenarios.md" && grep -q 'tracker-cards.json' "$CC/qa-scenarios.md"; check "scenarios_reads_rules_writes_cards" "$?" "0"
+grep -q 'Screenshots are sent as they are' "$ROOT/qa-kit/templates/trackers/writing-rules.md"; check "writing_rules_screenshot_line" "$?" "0"
+
+# --- Fix round 1 (Tasks 10 and 17): exact flags per verb line, the cards schema, I1-I6, R-a..R-e ---
+# verb_flags <file> <verb> <flag>...: some line that calls the verb carries every flag
+verb_flags(){ local f="$1" v="$2" l; shift 2
+  l="$(grep -E "tracker\.sh\"? $v( |\$)" "$f" 2>/dev/null)"; [ -n "$l" ] || return 1
+  local fl; for fl in "$@"; do l="$(printf '%s\n' "$l" | grep -F -- "$fl")"; [ -n "$l" ] || return 1; done; }
+verb_flags "$CC/qa-spec.md" spec-init '--spec <target>' '--apply'; check "flags_spec_spec_init" "$?" "0"
+verb_flags "$CC/qa-spec.md" push-docs '--spec <target>' '--apply'; check "flags_spec_push_docs" "$?" "0"
+verb_flags "$CC/qa-scenarios.md" lint '--spec <target>'; check "flags_scenarios_lint" "$?" "0"
+check "scenarios_lint_is_never_applied" "$(grep -E 'tracker\.sh"? lint' "$CC/qa-scenarios.md" | grep -c -- '--apply' || true)" "0"
+verb_flags "$CC/qa-scenarios.md" push-scenarios '--spec <target>' '--apply'; check "flags_scenarios_push_scenarios" "$?" "0"
+verb_flags "$CC/qa-scenarios.md" push-docs '--spec <target>' '--apply'; check "flags_scenarios_push_docs" "$?" "0"
+verb_flags "$CC/qa-analyze.md" spec-note '--spec <target>' '--file <note-file>' '--apply'; check "flags_analyze_spec_note" "$?" "0"
+grep -q 'Add `--blocked` when the Verdict is `BLOCKED`' "$CC/qa-analyze.md"; check "flags_analyze_blocked" "$?" "0"
+for v in push-bug sync-run push-docs; do
+  verb_flags "$CC/qa-verify.md" "$v" '--spec <target>' '--run <run-id>' '--apply'; check "flags_verify_${v}" "$?" "0"   # I5: push-bug too
+done
+verb_flags "$CC/qa-status.md" spec-status '--spec <target>'; check "flags_status_spec_status" "$?" "0"
+check "status_spec_status_is_never_applied" "$(grep -E 'tracker\.sh"? spec-status' "$CC/qa-status.md" | grep -c -- '--apply' || true)" "0"
+for k in '"as"' 'subtasks' 'checklist' '"criterion"'; do
+  grep -qF -- "$k" "$CC/qa-scenarios.md"; check "scenarios_names_schema_key_${k//\"/}" "$?" "0"
+done
+# I1: lint is the exception to the stop rule, stated right after the guard sentence
+grep -A1 -F "ClickUp cards (per spec).** $GUARD" "$CC/qa-scenarios.md" | tail -1 | grep -q '`lint` is the exception'; check "i1_lint_exception_follows_guard" "$?" "0"
+grep -q 'fix the cards and run it again' "$CC/qa-scenarios.md" && grep -q 'The stop rule applies to `push-scenarios` and `push-docs`' "$CC/qa-scenarios.md"; check "i1_stop_rule_names_the_two_pushes" "$?" "0"
+# I2: the offer sits outside the guarded part, only on the ClickUp backend, never unattended
+check "i2_offer_not_on_a_guarded_line" "$(grep -A2 -F "$GUARD" "$CC/qa-spec.md" | grep -c 'offer `/qa-tracker' || true)" "0"
+grep -q 'Only when `docs/agents/qa-tracker.json` has `backend: "clickup"`' "$CC/qa-spec.md" && grep -q 'offer `/qa-tracker --spec <target>` once' "$CC/qa-spec.md"; check "i2_offer_only_on_clickup_backend" "$?" "0"
+grep -q 'Make no offer under an unattended journey or `autonomousSetup`' "$CC/qa-spec.md"; check "i2_no_offer_unattended" "$?" "0"
+grep -q 'say nothing about ClickUp' "$CC/qa-spec.md"; check "i2_other_backends_see_nothing" "$?" "0"
+# I3: a failed ClickUp step never hides the command's own result
+grep -q 'never hides this command.s result' "$CC/qa-verify.md" && grep -q 'the run is not complete' "$CC/qa-verify.md"; check "i3_verify_reports_first_then_not_complete" "$?" "0"
+grep -q 'never hides this command.s result' "$CC/qa-analyze.md" && grep -q 'ClickUp was not updated' "$CC/qa-analyze.md"; check "i3_analyze_reports_first_then_not_updated" "$?" "0"
+# I4: where the row id goes, and the role rule
+grep -q '`criterion` is the one field that holds the checklist row id' "$CC/qa-scenarios.md" && grep -q '`title`, `do`, `expect`, `storyline` and `overview` must contain no ids' "$CC/qa-scenarios.md"; check "i4_criterion_is_the_only_id_field" "$?" "0"
+grep -q 'A card has one `role`' "$CC/qa-scenarios.md" && grep -q 'needs one check per role, each inside a card of that role' "$CC/qa-scenarios.md" && grep -q 'a single `persona`' "$CC/qa-scenarios.md" && grep -q 'a row with no role goes in exactly one card' "$CC/qa-scenarios.md"; check "i4_role_rule_exact" "$?" "0"
+grep -q '`personas` or `roles` list' "$CC/qa-scenarios.md" && grep -q 'wording.allow' "$CC/qa-scenarios.md"; check "i4_role_lists_and_wording_allow" "$?" "0"
+# I6: the token stays inside the tracker script; a pasted id is proved by the dry spec-init
+QT="$CC/qa-tracker.md"
+check "i6_tracker_cmd_has_no_curl" "$(grep -ci 'curl' "$QT" || true)" "0"
+check "i6_tracker_cmd_has_no_api_host" "$(grep -c 'api\.clickup\.com' "$QT" || true)" "0"
+check "i6_no_get_through_the_api" "$(grep -c 'GET through the API' "$QT" || true)" "0"
+grep -Eq 'tracker\.sh"? spec-init --spec <target>$' "$QT"; check "i6_dry_spec_init_line" "$?" "0"
+# (the token rule itself was reworded in fix round 2: see f7_* below)
+grep -q 'remove the saved id and ask again' "$QT" && grep -q '`folder` for a folder URL, `list` for a list URL' "$QT"; check "i6_wrong_id_is_removed_and_asked_again" "$?" "0"
+grep -q 'tell the person to run `/qa-tracker` first' "$QT"; check "i6_other_backend_stops" "$?" "0"
+# minors
+grep -q 'only if they are not already there' "$QT"; check "minor_writing_rules_appended_once" "$?" "0"
+grep -q 'once per spec' "$CC/qa-status.md" && grep -q 'for a spec that is not tracked print no ClickUp line' "$CC/qa-status.md" && grep -q 'before the final \*\*next step\*\* line' "$CC/qa-status.md"; check "minor_status_clickup_line_placement" "$?" "0"
+grep -q 'in the configured `language`' "$CC/qa-analyze.md" && grep -q "session's temp directory" "$CC/qa-analyze.md"; check "minor_analyze_note_language_and_temp" "$?" "0"
+check "minor_clickup_rules_list_not_split" "$(awk '/^## Rules/{r=1;next} r&&/^## /{r=0} r&&seen&&/^$/{gap=1} r&&gap&&/^- /{bad++;gap=0} r&&/^- /{seen=1;gap=0} END{print bad+0}' "$ROOT/qa-kit/templates/trackers/clickup.md")" "0"
+# R-a..R-e: the auto.sh interface /qa-auto and /qa-status follow
+QAU="$CC/qa-auto.md"
+grep -q 'plus `--known-defects-invalid` when step 2 exited non-zero' "$QAU"; check "ra_start_passes_known_defects_invalid" "$?" "0"
+grep -q 'auto: no journey for <target>' "$QAU" && grep -q 'auto: no journey for <target>' "$CC/qa-status.md"; check "rb_status_exit_1_means_no_journey" "$?" "0"
+check "rb_no_journey_json_lookup" "$(cat "$QAU" "$CC/qa-status.md" | grep -c 'Look for `.qa/specs/<target>/auto/journey.json`\|Only when `.qa/specs/<target>/auto/journey.json` exists' || true)" "0"
+grep -q 'auto: no open journey for <target>' "$QAU"; check "rc_closed_journey_refusal_named" "$?" "0"
+check "rc_no_stop_after_a_failed_final_note" "$(sed -n '/^11\. \*\*ClickUp note/,/^12\. /p' "$QAU" | grep -c 'auto.sh stop' || true)" "0"
+grep -q 'do not try to stop the journey' "$QAU" && grep -q 'The ClickUp comment was not posted' "$QAU"; check "rc_says_the_comment_was_not_posted" "$?" "0"
+check "rd_source_has_no_unavailable_call" "$(grep -c -- '--unavailable' "$QAU" || true)" "0"
+grep -q 'counts every low-confidence decision that has no second-look verdict' "$QAU"; check "rd_handoff_counts_unlooked_decisions" "$?" "0"
+grep -q 'auto.sh" note <target> --kind seed-not-run|check-left-out --text "<plain sentence>"' "$QAU"; check "re_note_verb_line" "$?" "0"
+grep -q -- '--kind seed-not-run' "$QAU" && grep -q -- '--kind check-left-out' "$QAU"; check "re_both_note_kinds_used" "$?" "0"
+check "re_left_out_check_is_not_a_scope_decision" "$(grep -c 'record that as a `scope` decision' "$QAU" || true)" "0"
+# /qa-auto follows the step commands: lint is not a failed sync, and the step's own result is said first
+grep -q '`lint` reporting problems is not a failed sync' "$QAU"; check "qa_auto_lint_is_not_a_failed_sync" "$?" "0"
+
+# --- Unattended journey (Task 17): /qa-auto is a loop over auto.sh; steps honour an open journey ---
+OJ='An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.sh status <target>` shows `state: open`) counts as `autonomousSetup` on for this step. Record each answer you give in place of a person with `auto.sh decide`.'
+for f in qa-constitution qa-spec qa-scenarios qa-analyze; do
+  grep -qF "$OJ" "$CC/$f.md"; check "open_journey_line_${f}" "$?" "0"
+done
+grep -q 'with the reason `unattended journey`' "$CC/qa-constitution.md"; check "constitution_passes_unattended_journey_reason" "$?" "0"
+grep -q 'auto.sh" status <target>' "$CC/qa-status.md" && grep -q 'unattended journey' "$CC/qa-status.md" && grep -q 'needsPerson' "$CC/qa-status.md" && grep -q 'stop.reason' "$CC/qa-status.md"; check "status_shows_journey_step_reason_and_count" "$?" "0"
+QAU="$CC/qa-auto.md"
+[ -f "$QAU" ]; check "qa_auto_source_exists" "$?" "0"
+grep -qxF 'description: Drive the whole qa-kit process for a target with nobody present, record every self-answered question, and end with a handoff list for a person.' "$QAU" 2>/dev/null; check "qa_auto_description_verbatim" "$?" "0"
+grep -qxF 'argument-hint: "<target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>] [--restart]"' "$QAU" 2>/dev/null; check "qa_auto_argument_hint_verbatim" "$?" "0"
+for v in start resume next step-start step-done signin decide stop audit handoff status; do
+  grep -Eq "auto\.sh\"? $v( |\$)" "$QAU" 2>/dev/null; check "qa_auto_calls_$v" "$?" "0"
+done
+check "qa_auto_second_look_token_once" "$(grep -c '{{SECOND_LOOK}}' "$QAU" 2>/dev/null || true)" "1"
+grep -q -- '--known-defects-invalid' "$QAU" 2>/dev/null && grep -q 'caffeinate -dimsu' "$QAU" 2>/dev/null; check "qa_auto_start_flags_and_keep_awake" "$?" "0"
+for r in step-failed tracker; do
+  grep -q -- "--reason $r" "$QAU" 2>/dev/null; check "qa_auto_stops_with_$r" "$?" "0"
+done
+grep -q 'time-limit' "$QAU" 2>/dev/null; check "qa_auto_names_time_limit" "$?" "0"
+for c in roles surface-access scope role-overrides journeys inputs expected gaps seed exclusion crawl-only oracle-human safety known-defect; do
+  grep -q "\`$c\`" "$QAU" 2>/dev/null; check "qa_auto_names_class_$c" "$?" "0"
+done
+grep -q 'When unsure whether a journey is P1, mark it P1' "$QAU" 2>/dev/null; check "qa_auto_unsure_p1_is_p1" "$?" "0"
+grep -q 'Never `oracleSource: "human"`' "$QAU" 2>/dev/null; check "qa_auto_never_oracle_human" "$?" "0"
+grep -q 'main session' "$QAU" 2>/dev/null && grep -q '{{ENGINE_RUN}}' "$QAU" 2>/dev/null && grep -q '/qa-resume' "$QAU" 2>/dev/null; check "qa_auto_run_in_main_session_engine_run_and_resume" "$?" "0"
+grep -q 'data-policy.sh list' "$QAU" 2>/dev/null && grep -q -- '--records' "$QAU" 2>/dev/null && grep -q 'known-defects.sh validate' "$QAU" 2>/dev/null; check "qa_auto_engine_results_passed_in" "$?" "0"
+grep -qF "<n> items need a person's review. See the results page." "$QAU" 2>/dev/null && grep -qF "Nothing needs a person's review." "$QAU" 2>/dev/null && grep -q 'tracker.sh" spec-note' "$QAU" 2>/dev/null; check "qa_auto_fixed_clickup_note" "$?" "0"
+# the words: "unattended journey"; never bare "autonomous" or "auto mode"
+check "qa_auto_no_bare_autonomous" "$(grep -oi 'autonomous[A-Za-z]*' "$QAU" 2>/dev/null | grep -vc '^autonomousSetup$' || true)" "0"
+check "qa_auto_no_auto_mode" "$(grep -ci 'auto mode' "$QAU" 2>/dev/null || true)" "0"
+grep -q 'unattended journey' "$QAU" 2>/dev/null; check "qa_auto_says_unattended_journey" "$?" "0"
+# no second copy of a step's instructions: the step scripts are named only in the step sources
+for s in spec-snapshot.sh constitution.sh generate-ship-criteria.sh coverage.sh check-fixtures.sh verify-plan.sh surface-access.sh; do
+  check "qa_auto_does_not_copy_step_$s" "$(grep -c "scripts/$s" "$QAU" 2>/dev/null || true)" "0"
+done
+# the second look follows the engine's subagentDispatch, recorded in qa-kit's own profile
+check "second_look_profile_matches_engine_dispatch" "$(python3 - "$ROOT" <<'PYEOF'
+import json, sys
+root = sys.argv[1]
+eng = json.load(open(root + "/harness-profiles.json"))["harnesses"]
+kit = json.load(open(root + "/qa-kit/harness-profiles.qakit.json"))["harnesses"]
+banner = "SECOND LOOK UNAVAILABLE: this harness cannot start a fresh agent; every low-confidence decision is left for a person."
+bad = []
+for h in ("claude", "pi", "codex", "opencode"):
+    k = kit[h]
+    if k.get("subagentDispatch") is not eng[h]["subagentDispatch"]:
+        bad.append(h + ":dispatch")
+    sl = k.get("secondLook", "")
+    if "auto.sh\" second <target> --unavailable" not in sl or banner not in sl:
+        bad.append(h + ":banner")
+    if ("Start one fresh agent" in sl) is not bool(k.get("subagentDispatch")):
+        bad.append(h + ":instruction")
+print(",".join(bad) or "ok")
+PYEOF
+)" "ok"
+
+# --- Fix round 2 (Task 17): F1-F7, M1-M7, the safety sentences, the words ---
+QAU="$CC/qa-auto.md"; PROFJ="$ROOT/qa-kit/harness-profiles.qakit.json"
+has(){ grep -qF -- "$2" "$1" 2>/dev/null; }
+# sl <harness>: that harness's secondLook string
+sl(){ python3 -c "import json,sys;sys.stdout.write(json.load(open(sys.argv[1]))['harnesses'][sys.argv[2]]['secondLook'])" "$PROFJ" "$1"; }
+slhas(){ sl "$1" | grep -qF -- "$2"; }
+# F1: a scenarios step on an existing plan only appends
+has "$QAU" 'only appends' && has "$QAU" 'Never rewrite, remove, reorder or re-derive an existing row, its tags or its expected value'; check "f1_scenarios_round_only_appends" "$?" "0"
+has "$QAU" 'a plan that existed when the journey started' && has "$QAU" 'that close the gaps analyze listed'; check "f1_covers_reopened_round_and_starting_plan" "$?" "0"
+has "$QAU" 'a row from the starting plan is gone' && has "$QAU" 'a person-confirmed expected value is no longer marked as confirmed'; check "f1_audit_fails_on_lost_row_or_confirmation" "$?" "0"
+# F2: the run step is marked done only on a finished run
+has "$QAU" "only after the engine's end-of-run order has completed" && has "$QAU" 'report.md'; check "f2_step_done_run_needs_finished_run" "$?" "0"
+has "$QAU" 'auto: that run started before this journey'; check "f2_names_the_script_refusal" "$?" "0"
+has "$QAU" 'resume it (step 6); never mark it done'; check "f2_unfinished_run_is_resumed_never_marked_done" "$?" "0"
+# F3: only a run of this journey is resumed
+has "$QAU" 'is not earlier than `startedAt` in `auto.sh status <target>`' && has "$QAU" 'started_at'; check "f3_resume_only_a_run_of_this_journey" "$?" "0"
+has "$QAU" 'start a new run'; check "f3_older_run_means_a_new_run" "$?" "0"
+# F4: the fresh agent is told it only reads; the banner is not a way out
+for s in 'You only read.' 'Change no file.' 'Run no script or command that writes.' 'Do not run auto.sh.' 'Do not correct or rewrite an answer.' 'Your whole reply is one line per decision id'; do
+  slhas claude "$s"; check "f4_claude_prompt_says_${s// /_}" "$?" "0"
+done
+slhas claude 'allowed only when the tool for starting a fresh agent is absent or its call fails' && slhas claude 'never because of time, cost or the number of decisions'; check "f4_banner_only_when_no_fresh_agent" "$?" "0"
+# F5: three fixed sentences, and when no comment is posted
+has "$QAU" 'This run was stopped before it finished. See the results page.'; check "f5_stopped_sentence" "$?" "0"
+has "$QAU" '`result` is `stopped`' && has "$QAU" '`needsPerson` is more than 0'; check "f5_sentence_chosen_from_result_and_needs_person" "$?" "0"
+has "$QAU" 'the stop reason is not `tracker`' && has "$QAU" 'No ClickUp comment was posted'; check "f5_no_comment_without_run_or_after_tracker_stop" "$?" "0"
+# F6: --unavailable runs only where the second look would have run
+for h in claude pi codex opencode; do
+  check "f6_${h}_no_run_before_the_audit" "$(sl "$h" | grep -ci 'once more\|before the audit' || true)" "0"
+done
+for h in pi codex opencode; do
+  check "f6_${h}_unavailable_called_once" "$(sl "$h" | grep -c -- 'second <target> --unavailable' || true)" "1"
+  slhas "$h" 'Run it only here, after `spec` and after `scenarios`'; check "f6_${h}_only_after_spec_and_scenarios" "$?" "0"
+done
+# F7: one token rule in /qa-tracker, nothing against it
+QT="$CC/qa-tracker.md"
+has "$QT" 'only ever referenced as the environment variable' && has "$QT" 'Never read it into the conversation, print, echo, paste, log or store it'; check "f7_token_rule" "$?" "0"
+has "$QT" 'only the tracker script talks to ClickUp' && has "$QT" 'checking a pasted folder or list URL'; check "f7_everything_else_goes_through_the_tracker" "$?" "0"
+check "f7_token_rule_stated_once" "$(grep -c 'only the tracker script talks to ClickUp' "$QT" || true)" "1"
+has "$QT" 'list workspaces, spaces and folders through'; check "f7_first_setup_still_lists_through_the_api" "$?" "0"
+check "f7_no_contradicting_sentence" "$(grep -c 'pass the ClickUp token yourself\|with the token in `CLICKUP_API_TOKEN`' "$QT" || true)" "0"
+# safety sentences that had no test
+slhas claude 'It never receives this conversation'; check "safety_fresh_agent_never_gets_the_conversation" "$?" "0"
+slhas claude 'do not review the decisions yourself'; check "safety_no_self_review" "$?" "0"
+slhas claude 'recorded as `ask` with the reason `no answer from the second look`'; check "safety_odd_answer_is_ask" "$?" "0"
+a="$(grep -n '^9\. \*\*Audit\.\*\*' "$QAU" | cut -d: -f1)"; b="$(grep -n '^10\. \*\*Handoff\.\*\*' "$QAU" | cut -d: -f1)"
+check "safety_audit_before_handoff" "$([ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] && echo y)" "y"
+has "$QAU" 'Go on to step 10 either way'; check "safety_handoff_follows_a_failed_audit" "$?" "0"
+# minors
+has "$QAU" '(`step-start`, `next`, `signin`, `decide`)' && has "$QAU" '--detail "<the script'"'"'s line>"'; check "m1_unruled_exit_1_stops_the_loop" "$?" "0"
+has "$QAU" 'The launch profile was not applied: the spec already had its own settings.' && has "$QAU" 'write nothing to the existing run-config'; check "m2_launch_profile_not_applied_to_existing_spec" "$?" "0"
+M3='When a person runs this command while a journey is open for the target, tell them first that an unattended journey is open; `auto.sh status` exit 1 means no journey, and the command goes on as usual.'
+for f in qa-constitution qa-spec qa-scenarios qa-analyze; do
+  grep -A1 -F "$OJ" "$CC/$f.md" | tail -1 | grep -qF "$M3"; check "m3_person_told_first_${f}" "$?" "0"
+done
+has "$CC/qa-constitution.md" 'run it for each directory under `.qa/specs/`'; check "m3_constitution_finds_the_target" "$?" "0"
+has "$QAU" "the engine's resume command (\`/qa-resume <run-id>\`; on a harness that prefixes plugin commands, the same prefix as the run command above)"; check "m4_resume_wording" "$?" "0"
+has "$QAU" 'shows that step still `running`' && has "$QAU" 'A second failure of the same step is `step-failed`'; check "m5_redo_count_comes_from_status" "$?" "0"
+has "$QAU" 'At the start of every `/qa-auto` invocation' && has "$QAU" '--reason step-failed --detail "the known-defect registry is not valid"'; check "m6_registry_checked_every_invocation" "$?" "0"
+grep -q 'substituted AFTER the skill and engine-run tokens' "$ROOT/qa-kit/scripts/build-qakit-adapter.sh" && grep -q 'must not contain them' "$ROOT/qa-kit/scripts/build-qakit-adapter.sh"; check "m7_token_order_comment" "$?" "0"
+check "m7_second_look_has_no_earlier_token" "$(grep -c '{{SKILL_REF\|{{ENGINE_RUN' "$PROFJ" || true)" "0"
+# the words, in the profile strings and every command source this lane edited
+for f in "$PROFJ" "$CC/qa-auto.md" "$CC/qa-constitution.md" "$CC/qa-spec.md" "$CC/qa-scenarios.md" "$CC/qa-analyze.md" "$CC/qa-status.md" "$CC/qa-tracker.md"; do
+  check "no_bare_autonomous_$(basename "$f")" "$(grep -oi 'autonomous[A-Za-z]*' "$f" 2>/dev/null | grep -vc '^autonomousSetup$' || true)" "0"
+  check "no_auto_mode_$(basename "$f")" "$(grep -ci 'auto mode' "$f" 2>/dev/null || true)" "0"
+done
+
+# --- Verdict line: one machine-readable line under ## Verdict ---
+TPL="$ROOT/qa-kit/templates/qa-analyze-template.md"
+check "vl_template_verdict_line_first" "$(awk '/^## Verdict$/{f=1;next} f&&NF{print;exit}' "$TPL")" "Verdict: {{VERDICT}}"
+has "$CC/qa-analyze.md" '`Verdict: BLOCKED`' && has "$CC/qa-analyze.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-analyze.md" 'nothing else on the line'; check "vl_analyze_names_both_values" "$?" "0"
+has "$CC/qa-status.md" '`Verdict: BLOCKED`' && has "$CC/qa-status.md" '`Verdict: PASS (advisory)`' && has "$CC/qa-status.md" 'not finished'; check "vl_status_reads_the_line" "$?" "0"
+has "$CC/qa-auto.md" 'reads that one line'; check "vl_auto_reads_the_line" "$?" "0"
+# /qa-auto follows the final auto.sh rules (limits in step verbs, run refusals, run-config keys, audit before handoff)
+has "$CC/qa-auto.md" 'A limit stop is not a failed step' && has "$CC/qa-auto.md" 'do not call `stop`'; check "qa_auto_step_verbs_limit_stop" "$?" "0"
+has "$CC/qa-auto.md" 'auto: that run is still in progress' && has "$CC/qa-auto.md" 'auto: that run has no results for this spec' && has "$CC/qa-auto.md" 'auto: run has no result yet' && has "$CC/qa-auto.md" 'auto: verify has no result yet'; check "qa_auto_step_done_run_refusals" "$?" "0"
+has "$CC/qa-auto.md" '`gates`, `humanInteraction`, `environment`, `allowApiWrites`, `seedableEnvMarker`, `allowBlackboxCrawl`, `profile` and `baseUrl`' && has "$CC/qa-auto.md" 'run-config-safety:<key>'; check "qa_auto_run_config_whole_keys" "$?" "0"
+has "$CC/qa-auto.md" 'not older than the last step' && has "$CC/qa-auto.md" 'The audit has not run for this journey.'; check "qa_auto_audit_before_handoff" "$?" "0"
+for f in qa-analyze qa-status; do
+  has "$ROOT/qa-kit/commands/$f.md" 'Verdict: PASS (advisory)'; check "vl_rendered_$f" "$?" "0"
+done
+
 echo "qa-kit-phases: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

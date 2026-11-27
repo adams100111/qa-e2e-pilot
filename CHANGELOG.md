@@ -660,6 +660,78 @@ The headline release: the engine now tells the truth about its own accuracy.
 
 ## qa-kit (process shell)
 
+### v0.5.0 — 2026-11-27 · "Follow the QA in ClickUp, or let it run itself"
+
+Needs engine `~0.12.0`, unchanged. Design in ADR-0034 and ADR-0035.
+
+**Added**
+
+- **ClickUp tracking per spec and run.** A spec set up for ClickUp gets one subfolder in your QA
+  folder, a Doc (Overview, Scenarios, one Results page per run) and one list per run. Each scenario is
+  a ticket and each check a subtask, written in plain words for the team. Tickets take the status the
+  run's results give; screenshots are attached; the run's bugs are linked to their scenarios; a project
+  Doc shows every spec and its latest run. The report in ClickUp is the Results page; the engine's HTML
+  report stays local.
+- **Setup at three levels**, nearest wins: `/qa-tracker --global` (workspace and token variable name,
+  once per machine), `/qa-tracker` (project), `/qa-tracker --spec <target>` (one spec, with a new
+  subfolder or a folder or list URL you paste). Shared settings go under `specDefaults`.
+- **New `tracker.sh` verbs:** `lint`, `spec-init`, `push-scenarios`, `sync-run` (`--retest`),
+  `push-docs`, `spec-note` (`--blocked`) and `spec-status`. All are dry runs until `--apply`.
+  `push-bug` and `update-retest` accept `--spec`.
+- **`/qa-auto <target>`: an unattended journey.** One agent runs constitution, spec, scenarios, analyze,
+  run and verify with nobody present, answers each question from the project's evidence and records it,
+  and ends with `.qa/specs/<target>/auto/handoff.md`. It continues after an interruption and refuses
+  production. It never decides a seed command, a coverage exclusion, a crawl-only census, a
+  person-confirmed expected value, a safety setting or the known-defect registry, and `auto.sh audit`
+  fails the journey when the files show one of them changed. The audit is a tripwire against drift
+  and mistakes: it reads files the agent can also write, so it does not stop an agent set on
+  defeating it. It does not check two of those: a crawl-only census, and a seed command that was run
+  without writing `seed.json`. A journey that is not finished is replaced only with `--restart`. The
+  verify step is closed by a script: `auto.sh step-done <target> verify` runs `verify-plan.sh`, plain
+  and `--drift`, and refuses on a non-zero exit. A verifier override on the run is never `ready`.
+- **A second look** (Claude only): a fresh agent reads the journey's decisions after the spec and
+  scenarios steps and can only hand one to a person. On other harnesses every low-confidence decision
+  goes on the handoff list.
+- **Writing rules shipped with qa-kit** (`templates/trackers/writing-rules.md`) and checked by `lint`
+  and by every verb that sends text.
+
+**Changed**
+
+- **`/qa-analyze` now writes one exact verdict line**, `Verdict: BLOCKED` or
+  `Verdict: PASS (advisory)`, as the first line under `## Verdict`, and `/qa-status` reads it. Anything
+  else reads as "analyze has no result yet".
+- **A tracked spec's ClickUp step is part of its command.** When it fails the command gives its own
+  result, says ClickUp was not updated and stops. A spec that is not tracked never contacts ClickUp.
+  The step runs its tracker verb for every spec and the tracker says whether the spec is tracked
+  (its own entry or `specDefaults`): the not-set-up answer ends the step, and any non-zero exit is
+  reported, never skipped.
+- **Run lists are owned by the run's results.** The tool sets ticket status; a status a person changed
+  is left alone and reported. A pass stays in `testing` until a person confirms it, unless it was
+  recorded and verified at high confidence.
+- **With an open journey,** each step command treats the setup questions as `autonomousSetup` on. No
+  config is edited.
+- The agent's description of the steps names `/qa-tracker` and `/qa-auto`.
+
+**Fixed**
+
+- A screenshot retest attaches only new files: attachment names come from the file's content.
+- A check added to the plan after a run's list was made gets its ticket on the next sync instead of
+  blocking it.
+- The wording check no longer flags email addresses or ids inside URLs.
+
+**Before you rely on it**
+
+Every ClickUp test uses an in-memory fake. Nothing has run against a real workspace. On one you can
+spare, check once:
+
+1. A subfolder is created inside the QA folder (`spec-init --apply`).
+2. The custom fields `Ref`, `Role`, `Needs a person's review` and `Build` are read from the folder.
+3. Each run list gets its views.
+4. The task, list, folder, Doc and page links open the right page.
+5. A comment with `notify` set mentions you once.
+6. A Doc is read and rewritten, not duplicated, on a second `push-docs`.
+7. Archived run lists do not confuse the next sync.
+
 ### v0.4.2 — 2026-11-11 · "Sixteen clicks, not 176"
 
 **Changed**

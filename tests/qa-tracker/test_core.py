@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "qa-kit" / "scripts"))
+import offline_guard  # noqa: E402,F401  (first: no test reaches the network)
 
 from trackers import core  # noqa: E402
 
@@ -376,6 +377,19 @@ class MapCacheTests(TempProject):
         self.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith("tracker-map")],
                          ["tracker-map.json"])
 
+    def test_bucket_that_is_not_an_object_is_replaced(self) -> None:
+        path = self.tmp / ".qa" / "tracker-map.json"
+        path.parent.mkdir(parents=True)
+        for bucket in ([1, 2], "text", 7, None):
+            path.write_text(json.dumps({"version": 1, "case": bucket, "bug": {"B1": {"id": "9", "hash": "h"}}}))
+            cache = core.MapCache(self.tmp)
+            self.assertIsNone(cache.get("case", "TC-A-001"))
+            cache.put("case", "TC-A-001", "86abc", "h1")
+            self.assertEqual(cache.bucket("spec-doc"), {})
+            cache.save()
+            again = core.MapCache(self.tmp)
+            self.assertEqual(again.get("case", "TC-A-001"), {"id": "86abc", "hash": "h1"})
+            self.assertEqual(again.get("bug", "B1"), {"id": "9", "hash": "h"})   # the other kinds are kept
 
     def test_corrupt_cache_is_empty_with_warning(self) -> None:
         path = self.tmp / ".qa" / "tracker-map.json"
