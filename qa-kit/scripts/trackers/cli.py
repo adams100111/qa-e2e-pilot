@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -34,6 +35,12 @@ SPEC_VERBS = {
 SPEC_BACKEND = "clickup"
 NO_BACKEND_VERBS = ("lint",)  # reads local files only: no backend, no token
 SPEC_OPTIONAL_CATALOG = ("push-bug", "update-retest")  # run without a catalog when --spec is given
+_SPEC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def _spec_name_ok(value) -> bool:
+    """`--spec` is a plain name: it is used in paths, so no separators and no `..`."""
+    return isinstance(value, str) and bool(_SPEC_NAME_RE.match(value)) and ".." not in value
 
 
 def load_backend(name: str):
@@ -89,18 +96,23 @@ def _print_json(obj: object) -> None:
 
 
 def _spec_target(cfg, named):
-    """The spec a spec verb works on: `--spec`, else the only enabled one. Returns
-    (target, None), or (None, "none" | "many") when it cannot be told without guessing."""
+    """The spec a spec verb works on: `--spec`, else the only enabled one under `specs`. Returns
+    (target, None), or (None, "many") when it cannot be told without guessing (several enabled,
+    or none listed while `specDefaults.enabled` makes any spec an enabled one), or (None, "none")
+    when no spec can be enabled at all."""
     if named:
         return named, None
     enabled = core.enabled_specs(cfg)
     if len(enabled) == 1:
         return enabled[0], None
-    return None, ("many" if enabled else "none")
+    defaults = cfg.get("specDefaults")
+    by_default = isinstance(defaults, dict) and defaults.get("enabled") is True
+    return None, ("many" if enabled or by_default else "none")
 
 
 def _spec_verb(args, project: Path, cfg) -> int:
     """Run one SPEC_VERBS handler. Exit 0 ok or not set up, 1 error or any skipped item, 2 backend.
+    Without `--spec` on a project where a spec is or can be enabled but cannot be told: exit 1.
 
     The handler gets a Ctx with: `args.spec` = the resolved target, `cfg` =
     `core.spec_settings(cfg, target)` (so `cfg["target"]` and `cfg["enabled"] is True`),
@@ -135,7 +147,7 @@ def _spec_verb(args, project: Path, cfg) -> int:
         _api_error(exc, _token_env(settings))
         sys.stdout.write(log.summary() + "\n")
         return 1
-    except (core.RunError, FileNotFoundError) as exc:
+    except (core.RunError, OSError) as exc:  # OSError: a file to read or upload is missing or unreadable
         sys.stderr.write(f"error: {exc}\n")
         return 1
     except Exception as exc:
@@ -151,6 +163,9 @@ def _spec_verb(args, project: Path, cfg) -> int:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.spec is not None and not _spec_name_ok(args.spec):
+        sys.stderr.write("error: --spec must be a spec name\n")  # the value is never echoed
+        return 2
     project = Path(args.project).resolve()
     try:
         cfg = core.load_config(project)
@@ -174,6 +189,19 @@ def main(argv=None) -> int:
             sys.stderr.write(f"error: {exc}\n")
             return 1
         return 0
+
+    if args.verb in SPEC_OPTIONAL_CATALOG and args.spec:
+        # the spec's own settings (its tokenEnv, say) apply; a spec that is not set up is skipped
+        try:
+            cfg = core.spec_settings(cfg, args.spec)
+        except core.ConfigError as exc:
+            sys.stderr.write(f"config error: {exc}\n")
+            return 1
+        if cfg.get("enabled") is not True:
+            log = core.ActionLog(apply=args.apply)
+            log.skip("not-set-up", args.spec)
+            sys.stdout.write(log.summary() + "\n")
+            return 0
 
     catalog = None
     try:
@@ -212,6 +240,11 @@ def main(argv=None) -> int:
         sys.stderr.write(f"config error: {exc}\n")
         return 1
     except (core.RunError, FileNotFoundError) as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    except OSError as exc:
+        if not (args.verb in SPEC_OPTIONAL_CATALOG and args.spec):
+            raise  # verbs without --spec keep their behaviour
         sys.stderr.write(f"error: {exc}\n")
         return 1
     except ApiError as exc:
