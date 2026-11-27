@@ -15,7 +15,8 @@
 # It NEVER writes outside `.qa/specs/<target>/auto/` and never edits `.qa/config.json`, the spec's
 # `run-config.json`, `checklist.json` or the known-defect registry; it only reads them. It never
 # calls an engine script (ADR-0022): where an engine result is needed the command passes it in
-# (for example `--known-defects-invalid`).
+# (for example `--known-defects-invalid`). The two scripts it does call are qa-kit's own, beside
+# this one: `tracker.sh spec-status` (the audit) and `verify-plan.sh` (`step-done verify`).
 #
 # USAGE (every verb takes `--project <dir>`, default `.`):
 #   auto.sh start  <target> [--profile ship|smoke|full] [--until <step>] [--max-hours <n>]
@@ -62,6 +63,7 @@
 #                     resumed from
 #   replacedFrom      the history number of the journey this one took the place of (any state)
 #   restartedFrom     the same number, when that journey was still open (`start --restart`)
+#   replacedAfterAudit  true when that journey had stopped with reason `audit`
 #   secondLook        "unavailable" after `second --unavailable`
 #   audit             {ok, at}: the last audit's verdict and time
 #   auditViolations, stopBeforeAudit   after a failed audit
@@ -92,6 +94,10 @@
 #     launch profile; on `resume`, the profile recorded in journey.json).
 #   - (`start`) no safety setting, exclusion or person-confirmed expected value holds a number the
 #     two engines could not compare alike (see NUMBERS below).
+#   - (`start`) this target has no journey, or its journey is finished (`done`). Any other journey
+#     of the target (open, or stopped for ANY reason: the three that can be resumed, and blocked,
+#     audit, no-sign-in, tracker) is replaced only with `--restart`; a plain `start` is refused. A
+#     new journey takes a new baseline, so replacing one that is not finished is a person's choice.
 # The launch profile is `--profile`, else the run-config's `profile`, else the config's, else `full`.
 # A target must be a plain name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`, no `..`), for every verb.
 # `--max-hours` is between 0.1 and 72.
@@ -100,8 +106,9 @@
 # that fails ends the verb with exit 1 and the one line `auto: could not write <path>`; nothing
 # that reads as a result is printed, and `start` never writes journey.json after a failed baseline.
 # A folder at the path of a journey file is a failed write. The spec folder and the journey folder
-# must be real folders: when either is a link, every verb that writes refuses with
-# `auto: the journey folder must be a real folder` (reading through the link still works).
+# must be real folders, and so must `auto/history`: when any of them is a link, every verb that
+# writes refuses with `auto: the journey folder must be a real folder` (reading through the link
+# still works).
 #
 # DECISIONS: `decide` appends one record to decisions.json:
 #   {id, step, class, question, answer, evidence, confidence, criteria:[], assumption:true,
@@ -111,7 +118,8 @@
 # the journey must never decide (FORBIDDEN_CLASSES) is refused. `second` records the second look:
 # `ask` sets `needsPerson: true`; `stands` never clears it; once a decision is `ask` it stays `ask`.
 # `second --unavailable` leaves every low-confidence decision without a second look for a person
-# and writes `secondLook: "unavailable"` into journey.json. `note` appends {id, kind, text, at} to
+# and writes `secondLook: "unavailable"` into journey.json; from then on `second <id> stands` is
+# refused for that journey (`ask` is still taken). `note` appends {id, kind, text, at} to
 # notes.json. All three verbs need an open journey. Free text is passed to the engines as
 # arguments, never as program text, so it is stored exactly as given.
 #
@@ -169,14 +177,19 @@
 #   step-without-result:<step>          a step other than verify is marked done and its result is not
 #                                       on disk
 #   not-verified                        the journey is done, or its verify step is, and the recorded
-#                                       run's verification.json is missing or does not parse
+#                                       run's verification.json is missing, does not parse, or is
+#                                       not a list of rows (`null`, `{}`; see STEP ORDER)
 #   tracker-behind                      `bash <this directory>/tracker.sh spec-status --spec <target>
 #                                       --project <dir>` failed, gave no answer, or answered anything
-#                                       other than: a JSON line whose `behind` is the boolean false;
-#                                       or its own not-set-up answer, which is exactly
+#                                       other than: a JSON line whose `behind` is the boolean false
+#                                       (a set-up spec; the line may also say `"setUp": true`); or
+#                                       its not-set-up answer, which is one JSON object, alone, with
+#                                       `"setUp": false` (`{"setUp": false, "target": "<target>"}`),
+#                                       or, as earlier trackers printed it, exactly
 #                                       `SKIP<TAB>not-set-up<TAB>…` on the first line (alone, or
-#                                       followed by one `SUMMARY …` line) or one JSON object, alone,
-#                                       with `"setUp": false`. Its stderr is never shown. It is
+#                                       followed by one `SUMMARY …` line). The tracker is not asked
+#                                       at all when the project has no `docs/agents/qa-tracker.json`:
+#                                       then no spec is tracked. Its stderr is never shown. It is
 #                                       stopped after QA_AUTO_TRACKER_TIMEOUT seconds (default 60)
 #                                       when `timeout` or `gtimeout` is installed; without either
 #                                       there is no time guard. `QA_AUTO_TRACKER_CMD` replaces the
@@ -186,12 +199,18 @@
 # as they were). A baseline written before this (no `runConfig` key: config-only `safety` values
 # with null for an absent key, and `runConfigSafety`) is still audited, the earlier way: config
 # values against `safety`, the run-config's dotted safety keys against `runConfigSafety`.
+# What the audit does not check: two of the classes a journey never decides leave no file of
+# their own for it to compare. `crawl-only` (a census accepted without the stack adapter) and a
+# seed command that was run without writing `seed.json` are refused by `decide` and forbidden by
+# the command, and nothing here detects them afterwards.
 # What the audit cannot see: a value changed and changed back before the audit; a baseline.json
 # and journey.json rewritten together to agree (or a new baseline taken with `start --restart`
 # after a change; the new journey then says `replacedFrom`); a plan row without a string id; two
 # numbers that differ only beyond the precision of a double; a `QA_AUTO_TEST=1` set in the
-# journey's own environment together with a tracker command (both variables are read from the
-# environment, so whoever controls it controls the tracker answer); a tracker.sh replaced on disk.
+# journey's own environment together with a tracker command, a plan check command or a clock
+# (`QA_AUTO_TRACKER_CMD`, `QA_AUTO_VERIFY_PLAN_CMD`, `QA_AUTO_NOW`: all are read from the
+# environment, so whoever controls it controls those answers); a tracker.sh or verify-plan.sh
+# replaced on disk.
 #
 # NUMBERS: both engines must print and compare a number alike. A number is plain when it is finite
 # and either whole with at most 15 digits before the point, or not whole and at least 0.0001 in
@@ -207,7 +226,8 @@
 # number of items listed under "Needs a person" (see THE TWO `needsPerson` NUMBERS). The result is
 # one of ready, not confirmed, not ready, verified, not verified, stopped; it is worked out from
 # files only and is never better than what the engine recorded (the exact rule is above
-# cmd_handoff). Without an audit record that passed and is not older than the last change to the
+# cmd_handoff). A verifier override on the run (a pass that verification did not leave a pass) is
+# `not verified`, never `ready`, whatever the report says. Without an audit record that passed and is not older than the last change to the
 # journey's steps the Result section says `The audit has not run for this journey.` and the result
 # is `not verified` (a stopped journey stays `stopped`, with the same sentence). The Result
 # sentence carries the count whenever items wait for a person (`Verified. 3 items need a person.`).
@@ -223,24 +243,33 @@
 # stops at the next `next` or `step-start`. `step-done` looks for the step's result on disk and
 # never takes the caller's word: analyze reads the ONE machine-readable line /qa-analyze writes
 # under `## Verdict` (`Verdict: BLOCKED` or `Verdict: PASS (advisory)`; anything else is no result);
-# run wants a run-manifest.json and a checkpoint.json that parse, a report.md that is not empty, a
-# manifest whose `status` is not `in-progress`, at least one checkpoint row for a row of this
-# spec's checklist.json, and a start inside this journey; verify wants a verification.json that
-# parses. A step's `attempts` counts its `step-start` calls, so a second `step-start` on a running
+# run wants a run-manifest.json and a checkpoint.json that parse, a report.md that is not empty
+# (one with only blanks is empty), a manifest whose `status` is text and is not `in-progress` (a
+# status that is missing, null, blank or not text is refused: `that run has no status`), at least
+# one checkpoint row for a row of this spec's checklist.json, and a start inside this journey;
+# verify wants a verification.json that parses and is a list of rows (a list of objects, at the top
+# level or under `rows` or `criteria`; an empty list is a result, the engine writes `[]` for a run
+# with no passes; `null`, `{}` and a scalar are not), and then
+# runs qa-kit's own verify-plan.sh for the recorded run, plain and `--drift`, and refuses when
+# either does not exit 0 (`the plan check did not pass for this run`, `the plan drift check did
+# not pass for this run`): the script decides, not the caller. `QA_AUTO_VERIFY_PLAN_CMD` replaces
+# that command only when `QA_AUTO_TEST=1` is set too (the suites). A step's `attempts` counts its `step-start` calls, so a second `step-start` on a running
 # step is a redo.
 #
 # EXIT CODES: 0 ok; 1 refused or failed (one line on stderr, `auto: <reason>`; for a step verb
 # stopped by a limit, the stop line on stdout); 2 usage.
 #
-# CLOCK: "now" is `QA_AUTO_NOW` (ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`) when set, else the system
-# clock. Timestamps are always written in that one format, so two of them compare as strings.
+# CLOCK: "now" is the system clock. `QA_AUTO_NOW` (ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`) replaces it
+# only when `QA_AUTO_TEST=1` is set too (the suites); without that the variable is ignored.
+# Timestamps are always written in that one format, so two of them compare as strings.
 #
 # DEPENDENCIES: bash (3.2 safe), coreutils, EITHER jq OR python3 (jq preferred; `QA_ENGINE=jq|python3`
 # overrides). Both engines give byte-identical files and output. No node/perl/grep -P. The python3
 # side is auto_helpers.py, beside this script (one python process per engine call).
 #
 # ENGINE CALLS PER VERB (each is one jq or one python3 process): status 1; stop 1; next 1;
-# step-start 1; step-done 1 (run 3: the journey, the run's files, the change; verify 3);
+# step-start 1; step-done 1 (run 3: the journey, the run's files, the change; verify 3, and
+# verify-plan.sh twice);
 # signin 1 (2 when it stops the journey); decide, note, second 1 (`second --unavailable` 2);
 # audit 2 (one more when the tracker answers in JSON); handoff 2; start 3 (4 when the target already
 # has a journey; one more per other target that has one); resume 3 (plus one per other target).
@@ -358,6 +387,13 @@ JQ_RD='def rd($state; $text; $empty_ok):
     | if (try ($d | getpath($k[:-1]) | (type == "object" and has($k[-1]))) catch false)
       then {found: true, v: ($d | getpath($k))} else {found: false, v: null} end;
   def merged($c; $r): (if ($c | type) == "object" then $c else {} end) + $r;'
+# has_rows — true for a verification.json that holds a result: the rows the handoff reads (the
+# document itself when it is a list, else the list under `rows` or `criteria`), every one an
+# object. The list may be empty: the engine writes `[]` for a run with no passes, and that is a
+# finished result. `null`, `{}`, a scalar and an object without such a list are not a result. (The
+# python side is has_rows in auto_helpers.py.)
+JQ_VRES='def has_rows: (if type == "array" then . elif type == "object" then (first((.rows, .criteria) | select(type == "array")) // null) else null end)
+    | (type == "array" and all(.[]; type == "object"));'
 # The array of a rows file read with `jq -s` (nothing at all, no file yet, is an empty array), and
 # the next free id with a one-letter prefix.
 JQ_ROWS='def rows_in: (if length == 0 then [] elif length == 1 then .[0] else error("not one JSON document") end)
@@ -386,6 +422,13 @@ json_strs() {
       | if type == "string" then gsub("[\r\n]"; " ") else "" end' --args "$@" < "$f" 2>/dev/null
   else py strs "$f" "$@" 2>/dev/null; fi
 }
+# verification_ok <file> — exit 0 when the file is one JSON document that holds a verification
+# result (has_rows). One engine call.
+verification_ok() {
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  if [ "$ENGINE" = jq ]; then jq -en --rawfile vt "$1" "$JQ_RD $JQ_VRES"' rd("1"; $vt; false) | .ok and (.v | has_rows)' >/dev/null 2>&1
+  else py verified "$1" >/dev/null 2>&1; fi
+}
 # file_state <path> — sets FS_STATE (`1` a file, `0` nothing there, `!` there but not a file that
 # can be read, such as a link that leads nowhere) and FS_PATH (the path, or /dev/null).
 FS_STATE=0; FS_PATH=/dev/null
@@ -394,10 +437,11 @@ file_state() {
   elif [ -e "$1" ] || [ -L "$1" ]; then FS_STATE="!"; FS_PATH=/dev/null
   else FS_STATE=0; FS_PATH=/dev/null; fi
 }
-# real_folders — die when the spec folder or the journey folder is a link: the script writes only
-# under `.qa/specs/<target>/auto/`, and through a link that would be somewhere else.
+# real_folders — die when the spec folder, the journey folder or its history folder is a link: the
+# script writes only under `.qa/specs/<target>/auto/`, and through a link that would be somewhere
+# else (`start` moves the earlier journey into `auto/history/`).
 real_folders() {
-  if [ -L "$SPEC_DIR" ] || [ -L "$AUTO_DIR" ]; then die "the journey folder must be a real folder"; fi
+  if [ -L "$SPEC_DIR" ] || [ -L "$AUTO_DIR" ] || [ -L "$AUTO_DIR/history" ]; then die "the journey folder must be a real folder"; fi
 }
 # atomic_write <file> <text> — THE writer: every file this script writes goes through here. The
 # text plus a final line break goes to a temporary name beside the file, which is then moved into
@@ -459,9 +503,11 @@ EOT
 # ---------------------------------------------------------------------------------------------
 # Clock
 # ---------------------------------------------------------------------------------------------
-# now_iso — the injected or real "now", `YYYY-MM-DDTHH:MM:SSZ`.
+# now_iso — "now", `YYYY-MM-DDTHH:MM:SSZ`: the system clock. `QA_AUTO_NOW` replaces it only when
+# `QA_AUTO_TEST=1` is set too (the suites set both); in a real journey the variable is ignored, so
+# it cannot move the deadline.
 now_iso() {
-  if [ -n "${QA_AUTO_NOW:-}" ]; then
+  if [ "${QA_AUTO_TEST:-}" = 1 ] && [ -n "${QA_AUTO_NOW:-}" ]; then
     case "$QA_AUTO_NOW" in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf '%s\n' "$QA_AUTO_NOW" ;;
       *) die "QA_AUTO_NOW must look like 2026-11-27T08:00:00Z" ;;
@@ -596,8 +642,8 @@ rows_commit() {
 # rows_source <file> — the file to read a rows file from: itself, or /dev/null when it is not there yet.
 rows_source() { if [ -f "$1" ]; then printf '%s\n' "$1"; else printf '/dev/null\n'; fi; }
 # run_facts <run id> — what `step-done run` needs from a run, in one engine call. Sets R_MANIFEST
-# and R_CHECKPOINT (`ok` when the file parses as JSON, else `bad`), R_STATUS (the manifest's
-# `status` in small letters), R_STARTED (its `started_at`), R_ROWS (1 when a checkpoint row is
+# and R_CHECKPOINT (`ok` when the file parses as JSON, else `bad`), R_STATUS (`=` and the manifest's
+# `status` in small letters when it is text; empty when it is missing, null or anything else), R_STARTED (its `started_at`), R_ROWS (1 when a checkpoint row is
 # about a row of this spec's plan, else 0) and R_TIMES (every `checkpointed_at`, one per line).
 # A checkpoint is a list of rows or an object holding one under `criteria`; a row names its check
 # in `criterion_id`, `criterionId` or `id`.
@@ -610,7 +656,7 @@ JQ_RUNFACTS='
   | (if $p.ok then ($p.v | plan_rows | row_ids) else [] end) as $ids
   | (if ($m.v | type) == "object" then $m.v else {} end) as $man
   | (if $m.ok then "ok" else "bad" end),
-    ($man.status | if type == "string" then ascii_downcase else null end | s), ($man.started_at | s),
+    ($man.status | if type == "string" then "=" + (ascii_downcase | s) else "" end), ($man.started_at | s),
     (if $k.ok then "ok" else "bad" end),
     (if any($rows[] | cid; . as $i | $i != null and any($ids[]; . == $i)) then "1" else "0" end),
     ($rows[] | .checkpointed_at | strings | gsub("[\r\n]"; " "))'
@@ -1064,8 +1110,10 @@ stop_journey() {
   now="$(now_iso)" || exit 1
   journey_apply "{\"require\":\"open\",\"set\":{\"state\":\"stopped\",\"endedAt\":\"$now\"},\"stop\":\"$1\"$print}" old "$2"
 }
+# has_text <file> — exit 0 when the file holds something other than blanks and line breaks.
+has_text() { LC_ALL=C grep -q '[^[:space:]]' "$1" 2>/dev/null; }
 # step_artifact_done <step> [run id] — exit 0 when the step's result is on disk (the checks
-# /qa-status makes; `run` also wants a report that is not empty). `run` and `verify` need the run
+# /qa-status makes; `run` also wants a report that is not empty: one with only blanks is empty). `run` and `verify` need the run
 # id. `start` asks only for the three steps a new journey can inherit. What `step-done` asks on
 # top of this for `run` and `verify` (files that parse, results for this spec, a run that has
 # ended) is in cmd_step_done.
@@ -1075,7 +1123,7 @@ step_artifact_done() {
     spec)         [ -f "$SPEC_DIR/qa-spec.md" ] && [ -f "$SPEC_DIR/spec-roles.json" ] ;;
     scenarios)    [ -f "$SPEC_DIR/scenarios.md" ] && [ -f "$SPEC_DIR/checklist.json" ] ;;
     analyze)      [ -f "$SPEC_DIR/analysis.md" ] && ! [ "$SPEC_DIR/analysis.md" -ot "$SPEC_DIR/checklist.json" ] ;;
-    run)          [ -n "${2:-}" ] && [ -f "$QA_DIR/runs/$2/run-manifest.json" ] && [ -f "$QA_DIR/runs/$2/checkpoint.json" ] && [ -f "$QA_DIR/runs/$2/report.md" ] && [ -s "$QA_DIR/runs/$2/report.md" ] ;;
+    run)          [ -n "${2:-}" ] && [ -f "$QA_DIR/runs/$2/run-manifest.json" ] && [ -f "$QA_DIR/runs/$2/checkpoint.json" ] && [ -f "$QA_DIR/runs/$2/report.md" ] && has_text "$QA_DIR/runs/$2/report.md" ;;
     verify)       [ -n "${2:-}" ] && [ -f "$QA_DIR/runs/$2/verification.json" ] ;;
     *) return 1 ;;
   esac
@@ -1331,7 +1379,7 @@ cmd_start() {
 
   # Preconditions (design B2; "THE GATE" in the header), in order. Nothing is written until all
   # of them hold.
-  local now was_open=0 had=0
+  local now was_open=0 had=0 after_audit=0
   now="$(now_iso)" || exit 1
   gate_config "$now" "$hours"
   [ "$kd_invalid" -eq 0 ] || die ".qa/known-defects.json is not valid"
@@ -1343,8 +1391,13 @@ cmd_start() {
       die "a journey is already open for $TARGET; continue it or pass --restart"
     elif [ "$J_STATE" = stopped ] && in_list "$J_REASON" "$RESUMABLE_REASONS"; then
       die "a journey for $TARGET is stopped ($J_REASON); resume it or pass --restart"
+    elif [ "$J_STATE" = stopped ]; then
+      # Any other stop (blocked, audit, no-sign-in, tracker, or a reason that was not recorded) is
+      # not finished either: a new journey takes a fresh baseline, so a person has to ask for it.
+      die "a journey for $TARGET is stopped (${J_REASON:-no reason recorded}); pass --restart to start a new one"
     fi
   fi
+  [ "$J_STATE" = stopped ] && [ "$J_REASON" = audit ] && after_audit=1
   # The launch profile: --profile, else the spec's run-config, else the project's config, else
   # `full` (the precedence scripts/profile.sh documents).
   local profile="$profile_flag"
@@ -1364,7 +1417,7 @@ cmd_start() {
   done
   until_json=null; [ -z "$until" ] || until_json="\"$until\""
 
-  # Writes start here: the earlier journey (finished, or open with --restart) goes to history,
+  # Writes start here: the earlier journey (finished, or any other with --restart) goes to history,
   # then the baseline, then the journey. Each is a plain command that ends the script when it
   # fails, so the journey is never written unless the baseline was.
   real_folders
@@ -1376,10 +1429,14 @@ cmd_start() {
   bhash="$(file_sha256 "$BASELINE")" || exit 1
   # A journey that took the place of an earlier one says so (`replacedFrom`: the history number
   # the earlier journey went to), whatever state that one was in; when it was still open the
-  # journey also says `restartedFrom`. The handoff tells the person both.
+  # journey also says `restartedFrom`, and when it had stopped for `audit`, `replacedAfterAudit`.
+  # The handoff tells the person each.
   if [ "$had" -eq 1 ] && [ "$ARCHIVED_N" -gt 0 ]; then
     extra=",\"replacedFrom\":$ARCHIVED_N"
     [ "$was_open" -eq 0 ] || extra="$extra,\"restartedFrom\":$ARCHIVED_N"
+    # The earlier journey had failed its audit: the new one starts from a fresh baseline, so it
+    # says so and the handoff tells the person.
+    [ "$after_audit" -eq 0 ] || extra="$extra,\"replacedAfterAudit\":true"
   fi
   journey_apply "{\"set\":{\"version\":1,\"target\":$TARGET_JSON,\"profile\":\"$profile\",\"startedAt\":\"$now\",\"deadline\":\"$G_DEADLINE\",\"until\":$until_json,\"steps\":[$steps],\"analyzeRounds\":0,\"runId\":null,\"state\":\"open\",\"stop\":null,\"endedAt\":null,\"baselineHash\":\"$bhash\"$extra}}" new
   printf '%s\n' "$STATUS_LINE"
@@ -1490,12 +1547,16 @@ cmd_step_start() {
 # report says something; the engine has closed the run; at least one of its results is for a row
 # of this spec's plan; it started inside this journey.
 run_refusal() {
-  local r_epoch j_epoch
+  local r_epoch j_epoch st=""
   step_artifact_done run "$1" || { echo "run has no result yet"; return 0; }
   run_facts "$1" || { echo "run has no result yet"; return 0; }
   if [ "$R_MANIFEST" != ok ] || [ "$R_CHECKPOINT" != ok ]; then echo "run has no result yet"; return 0; fi
-  # A run the engine has not closed is not a result.
-  if [ "$(trimmed "$R_STATUS")" = in-progress ]; then echo "that run is still in progress"; return 0; fi
+  # A run the engine has not closed is not a result: the manifest must say so itself, with a
+  # `status` that is text and is not `in-progress`. A status that is missing, null, blank or not
+  # text says nothing, and nothing is not "ended".
+  case "$R_STATUS" in =*) st="$(trimmed "${R_STATUS#=}")" ;; *) st="" ;; esac
+  if [ -z "$st" ]; then echo "that run has no status"; return 0; fi
+  if [ "$st" = in-progress ]; then echo "that run is still in progress"; return 0; fi
   # The run must be about this spec: at least one of its results is for a row of this plan.
   if [ "$R_ROWS" != 1 ]; then echo "that run has no results for this spec"; return 0; fi
   # The run must have started inside this journey; an earlier run is another plan's result.
@@ -1503,6 +1564,30 @@ run_refusal() {
   r_epoch="$(run_start_epoch)" || { echo "that run has no start time"; return 0; }
   j_epoch="$(time_epoch "$J_STARTED")" || { echo "journey.json for $TARGET is not readable"; return 0; }
   [ "$r_epoch" -ge "$j_epoch" ] || echo "that run started before this journey"
+}
+
+# verify_plan_refusal <run id> — runs qa-kit's own plan checks for the journey's run and prints the
+# refusal when one does not pass (nothing when both pass). The script is verify-plan.sh beside this
+# one (qa-kit's file, not the engine's), run twice, as /qa-verify runs it:
+#   verify-plan.sh <run>/checkpoint.json <spec>/checklist.json           a check acted outside the plan
+#   verify-plan.sh --drift <run>/checklist.json <spec>/checklist.json    the run's plan differs from the spec's
+# Only the exit code is used; any exit other than 0 (a finding, a missing file, input that does not
+# parse) is a refusal. `QA_AUTO_VERIFY_PLAN_CMD` replaces the command only when `QA_AUTO_TEST=1` is
+# set too (the suites set both); in a real journey the variable is ignored.
+verify_plan_refusal() {
+  local run="$QA_DIR/runs/$1" plan="$SPEC_DIR/checklist.json"
+  if [ "${QA_AUTO_TEST:-}" = 1 ] && [ -n "${QA_AUTO_VERIFY_PLAN_CMD+x}" ]; then
+    set -f
+    # shellcheck disable=SC2086
+    set -- $QA_AUTO_VERIFY_PLAN_CMD
+    set +f
+  else
+    set -- bash "$SCRIPT_DIR/verify-plan.sh"
+  fi
+  if [ "$#" -eq 0 ]; then echo "the plan check did not pass for this run"; return 0; fi
+  if ! "$@" "$run/checkpoint.json" "$plan" >/dev/null 2>&1 </dev/null; then echo "the plan check did not pass for this run"; return 0; fi
+  if ! "$@" --drift "$run/checklist.json" "$plan" >/dev/null 2>&1 </dev/null; then echo "the plan drift check did not pass for this run"; fi
+  return 0
 }
 
 cmd_step_done() {
@@ -1538,9 +1623,12 @@ cmd_step_done() {
       ;;
     verify)
       journey_read_open
+      case "$J_RUN" in ""|.|..|*/*|-*) J_RUN="" ;; esac
       if [ -z "$J_RUN" ]; then refuse="no run is recorded for this journey"
-      # An empty or broken verification.json is no result.
-      elif ! step_artifact_done verify "$J_RUN" || ! json_valid "$QA_DIR/runs/$J_RUN/verification.json"; then refuse="verify has no result yet"; fi
+      # An empty or broken verification.json, or one that is not a list of rows (`null`, `{}`), is no result.
+      elif ! verification_ok "$QA_DIR/runs/$J_RUN/verification.json"; then refuse="verify has no result yet"
+      # The plan checks decide, not the caller: qa-kit's own verify-plan.sh, plain and --drift.
+      else refuse="$(verify_plan_refusal "$J_RUN")"; fi
       ;;
     analyze)
       verdict=none
@@ -1675,7 +1763,8 @@ cmd_second() {
   if [ "$ENGINE" = jq ]; then
     out="$(jq -rsS --arg id "$id" --arg v "$verdict" --arg r "$reason" --rawfile jt "$J_PATH" --arg js "$J_FS" "$JQ_DEFS $JQ_RD $JQ_ROWS $JQ_OPEN"' open_or($js; $jt; rows_in
       | (map(type == "object" and .id == $id) | index(true)) as $i
-      | if $i == null then "!missing"
+      | if $v == "stands" and (rd($js; $jt; false).v.secondLook == "unavailable") then "!unavailable"
+        elif $i == null then "!missing"
         else
           (if .[$i].second == null or (.[$i].second == "stands" and $v == "ask")
            then .[$i] |= (.second = $v | .secondReason = $r | if $v == "ask" then .needsPerson = true else . end)
@@ -1686,6 +1775,8 @@ cmd_second() {
     out="$(py second "$J_FS" "$J_PATH" "$id" "$verdict" "$reason" < "$src" 2>/dev/null)" || die "decisions.json for $TARGET is not readable"
   fi
   journey_gate "$out"
+  # Once the second look was recorded as unavailable nobody independent can let a decision stand.
+  [ "$out" != "!unavailable" ] || die "the second look was recorded as unavailable; a decision cannot be let stand"
   [ "$out" != "!missing" ] || die "no decision $id"
   rows_commit "$DECISIONS" "$out"
   printf '%s\n' "$ROWS_LINE"
@@ -1832,8 +1923,8 @@ JQ_AUDIT='
                 | "forbidden-decision:" + (if (.value.id | type) == "string" then .value.id else "#\(.key + 1)" end) ]
          end
      end) as $decided
-  # a journey that is done, or whose verify step is, needs a verification that can be read
-  | (if $needv == "1" and (rd($vs; $vt; false).ok | not) then ["not-verified"] else [] end) as $verified
+  # a journey that is done, or whose verify step is, needs a verification that holds a result
+  | (if $needv == "1" and (rd($vs; $vt; false) | (.ok and (.v | has_rows)) | not) then ["not-verified"] else [] end) as $verified
   | ($j.state == "stopped" and ($j.stop | type) == "object" and $j.stop.reason == "audit") as $failed
   | ($files + $decided + $verified + $extra + (if $failed then (($j.auditViolations | strs) // []) else [] end) | unique) as $all
   | ($failed or ($all | length) > 0) as $bad
@@ -1875,7 +1966,7 @@ audit_files() {
       --rawfile et "$ef" --rawfile dt "$df" --rawfile vt "$vf" --arg bs "$bs" --arg cs "$cs" --arg rs "$rs" --arg ps "$ps" --arg es "$es" \
       --arg ds "$ds" --arg vs "$vs" --arg bhash "$bhash" --arg kdhash "$kdhash" --arg seed "$seed" --arg needv "$needv" --arg now "$now" \
       --arg keys "$SAFETY_KEYS" --arg rckeys "$RC_KEYS" --arg classes "$DECIDABLE_CLASSES" --arg extra "$CODES" \
-      "$JQ_DEFS $JQ_RD $JQ_PLAN $JQ_AUDIT" 2>/dev/null
+      "$JQ_DEFS $JQ_RD $JQ_VRES $JQ_PLAN $JQ_AUDIT" 2>/dev/null
   else
     py audit "$JOURNEY" "$bs" "$bf" "$cs" "$cf" "$rs" "$rf" "$ps" "$pf" "$es" "$ef" "$ds" "$df" "$vs" "$vf" \
       "$bhash" "$kdhash" "$seed" "$needv" "$now" "$SAFETY_KEYS" "$RC_KEYS" "$DECIDABLE_CLASSES" "$CODES" 2>/dev/null
@@ -1928,6 +2019,9 @@ tracker_answer() {
 # is also set (the suites set both); in a real journey the variable is ignored.
 audit_tracker() {
   local out rc guard="" secs="${QA_AUTO_TRACKER_TIMEOUT:-60}"
+  # Without the project's tracker settings no spec is tracked (the machine file cannot turn
+  # tracking on), so the tracker is not asked at all.
+  if [ ! -e "$PROJECT/docs/agents/qa-tracker.json" ] && [ ! -L "$PROJECT/docs/agents/qa-tracker.json" ]; then return 0; fi
   case "$secs" in ""|*[!0-9]*) secs=60 ;; esac
   # A time guard only where one is installed (macOS has no `timeout` of its own).
   if command -v timeout >/dev/null 2>&1; then guard=timeout
@@ -1979,8 +2073,9 @@ US="$(printf '\037')"
 # kept alike). One fact per line, fields split by U+001F, every text made one line by `clean`:
 #   S <file> <ok|absent|bad>      decisions, notes, plan, results (checkpoint.json), second
 #                                 (verification.json; also `override`: a row that is not about a
-#                                 recorded non-pass does not say pass)
-#   J <1|0>                       the journey was restarted
+#                                 recorded non-pass does not say pass; and `empty`: it has no
+#                                 rows and the run recorded a pass)
+#   J <1|0> <1|0>                 the journey was restarted; the journey it replaced had failed its audit
 #   V <code word> <text>          one audit violation; the text is its key, step, check title or question
 #   D <step> <class> <needs 1|0> <a top priority check rests on it 1|0> <no evidence 1|0> <question> <answer> <evidence>
 #   O <top priority 1|0> <title>            an expected value that is only a proposal
@@ -2036,7 +2131,7 @@ JQ_HANDOFF='
      elif $vrows == null or any($vrows[]; type != "object") then "bad"
      elif any($vrows[]; (.inRunVerdict | low) as $in
                 | (($in == "fail" or $in == "blocked" or $in == "deferred" or $in == "error") | not) and ((.verifierVerdict | low) != "pass"))
-     then "override" else "ok" end) as $vstat
+     then "override" else "ok" end) as $vstat0
   # expected values that are only a proposal: a calculated check, or any check that names a source,
   # whose source is neither a person nor a cited spec line
   | ($plan.ids | map(select(. as $i | $plan.by[$i] as $x
@@ -2050,8 +2145,10 @@ JQ_HANDOFF='
   | (reduce (($krows // [])[] | select(type == "object") | select(cid != null)) as $x
        ({keys: [], by: {}}; ([($x | cid), ($x | who)] | tojson) as $key
           | (if (.by | has($key)) then . else .keys += [$key] end) | .by[$key] = $x)) as $cp
+  # a second check with no rows at all covers nothing: beside a recorded pass it is `empty`
+  | (if $vstat0 == "ok" and ($vrows | length) == 0 and any($cp.keys[]; ($cp.by[.].verdict | low) == "pass") then "empty" else $vstat0 end) as $vstat
   | [ ["S", "decisions", $dstat], ["S", "notes", $nstat], ["S", "plan", $pstat], ["S", "results", $kstat], ["S", "second", $vstat],
-      ["J", ($j.restartedFrom != null | b)],
+      ["J", ($j.restartedFrom != null | b), ($j.replacedAfterAudit == true | b)],
       # what the audit found: the code word, and its key, step, check title or question
       ( ($j.auditViolations | if type == "array" then .[] else empty end) | strings
         | split(":") as $parts | ($parts[0] // "") as $w | ($parts[1:] | join(":")) as $arg
@@ -2282,14 +2379,20 @@ violation_plain() {
 #   not confirmed  the report says SHIP-READY and a top priority check rests on a person: a
 #                  decision that needs a person (JQ_NEEDS) and names no check, or names a top
 #                  priority check; or a top priority expected value that is only a proposal
-#   ready          the report says SHIP-READY and none of that holds
+#   ready          the report says SHIP-READY and none of that holds, and verification.json records
+#                  no override (a pass that verification did not leave a pass is `not verified`,
+#                  and so is a verification.json with no rows beside a recorded pass)
 # Under a SHIP-READY report the result is `not verified` when verification.json is absent or
 # unreadable, or checkpoint.json, decisions.json (when there is one) or the plan cannot be read.
 # The first sentence of the Result section is the fixed sentence of the result; whenever items
 # wait for a person their count follows it (`Verified. 3 items need a person.`), except after
 # `Not confirmed: <n> items need a person.`, which already says it. Further sentences: one when the
 # journey was restarted (`restartedFrom`), one when it took the place of an earlier journey
-# (`replacedFrom`), one when it was continued after stopping (`resumes`, with how many times).
+# (`replacedFrom`), one when that earlier journey had stopped for `audit` (`replacedAfterAudit`),
+# one when it was continued after stopping (`resumes`, with how many times). The last line of "How
+# to confirm" names the command that works next: `/qa-auto <target>` after a finished journey,
+# `/qa-auto <target> --restart` after any other (a plain start is refused there); a journey that
+# can be resumed also gets the line that continues it.
 cmd_handoff() {
   parse_common "$@"
   local records=""
@@ -2318,7 +2421,7 @@ cmd_handoff() {
 
   # ---- read the facts ----
   local k f1 f2 f3 f4 f5 f6 f7 f8 item
-  local dstat=absent nstat=absent pstat=absent kstat=absent vstat=absent restarted=0
+  local dstat=absent nstat=absent pstat=absent kstat=absent vstat=absent restarted=0 after_audit=0
   local viol="" scope="" needs="" recs="" count=0 noev=0 p1pending=0 counted=0
   local d_constitution="" d_spec="" d_scenarios="" d_analyze="" d_run="" d_verify="" d_other=""
   while IFS="$US" read -r k f1 f2 f3 f4 f5 f6 f7 f8; do
@@ -2326,7 +2429,7 @@ cmd_handoff() {
       S) case "$f1" in
            decisions) dstat="$f2" ;; notes) nstat="$f2" ;; plan) pstat="$f2" ;; results) kstat="$f2" ;; second) vstat="$f2" ;;
          esac ;;
-      J) restarted="$f1" ;;
+      J) restarted="$f1"; after_audit="$f2" ;;
       V) viol="$viol- $(violation_plain "$f1" "$f2")$NL" ;;
       D) # step class needs rests no-evidence question answer evidence
          [ "$f5" = 1 ] && noev=1
@@ -2402,11 +2505,16 @@ EOT
         elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
         elif [ "$vstat" = absent ]; then why="The results have not had their second check."
         elif [ "$vstat" = override ]; then why="The second check did not confirm every passed result."
+        elif [ "$vstat" = empty ]; then why="The second check does not cover the passed results."
         elif [ "$vstat" != ok ]; then why="The second check could not be read."
         else result=verified; line="Verified."; fi ;;
       ready)
         if [ "$vstat" = absent ]; then why="The results have not had their second check."
         elif [ "$vstat" = bad ]; then why="The second check could not be read."
+        # a pass the second check did not leave a pass is never ready, whatever the report says
+        elif [ "$vstat" = override ]; then why="The second check did not confirm every passed result."
+        # a second check with no rows beside a recorded pass covers nothing
+        elif [ "$vstat" = empty ]; then why="The second check does not cover the passed results."
         elif [ "$kstat" != ok ]; then why="The results of the run could not be read."
         elif [ "$dstat" = bad ] || [ "$pstat" != ok ]; then why="The decisions or the plan of checks could not be read."
         elif [ "$p1pending" -eq 1 ]; then result="not confirmed"; line="Not confirmed: $count items need a person."; counted=1
@@ -2433,6 +2541,7 @@ EOT
   [ -z "$why" ] || out="$out$NL$NL$why"
   [ "$restarted" != 1 ] || out="$out$NL${NL}This journey was restarted; the earlier one is kept in its history."
   [ "$replaced" != 1 ] || out="$out$NL${NL}An earlier journey for this target was replaced; it is kept in the history."
+  [ "$after_audit" != 1 ] || out="$out$NL${NL}The earlier journey had stopped because a limit was broken; this one started from the settings as they were after that."
   [ "$resumes" -eq 0 ] || out="$out$NL${NL}This journey was continued $resumes times after stopping."
   out="$out$NL$NL## Scope chosen for this spec$NL$NL"
   if [ -n "$scope" ]; then out="$out${scope%"$NL"}"; else out="${out}No scope was recorded."; fi
@@ -2455,7 +2564,17 @@ EOT
   out="$out$NL$NL## How to confirm$NL$NL"
   out="$out- Expected results: run \`oracle-confirm.sh render\` and confirm each value on the page it writes.$NL"
   out="$out- Who may reach each screen: run \`surface-access.sh confirm-table\` and confirm the table.$NL"
-  out="$out- Then run \`/qa-auto $TARGET\` again. It starts a new journey on the confirmed plan."
+  # The next action must be a command that works: only a finished journey gives way to a plain
+  # start; any other needs --restart, and a new journey is needed because a confirmed value
+  # changes the plan this one started from.
+  if [ "$state" = "done" ]; then
+    out="$out- Then run \`/qa-auto $TARGET\` again. It starts a new journey on the confirmed plan."
+  else
+    out="$out- Then run \`/qa-auto $TARGET --restart\`. It starts a new journey on the confirmed plan."
+    if [ "$state" = stopped ] && in_list "$reason" "$RESUMABLE_REASONS"; then
+      out="$out$NL- To continue this journey with nothing confirmed, run \`/qa-auto $TARGET\`."
+    fi
+  fi
   atomic_write "$AUTO_DIR/handoff.md" "$out"
   printf '{"result":"%s","needsPerson":%s}\n' "$result" "$count"
 }

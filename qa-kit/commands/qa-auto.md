@@ -37,11 +37,27 @@ one where the harness can.
 
 3. **Open or continue the journey.** Run `auto.sh status <target>`. Exit 1 with
    `auto: no journey for <target>` means there is no journey yet; that is not an error.
+   - There is no journey, or it shows `state: done`, or `--restart` was given → `auto.sh start <target>`
+     with the flags from the input (`--profile`, `--until`, `--max-hours`, `--restart`),
+     plus `--known-defects-invalid` when step 2 exited non-zero.
    - It shows `state: open`, and `--restart` was not given → the journey continues. Go to step 4.
    - It shows `state: stopped` with a `stop.reason` of `time-limit`, `step-failed` or `until`, and
      `--restart` was not given → `auto.sh resume <target>` (add `--max-hours <n>` when it was given).
-   - Anything else, no journey included → `auto.sh start <target>` with the flags from the input
-     (`--profile`, `--until`, `--max-hours`, `--restart`), plus `--known-defects-invalid` when step 2 exited non-zero.
+   - It shows `state: stopped` with any other `stop.reason` (`blocked`, `audit`, `no-sign-in`,
+     `tracker`), and `--restart` was not given → start nothing. That journey is not finished and a
+     person has to look at it first: `auto.sh start` refuses it
+     (`auto: a journey for <target> is stopped (<reason>); pass --restart to start a new one`). Print
+     that the journey stopped, its reason, the path `.qa/specs/<target>/auto/handoff.md`, and that
+     `/qa-auto <target> --restart` starts a new journey. Release the machine (step 12) and end. Never
+     add `--restart` yourself: a new journey takes a new baseline, and that is the person's choice.
+   - `auto.sh status` exits 1 with any other line (for example
+     `auto: decisions.json for <target> is not readable`) → there is a journey and it cannot be read
+     fully. Do not start or resume. Run
+     `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`, then go to the end
+     (step 9): audit, then handoff. If `stop` itself exits 1, go to the end all the same.
+
+   A journey that takes the place of one stopped by its audit records that, and its handoff says so
+   in one sentence.
 
    `start` and `resume` judge the config merged with the spec's run-config. A run-config that is not
    a JSON object is refused at `start`, and so is a safety number written like `1e16` or with more
@@ -90,16 +106,25 @@ one where the harness can.
       Each of those commands treats the open journey as `autonomousSetup` on, so it asks nobody. Where
       it would have asked a person, answer by the rules below and record the answer (step 7).
    5. `auto.sh step-done <target> <step>`. It refuses (`auto: <step> has no result yet`) when the step's
-      files are missing; `auto: verify has no result yet` also covers a `verification.json` that does not parse.
+      files are missing; `auto: verify has no result yet` also covers a `verification.json` that does not
+      parse or is not a list of rows (`null`, `{}`); an empty list is a result, the engine writes `[]` for
+      a run with no passes.
+      For the verify step the script then runs qa-kit's own `verify-plan.sh` for the journey's run, plain
+      and `--drift`, and refuses when either does not exit 0: `auto: the plan check did not pass for this run`
+      or `auto: the plan drift check did not pass for this run`. The script decides, not you. A refused
+      verify is not redone: `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`,
+      then the end (step 9): audit, then handoff.
       For the run step: `auto.sh step-done <target> run --run <run-id>`, and
       only after the engine's end-of-run order has completed and the run's rendered report
       (`.qa/runs/<run-id>/report.md`) exists. It refuses a run that is not this journey's finished
       result, with one of these lines:
       - `auto: that run is still in progress`: the `status` in the run's `run-manifest.json` must no
         longer be `in-progress`;
+      - `auto: that run has no status`: the manifest's `status` is missing, empty or not text, so it
+        does not say the run ended;
       - `auto: that run has no results for this spec`;
       - `auto: run has no result yet`: also when the manifest or the checkpoint does not parse, or
-        `report.md` is empty;
+        `report.md` is empty or holds only blanks;
       - `auto: that run started before this journey`.
 
       If the engine's agent returns before the run is finished, resume it (step 6); never mark it done.
@@ -113,10 +138,16 @@ one where the harness can.
    **A step that fails** (its command stops on an error, or `step-done` refuses). Do not keep the count
    of attempts in your memory: run `auto.sh status <target>`. Redo the step once from 5.3 only when it
    shows that step still `running` after the first attempt. A second failure of the same step is `step-failed`:
-   `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end.
+   `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end. A verify step the
+   plan checks refused is never redone (5.5).
+
+   **`auto.sh status` itself fails.** Anywhere in this command, when `auto.sh status <target>` exits 1
+   with a line other than `auto: no journey for <target>`, the journey cannot be read fully. Do not go
+   on from memory: `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`, then
+   the end (step 9): audit, then handoff. If `stop` itself exits 1, go to the end all the same.
 
    **An `auto.sh` verb that exits 1** where no rule here says what to do (`step-start`, `next`, `signin`, `decide`), other than a limit stop, which has its rule above:
-   stop the loop. If `auto.sh status <target>` still shows `state: open`, run
+   stop the loop. If `auto.sh status <target>` still shows `state: open`, or itself exits 1, run
    `auto.sh stop <target> --reason step-failed --detail "<the script's line>"`. Then go to the end (step 9).
 
    **A required ClickUp step that fails.** The step commands sync a spec that is tracked in ClickUp.
@@ -124,7 +155,9 @@ one where the harness can.
    updated. Do not redo the step and do not go on without the sync:
    `auto.sh stop <target> --reason tracker --detail "<the tracker's one-line error>"`, then the end.
    `lint` reporting problems is not a failed sync: fix the cards and run it again, as `/qa-scenarios`
-   says. A spec that is not tracked is never offered tracking and never contacts ClickUp.
+   says. A verb that prints `SKIP	not-set-up	<target>` and exits 0 is not a failed sync either: the spec
+   is not tracked. A spec that is not tracked is never offered tracking and never contacts ClickUp. A bug
+   that could not be filed makes `sync-run` exit 1 (`/qa-verify` step 4b): that is a failed sync.
 
    **When analyze ends `BLOCKED`**, `step-done` reopens `scenarios` and `analyze` itself, and stops the
    journey after the second round. Follow `next`; never mark the analysis anything other than what the
@@ -205,8 +238,10 @@ one where the harness can.
    regenerate a spec, a plan or a constitution, and leave existing exclusions, an existing `seed.json`
    and existing person-confirmed expected values as they are.
 
-   **Never do these.** `auto.sh decide` refuses each class, the audit at the end checks each from the
-   files, and the step goes on without it:
+   **Never do these.** `auto.sh decide` refuses each class, and the step goes on without it. The audit
+   at the end checks most of them from the files. It does not check two: a census accepted without the
+   stack adapter (`crawl-only`), and a seed command that was run without writing `seed.json`. Nothing
+   catches those afterwards, so this rule is all that holds them:
    - Never run a seed command, and never write `seed.json` (`seed`). The spec stays declare-and-verify.
      When a seed command was proposed and not run, record that with `note --kind seed-not-run` (below).
    - Never exclude a screen or a screen and role pair from coverage, and never add to
@@ -274,6 +309,10 @@ one where the harness can.
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" second <target> --unavailable
    ```
 
+   Once the second look was recorded as unavailable for a journey, `auto.sh second <target> <id> stands`
+   is refused (`auto: the second look was recorded as unavailable; a decision cannot be let stand`);
+   `ask` is still taken.
+
    The second look can only hand a decision to a person. It never changes an answer and never approves
    one, and you never review your own decisions in its place. It runs only here, after these two steps,
    while the journey is open: never at the end and never on a closed journey. `auto.sh handoff` itself
@@ -287,16 +326,23 @@ one where the harness can.
    (a stopped journey stays `stopped`, with the same sentence).
 
    `auto.sh audit <target>` prints `{"ok":bool,"violations":[…]}` and exits 1 when a limit was
-   broken; it then stops the journey itself. Do not undo anything to make it pass and do not run it a
+   broken; it then stops the journey itself. It asks the tracker only when the project has
+   `docs/agents/qa-tracker.json`; without that file no spec is tracked. It does not check the
+   `crawl-only` class or a seed command run without `seed.json` (the never list above). Do not undo anything to make it pass and do not run it a
    second time to get a better answer. Go on to step 10 either way.
 
 10. **Handoff.** When the journey has a run (`runId` in `auto.sh status <target>`), write the engine's
     `data-policy.sh list .qa/runs/<run-id>` output (an engine script, resolved as in step 2) to a temp
     file. Then `auto.sh handoff <target> --records <file>` (without `--records` when there is no run). It
     writes `.qa/specs/<target>/auto/handoff.md` and prints `{"result":…,"needsPerson":n}`. The journey
-    deletes none of those records.
+    deletes none of those records. A verifier override on the run gives `not verified`, never `ready`.
+    The last lines of the handoff name the command that works next: `/qa-auto <target>` after a
+    finished journey, `/qa-auto <target> --restart` after any other, and for a journey that can be
+    resumed also the plain `/qa-auto <target>` that continues it.
 
-11. **ClickUp note.** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. Post the
+11. **ClickUp note.** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+    A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
+    Post the
     comment only when the journey has a run (`runId` in `auto.sh status <target>`) and the stop reason is not `tracker`.
     Otherwise post nothing and keep one line for step 12: `No ClickUp comment was posted: <the journey has
     no run | ClickUp could not be updated during the journey>`.
@@ -312,8 +358,9 @@ one where the harness can.
     ```
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
     ```
-    If it exits non-zero, do not try to stop the journey (it is closed by now) and do not run the
-    handoff again. Keep its one-line error for step 12.
+    When it prints the not-set-up line the spec is not tracked: nothing was posted, and step 12 says
+    nothing about ClickUp. If it exits non-zero, do not try to stop the journey (it is closed by now)
+    and do not run the handoff again. Keep its one-line error for step 12.
 
 12. **Close.** Release the machine (stop the `caffeinate` process from step 1). Print the `Result`
     section of `handoff.md` word for word and the path `.qa/specs/<target>/auto/handoff.md`. Add

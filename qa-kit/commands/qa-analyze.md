@@ -156,7 +156,8 @@ When a person runs this command while a journey is open for the target, tell the
    one line. The ClickUp step's `--blocked` follows that same line. This coverage gate is the only blocking analyze check besides
    plan defects.
 
-5b. **ClickUp note (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+5b. **ClickUp note (per spec).** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
    Write the coverage note in plain words (the gaps and whether the plan is ready, no criterion ids,
    following `${CLAUDE_PLUGIN_ROOT}/templates/trackers/writing-rules.md`), in the configured `language` of
    `docs/agents/qa-tracker.json`, to a file under the session's temp directory, never into the repo. Then:

@@ -37,7 +37,11 @@ decisions), `handoff.md` and `history/<n>/` (earlier journeys of the target). `/
 on disk and never takes the caller's word. The journey survives an interruption: started again it
 continues from `next`, and an interrupted run is continued with the engine's resume, never restarted.
 A journey that stopped for the time limit, a step failure or `--until` resumes; a restart is explicit
-(`--restart`) and the old journey moves to `history/`. The script writes only under `auto/`. It never
+(`--restart`) and the old journey moves to `history/`. A plain `start` is refused for any journey of
+the target that is not finished: open, or stopped for any reason, the reasons that cannot be resumed
+(`blocked`, `audit`, `no-sign-in`, `tracker`) included. A new journey takes a new baseline, so
+replacing one is a person's choice. A journey that replaces one stopped by its audit records
+`replacedAfterAudit`, and the handoff says so in one sentence. The script writes only under `auto/`. It never
 edits `.qa/config.json`, the spec's `run-config.json`, `checklist.json` or the known-defect registry.
 Only one journey is open in a project at a time; they share sessions, accounts and data.
 
@@ -74,7 +78,7 @@ fresh agent (never a fork, never a resumed one) reads the recorded decisions and
 `ask` stays `ask`. It cannot change an answer or approve one, and the acting agent never reviews its own
 decisions in its place. Only Claude can start such an agent (`subagentDispatch`). Elsewhere, or when
 the agent call fails, `second --unavailable` leaves every low-confidence decision for a person and the
-journey says so. The handoff counts every low-confidence decision that has no `stands` verdict as
+journey says so; from then on `second <id> stands` is refused for that journey. The handoff counts every low-confidence decision that has no `stands` verdict as
 needing a person, on every harness.
 
 **F. The file audit.** `auto.sh audit` compares the files as they are now with `baseline.json` and with
@@ -83,7 +87,9 @@ detail) if any of these changed: a safety setting of the config or the run-confi
 application, the known-defect registry, a seed file, a coverage exclusion, a person-confirmed expected
 value (added, removed or its expected value changed), a row of the starting plan (removed), or when a
 decision of a forbidden class is on record, a step is marked done without its result, the run has no
-`verification.json`, or ClickUp is behind the results (`tracker.sh spec-status`). The codes are
+`verification.json` that is a list of rows, or ClickUp is behind the results (`tracker.sh spec-status`, asked
+only when the project has `docs/agents/qa-tracker.json`; its one line `{"setUp": false, "target": …}`
+means the spec is not tracked). The codes are
 `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`. Once failed it stays failed.
 
 What the audit cannot detect, stated plainly. It reads files on the same machine the agent can write.
@@ -95,7 +101,9 @@ It does not see:
   and `restartedFrom` when the old one was still open; the handoff says so, so a person can see it;
   the files alone cannot prove it);
 - a plan row without a string id;
-- a tracker command replaced through the environment.
+- a tracker command, a plan check command or a clock replaced through the environment together with
+  `QA_AUTO_TEST=1` (without that variable `QA_AUTO_NOW`, `QA_AUTO_TRACKER_CMD` and
+  `QA_AUTO_VERIFY_PLAN_CMD` are ignored).
 
 It is a tripwire against drift and mistakes. It is not a guard against an agent that sets out to
 defeat it. Making it tamper-proof needs a record outside the agent's reach (a log written elsewhere,
@@ -103,15 +111,22 @@ or a hash held by a person or a CI job); that is not built.
 
 **G. The result rule is stricter than the engine's.** `auto.sh handoff` works the result out from files
 only and never reports better than what the engine recorded: `stopped` for any stop; `not verified`
-when the journey is open, has no run, a file it decides from cannot be read, or verification is missing
-or leaves a pass that was recorded; `not ready` when the report says NOT SHIP-READY; `not confirmed`
+when the journey is open, has no run, a file it decides from cannot be read, or verification is missing,
+leaves a pass that was recorded, or has no rows while the run recorded a pass; `not ready` when the report says NOT SHIP-READY; `not confirmed`
 when the report says SHIP-READY but a top-priority check rests on a person (a decision that needs a
 person, or an expected value that is only a proposal); `ready` only when none of that holds; and under
 `full`, with no ship section, `verified` or `not verified`. The sentence carries the count of items
 waiting for a person. A passing audit is recorded; a handoff with no audit that passed and is not older than the last
 step says `The audit has not run for this journey.` and is `not verified` (`stopped` stays `stopped`).
-Run the audit first, then the handoff. `step-done run` refuses a run that is unfinished, has no rendered
-report, has no checkpoint row from this plan, or started before the journey.
+Run the audit first, then the handoff. `step-done run` refuses a run that is unfinished (its manifest
+`status` must be text other than `in-progress`), has no rendered report (one with only blanks is
+empty), has no checkpoint row from this plan, or started before the journey. `step-done verify`
+refuses a `verification.json` that is not a list of rows (`null`, `{}`; an empty list is a result, the
+engine writes `[]` for a run with no passes), and then runs qa-kit's own
+`verify-plan.sh` for the run, plain and `--drift`, and refuses when either does not exit 0: the
+script decides, not the agent. A refused verify stops the journey (`step-failed`); it is still audited
+and handed off. The handoff's last lines name the command that works next: `/qa-auto <target>` after
+a finished journey, `/qa-auto <target> --restart` after any other.
 
 **H. QA only.** The journey ends with a verified report and a bug list. It does not fix the application,
 and it deletes none of the records the run created (the handoff lists them).

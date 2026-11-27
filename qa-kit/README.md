@@ -171,13 +171,23 @@ a `.qa/config.json` and working sign-in for the roles. Run it in the main sessio
   stopped journey.
 - **Continue or restart.** Run `/qa-auto <target>` again: an open journey, or one that stopped for
   `time-limit`, `step-failed` or `until`, continues where it stopped, and an interrupted run is
-  resumed, not started again. `--restart` abandons the journey and starts a new one; the old one moves
-  to `auto/history/`. A finished journey is never continued: starting again opens a new one that keeps
-  the spec and scenarios and runs analyze, a new run and verify.
+  resumed, not started again. A journey that stopped for `blocked`, `audit`, `no-sign-in` or `tracker`
+  is not continued and is not replaced by a plain `/qa-auto <target>`: the command prints why it
+  stopped and ends. Read its handoff, then run `/qa-auto <target> --restart`. `--restart` abandons
+  the journey, whatever its state, and starts a new one; the old one moves to `auto/history/`. A new
+  journey that replaces one stopped by its audit says so in its handoff. A finished journey (`done`)
+  is never continued: `/qa-auto <target>` opens a new one that keeps the spec and scenarios and runs
+  analyze, a new run and verify. The last lines of every handoff name the command that works next.
+- **Verify is checked by a script.** `auto.sh step-done <target> verify` runs `verify-plan.sh` for
+  the journey's run, plain and `--drift`, and refuses the step when either does not exit 0. A refused
+  verify stops the journey (`step-failed`), and it is still audited and handed off.
 - **The audit and its limits.** `auto.sh audit` runs at the end of every journey and fails it when a
   safety setting, the registry, a seed file, an exclusion, a person-confirmed expected value or a row
   of the starting plan changed, a step has no result, the run was not verified, or ClickUp is behind
-  (eighteen codes: `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`). It reads files the agent can also write. It cannot see a change that was changed
+  (asked only when the project has `docs/agents/qa-tracker.json`)
+  (eighteen codes: `baseline-missing`, `baseline-changed`, `base-url-changed`, `safety-setting-changed:<key>`, `run-config-safety:<key>`, `known-defects-changed`, `human-oracle-added:<id>`, `human-oracle-removed:<id>`, `human-oracle-changed:<id>`, `plan-row-removed:<id>`, `plan-unreadable`, `seed-added`, `exclusion-added`, `forbidden-decision:<id>`, `decisions-unreadable`, `step-without-result:<step>`, `not-verified`, `tracker-behind`). It reads files the agent can also write. It does not check the
+  `crawl-only` class (a census accepted without the stack adapter) or a seed command that was run
+  without writing `seed.json`. It cannot see a change that was changed
   back, a baseline and journey rewritten together, or a fresh baseline taken with `--restart` after a
   change (the new journey says `replacedFrom`). It is a tripwire against drift and mistakes, not
   protection against an agent set on defeating it.

@@ -25,7 +25,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 T_OLD=202611270700; T_MID=202611270710
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
@@ -65,6 +65,13 @@ printf '#!/usr/bin/env bash\necho "{\\"setUp\\": true}"\n' > "$ROOT/trk-setupyes
 printf '#!/usr/bin/env bash\necho "[{\\"setUp\\": false}]"\n' > "$ROOT/trk-setuplist.sh"
 printf '#!/usr/bin/env bash\necho "{\\"behind\\": 0}"\n' > "$ROOT/trk-zero.sh"
 printf '#!/usr/bin/env bash\necho "{\\"behind\\": null}"\nprintf "SKIP\\tnot-set-up\\tcheckout\\n"\n' > "$ROOT/trk-null.sh"
+# item 4: the one-line answers of the tracker's spec-status
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": false, \\"target\\": \\"checkout\\"}"\n' > "$ROOT/trk-notsetup.sh"
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": true, \\"target\\": \\"checkout\\", \\"behind\\": false, \\"cards\\": 3}"\n' > "$ROOT/trk-setuplevel.sh"
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": true, \\"target\\": \\"checkout\\", \\"behind\\": true}"\n' > "$ROOT/trk-setupbehind.sh"
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": true, \\"target\\": \\"checkout\\"}"\n' > "$ROOT/trk-setuponly.sh"
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": false, \\"target\\": \\"checkout\\"}"\necho "PUSH\\tcard\\t1"\n' > "$ROOT/trk-notsetupextra.sh"
+printf '#!/usr/bin/env bash\necho "{\\"setUp\\": false, \\"target\\": \\"checkout\\"}"\necho "SUMMARY {\\"skip\\": 1} dry-run"\n' > "$ROOT/trk-notsetupsummary.sh"
 TRK=""
 # au <project> — the audit, with the stub tracker ($TRK names the stub; default: not set up).
 au() { QA_AUTO_TRACKER_CMD="bash $ROOT/trk-${TRK:-skip}.sh" auto audit checkout --project "$1"; }
@@ -87,7 +94,7 @@ artifact() {
     run)          mkdir -p "$R"
                   printf '{"run_id":"r1","target_feature":"checkout","started_at":"2026-11-27T08:30:00Z","status":"complete"}\n' > "$R/run-manifest.json"
                   printf '{"criteria":[{"criterion_id":"C-001","persona":"admin","verdict":"pass","confidence":"high"}]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
-    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+    verify)       mkdir -p "$R"; printf '%s\n' '[{"criterionId":"C-001","persona":"admin","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"high","reasons":[]}]' > "$R/verification.json" ;;
   esac
 }
 done_step() {
@@ -109,6 +116,8 @@ fin() {
   local shape="${1:-plain}" tpl="$ROOT/tpl-$E-${1:-plain}" P S flags=""
   if [ ! -d "$tpl" ]; then
     P="$(mktemp -d "$ROOT/p.XXXXXX")"; S="$P/.qa/specs/checkout"; mkdir -p "$S"
+    # the project's tracker settings: without this file the audit does not ask the tracker at all
+    mkdir -p "$P/docs/agents"; printf '{"specs":{}}\n' > "$P/docs/agents/qa-tracker.json"
     if [ "$shape" = rich ]; then printf '%s\n' "$RICH_CONFIG" > "$P/.qa/config.json"; else cp "$FX/config-local.json" "$P/.qa/config.json"; fi
     artifact "$P" constitution; artifact "$P" spec; artifact "$P" scenarios
     case "$shape" in
@@ -169,6 +178,18 @@ EOT
   expect "an empty verification.json is not-verified" "$P" 1 '"not-verified"'
   P="$(fin)"; printf '{"overrides":' > "$P/.qa/runs/r1/verification.json"
   expect "a verification.json that does not parse is not-verified" "$P" 1 '"not-verified"'
+  # item 14: a verification that parses and is not a list of rows is no verification either; an
+  # empty list is one (the engine writes [] for a run with no passes)
+  for k in 'null' '{}' '{"overrides":[]}' '[1]' '"ok"'; do
+    P="$(fin)"; printf '%s\n' "$k" > "$P/.qa/runs/r1/verification.json"
+    expect "not_verified_without_a_list_of_rows [$k]" "$P" 1 '"not-verified"'
+  done
+  for k in '[]' '{"rows":[]}' '{"criteria":[]}'; do
+    P="$(fin)"; printf '%s\n' "$k" > "$P/.qa/runs/r1/verification.json"
+    expect "an_empty_list_of_rows_is_a_verification [$k]" "$P" 0 ""
+  done
+  P="$(fin)"; printf '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}\n' > "$P/.qa/runs/r1/verification.json"
+  expect "a verification with its rows under a key is a verification" "$P" 0 ""
   P="$(fin)"; ed "$P/.qa/specs/checkout/auto/journey.json" 'd["runId"]="../r1"'
   expect "a run id that is not a plain name has no verification" "$P" 1 '"not-verified","step-without-result:run"'
 
@@ -200,6 +221,30 @@ EOT
   for k in skipone setup; do
     P="$(fin)"; TRK=$k expect "tracker answer '$k' is the not-set-up answer" "$P" 0 ""
   done
+  # item 4: the tracker's answer for a spec that is not set up is one JSON line, alone; a set-up
+  # spec's line says so and still needs `behind: false`
+  for k in notsetup setuplevel; do
+    P="$(fin)"; TRK=$k expect "tracker_not_set_up_json_line: '$k' passes" "$P" 0 ""
+  done
+  for k in setupbehind setuponly notsetupextra notsetupsummary; do
+    P="$(fin)"; TRK=$k expect "tracker_not_set_up_json_line: '$k' is a violation" "$P" 1 '"tracker-behind"'
+  done
+  # item 26: without docs/agents/qa-tracker.json no spec is tracked, so the tracker is not asked
+  P="$(fin)"; rm "$P/docs/agents/qa-tracker.json"; rm -f "$ROOT/trk-args.txt"
+  TRK=args expect "audit_skips_tracker_without_settings_file" "$P" 0 ""
+  check "$E audit_skips_tracker_without_settings_file: the tracker was not called" "$([ -e "$ROOT/trk-args.txt" ] && echo called || echo not-called)" "not-called"
+  P="$(fin)"; rm "$P/docs/agents/qa-tracker.json"
+  TRK=behind expect "without the settings file a tracker that says behind is not heard" "$P" 0 ""
+  P="$(fin)"; rm -rf "$P/docs"
+  TRK=fail expect "without the docs folder a failing tracker is not heard" "$P" 0 ""
+  # the machine file cannot turn tracking on, so it does not make the audit ask either
+  P="$(fin)"; rm "$P/docs/agents/qa-tracker.json"; mkdir -p "$P/.qa"; printf '{"specs":{"checkout":{"enabled":true}}}\n' > "$P/.qa/tracker.local.json"
+  TRK=behind expect "a machine file alone does not make the audit ask the tracker" "$P" 0 ""
+  # the file being there is enough to ask, whatever it holds; so is a link that leads nowhere
+  P="$(fin)"; : > "$P/docs/agents/qa-tracker.json"
+  TRK=behind expect "an empty settings file still asks the tracker" "$P" 1 '"tracker-behind"'
+  P="$(fin)"; rm "$P/docs/agents/qa-tracker.json"; ln -s "$P/nowhere.json" "$P/docs/agents/qa-tracker.json"
+  TRK=behind expect "a settings file that is a link leading nowhere still asks the tracker" "$P" 1 '"tracker-behind"'
   # QA_AUTO_TRACKER_CMD is for the suites: without QA_AUTO_TEST=1 the real tracker script is asked
   # (this project has no tracker file, so the real answer is not-set-up)
   P="$(fin)"; out="$(QA_ENGINE="$E" QA_AUTO_NOW="$NOW_DEFAULT" QA_AUTO_TRACKER_CMD="bash $ROOT/trk-behind.sh" bash "$SH" audit checkout --project "$P" 2>&1)"; rc=$?

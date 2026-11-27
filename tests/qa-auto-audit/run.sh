@@ -24,7 +24,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 T_OLD=202611270700; T_MID=202611270710
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
@@ -86,7 +86,7 @@ artifact() {
     run)          mkdir -p "$R"
                   printf '{"run_id":"r1","target_feature":"checkout","started_at":"2026-11-27T08:30:00Z","status":"complete"}\n' > "$R/run-manifest.json"
                   printf '{"criteria":[{"criterion_id":"C-001","persona":"admin","verdict":"pass","confidence":"high"}]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
-    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+    verify)       mkdir -p "$R"; printf '%s\n' '[{"criterionId":"C-001","persona":"admin","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"high","reasons":[]}]' > "$R/verification.json" ;;
   esac
 }
 done_step() {
@@ -108,6 +108,8 @@ fin() {
   local shape="${1:-plain}" tpl="$ROOT/tpl-$E-${1:-plain}" P S flags=""
   if [ ! -d "$tpl" ]; then
     P="$(mktemp -d "$ROOT/p.XXXXXX")"; S="$P/.qa/specs/checkout"; mkdir -p "$S"
+    # the project's tracker settings: without this file the audit does not ask the tracker at all
+    mkdir -p "$P/docs/agents"; printf '{"specs":{}}\n' > "$P/docs/agents/qa-tracker.json"
     if [ "$shape" = rich ]; then printf '%s\n' "$RICH_CONFIG" > "$P/.qa/config.json"; else cp "$FX/config-local.json" "$P/.qa/config.json"; fi
     artifact "$P" constitution; artifact "$P" spec; artifact "$P" scenarios
     case "$shape" in

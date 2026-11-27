@@ -128,14 +128,25 @@ qa-kit step: constitution → spec → scenarios → analyze → run → **verif
    list, plan-drift list, override list, confidence downgrades, the re-adjudication outcome (re-judged / verifier
    overrides / unavailable banner / did not run), and the verified/overridden/not-verified state.
 
-4b. **ClickUp sync (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
+4b. **ClickUp sync (per spec).** Run it for every spec: the tracker says whether the spec is tracked. `SKIP	not-set-up	<target>` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
    After `verification.md` is written, with `<run-id>` from step 1 on every line (so an older run
-   files its own bugs), run in this order and stop at the first that fails:
+   files its own bugs), run in this order and stop at the first that fails. The bugs are filed first
+   (`push-bug`), because `sync-run` links each result to its bug:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-bug --spec <target> --run <run-id> --apply
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" sync-run --spec <target> --run <run-id> --apply
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" push-docs --spec <target> --run <run-id> --apply
    ```
+   - When `push-bug` prints the not-set-up line, run neither of the other two.
+   - A bug that could not be filed is a failure this command reports, never a quiet skip. `sync-run`
+     exits 1 on `SKIP	bug-not-found	<title>: not in the Bugs list yet; run push-bug first` and on
+     `SKIP	bugs-not-linked	the Bugs list is not set up; run tracker.sh init`. Report that line as the
+     failed step. Until it is fixed `spec-status` says ClickUp is behind, and an unattended journey's
+     audit reports `tracker-behind`.
+   - A `SKIP	page-not-ours	<name>: …` line from `push-docs` does not fail the step; repeat it in the report.
+   - A run id the tracker does not take (`error: --run must be a run name`, exit 2) is a failed step too.
+
    A failed step here never hides this command's result. Whatever happens, give the step 5 report first
    and in full: the out-of-plan acts, the plan drift and the verification summary. When a step failed,
    add after it one line with that step's name and its one-line error, say that the run is not complete,

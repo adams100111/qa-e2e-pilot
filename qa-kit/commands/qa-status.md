@@ -47,8 +47,10 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    [· drift: stale]`. End with the single **next step** for the requested scope. Never invent an
    artifact you did not find; report only what is present on disk.
 
-5. **ClickUp links (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
-   Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) once per tracked spec. Print one ClickUp line
+5. **ClickUp links (per spec).** Run it for every spec: the tracker says whether the spec is tracked. The one line `{"setUp": false, "target": "<target>"}` with exit 0 means it is not tracked, and the ClickUp step ends there. Any non-zero exit is a failure: stop and report its one-line error; do not continue the command, and never skip it silently.
+   A spec is tracked when its own entry in `docs/agents/qa-tracker.json` or `specDefaults` turns it on; do not read the file to decide, run the verb.
+   Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-status --spec <target>` (it reads only) once per spec. A tracked spec's
+   line carries `"setUp": true`; for a spec that is not tracked print no ClickUp line. Print one ClickUp line
    per tracked spec, under the summary lines and before the final **next step** line: the links it
    returns for the spec and its latest run, plus each reason it gives for ClickUp being behind the
    local files.
@@ -61,7 +63,8 @@ spec-level checks to `.qa/specs/<target>/`; with no target, list every `.qa/spec
    - `state: open` → `journey: open at <step>`, the first step in `steps` whose `state` is not `done`;
    - `state: stopped` → `journey: stopped at <step> (<stop.reason>)`, and say whether starting
      `/qa-auto <target>` again continues it (`time-limit`, `step-failed`, `until`) or a person has to
-     act first (`blocked`, `audit`, `no-sign-in`, `tracker`);
+     act first (`blocked`, `audit`, `no-sign-in`, `tracker`) and then start a new journey with
+     `/qa-auto <target> --restart` (a plain `/qa-auto <target>` does not replace it);
    - `state: done` → `journey: done`;
 
    then `<needsPerson> decisions that need a person` (not the handoff's count of all items for a person, which is never smaller), and point at `.qa/specs/<target>/auto/handoff.md` when that

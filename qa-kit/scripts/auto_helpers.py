@@ -54,10 +54,36 @@ def odd(v):
     return False
 
 
+SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
+
+
+def whole_text(v):
+    # A value read from JSON, as jq reads it: half of a surrogate pair written as an escape cannot
+    # stand alone. jq refuses the document for a first half with no second half after it
+    # (`\ud800`), and reads a second half on its own (`\udc00`) as U+FFFD. Python would keep
+    # either as a character that cannot be written out again.
+    if isinstance(v, str):
+        if any("\ud800" <= c <= "\udbff" for c in v):
+            raise ValueError("half a surrogate pair")
+        return "".join("\ufffd" if "\udc00" <= c <= "\udfff" else c for c in v)
+    if isinstance(v, dict):
+        return dict((whole_text(k), whole_text(x)) for k, x in v.items())
+    if isinstance(v, list):
+        return [whole_text(x) for x in v]
+    return v
+
+
+def loads(t):
+    # json.loads, reading surrogate escapes as jq does (whole_text); only a text that holds such
+    # an escape is walked
+    v = json.loads(t)
+    return whole_text(v) if SURROGATE_ESCAPE.search(t) else v
+
+
 def load(p):
     # utf-8-sig: one leading byte order mark is dropped, as jq drops it
     with open(p, encoding="utf-8-sig") as f:
-        return json.load(f)
+        return loads(f.read())
 
 
 def norm(v):
@@ -108,7 +134,7 @@ def rd(state, path, empty_ok=False):
             t = t[1:]
         if t.strip(" \t\r\n") == "":
             return (True, []) if empty_ok else (False, None)
-        return True, json.loads(t)
+        return True, loads(t)
     except Exception:
         return False, None
 
@@ -151,7 +177,7 @@ def low(v):
 def rows_in():
     # the array on stdin; nothing at all (no file yet) is an empty array
     t = sys.stdin.buffer.read().decode("utf-8-sig")
-    rows = json.loads(t) if t.strip(" \t\r\n") else []
+    rows = loads(t) if t.strip(" \t\r\n") else []
     if not isinstance(rows, list):
         sys.exit(1)
     return rows
@@ -529,9 +555,32 @@ def cid(r):
     return None
 
 
+def has_rows(v):
+    # a verification.json that holds a result: the rows the handoff reads (the document itself when
+    # it is a list, else the list under `rows` or `criteria`), every one an object; the list may be
+    # empty (the engine writes [] for a run with no passes)
+    rows = None
+    if isinstance(v, list):
+        rows = v
+    elif isinstance(v, dict):
+        for k in ("rows", "criteria"):
+            if isinstance(v.get(k), list):
+                rows = v[k]
+                break
+    return isinstance(rows, list) and all(isinstance(r, dict) for r in rows)
+
+
+def op_verified():
+    # exit 0 when the file is one JSON document that holds a verification result
+    ok, v = rd("1", a[0])
+    if not ok or not has_rows(v):
+        sys.exit(1)
+
+
 def op_runfacts():
     # What `step-done run` needs from a run: manifest, checkpoint, state and path of the plan.
-    # Lines: ok|bad (the manifest parses), its status in small letters, its started_at, ok|bad (the
+    # Lines: ok|bad (the manifest parses), `=` and its status in small letters (an empty line when
+    # the status is not text), its started_at, ok|bad (the
     # checkpoint parses), 1|0 (a checkpoint row is about a row of this plan), then every
     # checkpointed_at.
     okm, m = rd("1", a[0])
@@ -540,7 +589,8 @@ def op_runfacts():
     rows = [r for r in (checkpoint_rows(k) if okk else []) if isinstance(r, dict)]
     ids = plan_ids(p)[1] if okp else set()
     m = m if isinstance(m, dict) else {}
-    lines = ["ok" if okm else "bad", one_line(low(m.get("status"))), one_line(m.get("started_at")), "ok" if okk else "bad",
+    st = m.get("status")
+    lines = ["ok" if okm else "bad", "=" + one_line(low(st)) if isinstance(st, str) else "", one_line(m.get("started_at")), "ok" if okk else "bad",
              "1" if any(cid(r) in ids for r in rows if cid(r) is not None) else "0"]
     lines += [one_line(r["checkpointed_at"]) for r in rows if isinstance(r.get("checkpointed_at"), str)]
     out("\n".join(lines))
@@ -668,9 +718,11 @@ def op_audit():
                 if isinstance(r, dict) and not (isinstance(r.get("class"), str) and r["class"] in classes):
                     i = r.get("id")
                     codes.add("forbidden-decision:" + (i if isinstance(i, str) else "#%d" % (n + 1)))
-    # a journey that is done, or whose verify step is, needs a verification that can be read
-    if needv == "1" and not rd(vs, vf)[0]:
-        codes.add("not-verified")
+    # a journey that is done, or whose verify step is, needs a verification that holds a result
+    if needv == "1":
+        okv, ver = rd(vs, vf)
+        if not okv or not has_rows(ver):
+            codes.add("not-verified")
     st = j.get("stop")
     failed = j.get("state") == "stopped" and isinstance(st, dict) and st.get("reason") == "audit"
     if failed:
@@ -777,9 +829,13 @@ def op_note():
 
 def op_second():
     # (journey) id verdict reason
+    ok, j = rd(a[0], a[1])
     if not rows_op():
         return
     rows = rows_in()
+    if a[1] == "stands" and j.get("secondLook") == "unavailable":
+        out("!unavailable")
+        return
     r = None
     for x in rows:
         if isinstance(x, dict) and x.get("id") == a[0]:
@@ -948,8 +1004,15 @@ def op_facts():
     put("S", "notes", nstat)
     put("S", "plan", pstat)
     put("S", "results", kstat)
+    # a second check with no rows at all covers nothing: beside a recorded pass it is `empty`
+    last = {}
+    for r in (krows or []):
+        if isinstance(r, dict) and cid(r) is not None:
+            last[(cid(r), who(r))] = r
+    if vstat == "ok" and len(vrows) == 0 and any(low(r.get("verdict")) == "pass" for r in last.values()):
+        vstat = "empty"
     put("S", "second", vstat)
-    put("J", b(j.get("restartedFrom") is not None))
+    put("J", b(j.get("restartedFrom") is not None), b(j.get("replacedAfterAudit") is True))
     # what the audit found: the code word, and its key, step, check title or question
     av = j.get("auditViolations")
     for code in (av if isinstance(av, list) else []):
@@ -1032,7 +1095,7 @@ def op_strs():
     out("\n".join(one_line(walk(d, p)[1]) for p in a[1:]))
 
 
-OPS = {"valid": op_valid, "strs": op_strs, "gate": op_gate, "baseline": op_baseline,
+OPS = {"valid": op_valid, "verified": op_verified, "strs": op_strs, "gate": op_gate, "baseline": op_baseline,
        "apply": op_apply, "step": op_step, "next": op_next, "status": op_status, "journey": op_journey, "runfacts": op_runfacts, "audit": op_audit,
        "behind": op_behind, "personas": op_personas, "decide": op_decide, "note": op_note, "second": op_second,
        "unavailable": op_unavailable, "head": op_head, "facts": op_facts}
