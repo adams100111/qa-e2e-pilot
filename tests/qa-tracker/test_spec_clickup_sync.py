@@ -7,10 +7,14 @@ list-level field (the Bugs list's own `Ref`).
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import os
 import re
 import shutil
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
@@ -41,6 +45,21 @@ ADMIN_RANK, HACKATHONS = "Admin sees the ranking", "Hackathon list opens"
 LOAD = "load-clean:GET /admin/hackathons:admin"
 REVIEW_NOTE = "Passed on this run. A person needs to confirm the expected result."
 BUG_TITLE = "A score above the maximum is saved"
+NO_RESULTS = "SKIP\tno-results\tthis run has no results for this spec; nothing was synced"
+LIST_UNUSED = ("SKIP\tlist-unused\tRun 2 · next: a retest uses the list of the newest run; "
+               "this list is left for the next new run")
+NEW_CHECK = {"criterion": "C-SCORE-03", "title": "Change a saved score",
+             "do": "Open a scored submission, type 6 and press Save.", "expect": "The new score replaces the old one."}
+
+
+def named(data):
+    """The name a screenshot is sent under: `screen-<first 6 hex of its sha256>.png`."""
+    return f"screen-{hashlib.sha256(data).hexdigest()[:6]}.png"
+
+
+def shot(persona, criterion, phase):
+    """The upload name of one of the run fixture's screenshots."""
+    return named((RUN_FIXTURE / "evidence" / persona / criterion / f"screenshot-{phase}.png").read_bytes())
 
 
 def row(criterion, persona, verdict, confidence="high"):
@@ -136,11 +155,47 @@ class SyncBase(SpecBase):
         self.assertEqual(self.push()[0], 0)
         self.fake.calls.clear()
 
+    def record(self, run_id, rows):
+        """Write the run's recorded rows; its other files stay as they are."""
+        path = self.tmp / ".qa" / "runs" / run_id / "checkpoint.json"
+        path.write_text(json.dumps({"criteria": rows}), encoding="utf-8")
+
+    def only_shot(self, run_id, persona, criterion, data):
+        """Make `data` the one screenshot of a check in this run; returns the name it is sent under."""
+        folder = self.tmp / ".qa" / "runs" / run_id / "evidence" / persona / criterion
+        for f in folder.iterdir():
+            f.unlink()
+        (folder / "screenshot-after.png").write_bytes(data)
+        return named(data)
+
+    def fail_ref(self, name, pending, status=502):
+        """The next write of this ticket's Ref that carries a move in progress (two letters), or
+        with `pending` False its final single letter, fails before it lands."""
+        tid = self.fake.task(name)["id"]
+        real, left = self.fake.request, [1]
+
+        def flaky(method, path, body=None):
+            if left[0] and method == "POST" and path == f"/v2/task/{tid}/field/f-ref":
+                if (len(body["value"].split("-")[2]) == 2) == pending:
+                    left[0] = 0
+                    raise ApiError(method, path, status, "bad gateway")
+            return real(method, path, body)
+        self.fake.request = flaky
+
+    def touched(self, name, lid=None):
+        """The calls made on one ticket."""
+        tid = self.fake.task(name, lid)["id"]
+        return [c for c in self.fake.calls if re.search(rf"/{tid}(/|$)", c[1])]
+
+    def add_check(self, card=0, check=NEW_CHECK, persona="judge"):
+        self.edit_cards(lambda d: d["cards"][card]["checks"].append(dict(check)))
+        self.edit_plan(lambda rows: rows + [{"id": check["criterion"], "persona": persona, "kind": "happy-path"}])
+
     def add_run(self, run_id, rows=None, manifest=None):
         run_dir = self.tmp / ".qa" / "runs" / run_id
         shutil.copytree(RUN_FIXTURE, run_dir, dirs_exist_ok=True)
         if rows is not None:
-            (run_dir / "checkpoint.json").write_text(json.dumps({"criteria": rows}), encoding="utf-8")
+            self.record(run_id, rows)
         if manifest is not None:
             (run_dir / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return run_dir
@@ -215,8 +270,7 @@ class BindingTests(SyncBase):
 
     def test_other_machine_finds_bound_list_without_cache(self):
         self.assertEqual(self.sync()[0], 0)
-        shutil.rmtree(self.tmp / ".qa" / "tracker-map.json", ignore_errors=True)
-        (self.tmp / ".qa" / "tracker-map.json").unlink(missing_ok=True)
+        (self.tmp / ".qa" / "tracker-map.json").unlink()
         self.fake.calls.clear()
         rc, lines, _ = self.sync()
         self.assertEqual(rc, 0, lines)
@@ -304,7 +358,8 @@ class StatusTests(SyncBase):
         t = self.fake.task(SAVE)
         self.assertIs(t["values"]["f-review"], True)
         self.assertEqual(self.texts(SAVE), [REVIEW_NOTE])
-        self.assertEqual(self.fake.names_on(t["id"]), ["screen-1.png", "screen-2.png"])
+        self.assertEqual(self.fake.names_on(t["id"]), [shot("judge", "C-SCORE-01", "before"),
+                                                       shot("judge", "C-SCORE-01", "after")])
         # nothing but a high-confidence pass is ever written as passed
         self.assertNotIn("passed", [c[2].get("status") for c in self.fake.writes("PUT", r"/v2/task/\w+$")])
         # a second sync adds neither the comment nor the tick again
@@ -338,14 +393,23 @@ class StatusTests(SyncBase):
         self.assertEqual(self.state(SAVE), ("failed", "f"))   # the others still follow the run
         self.assertIn('"changed-by-person": 1', lines[-1])
 
-    def test_run_of_another_spec_is_refused_before_any_write(self):
-        self.add_run("2026-11-29-team-registration", [row("C-REG-01", "applicant", "pass"),
-                                                      row("C-REG-02", "applicant", "fail")])
-        rc, lines, _ = self.sync(run="2026-11-29-team-registration")
-        self.assertEqual(rc, 1)
-        self.assertIn("SKIP\tother-run\tnone of this run's results belongs to this spec's cards; "
-                      "name the run with --run", lines)
-        self.assertEqual(self.fake.calls, [])
+    def test_run_with_no_result_for_this_spec_binds_no_list(self):
+        other = "2026-11-29-team-registration"
+        for rows in ([], [row("C-REG-01", "applicant", "pass"), row("C-REG-02", "applicant", "fail")]):
+            with self.subTest(rows=len(rows)):
+                self.add_run(other, rows)
+                self.fake.calls.clear()
+                for argv in (("sync-run", "--run", other), ("sync-run",)):   # named, and picked as the newest
+                    rc, lines, err = self.tracker(*argv)
+                    self.assertEqual(rc, 0, (lines, err))
+                    self.assertEqual(lines[:-1], [NO_RESULTS])
+                    self.assertNotIn('"skip"', lines[-1])
+                self.assertEqual(self.fake.calls, [])
+                self.assertEqual(self.run_list()["name"], "Run 1 · next")
+                self.assertEqual(cs.parse_ref(self.summary()["values"]["f-ref"])["run"], "open")
+        # the spec's own run still takes the open list afterwards
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.run_list()["name"], "Run 1 · 2026-11-27")
 
     def test_summary_a_person_moved_keeps_its_status_and_still_gets_the_counts(self):
         self.assertEqual(self.sync()[0], 0)
@@ -378,26 +442,62 @@ class StatusTests(SyncBase):
         self.assertEqual(s.label_of(entry), "2026-11-27")
         self.assertEqual(self.fake.calls, [])
 
-    def test_status_written_without_its_letter_is_finished(self):
-        real, seen = self.fake.request, [0]
-
-        def flaky(method, path, body=None):  # the first status lands, its Ref letter does not
-            if method == "POST" and path.endswith("/field/f-ref"):
-                seen[0] += 1
-                if seen[0] == 2:
-                    raise ApiError(method, path, 502, "bad gateway")
-            return real(method, path, body)
-        self.fake.request = flaky
-        rc, lines, _ = self.sync()
-        self.assertEqual(rc, 1)
-        self.assertEqual(self.state(SAVE), ("passed", "t"))
+    def half_moved(self):
+        """SAVE's status landed (passed) and the write of its final Ref letter failed."""
+        self.fail_ref(SAVE, pending=False)
+        self.assertEqual(self.sync()[0], 1)
         del self.fake.request
+        t = self.fake.task(SAVE)
+        self.assertEqual(t["status"]["status"], "passed")
+        self.assertEqual(cs.parse_ref(t["values"]["f-ref"])["pending"], "passed")   # the move is on record
+        return t
+
+    def test_status_written_without_its_letter_is_finished(self):
+        self.half_moved()
         rc, lines, _ = self.sync()
         self.assertEqual(rc, 0, lines)
         self.assertNotIn("changed-by-person", "\n".join(lines))
         for name, want in ((SAVE, ("passed", "p")), (REFUSE, ("failed", "f")), ("Run summary", ("failed", "f"))):
             self.assertEqual(self.state(name), want)
+            self.assertIsNone(cs.parse_ref(self.fake.task(name)["values"]["f-ref"])["pending"])
         self.assertEqual(cs.parse_ref(self.summary()["values"]["f-ref"])["run"], cs.run_hash(RUN_1))
+
+    def test_half_done_move_follows_a_result_recorded_again(self):
+        t = self.half_moved()
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "fail")])
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertNotIn("changed-by-person", "\n".join(lines))
+        self.assertEqual(self.state(SAVE), ("failed", "f"))
+        self.assertIsNone(cs.parse_ref(t["values"]["f-ref"])["pending"])
+        self.fake.calls.clear()
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_move_that_failed_before_anything_changed_is_done_on_the_next_sync(self):
+        self.fail_ref(SAVE, pending=True)
+        self.assertEqual(self.sync()[0], 1)
+        del self.fake.request
+        t = self.fake.task(SAVE)
+        self.assertEqual((t["status"]["status"], t["values"]["f-ref"][-2:]), ("to test", "-t"))
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "fail")])
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertNotIn("changed-by-person", "\n".join(lines))
+        self.assertEqual(self.state(SAVE), ("failed", "f"))
+        self.assertIsNone(cs.parse_ref(t["values"]["f-ref"])["pending"])
+
+    def test_person_change_during_a_half_done_move_is_left(self):
+        t = self.half_moved()
+        value = t["values"]["f-ref"]
+        self.move(SAVE, "blocked")           # a status that is neither the old nor the new one
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "fail")])
+        self.fake.calls.clear()
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(lines.count(f"SKIP\tchanged-by-person\t{SAVE}"), 1)
+        self.assertEqual((t["status"]["status"], t["values"]["f-ref"]), ("blocked", value))
+        self.assertEqual(self.touched(SAVE), [])
 
     def test_sync_twice_no_writes(self):
         self.assertEqual(self.sync()[0], 0)
@@ -417,7 +517,7 @@ class StatusTests(SyncBase):
         self.assertEqual(rc, 0, lines)
         self.assertEqual(self.fake.calls, [])
         self.assertIn(f"DRY\tstatus\t{REFUSE}: failed", lines)
-        self.assertIn(f"DRY\tattach\t{REFUSE}: screen-1.png", lines)
+        self.assertIn(f"DRY\tattach\t{REFUSE}: {shot('judge', 'C-SCORE-02', 'before')}", lines)
         self.assertIn(f"DRY\tcreate\t{ADMIN_RANK}", lines)
         self.assertTrue(any(ln.startswith("DRY\tlink-bug\t") for ln in lines), lines)
         self.assertEqual(self.cfg_path.read_text(encoding="utf-8"), config)
@@ -456,19 +556,37 @@ class StatusTests(SyncBase):
         self.assertIn("error: the plan changed since the tickets were made; run push-scenarios", err)
         self.assertEqual(self.fake.calls, [])
 
-    def test_card_added_after_the_tickets_stops_before_writes(self):
-        def add(d):
-            d["cards"][0]["checks"].append({"criterion": "C-SCORE-03", "title": "Change a saved score",
-                                            "do": "Open a scored submission, type 6 and press Save.",
-                                            "expect": "The new score replaces the old one."})
-        self.edit_cards(add)
-        self.edit_plan(lambda rows: rows + [{"id": "C-SCORE-03", "persona": "judge", "kind": "happy-path"}])
-        rc, lines, err = self.sync()
-        self.assertEqual(rc, 1)
-        self.assertIn("error: the plan changed since the tickets were made; run push-scenarios", err)
-        self.assertEqual(self.fake.calls, [])
-        self.assertEqual(self.push()[0], 0)
+    def test_check_added_after_the_tickets_gets_its_ticket_before_the_sync(self):
+        for bound in (False, True):   # the list is still open, or already holds this run
+            with self.subTest(bound=bound):
+                self.new_project()
+                self.ready()
+                self.assertEqual(self.push()[0], 0)
+                if bound:
+                    self.assertEqual(self.sync()[0], 0)
+                self.add_check()
+                rc, lines, err = self.sync()
+                self.assertEqual(rc, 0, (lines, err))
+                self.assertNotIn("plan changed", err)
+                t = self.fake.task(NEW_CHECK["title"])
+                self.assertEqual(self.state(NEW_CHECK["title"]), ("to test", "t"))
+                self.assertEqual(t["parent"], self.fake.task(JUDGE_CARD)["id"])
+                self.assertEqual(self.state(REFUSE), ("failed", "f"))
+                self.assertEqual(self.run_list()["name"], "Run 1 · 2026-11-27")
+                self.assertFalse(any("\tretire\t" in ln for ln in lines), lines)
+                self.fake.calls.clear()
+                self.assertEqual(self.sync()[0], 0)
+                self.assertEqual(self.fake.calls, [])
+
+    def test_check_removed_with_a_recorded_result_is_not_retired_by_the_sync(self):
         self.assertEqual(self.sync()[0], 0)
+        self.remove_check("C-SCORE-02")
+        self.fake.calls.clear()
+        rc, lines, _ = self.sync()
+        self.assertEqual(rc, 1)              # its recorded result has no card now
+        self.assertTrue(any(ln.startswith("SKIP\tno-ticket\tC-SCORE-02 (judge): recorded as fail") for ln in lines))
+        self.assertEqual(self.state(REFUSE), ("failed", "f"))
+        self.assertEqual(self.touched(REFUSE), [])
 
     def test_wording_problem_in_the_cards_stops_before_clickup(self):
         self.edit_cards(lambda d: d["cards"][0].update(title="Automated judge scoring"))
@@ -522,7 +640,7 @@ class ChecklistTests(SyncBase):
         self.assertEqual(raised["markdown_description"],
                          "Open the leaderboard as an admin.\n\n"
                          "Teams are listed from the highest average score to the lowest.")
-        self.assertEqual(self.fake.names_on(raised["id"]), ["screen-1.png"])
+        self.assertEqual(self.fake.names_on(raised["id"]), [shot("admin", "C-RANK-01", "after")])
         self.assertEqual(self.items(), {ADMIN_RANK: False, HACKATHONS: True})
         self.assertEqual(self.state(ADMIN_CARD), ("failed", "f"))
         # found again by its Ref: a second sync makes no second subtask
@@ -546,21 +664,64 @@ class ChecklistTests(SyncBase):
         self.assertEqual(self.state(ADMIN_RANK), ("failed", "f"))
         self.assertEqual(len(self.fake.writes("POST", r"/list/\w+/task$")), 1)
 
+    def test_raised_subtask_is_untouched_when_a_check_is_added_to_the_cards(self):
+        self.add_run(RUN_1, [row("C-RANK-01", "admin", "fail"), row(LOAD, "admin", "pass")])
+        self.assertEqual(self.sync()[0], 0)
+        raised = self.fake.task(ADMIN_RANK)
+        before = json.dumps([raised, self.fake.comments.get(raised["id"]), self.fake.names_on(raised["id"])],
+                            sort_keys=True)
+        extra = {"criterion": "C-RANK-02", "title": "Ranking shows every team",
+                 "do": "Open the leaderboard and count the teams.", "expect": "Every team that submitted is listed."}
+        self.add_check()                                   # a subtask card gets a ticket
+        self.add_check(card=1, check=extra, persona="admin")   # a checklist card gets an item
+        self.fake.calls.clear()
+        rc, lines, err = self.sync()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(json.dumps([raised, self.fake.comments.get(raised["id"]),
+                                     self.fake.names_on(raised["id"])], sort_keys=True), before)
+        self.assertEqual(self.touched(ADMIN_RANK), [])
+        self.assertIs(self.fake.task(ADMIN_RANK), raised)      # still the one subtask of that check
+        self.assertEqual(self.state(NEW_CHECK["title"]), ("to test", "t"))
+        self.assertEqual(self.items(), {ADMIN_RANK: False, HACKATHONS: True, extra["title"]: False})
+        self.assertFalse(any("\tretire\t" in ln for ln in lines), lines)
+        self.assertNotIn("skipped", [t["status"]["status"] for t in self.fake.tasks.values()])
+        self.assertEqual(len(self.fake.tasks), 8)   # summary, 2 cards, 3 checks, the raised one, the new check
+        self.fake.calls.clear()
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_check_left_for_a_later_run_is_not_taken_for_one_back_in_the_plan(self):
+        self.add_run(RUN_1, [row("C-SCORE-01", "judge", "deferred"), row("C-SCORE-02", "judge", "fail")])
+        for _ in range(2):
+            rc, lines, _ = self.sync()
+            self.assertEqual(rc, 0, lines)
+            self.assertFalse(any("\treturn\t" in ln for ln in lines), lines)
+        self.assertEqual(self.state(SAVE), ("skipped", "s"))
+        # recorded again with a result: the ticket follows it, and nothing says it came back
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "pass"), row("C-SCORE-02", "judge", "fail")])
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.state(SAVE), ("passed", "p"))
+        self.assertEqual(self.texts(SAVE), ["Not checked on this run. It was left for a later run."])
+
 
 class EvidenceTests(SyncBase):
     def test_evidence_uploaded_once_with_neutral_names(self):
         rc, lines, err = self.sync()
         self.assertEqual(rc, 0, (lines, err))
+        refused = [shot("judge", "C-SCORE-02", phase) for phase in ("before", "after-message", "after")]
         on = {name: self.fake.names_on(self.fake.task(name)["id"]) for name in (SAVE, REFUSE, JUDGE_RANK, ADMIN_RANK)}
-        self.assertEqual(on, {SAVE: ["screen-1.png"], REFUSE: ["screen-1.png", "screen-2.png", "screen-3.png"],
-                              JUDGE_RANK: ["screen-1.png"], ADMIN_RANK: ["screen-1.png"]})
+        self.assertEqual(on, {SAVE: [shot("judge", "C-SCORE-01", "after")], REFUSE: refused,
+                              JUDGE_RANK: [shot("judge", "C-RANK-01", "before")],
+                              ADMIN_RANK: [shot("admin", "C-RANK-01", "after")]})
         refuse = self.fake.task(REFUSE)["id"]
         folder = RUN_FIXTURE / "evidence" / "judge" / "C-SCORE-02"
         self.assertEqual([a["data"] for a in self.fake.attachments[refuse]],
                          [(folder / n).read_bytes() for n in ("screenshot-before.png", "screenshot-after-message.png",
                                                               "screenshot-after.png")])
-        self.assertEqual({c[2] for c in self.fake.calls if c[0] == "UPLOAD"},
-                         {"screen-1.png", "screen-2.png", "screen-3.png"})
+        sent = [c[2] for c in self.fake.calls if c[0] == "UPLOAD"]
+        self.assertEqual(len(sent), 6)
+        for name in sent:   # a name says nothing but what the file holds
+            self.assertRegex(name, r"^screen-[0-9a-f]{6}\.png$")
         for holder in (JUDGE_CARD, ADMIN_CARD, "Run summary"):
             self.assertEqual(self.fake.names_on(self.fake.task(holder)["id"]), [])
         self.assert_quiet()
@@ -575,7 +736,48 @@ class EvidenceTests(SyncBase):
             f.unlink()
         (folder / "Score Saved.JPG").write_bytes(b"jpeg")
         self.assertEqual(self.sync()[0], 0)
-        self.assertEqual(self.fake.names_on(self.fake.task(SAVE)["id"]), ["screen-1.jpg"])
+        self.assertEqual(self.fake.names_on(self.fake.task(SAVE)["id"]), [named(b"jpeg")[:-4] + ".jpg"])
+
+    def test_retest_with_other_screenshots_uploads_the_new_ones(self):
+        self.assertEqual(self.sync()[0], 0)
+        refuse = self.fake.task(REFUSE)["id"]
+        first = self.fake.names_on(refuse)
+        self.add_run(RUN_2)                  # the same results, recorded again
+        new = self.only_shot(RUN_2, "judge", "C-SCORE-02", b"the message after the second round")
+        self.fake.calls.clear()
+        rc, lines, err = self.sync("--retest", run=RUN_2)
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.fake.names_on(refuse), first + [new])
+        # the screenshots that did not change are not sent a second time
+        self.assertEqual([c for c in self.fake.calls if c[0] == "UPLOAD"],
+                         [("UPLOAD", f"/v2/task/{refuse}/attachment", new)])
+        self.fake.calls.clear()
+        self.assertEqual(self.sync("--retest", run=RUN_2)[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_check_recorded_again_gets_the_screenshot_of_its_new_result(self):
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "fail")])
+        self.assertEqual(self.sync()[0], 0)
+        save = self.fake.task(SAVE)["id"]
+        failed = [shot("judge", "C-SCORE-01", "before"), shot("judge", "C-SCORE-01", "after")]
+        self.assertEqual(self.fake.names_on(save), failed)
+        new = self.only_shot(RUN_1, "judge", "C-SCORE-01", b"the score is saved now")
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "pass")])
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.state(SAVE), ("passed", "p"))
+        self.assertEqual(self.fake.names_on(save), failed + [new])
+        self.fake.calls.clear()
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_cap_counts_the_files_of_this_sync(self):
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(evidenceCap=1))
+        self.assertEqual(self.sync()[0], 0)
+        refuse = self.fake.task(REFUSE)["id"]
+        self.assertEqual(self.fake.names_on(refuse), [shot("judge", "C-SCORE-02", "before")])
+        new = self.only_shot(RUN_1, "judge", "C-SCORE-02", b"another try, the same message")
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.fake.names_on(refuse), [shot("judge", "C-SCORE-02", "before"), new])
 
     def test_evidence_none_uploads_nothing(self):
         self.edit_cfg(lambda d: d["specs"][TARGET].update(evidence="none"))
@@ -592,7 +794,8 @@ class EvidenceTests(SyncBase):
         self.fake.fail_uploads = 1
         rc, lines, _ = self.sync()
         self.assertEqual(rc, 1)
-        self.assertTrue(any(ln.startswith("SKIP\tapi-error\t") and "screen-1.png" in ln for ln in lines), lines)
+        self.assertTrue(any(ln.startswith("SKIP\tapi-error\t") and re.search(r": screen-[0-9a-f]{6}\.png: HTTP 500", ln)
+                            for ln in lines), lines)
         self.assertEqual(self.state(REFUSE), ("failed", "f"))
         # the next sync sends only the one that failed
         self.fake.calls.clear()
@@ -614,7 +817,7 @@ class EvidenceTests(SyncBase):
         self.addCleanup(setattr, spec_runs, "states", real)
         rc, lines, _ = self.sync()
         self.assertEqual(rc, 1)
-        self.assertIn(f"SKIP\tupload-failed\t{SAVE}: screen-1.png could not be read", lines)
+        self.assertIn(f"SKIP\tupload-failed\t{SAVE}: a screenshot could not be read", lines)
         self.assertEqual(self.state(REFUSE), ("failed", "f"))
 
 
@@ -672,17 +875,83 @@ class RetestTests(SyncBase):
         self.assertEqual(rc, 0, lines)
         self.check_retested()
 
-    def test_retest_resets_a_ticket_a_person_moved_and_keeps_what_it_said(self):
+    def test_retest_leaves_a_ticket_a_person_changed(self):
         self.assertEqual(self.sync()[0], 0)
         self.move(REFUSE, "passed")
         self.add_run(RUN_2, [row("C-SCORE-02", "judge", "fail")])
+        self.fake.calls.clear()
         rc, lines, _ = self.sync("--retest", run=RUN_2)
         self.assertEqual(rc, 0, lines)
-        self.assertEqual(self.texts(REFUSE), ["Earlier result: passed (2026-11-27)."])
-        self.assertEqual(self.state(REFUSE), ("failed", "f"))
+        self.assertEqual(lines.count(f"SKIP\tchanged-by-person\t{REFUSE}"), 1)
+        self.assertEqual(self.texts(REFUSE), [])                  # no earlier-result comment
+        self.assertEqual(self.state(REFUSE), ("passed", "f"))     # not reset, and not set by the retest
+        self.assertEqual(self.touched(REFUSE), [])
+        # every other ticket is reset
         self.assertEqual(self.state(SAVE), ("to test", "t"))
+        self.assertEqual(self.texts(SAVE), ["Earlier result: passed (2026-11-27)."])
         items = [i["resolved"] for c in self.fake.checklists.values() for i in c["items"]]
         self.assertEqual(items, [False, False])
+        self.assertEqual(self.run_list()["name"], "Run 1 · 2026-11-28")
+
+    def test_retest_uses_the_newest_bound_list_and_leaves_an_open_list_unused(self):
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.push()[0], 0)      # makes `Run 2 · next`
+        first, second = self.lists()
+        open_before = json.dumps(self.fake.tasks_in(second["id"]), sort_keys=True)
+        self.add_run(RUN_2, ALL_PASS)
+        self.fake.calls.clear()
+        rc, lines, err = self.sync("--retest", run=RUN_2)
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(lines.count(LIST_UNUSED), 1)
+        self.assertEqual([l["name"] for l in self.lists()], ["Run 1 · 2026-11-28", "Run 2 · next"])
+        self.assertEqual(self.state(REFUSE, first["id"]), ("passed", "p"))
+        self.assertEqual(self.texts(REFUSE, first["id"]), ["Earlier result: failed (2026-11-27)."])
+        self.assertEqual(json.dumps(self.fake.tasks_in(second["id"]), sort_keys=True), open_before)
+        self.assertEqual(self.fake.writes("PUT", rf"/v2/list/{second['id']}$"), [])
+        # the same with `listMode: reuse`, on the next run
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(listMode="reuse"))
+        self.add_run("2026-11-29-judge-scoring", ALL_PASS)
+        rc, lines, err = self.sync(run="2026-11-29-judge-scoring")
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual([l["name"] for l in self.lists()], ["Run 1 · 2026-11-29", "Run 2 · next"])
+        self.assertEqual(json.dumps(self.fake.tasks_in(second["id"]), sort_keys=True), open_before)
+
+    def test_fixed_note_is_posted_again_after_a_retest(self):
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.texts(ADMIN_RANK), [REVIEW_NOTE])
+        self.add_run(RUN_2)                  # the same results: the admin's check waits for a review again
+        rc, lines, err = self.sync("--retest", run=RUN_2)
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.texts(ADMIN_RANK), [REVIEW_NOTE, "Earlier result: testing (2026-11-27).", REVIEW_NOTE])
+        # and only once per retest
+        self.fake.calls.clear()
+        self.assertEqual(self.sync("--retest", run=RUN_2)[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_note_is_not_repeated_under_other_comments(self):
+        self.record(RUN_1, [row("C-SCORE-01", "judge", "error")])
+        self.assertEqual(self.sync()[0], 0)
+        save = self.fake.task(SAVE)["id"]
+        self.fake.comments[save].append({"comment_text": "The staging server was down that morning.",
+                                         "notify_all": False})
+        self.fake.calls.clear()
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_earlier_result_comment_is_not_repeated_under_a_newer_comment(self):
+        self.assertEqual(self.sync()[0], 0)
+        refuse = self.fake.task(REFUSE)["id"]
+        self.add_run(RUN_2, ALL_PASS)
+        # the retest stops on this ticket after its comment, before its status
+        self.fail_after("PUT", rf"/v2/task/{refuse}$", status=502, times=1, lands=False)
+        self.assertEqual(self.sync("--retest", run=RUN_2)[0], 1)
+        del self.fake.request
+        self.assertEqual(self.texts(REFUSE), ["Earlier result: failed (2026-11-27)."])
+        self.fake.comments[refuse].append({"comment_text": "Checked with the judging team.", "notify_all": False})
+        rc, lines, _ = self.sync("--retest", run=RUN_2)
+        self.assertEqual(rc, 0, lines)
+        self.assertEqual(self.texts(REFUSE), ["Earlier result: failed (2026-11-27).", "Checked with the judging team."])
+        self.assertEqual(self.state(REFUSE), ("passed", "p"))
 
     def test_retest_comment_drops_a_list_name_that_breaks_the_writing_rules(self):
         self.assertEqual(self.sync()[0], 0)
@@ -758,6 +1027,159 @@ class BugTests(SyncBase):
         self.assertEqual(set(self.fake.links), {again["id"], self.fake.task(JUDGE_CARD)["id"]})
 
 
+class RefGrammarTests(unittest.TestCase):
+    KEY = "a1b2c3d4e5f6"
+
+    def test_a_move_in_progress_is_two_letters(self):
+        key = self.KEY
+        self.assertEqual(cs.parse_ref(f"qk1-{key}-tp"),
+                         {"key": key, "letter": "t", "role": "to_test", "run": None, "pending": "passed"})
+        self.assertEqual(cs.parse_ref(f"qk1-{key}-fb-0a1b2c3d"),
+                         {"key": key, "letter": "f", "role": "failed", "run": "0a1b2c3d", "pending": "blocked"})
+        self.assertEqual(cs.parse_ref(f"qk1-{key}-gs-open")["run"], "open")
+        # every Ref written so far is read as before, with no move in progress
+        self.assertEqual(cs.parse_ref(f"qk1-{key}-t"),
+                         {"key": key, "letter": "t", "role": "to_test", "run": None, "pending": None})
+        self.assertIsNone(cs.parse_ref(f"qk1-{key}-p-open")["pending"])
+
+    def test_reletter_marks_and_settles_a_move(self):
+        key = self.KEY
+        self.assertEqual(cs.reletter(f"qk1-{key}-t", "to_test", pending="passed"), f"qk1-{key}-tp")
+        self.assertEqual(cs.reletter(f"qk1-{key}-tp", "failed"), f"qk1-{key}-f")
+        self.assertEqual(cs.reletter(f"qk1-{key}-tp", "passed", pending="failed"), f"qk1-{key}-pf")
+        self.assertEqual(cs.reletter(f"qk1-{key}-tp-0a1b2c3d", "passed"), f"qk1-{key}-p-0a1b2c3d")
+        self.assertEqual(cs.reletter(f"qk1-{key}-t-open", "to_test", run="run-2026-11-27", pending="failed"),
+                         f"qk1-{key}-tf-{cs.run_hash('run-2026-11-27')}")
+        self.assertEqual(cs.reletter(f"qk1-{key}-t", "passed", pending="passed"), f"qk1-{key}-p")  # no move to itself
+
+    def test_anything_else_is_not_a_ref(self):
+        key = self.KEY
+        for bad in (f"qk1-{key}-tt", f"qk1-{key}-tpf", f"qk1-{key}-tz", f"qk1-{key}-zt", f"qk1-{key}-",
+                    f"qk1-{key}-tp-", f"qk1-{key}-t-p", f"qk1-{key}-tp-open-open", f"xqk1-{key}-tp",
+                    f"qk1-{key}-tp x", f"qk1-{key}-tp\nqk1-{key}-t", f"qk1-{key}-TP", f"qk1-{key.upper()}-tp",
+                    f"qk1-{key}-t p", f"qk1-{key}-tp-0A1B2C3D"):
+            self.assertIsNone(cs.parse_ref(bad), bad)
+
+
+class RecoveryTests(SyncBase):
+    """A write of a sync fails once (HTTP 500), after it landed and before. One clean sync after
+    it ends where an undisturbed sync ends: no second comment, upload, link or ticket.
+
+    Of the writes of one kind (same call, same shape of body) the first and the last are failed;
+    `QA_TRACKER_FULL_SWEEP=1` fails every write in turn."""
+
+    def snapshot(self):
+        fake = self.fake
+        lists = {l["id"]: l["name"] for l in fake.lists.values()}
+        names = {t["id"]: t["name"] for t in fake.tasks.values()}
+        tasks = [{"list": lists[t["list"]["id"]], "name": t["name"], "status": t["status"]["status"],
+                  "parent": names.get(t["parent"]), "values": dict(t["values"]), "text": t["markdown_description"],
+                  "comments": [c["comment_text"] for c in fake.comments.get(t["id"], [])],
+                  "files": sorted(fake.names_on(t["id"])),
+                  "links": sorted(names[x] for x in fake.links.get(t["id"], ())),
+                  "items": sorted((i["name"], i["resolved"]) for c in fake.checklists.values()
+                                  if c["task_id"] == t["id"] for i in c["items"])}
+                 for t in fake.tasks.values()]
+        return {"lists": sorted((l["name"], l["archived"]) for l in fake.lists.values()),
+                "tasks": sorted(tasks, key=lambda t: (t["list"], t["parent"] or "", t["name"]))}
+
+    def break_write(self, k, lands):
+        """The write number `k` (calls and uploads, counted from 0) answers HTTP 500."""
+        fake, seen = self.fake, [0]
+        request, upload = fake.request, fake.upload
+
+        def failing(send, method, path):
+            hit = seen[0] == k
+            seen[0] += 1
+            if hit and not lands:
+                raise ApiError(method, path, 500, "internal error")
+            out = send()
+            if hit:
+                raise ApiError(method, path, 500, "internal error")
+            return out
+
+        def flaky_request(method, path, body=None):
+            if method.upper() == "GET":
+                return request(method, path, body)
+            return failing(lambda: request(method, path, body), method, path)
+
+        def flaky_upload(path, file_path, filename):
+            return failing(lambda: upload(path, file_path, filename), "POST", path)
+        fake.request, fake.upload = flaky_request, flaky_upload
+
+    @staticmethod
+    def kind(call):
+        method, path, body = call
+        shape = re.sub(r"/[A-Za-z]?\d+(?=/|$)", "/*", path)
+        if path.endswith("/field/f-ref"):   # a move in progress, a final letter, the summary's run
+            parts = body["value"].split("-")
+            return method, shape, len(parts[2]), len(parts)
+        return method, shape, tuple(sorted(body)) if isinstance(body, dict) else None
+
+    def picked(self, calls):
+        if os.environ.get("QA_TRACKER_FULL_SWEEP"):
+            return list(range(len(calls)))
+        first, last = {}, {}
+        for k, call in enumerate(calls):
+            first.setdefault(self.kind(call), k)
+            last[self.kind(call)] = k
+        return sorted(set(first.values()) | set(last.values()))
+
+    def sweep(self, prepare, act, at_least):
+        prepare()
+        cache = self.tmp / ".qa" / "tracker-map.json"
+        start, saved = copy.deepcopy(self.fake), cache.read_text(encoding="utf-8")
+
+        def again():
+            self.fake = copy.deepcopy(start)
+            cache.write_text(saved, encoding="utf-8")
+        rc, lines, err = act()
+        self.assertEqual(rc, 0, (lines, err))
+        calls, want = list(self.fake.calls), self.snapshot()
+        self.assertGreaterEqual(len(calls), at_least)
+        for k in self.picked(calls):
+            for lands in (True, False):
+                with self.subTest(write=k, call=calls[k][:2], lands=lands):
+                    again()
+                    self.break_write(k, lands)
+                    act()
+                    del self.fake.request, self.fake.upload
+                    rc, lines, err = act()
+                    self.assertEqual(rc, 0, (lines, err))
+                    self.assertEqual(self.snapshot(), want)
+                    self.fake.calls.clear()
+                    self.assertEqual(act()[0], 0)
+                    self.assertEqual(self.fake.calls, [])
+
+    def with_bug(self):
+        self.fake.add_bug(BUG_TITLE, core.fingerprint("C-SCORE-02", "judge", BUG_TITLE))
+        path = self.tmp / ".qa" / "runs" / RUN_1 / "bugs"
+        path.mkdir(exist_ok=True)
+        (path / "bugs.json").write_text(json.dumps([{"title": BUG_TITLE, "criterionId": "C-SCORE-02",
+                                                     "persona": "judge"}]), encoding="utf-8")
+
+    def test_first_sync_recovers_from_any_failed_write(self):
+        self.sweep(self.with_bug, self.sync, 30)
+
+    def test_retest_recovers_from_any_failed_write(self):
+        def prepare():
+            self.assertEqual(self.sync()[0], 0)
+            self.add_run(RUN_2, [row("C-SCORE-01", "judge", "fail"), row("C-SCORE-02", "judge", "pass"),
+                                 row("C-RANK-01", "judge", "pass"), row("C-RANK-01", "admin", "pass", "low"),
+                                 row(LOAD, "admin", "pass")])
+            self.only_shot(RUN_2, "judge", "C-SCORE-01", b"the score was not saved this time")
+            self.fake.calls.clear()
+        self.sweep(prepare, lambda: self.sync("--retest", run=RUN_2), 30)
+
+    def test_second_run_in_a_new_list_recovers_from_any_failed_write(self):
+        def prepare():
+            self.edit_cfg(lambda d: d["specs"][TARGET].update(keepRuns=1))
+            self.assertEqual(self.sync()[0], 0)
+            self.add_run(RUN_2, ALL_PASS)
+            self.fake.calls.clear()
+        self.sweep(prepare, lambda: self.sync(run=RUN_2), 30)
+
+
 class ArchiveTests(SyncBase):
     def runs(self, count, apply=True):
         """Sync `count` runs, each into its own list; the last one with `apply`."""
@@ -816,5 +1238,4 @@ class ArchiveTests(SyncBase):
 
 
 if __name__ == "__main__":
-    import unittest
     unittest.main()

@@ -95,6 +95,7 @@ class SpecSync(clickup._Mirror):
         self._summary_keys: Optional[Dict[str, int]] = None
         self._dupes: set = set()
         self._fixed: Dict[str, Optional[str]] = {}
+        self._person: set = set()
 
     # -- small helpers
 
@@ -147,10 +148,20 @@ class SpecSync(clickup._Mirror):
             self._fixed[value] = self.clean(f'"{value}"', value, kind)
         return self._fixed[value]
 
-    def person_changed(self, title: str) -> None:
-        """Report a ticket a person changed; it is left alone and is not a failure (P4)."""
-        self.log.out.write(f"SKIP\tchanged-by-person\t{title}\n")
-        self.log.counts["changed-by-person"] = self.log.counts.get("changed-by-person", 0) + 1
+    def left(self, kind: str, detail: str) -> None:
+        """`SKIP\\t<kind>\\t<detail>` for something left alone on purpose. Counted under its own
+        kind, not as a skip, so it does not fail the step (P4)."""
+        self.log.out.write(f"SKIP\t{kind}\t{detail}\n")
+        self.log.counts[kind] = self.log.counts.get(kind, 0) + 1
+
+    def person_changed(self, title: str, t: Optional[dict] = None) -> None:
+        """Report a ticket a person changed; it is left alone and is not a failure (P4). With
+        the ticket given it is reported once per run, however many steps leave it."""
+        if t is not None:
+            if str(t.get("id")) in self._person:
+                return
+            self._person.add(str(t.get("id")))
+        self.left("changed-by-person", title)
 
     def list_name(self, n: int, label: str = NEXT_LABEL) -> str:
         """`Run <N> · <label>`; in the flat layout prefixed with the spec title."""
@@ -381,7 +392,7 @@ class SpecSync(clickup._Mirror):
             else:
                 why = self.edited(key, t, local_id)
                 if why == "person":
-                    self.person_changed(t.get("name") or title)
+                    self.person_changed(t.get("name") or title, t)
                 elif why == "unknown":
                     self.log.skip("description-differs", f"{t.get('name') or title}: its text is not the plan's "
                                                          f"and may be a person's; --overwrite {local_id} replaces it")
@@ -404,40 +415,67 @@ class SpecSync(clickup._Mirror):
 
     # -- a ticket's status (sync-run, spec-note)
 
-    def note_local(self, t: dict, status: str, ref_value: str) -> None:
-        """Keep the task as read in step with a write just made (or, in a dry run, just logged)."""
-        t["status"] = dict(t.get("status") or {}, status=status)
+    @staticmethod
+    def put_local(t: dict, fid: str, value: Any) -> None:
+        """Keep a task as read in step with a field write just made (or, in a dry run, logged)."""
         for f in t.setdefault("custom_fields", []):
-            if str(f.get("id")) == self.fid("Ref"):
-                f["value"] = ref_value
+            if str(f.get("id")) == fid:
+                f["value"] = value
                 return
-        t["custom_fields"].append({"id": self.fid("Ref"), "value": ref_value})
+        t["custom_fields"].append({"id": fid, "value": value})
+
+    def note_local(self, t: dict, status: str, ref_value: str) -> None:
+        """Keep the task as read in step with a status and Ref write just made (or just logged)."""
+        t["status"] = dict(t.get("status") or {}, status=status)
+        self.put_local(t, self.fid("Ref"), ref_value)
+
+    def standing(self, t: dict) -> Optional[str]:
+        """The status role the tool itself left the ticket in: the role of its Ref letter when the
+        live status is that one, or, with a move in progress (two letters), whichever of the two
+        the live status is. None when the live status is neither: a person changed it."""
+        p = self.ref_of(t)
+        if p is None:
+            return None
+        live = _status_of(t)
+        for role in (p["role"], p["pending"]):
+            if role and same_status(live, status_name(self.cfg, "case", role)):
+                return role
+        return None
 
     def set_role(self, t: dict, role: str, title: Optional[str] = None) -> bool:
-        """Move a ticket to the status of `role` and record it in its Ref letter (written last,
-        so a change that stopped half way is finished on the next run). False when the ticket was
-        left: a person moved it to another status (reported, not a failure) or the write failed."""
+        """Move a ticket to the status of `role`. The Ref says so before the status changes
+        (`<from><to>`) and takes the single letter after it, so a move that stopped half way is
+        finished, or redone toward the status wanted by then, on the next run. A status that is
+        already the wanted one only gets its letter. False when the ticket was left: a person
+        moved it to another status (reported, not a failure) or a write failed."""
         p = self.ref_of(t)
         if p is None:
             return False
         title = title or t.get("name") or ""
-        want, live = status_name(self.cfg, "case", role), _status_of(t)
-        moved = not same_status(live, want)
-        if moved and not same_status(live, status_name(self.cfg, "case", p["role"])):
-            self.person_changed(title)
+        want = status_name(self.cfg, "case", role)
+        at = self.standing(t)
+        if at is None and same_status(_status_of(t), want):
+            at = role
+        if at is None:
+            self.person_changed(title, t)
             return False
-        if not moved and p["role"] == role:
+        if at == role and p["role"] == role and p["pending"] is None:
             return True
-        value = reletter(self.live_field(t, self.fid("Ref")), role)
+        fid, tid = self.fid("Ref"), t["id"]
+        now = self.live_field(t, fid)
+        final = reletter(now, role)
+        mark = reletter(now, at, pending=role)
 
         def go():
-            if moved:
-                self.tr.request("PUT", f"/v2/task/{t['id']}", {"status": want})
-            self.tr.request("POST", f"/v2/task/{t['id']}/field/{self.fid('Ref')}", {"value": value})
+            if at != role:
+                if now != mark:
+                    self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": mark})
+                self.tr.request("PUT", f"/v2/task/{tid}", {"status": want})
+            self.tr.request("POST", f"/v2/task/{tid}/field/{fid}", {"value": final})
             return True
         done = bool(self.write("status", f"{title}: {want}", go)) or not self.log.apply
         if done:
-            self.note_local(t, want, value)
+            self.note_local(t, want, final)
         return done
 
     def ticket_links(self, list_id: str) -> Dict[str, str]:
@@ -455,9 +493,11 @@ class SpecSync(clickup._Mirror):
 
     # -- filling a list
 
-    def fill(self, list_id: str, n: int) -> None:
+    def fill(self, list_id: str, n: int, retire: bool = True) -> None:
         """Make list `n` match the cards: its views, the Run summary ticket, a ticket per card, a
-        subtask or checklist item per check. Creates only what is missing; retires what left."""
+        subtask or checklist item per check. Creates only what is missing; retires what left
+        (not with `retire` False). A subtask of a checklist card's check, which only a run sync
+        makes, is neither made nor retired here while its check is in the cards."""
         if self.log.apply and not _real(list_id):
             return
         name = self.list_name(n)
@@ -471,7 +511,8 @@ class SpecSync(clickup._Mirror):
                 self.create_ticket(list_id, summary_key, ref(self.target, n, "summary", SUMMARY_ID), {"name": title})
         for card in self.cards.cards:
             self.fill_card(list_id, n, card, have, wanted)
-        self.retire_removed(have, wanted)
+        if retire:
+            self.retire_removed(have, wanted)
         self.forget(list_id)
 
     def fill_card(self, list_id: str, n: int, card: cards.Card, have: Dict[str, dict], wanted: set) -> None:
@@ -585,10 +626,10 @@ class SpecSync(clickup._Mirror):
                 continue
             title = t.get("name") or ""
             done = same_status(_status_of(t), self.case_skipped)
-            if p["role"] == "skipped" and done:
+            if p["role"] == "skipped" and p["pending"] is None and done:
                 continue
-            if not done and not same_status(_status_of(t), status_name(self.cfg, "case", p["role"])):
-                self.person_changed(title)
+            if not done and self.standing(t) is None:
+                self.person_changed(title, t)
                 continue
             text = text or self.fixed(REMOVED_COMMENT, "body")
             if text is None:
@@ -624,8 +665,8 @@ class SpecSync(clickup._Mirror):
         (live status `skipped` and Ref letter `s`) goes back to `to test`, with letter `t` and one
         comment. Where status and letter disagree a person moved it: left alone and reported."""
         p = self.ref_of(t)
-        if p is None:
-            return
+        if p is None or p["pending"] is not None:
+            return  # a status move of a run sync is in progress: that sync finishes it
         skipped = same_status(_status_of(t), self.case_skipped)
         lettered = p["role"] == "skipped"
         if not skipped and not lettered:
@@ -638,7 +679,7 @@ class SpecSync(clickup._Mirror):
             # the one disagreement that is ours: a return that stopped before its last step
             half = lettered and same_status(_status_of(t), self.case_to_test) and self.last_note(tid) == text
             if not half:
-                self.person_changed(t.get("name") or title)
+                self.person_changed(t.get("name") or title, t)
                 return
 
         def go():

@@ -27,7 +27,10 @@ SUMMARY_ID = "summary"  # the local id of a list's Run summary ticket
 KINDS = ("summary", "card", "check")
 LETTERS = {"to_test": "t", "testing": "g", "failed": "f", "blocked": "b", "passed": "p", "skipped": "s"}
 ROLE_OF = {v: k for k, v in LETTERS.items()}
-_REF_RE = re.compile(r"^qk1-([0-9a-f]{12})-([tgfbps])(?:-([0-9a-f]{8}|open))?$")
+# `qk1-<key>-<s>[<s>][-<run>]`. One status letter is the status the tool last wrote. Two letters
+# are a move in progress, `<from><to>`: written before the status changes and replaced by the
+# single `<to>` after it, so a move that stopped half way is told from a person's change.
+_REF_RE = re.compile(r"qk1-([0-9a-f]{12})-([tgfbps])([tgfbps])?(?:-([0-9a-f]{8}|open))?")
 
 
 def ref_key(target: str, n: int, kind: str, local_id: str) -> str:
@@ -52,8 +55,8 @@ def check_id(card_id: str, criterion: str) -> str:
 
 def ref(target: str, n: int, kind: str, local_id: str, status_letter: str = "t",
         run: Optional[str] = None) -> str:
-    """The `Ref` field value: `qk1-<key>-<s>`, and `qk1-<key>-<s>-<run>` for the Run summary
-    ticket (`run` is the run id; None means `open`)."""
+    """The `Ref` field value of a new ticket: `qk1-<key>-<s>`, and `qk1-<key>-<s>-<run>` for the
+    Run summary ticket (`run` is the run id; None means `open`)."""
     if status_letter not in ROLE_OF:
         raise ValueError(f"status letter must be one of {''.join(ROLE_OF)}")
     value = f"{REF_PREFIX}-{ref_key(target, n, kind, local_id)}-{status_letter}"
@@ -61,20 +64,24 @@ def ref(target: str, n: int, kind: str, local_id: str, status_letter: str = "t",
 
 
 def parse_ref(value: Any) -> Optional[dict]:
-    """`{"key", "letter", "role", "run"}` or None. `run` is None except on a Run summary ticket,
-    where it is the run hash or `open`. `role` is the status role the tool last wrote."""
-    m = _REF_RE.match(value.strip()) if isinstance(value, str) else None
-    if not m:
+    """`{"key", "letter", "role", "run", "pending"}` or None. `run` is None except on a Run
+    summary ticket, where it is the run hash or `open`. `role` is the status role the tool last
+    wrote; `pending` is the role a move in progress goes to (the Ref's second letter), else None.
+    The whole value must be a Ref: anything before, after or between is refused."""
+    m = _REF_RE.fullmatch(value.strip()) if isinstance(value, str) else None
+    if not m or m.group(2) == m.group(3):
         return None
-    return {"key": m.group(1), "letter": m.group(2), "role": ROLE_OF[m.group(2)], "run": m.group(3)}
+    return {"key": m.group(1), "letter": m.group(2), "role": ROLE_OF[m.group(2)], "run": m.group(4),
+            "pending": ROLE_OF[m.group(3)] if m.group(3) else None}
 
 
-def reletter(value: str, role: str, run: Optional[str] = None) -> str:
-    """`value` with the status letter of `role`; on a summary Ref `run` (a run id) rebinds it."""
+def reletter(value: str, role: str, run: Optional[str] = None, pending: Optional[str] = None) -> str:
+    """`value` with the status letter of `role`; on a summary Ref `run` (a run id) rebinds it.
+    `pending` marks a move from `role` to that role as in progress; without it the Ref is settled."""
     p = parse_ref(value)
     if p is None:
         raise ValueError("not a Ref value")
-    out = f"{REF_PREFIX}-{p['key']}-{LETTERS[role]}"
+    out = f"{REF_PREFIX}-{p['key']}-{LETTERS[role]}{LETTERS[pending] if pending and pending != role else ''}"
     if p["run"] is None:
         return out
     return f"{out}-{run_hash(run) if run else p['run']}"
