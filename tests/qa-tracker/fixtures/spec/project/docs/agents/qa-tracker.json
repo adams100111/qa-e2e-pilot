@@ -1,0 +1,19 @@
+{
+  "backend": "clickup",
+  "ids": {
+    "workspace": "9001",
+    "space": "9002",
+    "folder": "9003"
+  },
+  "listIds": {
+    "Bugs": "905"
+  },
+  "fields": {
+    "Bugs/Ref": "f-bug-ref"
+  },
+  "specs": {
+    "judge-scoring": {
+      "enabled": true
+    }
+  }
+}
