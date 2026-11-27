@@ -1,0 +1,4 @@
+[
+  {"surfaceId": "page:Admin/Reports/Show", "personaId": "admin", "reason": "تقارير الإدارة خارج نطاق هذا الإصدار"},
+  {"surfaceId": "GET /الأخبار", "personaId": "*", "reason": "صفحة الأخبار تغطى في الإصدار القادم"}
+]
