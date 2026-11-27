@@ -8,6 +8,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "qa-kit" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,9 +67,8 @@ class DocsBase(SyncBase):
     def status(self, *extra):
         """`spec-status`: its exit code, the one JSON line, and every line it printed."""
         rc, lines, err = self.tracker("spec-status", *extra, apply=False)
-        found = [ln for ln in lines if ln.startswith("{")]
-        self.assertEqual(len(found), 1, (lines, err))
-        return rc, json.loads(found[0]), lines
+        self.assertEqual(len(lines), 1, (lines, err))     # the JSON line and nothing else
+        return rc, json.loads(lines[0]), lines
 
     def note(self, text=NOTE, *extra, apply=True):
         path = self.tmp / "analysis-note.md"
@@ -77,6 +77,33 @@ class DocsBase(SyncBase):
 
     def report(self, text=READY_REPORT, run=RUN_1):
         (self.tmp / ".qa" / "runs" / run / "report.md").write_text(text, encoding="utf-8")
+
+    def verify(self, run=RUN_1, report="# Judging report\n"):
+        """The run was verified and its report rendered (a report with no ship section says nothing)."""
+        run_dir = self.tmp / ".qa" / "runs" / run
+        (run_dir / "verification.json").write_text(json.dumps({"rows": []}), encoding="utf-8")
+        (run_dir / "report.md").write_text(report, encoding="utf-8")
+
+    def doc_url(self, doc=None):
+        return f"https://app.clickup.com/{WS}/v/dc/{doc or self.spec_doc()}"
+
+    def project_rows(self, *extra):
+        """`push-docs --apply`; the rows it handed to the project page, by spec title."""
+        seen, real = [], spec_docs.project_page
+
+        def spy(rows, bugs, cfg):
+            seen.append(rows)
+            return real(rows, bugs, cfg)
+        with mock.patch.object(spec_docs, "project_page", spy):
+            rc, lines, err = self.docs(*extra)
+        self.assertEqual(rc, 0, (lines, err))
+        return {r["title"]: r for r in seen[-1]}
+
+    def no_cache(self):
+        """A machine that has never pushed: the local cache is not there."""
+        cache = self.tmp / ".qa" / "tracker-map.json"
+        if cache.exists():
+            cache.unlink()
 
     def no_runs(self):
         """No run has been made on this machine yet."""
@@ -221,6 +248,64 @@ class PushDocsTests(DocsBase):
         self.assertEqual(self.docs()[0], 0)
         self.assertEqual(self.fake.calls, [])
 
+    def retire_admin_card(self):
+        self.edit_cards(lambda d: d.update(cards=d["cards"][:1]))
+        self.edit_plan(lambda rows: [r for r in rows if r.get("persona") != "admin"])
+
+    def test_retired_page_is_rebuilt_from_the_text_the_tool_wrote(self):
+        self.synced()
+        self.pushed()
+        page = self.page(ADMIN_CARD, "Scenarios")
+        before = page["content"]
+        page["content"] = before.replace("   - Do:", "* Do:").replace("## ", "### ")   # ClickUp's own layout
+        self.assertNotEqual(page["content"], before)
+        self.retire_admin_card()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(page["content"], f"No longer part of the plan.\n\n{before.rstrip()}\n")
+
+    def test_retired_page_without_the_cache_keeps_what_clickup_holds(self):
+        self.synced()
+        self.pushed()
+        page = self.page(ADMIN_CARD, "Scenarios")
+        page["content"] = page["content"].replace("   - Do:", "* Do:")
+        held = page["content"]
+        self.no_cache()
+        self.retire_admin_card()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(page["content"], f"No longer part of the plan.\n\n{held.rstrip()}\n")
+        self.fake.calls.clear()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_retired_page_a_person_edited_keeps_the_persons_text(self):
+        self.synced()
+        self.pushed()
+        page = self.page(ADMIN_CARD, "Scenarios")
+        page["content"] += "\nThe ranking is also shown on the hall screen.\n"
+        held = page["content"]
+        self.retire_admin_card()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(page["content"], f"No longer part of the plan.\n\n{held.rstrip()}\n")
+
+    def test_page_under_scenarios_that_the_tool_did_not_make_is_left_alone(self):
+        self.synced()
+        self.pushed()
+        doc = self.spec_doc()
+        theirs = {"id": "p-review-notes", "name": "Notes from the review", "parent": self.page("Scenarios")["id"],
+                  "content": "Ask Noura which team wins when two scores are equal."}
+        self.fake.pages[doc].append(theirs)
+        kept = dict(theirs)
+        for cached in (True, False):
+            with self.subTest(cached=cached):
+                if not cached:
+                    self.no_cache()
+                rc, lines, err = self.docs()
+                self.assertEqual(rc, 0, (lines, err))
+                self.assertEqual(self.fake.calls, [])
+                self.assertEqual(theirs, kept)
+                self.assertIn("SKIP\tpage-not-ours\tNotes from the review: a page under Scenarios that was not "
+                              "made here; it is left as it is", lines)
+
     def test_page_that_breaks_the_writing_rules_is_not_written(self):
         self.synced()
         self.edit_cards(lambda d: d["spec"].update(overview="Judges score each submission. See C-900 for the rules."))
@@ -320,7 +405,8 @@ class ProjectDocTests(DocsBase):
         self.assertEqual(self.cfg_path.read_text(encoding="utf-8"), json.dumps(after, indent=2, ensure_ascii=False) + "\n")
         self.assertEqual(self.names(doc=doc["id"]), ["QA overview"])
         self.assertEqual(self.dashboard(),
-                         f"# QA overview\n\n## Specs\n\n{TITLE}. Latest run: {RUN_PAGE_1}. 1 testing, 1 failed. "
+                         f"# QA overview\n\n## Specs\n\n[{TITLE}]({self.doc_url()}). Latest run: {RUN_PAGE_1}. "
+                         f"1 testing, 1 failed. "
                          f"Ready to ship: not known.\n\n## Open bugs\n\nNo open bugs.\n")
         self.fake.calls.clear()
         self.assertEqual(self.docs()[0], 0)
@@ -329,7 +415,7 @@ class ProjectDocTests(DocsBase):
 
     def test_spec_without_a_run_says_so(self):
         self.pushed()
-        self.assertIn(f"{TITLE}. No run yet.", self.dashboard())
+        self.assertIn(f"[{TITLE}]({self.doc_url()}). No run yet.", self.dashboard())
         self.assertEqual(self.names(parent="Results"), [])
 
     def test_every_tracked_spec_is_listed_and_one_that_cannot_be_read_is_not_known(self):
@@ -341,7 +427,7 @@ class ProjectDocTests(DocsBase):
         self.assertEqual(rc, 0, (lines, err))
         page = self.dashboard()
         self.assertIn("| Spec | Latest run | Results | Ready to ship |", page)
-        self.assertIn(f"| {TITLE} | {RUN_PAGE_1} | 1 testing, 1 failed | Not known |", page)
+        self.assertIn(f"| [{TITLE}]({self.doc_url()}) | {RUN_PAGE_1} | 1 testing, 1 failed | Not known |", page)
         self.assertIn("| Teams register for the hackathon | Not known |  | Not known |", page)
         self.assertNotIn("ertificates", page)
         self.assertNotIn("F404", page)
@@ -374,6 +460,99 @@ class ProjectDocTests(DocsBase):
         self.assertIn("No open bugs.", self.page(RUN_PAGE_1, "Results")["content"])
 
 
+    def test_bug_title_that_breaks_the_writing_rules_is_shown_as_open_bug(self):
+        self.synced()
+        title = "Score C-900 is saved twice"
+        bugs = self.tmp / ".qa" / "runs" / RUN_1 / "bugs"
+        bugs.mkdir(exist_ok=True)
+        (bugs / "bugs.json").write_text(json.dumps([{"title": title, "criterionId": "C-SCORE-02",
+                                                     "persona": "judge", "severity": "high"}]), encoding="utf-8")
+        bug = self.fake.add_bug(title, core.fingerprint("C-SCORE-02", "judge", title))
+        bug["priority"] = {"id": "2"}
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 0, (lines, err))
+        link = f"[Open bug](https://app.clickup.com/t/{bug['id']}), high."
+        self.assertIn(f"## Open bugs\n\n{link}\n", self.page(RUN_PAGE_1, "Results")["content"])
+        self.assertIn(f"## Open bugs\n\n{link}\n", self.dashboard())
+        self.assertNotIn("C-900", json.dumps(self.fake.calls))
+        self.assertNotIn("C-900", "\n".join(lines))
+        self.assertEqual([ln for ln in lines if ln.startswith("SKIP\t")],
+                         ["SKIP\tbug-title\ta bug title does not follow the writing rules; "
+                          "the pages show it as Open bug"])
+        self.fake.calls.clear()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+
+class ProjectReadyTests(DocsBase):
+    """The project page's ready word follows the tickets as they stand now, not only the summary."""
+
+    def ready_run(self):
+        """Run 2 passed everything and its report says ready; both runs are on their lists."""
+        self.synced()
+        self.add_run(RUN_2, ALL_PASS)
+        self.report(run=RUN_2)
+        self.synced(RUN_2)
+        self.assertIn("Ready to ship.", self.summary(self.lists()[1]["id"])["markdown_description"])
+        return self.lists()[1]["id"]
+
+    def test_ready_when_the_summary_says_so_and_every_scenario_ticket_passed(self):
+        self.ready_run()
+        row = self.project_rows()[TITLE]
+        self.assertIs(row["ready"], True)
+        self.assertEqual((row["counts"]["passed"], row["counts"]["to_test"]), (2, 0))
+        self.assertIn(f"Latest run: {RUN_PAGE_2}. 2 passed. Ready to ship: yes.\n", self.dashboard())
+
+    def test_not_ready_when_a_ticket_was_moved_after_the_summary_was_written(self):
+        second = self.ready_run()
+        for status in ("failed", "blocked", "testing", "to test"):
+            with self.subTest(status=status):
+                self.fake.task(JUDGE_CARD, second)["status"]["status"] = status
+                row = self.project_rows()[TITLE]
+                self.assertIs(row["ready"], False)
+                self.assertEqual(row["counts"]["passed"], 1)
+                self.assertIn(f"1 {status}, 1 passed. Ready to ship: no.\n", self.dashboard())
+
+    def test_not_ready_while_a_result_waits_for_a_persons_review(self):
+        second = self.ready_run()
+        self.fake.task(JUDGE_CARD, second)["values"]["f-review"] = True
+        row = self.project_rows()[TITLE]
+        self.assertIs(row["ready"], False)
+        self.assertEqual(row["counts"]["needs_review"], 1)
+
+    def test_only_skipped_tickets_are_not_ready(self):
+        second = self.ready_run()
+        for name in (JUDGE_CARD, ADMIN_CARD):
+            self.fake.task(name, second)["status"]["status"] = "skipped"
+        self.assertIs(self.project_rows()[TITLE]["ready"], False)
+
+    def test_half_filled_list_is_not_known_and_counts_the_missing_scenarios(self):
+        second = self.ready_run()
+        gone = self.fake.task(ADMIN_CARD, second)["id"]
+        for tid in [t["id"] for t in self.fake.tasks.values() if gone in (t["id"], t["parent"])]:
+            del self.fake.tasks[tid]
+        row = self.project_rows()[TITLE]
+        self.assertIs(row["ready"], None)
+        self.assertEqual((row["counts"]["passed"], row["counts"]["to_test"]), (1, 1))
+        self.assertIn("1 to test, 1 passed. Ready to ship: not known.\n", self.dashboard())
+
+    def test_summary_that_says_not_ready_stays_no(self):
+        self.synced()
+        self.report("# Judging report\n\n## Ship readiness\n\n**NOT SHIP-READY**\n\n- 1 P1 criterion failed\n")
+        self.synced()
+        self.assertIn("Not ready to ship.", self.summary()["markdown_description"])
+        self.assertIs(self.project_rows()[TITLE]["ready"], False)
+
+    def test_spec_whose_tickets_cannot_be_read_is_not_known(self):
+        self.ready_run()
+        self.edit_cfg(lambda d: d["specs"].update({
+            "team-registration": {"enabled": True, "folder": "F404", "title": "Teams register for the hackathon"}}))
+        rows = self.project_rows()
+        self.assertIs(rows["Teams register for the hackathon"]["ready"], None)
+        self.assertEqual(rows["Teams register for the hackathon"]["counts"], {})
+        self.assertIs(rows[TITLE]["ready"], True)
+
+
 class ResultsLinkTests(DocsBase):
     def test_results_link_is_on_the_run_summary_and_every_sync_keeps_it(self):
         self.fake.doc_urls = True
@@ -391,13 +570,118 @@ class ResultsLinkTests(DocsBase):
         # the links ClickUp gave are the ones the dashboard uses
         self.assertIn(f"[{TITLE}](https://app.clickup.com/{WS}/v/dc/{self.spec_doc()}).", self.dashboard())
 
-    def test_no_link_is_made_up_when_clickup_gives_none(self):
+    def test_links_are_built_from_ids_when_clickup_returns_none(self):
         self.synced()
         lines = self.pushed("--run", RUN_1)
-        self.assertNotIn("Full results", self.summary()["markdown_description"])
-        self.assertIn("SKIP\tno-results-link\tClickUp gave no link to the Results page; "
-                      "the Run summary has no link to it", lines)
-        self.assertNotIn("app.clickup.com/9001", json.dumps(self.fake.calls))
+        page = self.page(RUN_PAGE_1, "Results")["id"]
+        line = f"Full results: https://app.clickup.com/{WS}/v/dc/{self.spec_doc()}/{page}"
+        text = self.summary()["markdown_description"]
+        self.assertEqual(text, "5 checks: 1 to test, 1 testing, 1 failed, 1 blocked, 1 passed.\n\n"
+                               f"A person needs to confirm 1 result.\n\n{line}")
+        self.assertFalse(any("no-results-link" in ln for ln in lines), lines)
+        self.assertIn(f"[{TITLE}]({self.doc_url()}).", self.dashboard())
+        # the line is written once and every sync keeps it
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.docs("--run", RUN_1)[0], 0)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.summary()["markdown_description"], text)
+
+
+class LinkTests(unittest.TestCase):
+    BASE = "https://app.clickup.com"
+
+    def link_of(self, *args, **kw):
+        from trackers import clickup_spec_docs as docs
+        return docs.link_of(*args, **kw)
+
+    def test_each_standard_form_is_built_from_ids(self):
+        for kind, args, want in (
+                ("task", {}, "/t/86c2xk4"),
+                ("list", {"ws": "9001"}, "/9001/v/li/86c2xk4"),
+                ("folder", {"ws": "9001"}, "/9001/v/f/86c2xk4"),
+                ("doc", {"ws": "9001"}, "/9001/v/dc/86c2xk4"),
+                ("page", {"ws": "9001", "doc": "2ky4-311"}, "/9001/v/dc/2ky4-311/86c2xk4")):
+            with self.subTest(kind=kind):
+                self.assertEqual(self.link_of({"id": "86c2xk4"}, kind, **args), self.BASE + want)
+                self.assertEqual(self.link_of("86c2xk4", kind, **args), self.BASE + want)
+                self.assertEqual(self.link_of({"id": 86024}, kind, **args), self.BASE + want.replace("86c2xk4", "86024"))
+
+    def test_link_clickup_returned_is_preferred(self):
+        given = "https://app.clickup.com/9001/v/dc/2ky4-311/2ky4-99?block=x"
+        self.assertEqual(self.link_of({"id": "86c2xk4", "url": given}, "page", ws="9001", doc="2ky4-311"), given)
+        self.assertEqual(self.link_of({"id": "86c2xk4", "url": given}), given)
+        # anything else than an https link is not used; the standard form is
+        self.assertEqual(self.link_of({"id": "86c2xk4", "url": "javascript:alert(1)"}, "task"), self.BASE + "/t/86c2xk4")
+
+    def test_id_that_is_not_plain_is_refused(self):
+        for bad in ("../../settings", "86c2/xk4", "86c2xk4?x=1", "86c2xk4#x", "86 c2", "<new:Results>", "86c2xk4\n",
+                    "٨٦", "", None, True, {"id": "a/b"}, {}):
+            with self.subTest(bad=bad):
+                for kind in ("task", "list", "folder", "doc", "page"):
+                    self.assertIsNone(self.link_of(bad, kind, ws="9001", doc="2ky4-311"))
+        for kind in ("list", "folder", "doc", "page"):
+            with self.subTest(kind=kind):
+                self.assertIsNone(self.link_of("86c2xk4", kind, ws="9001/x", doc="2ky4-311"))
+        self.assertIsNone(self.link_of("86c2xk4", "page", ws="9001", doc="2ky4/../311"))
+
+    def test_missing_workspace_or_doc_or_kind_gives_no_link(self):
+        for kind in ("list", "folder", "doc", "page"):
+            self.assertIsNone(self.link_of("86c2xk4", kind))
+            self.assertIsNone(self.link_of("86c2xk4", kind, ws=""))
+        self.assertIsNone(self.link_of("86c2xk4", "page", ws="9001"))
+        self.assertIsNone(self.link_of({"id": "86c2xk4"}))
+        self.assertIsNone(self.link_of({"id": "86c2xk4"}, "space", ws="9001"))
+
+
+class ResultsPageIdentityTests(DocsBase):
+    RENAMED = "Run 1 · 2026-11-27 evening"
+
+    def relabel(self):
+        self.lists()[0]["name"] = self.RENAMED
+
+    def assert_renamed(self, page):
+        rc, lines, err = self.docs()
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.names(parent="Results"), [self.RENAMED])
+        self.assertEqual(self.page(self.RENAMED, "Results")["id"], page)
+        self.assertTrue(self.page(self.RENAMED, "Results")["content"].startswith(f"# {self.RENAMED}\n"))
+        self.assertEqual(self.fake.writes("POST", r"/pages$"), [])
+        self.fake.calls.clear()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_changed_label_renames_the_results_page(self):
+        self.synced()
+        self.pushed()
+        page = self.page(RUN_PAGE_1, "Results")["id"]
+        self.relabel()
+        self.assert_renamed(page)
+
+    def test_changed_label_renames_the_results_page_on_a_machine_without_the_cache(self):
+        self.synced()
+        self.pushed()
+        page = self.page(RUN_PAGE_1, "Results")["id"]
+        self.no_cache()
+        self.relabel()
+        self.assert_renamed(page)
+
+    def test_page_a_person_renamed_is_found_by_the_remembered_id(self):
+        self.synced()
+        self.pushed()
+        page = self.page(RUN_PAGE_1, "Results")
+        page["name"] = "First judging round"
+        self.relabel()
+        self.assert_renamed(page["id"])
+
+    def test_each_run_keeps_its_own_page(self):
+        self.synced()
+        self.add_run(RUN_2, ALL_PASS)
+        self.synced(RUN_2)
+        self.pushed()
+        self.no_cache()
+        self.relabel()
+        self.assertEqual(self.docs()[0], 0)
+        self.assertEqual(self.names(parent="Results"), [self.RENAMED, RUN_PAGE_2])
 
 
 class NotifyTests(DocsBase):
@@ -409,7 +693,8 @@ class NotifyTests(DocsBase):
     def test_notify_once_per_run(self):
         self.edit_cfg(lambda d: d["specs"][TARGET].update(notify={"user": LEAD, "on": "verified"}))
         self.synced()
-        self.pushed()                       # no run named: nothing was verified
+        self.verify()
+        self.pushed()                       # no run named: nobody is told
         self.assertEqual(self.mentions(), [])
         rc, lines, err = self.docs("--run", RUN_1, apply=False)
         self.assertEqual(rc, 0, (lines, err))
@@ -424,8 +709,58 @@ class NotifyTests(DocsBase):
         # the next run gets its own
         self.add_run(RUN_2, ALL_PASS)
         self.synced(RUN_2)
+        self.verify(RUN_2)
         self.pushed("--run", RUN_2)
         self.assertEqual(len(self.mentions()), 2)
+
+    def test_no_mention_for_a_run_that_is_not_verified(self):
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(notify={"user": LEAD, "on": "verified"}))
+        self.synced()                       # on its list, and not verified
+        run_dir = self.tmp / ".qa" / "runs" / RUN_1
+        said = f"SKIP\tnot-verified\t{RUN_PAGE_1}: this run is not verified yet; no one was mentioned"
+        for have in ((), ("verification.json",), ("report.md",)):
+            with self.subTest(have=have):
+                for name in ("verification.json", "report.md"):
+                    if (run_dir / name).exists():
+                        (run_dir / name).unlink()
+                for name in have:
+                    (run_dir / name).write_text("{}" if name.endswith(".json") else "# Judging report\n", encoding="utf-8")
+                for apply in (False, True, True):
+                    rc, lines, err = self.docs("--run", RUN_1, apply=apply)
+                    self.assertEqual(rc, 0, (lines, err))     # said, and not a failure
+                    self.assertEqual(lines.count(said), 1, lines)
+                self.assertEqual(self.mentions(), [])
+                self.assertEqual(self.fake.writes("POST", r"/comment"), [])
+                self.assertNotIn('"tag"', json.dumps(self.fake.calls))
+                self.assertNotIn(str(LEAD), json.dumps(self.fake.calls))
+        # once it is verified its person is told, once
+        self.verify()
+        for _ in range(2):
+            rc, lines, err = self.docs("--run", RUN_1)
+            self.assertEqual(rc, 0, (lines, err))
+            self.assertNotIn(said, lines)
+        self.assertEqual(len(self.mentions()), 1)
+        self.assertEqual(len(self.fake.writes("POST", r"/comment")), 1)
+
+    def test_not_verified_is_not_said_when_nobody_is_to_be_told(self):
+        self.synced()
+        rc, lines, err = self.docs("--run", RUN_1)
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertFalse(any("not-verified" in ln for ln in lines), lines)
+
+    def test_mention_is_not_repeated_behind_many_newer_comments(self):
+        self.edit_cfg(lambda d: d["specs"][TARGET].update(notify={"user": LEAD, "on": "verified"}))
+        self.synced()
+        self.verify()
+        self.pushed("--run", RUN_1)
+        self.assertEqual(len(self.mentions()), 1)
+        self.fake.comments[self.summary()["id"]] += [
+            {"comment_text": f"Round {i} of the judging screen was checked again.", "notify_all": False}
+            for i in range(1, 61)]
+        rc, lines, err = self.docs("--run", RUN_1)
+        self.assertEqual(rc, 0, (lines, err))
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(len(self.mentions()), 1)
 
     def test_no_notify_by_default(self):
         self.synced()
@@ -438,6 +773,7 @@ class NotifyTests(DocsBase):
     def test_no_mention_while_a_page_could_not_be_written(self):
         self.edit_cfg(lambda d: d["specs"][TARGET].update(notify={"user": LEAD, "on": "verified"}))
         self.synced()
+        self.verify()
         self.fail_after("POST", r"/pages$", lands=False)
         self.assertEqual(self.docs("--run", RUN_1)[0], 1)
         self.assertEqual(self.mentions(), [])
@@ -462,6 +798,16 @@ class SpecNoteTests(DocsBase):
         self.assertEqual(len(self.fake.calls), 1)
         self.assertEqual(self.state("Run summary"), ("to test", "t"))
         self.assertNotIn("analysis-note", json.dumps(self.fake.calls))
+
+    def test_spec_note_is_not_posted_again_behind_many_newer_comments(self):
+        self.assertEqual(self.note()[0], 0)
+        self.fake.comments[self.summary()["id"]] += [
+            {"comment_text": f"Round {i} of the judging screen was checked again.", "notify_all": False}
+            for i in range(1, 61)]
+        self.fake.calls.clear()
+        self.assertEqual(self.note()[0], 0)
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.texts("Run summary").count(NOTE), 1)
 
     def test_spec_note_dry_run_sends_nothing(self):
         rc, lines, _ = self.note(NOTE, "--blocked", apply=False)
@@ -567,14 +913,16 @@ class SpecStatusTests(DocsBase):
                 self.assertEqual(self.fake.calls, [])
                 self.assertEqual(self.frozen(), before)
                 self.assertEqual(list(out), KEYS)
-                self.assertTrue(lines[-1].startswith("SUMMARY {} dry-run"), lines)
+                self.assertEqual(lines, [json.dumps(out, ensure_ascii=False)])   # one JSON line, nothing else
 
     def test_spec_status_no_list_yet(self):
         self.new_project()
         self.ready()
         rc, out, lines = self.status()
         self.assertEqual(rc, 0, lines)
-        self.assertEqual(out, {"spec": TARGET, "folderUrl": None, "docUrl": None, "list": None, "behind": True,
+        folder = self.cfg()["specs"][TARGET]["folder"]
+        self.assertEqual(out, {"spec": TARGET, "folderUrl": f"https://app.clickup.com/{WS}/v/f/{folder}",
+                               "docUrl": self.doc_url(), "list": None, "behind": True,
                                "reasons": ["there is no run list yet", "a Doc page is not up to date"]})
 
     def test_spec_status_not_set_up_in_clickup(self):
@@ -591,9 +939,10 @@ class SpecStatusTests(DocsBase):
         self.pushed("--run", RUN_1)
         rc, out, lines = self.status()
         self.assertEqual(rc, 0, lines)
-        self.assertEqual(out, {"spec": TARGET, "folderUrl": None,
-                               "docUrl": f"https://app.clickup.com/{WS}/v/dc/{self.spec_doc()}",
-                               "list": {"n": 1, "url": f"https://app.clickup.com/t/{self.summary()['id']}",
+        folder = self.cfg()["specs"][TARGET]["folder"]
+        self.assertEqual(out, {"spec": TARGET, "folderUrl": f"https://app.clickup.com/{WS}/v/f/{folder}",
+                               "docUrl": self.doc_url(),
+                               "list": {"n": 1, "url": f"https://app.clickup.com/{WS}/v/li/{self.lists()[0]['id']}",
                                         "bound": True},
                                "behind": False, "reasons": []})
 
@@ -648,8 +997,22 @@ class SpecStatusTests(DocsBase):
         rc, out, _ = self.status()
         self.assertEqual(rc, 0)
         self.assertEqual(out["reasons"], ["the cards file cannot be read"])
-        self.assertEqual(out["list"], {"n": 1, "url": f"https://app.clickup.com/t/{self.summary()['id']}",
+        self.assertEqual(out["list"], {"n": 1, "url": f"https://app.clickup.com/{WS}/v/li/{self.lists()[0]['id']}",
                                        "bound": False})
+
+    def test_spec_status_says_when_the_latest_run_cannot_be_read(self):
+        self.synced()
+        self.pushed()
+        self.assertEqual(self.status()[1]["reasons"], [])
+        (self.tmp / ".qa" / "runs" / RUN_1 / "checkpoint.json").write_text("{", encoding="utf-8")
+        rc, out, _ = self.status()
+        self.assertEqual((rc, out["behind"], out["reasons"]), (0, True, ["the latest run could not be read"]))
+
+    def test_spec_status_with_a_named_run_that_is_not_there_has_nothing_to_compare(self):
+        self.synced()
+        self.pushed()
+        rc, out, _ = self.status("--run", "2026-11-30-judge-scoring")
+        self.assertEqual((rc, out["behind"], out["reasons"]), (0, False, []))
 
 
 class WordingPinTests(unittest.TestCase):

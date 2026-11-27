@@ -10,7 +10,8 @@ Docs: a new Doc gets one empty page (unless `create_page` is false), pages nest 
 `parent_page_id`, and a page's content is read back re-rendered (blank lines collapsed, the end
 trimmed), as ClickUp gives markdown back in its own layout. A Doc and a page carry a `url` only
 with `doc_urls` on: the reference lists none. A comment sent as parts (`comment`) is read back as
-one text, a `tag` part as `@<user id>`.
+one text, a `tag` part as `@<user id>`. Comments are read 25 at a time, newest first; the next
+page is asked for with the `date` and `id` of the last comment read (`start`, `start_id`).
 """
 from __future__ import annotations
 
@@ -67,6 +68,7 @@ class SpecFake(Transport):
         self.template_statuses = None  # statuses of a list made from a template, when not the folder's
         self.pages: dict = {}          # doc id -> its pages, in order: {"id", "name", "content", "parent"}
         self.doc_urls = False          # True: Docs and pages are read back with a `url`
+        self.comment_page = 25         # comments a read returns; older ones need `start` and `start_id`
         self.add_list("905", "Bugs", QA)
 
     # -- seeding
@@ -255,7 +257,7 @@ class SpecFake(Transport):
             if sub == "/task" and method == "POST":
                 return self.create_task(method, path, lid, body)
 
-        m = re.fullmatch(r"/v2/task/(\w+)(/comment|/checklist|/field/[\w-]+)?", path)
+        m = re.fullmatch(r"/v2/task/(\w+)(/comment(?:\?.*)?|/checklist|/field/[\w-]+)?", path)
         if m and m.group(1) in self.tasks:
             t, sub = self.tasks[m.group(1)], m.group(2)
             if sub is None and method == "GET":
@@ -275,10 +277,19 @@ class SpecFake(Transport):
             if sub == "/comment" and method == "POST":
                 self.comments.setdefault(t["id"], []).append(body)
                 return {"id": self.new_id("c")}
-            if sub == "/comment" and method == "GET":  # newest first, as ClickUp answers
-                rows = [{"comment_text": self.comment_text(c), "date": str(1795000000000 + i)}
-                        for i, c in enumerate(self.comments.get(t["id"], []))]
-                return {"comments": rows[::-1]}
+            if sub and sub.startswith("/comment") and method == "GET":
+                # newest first, 25 a page; `start` and `start_id` name the last comment of the page before
+                rows = [{"id": f"c-{t['id']}-{i}", "comment_text": self.comment_text(c), "date": str(1795000000000 + i)}
+                        for i, c in enumerate(self.comments.get(t["id"], []))][::-1]
+                q = re.fullmatch(r"/comment\?start=(\d+)&start_id=([\w-]+)", sub)
+                if sub != "/comment" and not q:
+                    self.bad(method, path, "start and start_id go together")
+                if q:
+                    at = next((i for i, c in enumerate(rows) if c["id"] == q.group(2) and c["date"] == q.group(1)), None)
+                    if at is None:
+                        self.bad(method, path, "Comment not found")
+                    rows = rows[at + 1:]
+                return {"comments": rows[:self.comment_page]}
             if sub == "/checklist" and method == "POST":
                 cid = self.new_id("k")
                 self.checklists[cid] = {"id": cid, "task_id": t["id"], "name": body["name"], "items": []}

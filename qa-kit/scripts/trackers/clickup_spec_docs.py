@@ -7,21 +7,32 @@ The text of every page comes from `spec_docs`; nothing here words a result. A pa
 when its text is not what ClickUp holds now (read back and compared without layout), so a second
 machine with no cache rewrites nothing. What a scenario did in each run and the latest run of
 each spec are read from the tickets in ClickUp, so they are right on any machine; a Results page
-needs the run's own files and is left as it is where they are not.
+needs the run's own files and is left as it is where they are not. A spec is shown as ready only
+when its Run summary says so and every scenario ticket of that list stands passed (or skipped)
+now, with none missing.
+
+A run's Results page is the page remembered for its list number (`.qa/tracker-map.json`), else
+the one page under Results whose name starts with `Run <N> · `: a changed label renames it. The
+cache also keeps the text last written to a scenario page, which is what a retired page is
+rebuilt from while ClickUp still holds that text.
 
 `spec-note` adds one linted note as a comment on a Run summary ticket, once; `--blocked` also
 moves that ticket to the blocked status the way a sync moves a ticket (`SpecSync.set_role`), so
 the next sync reads it as the tool's own status and moves it on to the run's.
 
-`spec-status` only reads: it prints one JSON line and runs the other verbs' own dry run against a
-log nobody sees to tell whether anything would be written.
+`spec-status` only reads: it prints one JSON line and nothing else (the CLI adds no summary line
+to it) and runs the other verbs' own dry run against a log nobody sees to tell whether anything
+would be written.
 
 Dry run unless `--apply`. Nothing is deleted: the page of a scenario that left the plan stays and
-says so. No link is built here: a link is used only where ClickUp returned one (`url`). Every
-string sent passes the wording lint and the redaction; a page that does not pass is not written
-and fails the step. A person is mentioned only when `notify` names who, once per run; every other
-comment goes with `notify_all: false`. A Doc or page create that may have landed is looked for
-again, by name and parent, before anything is sent a second time.
+says so, and a page under Scenarios that was not made here is left as it is. Links: the one
+ClickUp returned (`url`), else the standard form built by `link_of` from ids that hold plain id
+characters only. Every string sent passes the wording lint and the redaction; a page that does
+not pass is not written and fails the step (a bug title that does not pass is shown as
+`Open bug`). A person is mentioned only when `notify` names who, for a verified run (its folder
+holds `verification.json` and the rendered `report.md`), once per run; every comment goes with
+`notify_all: false`. A Doc or page create that may have landed is looked for again, by name and
+parent, before anything is sent a second time.
 """
 from __future__ import annotations
 
@@ -36,12 +47,12 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from trackers import cards, clickup, core, spec_docs, spec_runs, wording
-from trackers.clickup import _is_closed, _real, _status_of
+from trackers.clickup import _is_closed, _keep_cache, _real, _status_of
 from trackers.clickup_api import ApiError
 from trackers.clickup_spec import OPEN, SUMMARY_ID, SpecSync, ref_key, remote_id, run_hash, save_spec
 from trackers.clickup_spec_setup import FOLDER_PARENT_TYPE, _SpecInit
 from trackers.clickup_spec_sync import RESULTS_PREFIX, REVIEW_FIELD, RunSync, _TICKED
-from trackers.core import CONFIG_REL, ConfigError, WordingError, same_status, status_name
+from trackers.core import CONFIG_REL, ConfigError, WordingError, content_hash, same_status, status_name
 from trackers.ctx import VERSION_RE, Ctx, run_dir_for
 
 PAGES_QUERY = "max_page_depth=-1&content_format=text%2Fmd"
@@ -53,6 +64,17 @@ SAID_READY, SAID_NOT_READY = "Ready to ship.", "Not ready to ship."
 SEVERITY_OF_PRIORITY = {v: k for k, v in clickup.SEVERITY_PRIORITY.items()}
 RUN_NOT_HERE = "its results are not on this machine; its page is left as it is"
 NO_LINK = "ClickUp gave no link to the Results page; the Run summary has no link to it"
+NOT_VERIFIED = "this run is not verified yet; no one was mentioned"
+VERIFIED_FILES = ("verification.json", spec_runs.REPORT_NAME)   # what a verified run's folder holds
+OPEN_BUG = "Open bug"            # shown in place of a bug title that does not pass the writing rules
+BUG_TITLE = "a bug title does not follow the writing rules; the pages show it as Open bug"
+NOT_OURS = "a page under Scenarios that was not made here; it is left as it is"
+SCENARIO_MARK = "Results by run"  # a heading every scenario page the tool writes holds
+DOC_CACHE = "spec-doc"           # .qa/tracker-map.json: `<target>:results:<n>` and `<target>:page:<page id>`
+COMMENT_PAGE, COMMENT_PAGES = 25, 40   # ClickUp gives 25 comments a read; at most 1000 are looked through
+LINK_BASE = "https://app.clickup.com"
+LINK_FORMS = {"task": "{base}/t/{id}", "list": "{base}/{ws}/v/li/{id}", "folder": "{base}/{ws}/v/f/{id}",
+              "doc": "{base}/{ws}/v/dc/{id}", "page": "{base}/{ws}/v/dc/{doc}/{id}"}
 # spec-status: why ClickUp is behind, in plain phrases
 R_NOT_SET_UP = "the spec is not set up in ClickUp yet"
 R_CARDS_FILE = "the cards file cannot be read"
@@ -61,10 +83,11 @@ R_CARDS = "the scenario tickets do not match the cards file"
 R_RUN_NOT_SYNCED = "the newest run's results are not in ClickUp yet"
 R_RESULTS = "the newest run's results differ from the tickets"
 R_DOCS = "a Doc page is not up to date"
+R_RUN_UNREADABLE = "the latest run could not be read"
 # log lines that say something without standing for a write
 INFO_KINDS = {"evidence-missing", "item-left", "bug-not-found", "bug-unlinked", "bugs-not-linked", "reconciled",
               "stale-cache", "info", "changed-by-person", "list-unused", "no-results", "run-not-here",
-              "no-results-link"}
+              "no-results-link", "not-verified", "bug-title", "page-not-ours"}
 
 
 def page_norm(text: Optional[str]) -> str:
@@ -73,10 +96,38 @@ def page_norm(text: Optional[str]) -> str:
     return re.sub(r"[\W_]+", "", text or "", flags=re.UNICODE).lower()
 
 
-def link_of(obj: Any) -> Optional[str]:
-    """The link ClickUp returned for a task, list, folder, Doc or page; None when it gave none."""
+def plain_id(value: Any) -> Optional[str]:
+    """`value` as an id that may stand in a link or a query: plain id characters only (the guard
+    of `remote_id`), else None."""
+    if value is None or isinstance(value, (bool, dict, list)) or str(value) == "":
+        return None
+    try:
+        return remote_id(value, "id")
+    except ConfigError:
+        return None
+
+
+def link_of(obj: Any, kind: Optional[str] = None, ws: Any = None, doc: Any = None) -> Optional[str]:
+    """The link of a task, list, folder, Doc or page (`kind`): the `url` ClickUp returned with it,
+    else ClickUp's standard form built from its id (`obj` is what ClickUp returned, or the id), the
+    workspace id for all but a task, and the Doc's id for a page. Every id put in a link passes
+    `plain_id`; None when one is missing or refused, or no `kind` is named."""
     url = obj.get("url") if isinstance(obj, dict) else None
-    return url if isinstance(url, str) and url.startswith("https://") else None
+    if isinstance(url, str) and url.startswith("https://"):
+        return url
+    form = LINK_FORMS.get(kind or "")
+    if form is None:
+        return None
+    ids = {"id": plain_id(obj.get("id") if isinstance(obj, dict) else obj)}
+    for name, value in (("ws", ws), ("doc", doc)):
+        if "{" + name + "}" in form:
+            ids[name] = plain_id(value)
+    return None if None in ids.values() else form.format(base=LINK_BASE, **ids)
+
+
+def verified(run_dir: Path) -> bool:
+    """The run was verified and its report rendered: its folder holds both files."""
+    return all((Path(run_dir) / name).is_file() for name in VERIFIED_FILES)
 
 
 def save_overview_doc(ctx, doc_id: str) -> bool:
@@ -125,7 +176,6 @@ def notify_user(cfg: dict) -> Optional[int]:
 class DocSync(SpecSync):
     """The spec's Doc, the project's Doc and the Run summary notes of one spec."""
 
-    recent = RunSync.recent          # a ticket's recent comment texts, newest first
     bugs_home = RunSync.bugs_home    # (Bugs list id, its Ref field id), or None
     find_docs = _SpecInit.find_docs  # the Docs with this name in this folder
 
@@ -139,6 +189,7 @@ class DocSync(SpecSync):
         self._lint_cfg: Optional[core.Config] = None
         self._runs: Optional[Dict[str, Path]] = None
         self._no_link = False
+        self._bug_title_said = False
 
     # -- text
 
@@ -151,8 +202,8 @@ class DocSync(SpecSync):
             self._versions |= found
             self._lint_cfg = None
 
-    def lint(self, item: str, value: str) -> Optional[str]:
-        """`wording.clean` for a page's name or text; None after the skip is logged."""
+    def page_rules(self) -> core.Config:
+        """The settings a page is linted with: the project's, plus the build numbers let through."""
         if self._lint_cfg is None:
             cfg = core.Config(self.cfg)
             cfg.project = getattr(self.cfg, "project", None)
@@ -160,11 +211,59 @@ class DocSync(SpecSync):
             rules["allow"] = list(rules.get("allow") or []) + sorted(self._versions)
             cfg["wording"] = rules
             self._lint_cfg = cfg
+        return self._lint_cfg
+
+    def lint(self, item: str, value: str) -> Optional[str]:
+        """`wording.clean` for a page's name or text; None after the skip is logged."""
         try:
-            return wording.clean(value, "body", self._lint_cfg)
+            return wording.clean(value, "body", self.page_rules())
         except WordingError as err:
             self.log.skip("wording", f"{item}: {err.word}")
             return None
+
+    def link(self, obj: Any, kind: str, doc: Any = None) -> Optional[str]:
+        """`link_of` in this workspace."""
+        return link_of(obj, kind, self.ws, doc)
+
+    def recent(self, task_id: str) -> List[str]:
+        """The ticket's comment texts, newest first. ClickUp gives the newest 25; older ones are
+        asked for with the `date` and `id` of the last one read, up to `COMMENT_PAGES` reads."""
+        if not _real(task_id):
+            return []
+        path = f"/v2/task/{task_id}/comment"
+        page = list(self.tr.request("GET", path).get("comments") or [])
+        rows, seen = list(page), {str(c.get("id")) for c in page}
+        for _ in range(COMMENT_PAGES - 1):
+            if len(page) < COMMENT_PAGE:
+                break
+            start, start_id = str(page[-1].get("date") or ""), plain_id(page[-1].get("id"))
+            if not start.isdigit() or start_id is None:
+                break
+            older = self.tr.request("GET", f"{path}?start={start}&start_id={start_id}").get("comments") or []
+            page = [c for c in older if str(c.get("id")) not in seen]
+            if not page:
+                break
+            seen |= {str(c.get("id")) for c in page}
+            rows += page
+        if all(str(c.get("date") or "").isdigit() for c in rows):
+            rows = sorted(rows, key=lambda c: int(c["date"]), reverse=True)
+        return [str(c.get("comment_text") or "").strip() for c in rows]
+
+    # -- what this machine wrote last (.qa/tracker-map.json; only a cache)
+
+    def remembered(self, key: str) -> Optional[dict]:
+        return self.ctx.cache.get(DOC_CACHE, f"{self.target}:{key}")
+
+    def remember_page(self, key: str, page: Optional[dict], keep_text: bool = False) -> None:
+        """Remember a page just written or found up to date: its id, and with `keep_text` the text
+        the tool wrote. Under `--apply` only: a dry run and `spec-status` leave the cache alone."""
+        text = (page or {}).get("sent")
+        if not self.log.apply or page is None or text is None or not _real(page["id"]):
+            return
+        entry = {"id": page["id"], "hash": content_hash(text)}
+        if keep_text:
+            entry["text"] = text
+        self.ctx.cache.data.setdefault(DOC_CACHE, {})[f"{self.target}:{key}"] = entry
 
     # -- reading the spec's lists and tickets
 
@@ -209,6 +308,19 @@ class DocSync(SpecSync):
             role = next((r for r in core.CASE_ROLES if same_status(live, status_name(self.cfg, "case", r))), None)
         return role
 
+    def ticket_links(self, list_id: str) -> Dict[str, str]:
+        """As `SpecSync.ticket_links`, with the standard link where ClickUp returned none."""
+        n = next((e["n"] for e in self.run_lists() if e["id"] == list_id), None)
+        if n is None:
+            return {}
+        have = self.tickets(list_id)
+        out = {}
+        for card in self.cards.cards:
+            url = self.link(have.get(ref_key(self.target, n, "card", card.id)), "task")
+            if url:
+                out[card.id] = url
+        return out
+
     def local_run(self, entry: dict) -> Optional[Path]:
         """The folder of the run a list is tied to, when that run was made on this machine."""
         if self._runs is None:
@@ -243,7 +355,17 @@ class DocSync(SpecSync):
         priority = str((b.get("priority") or {}).get("id") or "")
         if not severity and priority.isdigit():
             severity = SEVERITY_OF_PRIORITY.get(int(priority), "")
-        return {"title": b.get("name") or "", "severity": severity, "url": link_of(b)}
+        title = b.get("name") or ""
+        try:
+            wording.clean(title, "body", self.page_rules())
+        except WordingError:
+            # a bug is filed under weaker rules than a page is written with: its title must not
+            # keep a page from being written, and is not put on one
+            title = OPEN_BUG
+            if not self._bug_title_said:
+                self._bug_title_said = True
+                self.left("bug-title", BUG_TITLE)
+        return {"title": title, "severity": severity, "url": self.link(b, "task")}
 
     def run_bugs(self, run_dir: Path) -> List[dict]:
         """The open bugs of one run: its exported bugs, found in the Bugs list by the `Ref`
@@ -277,18 +399,19 @@ class DocSync(SpecSync):
                 for p in items or []:
                     out.append({"id": str(p.get("id")), "name": p.get("name") or "", "content": p.get("content") or "",
                                 "parent": str(p["parent_page_id"]) if p.get("parent_page_id") else parent,
-                                "url": link_of(p)})
+                                "url": self.link(p, "page", doc_id)})
                     walk(p.get("pages"), str(p.get("id")))
             walk(r if isinstance(r, list) else (r.get("pages") or []), None)
             self._pages[doc_id] = out
         return self._pages[doc_id]
 
     def page(self, doc_id: str, name: str, content: Optional[str], parent: Optional[str] = None,
-             first: bool = False) -> Optional[dict]:
+             first: bool = False, known: Optional[Callable[[], Optional[dict]]] = None) -> Optional[dict]:
         """Make a page say `content` (None: a page that only holds others, its text is left).
-        Found by name under its parent; `first` lets the empty page ClickUp makes with a new Doc
-        become this one. Sent only when its text differs from what ClickUp holds. Returns the
-        page, or None when it could not be written (reported)."""
+        Found by name under its parent, else it is the page `known` gives (which then takes this
+        name); `first` lets the empty page ClickUp makes with a new Doc become this one. Sent only
+        when its name or text differs from what ClickUp holds. Returns the page (`sent` is the
+        text it was given), or None when it could not be written (reported)."""
         safe = self.lint(f"page {name}", name)
         text = self.lint(f"page {name}", content) if safe is not None and content is not None else content
         if safe is None or (content is not None and text is None):
@@ -300,6 +423,8 @@ class DocSync(SpecSync):
         def find():
             return next((p for p in self.read_pages(doc_id) if p["name"] == safe and p["parent"] == parent), None)
         found = find()
+        if found is None and known is not None:
+            found = known()
         if found is None and first:
             found = next((p for p in self.read_pages(doc_id)
                           if p["parent"] is None and not p["name"].strip() and not p["content"].strip()), None)
@@ -313,11 +438,14 @@ class DocSync(SpecSync):
                 return find()
             r = self.write("page-create", safe, self._landed(lambda: self.tr.request("POST", path, body), landed, safe))
             if not (r and r.get("id")):
-                return None if self.log.apply else {"id": f"<new:{safe}>", "name": safe, "parent": parent, "url": None}
+                return None if self.log.apply else {"id": f"<new:{safe}>", "name": safe, "parent": parent, "url": None,
+                                                    "sent": text}
             made = find()
             if made is None or made["id"] != str(r["id"]):
-                made = {"id": str(r["id"]), "name": safe, "content": text or "", "parent": parent, "url": link_of(r)}
+                made = {"id": str(r["id"]), "name": safe, "content": text or "", "parent": parent,
+                        "url": self.link(r, "page", doc_id)}
                 self.read_pages(doc_id).append(made)
+            made["sent"] = text
             return made
         if text is not None and (found["name"] != safe or page_norm(found["content"]) != page_norm(text)):
             body = {"name": safe, "content": text, "content_format": "text/md", "content_edit_mode": "replace"}
@@ -325,6 +453,7 @@ class DocSync(SpecSync):
             if not done and self.log.apply:
                 return None
             found.update(name=safe, content=text)
+        found["sent"] = text
         return found
 
     def ensure_doc(self, title: str, parent: str, saved: str, save: Callable[[str], Any]) -> Optional[str]:
@@ -368,17 +497,17 @@ class DocSync(SpecSync):
                                lambda doc_id: save_overview_doc(self.ctx, doc_id))
 
     def doc_link(self) -> Optional[str]:
-        """The link ClickUp gives for the spec's Doc, if it gives one."""
+        """The link of the spec's Doc: the one ClickUp gives with it, else the standard one."""
         doc = self.cfg.get("doc")
         if not doc:
             return None
+        doc = remote_id(doc, f"specs.{self.target}.doc")
         try:
-            return link_of(self.tr.request(
-                "GET", f"/v3/workspaces/{self.ws}/docs/{remote_id(doc, f'specs.{self.target}.doc')}"))
+            return self.link(dict(self.tr.request("GET", f"/v3/workspaces/{self.ws}/docs/{doc}") or {}, id=doc), "doc")
         except ApiError as err:
             if err.status in (401, 403) or not 400 <= err.status < 500:
                 raise
-            return None
+            return self.link(doc, "doc")
 
     # -- the spec Doc
 
@@ -400,12 +529,30 @@ class DocSync(SpecSync):
                 self.log.skip("page-name", f"{card.title}: two scenarios have this title; one page cannot hold both")
                 continue
             names.add(card.title)
-            self.page(doc_id, card.title, spec_docs.scenario_page(card, self.history(card), self.cfg), parent["id"])
+            page = self.page(doc_id, card.title, spec_docs.scenario_page(card, self.history(card), self.cfg),
+                             parent["id"])
+            if page is not None:
+                names.add(page["name"])
+                self.remember_page(f"page:{page['id']}", page, keep_text=True)
         mark = page_norm(spec_docs.RETIRED)
         for p in list(self.read_pages(doc_id)):
-            # the page of a scenario that left the plan stays and says so
-            if p["parent"] == parent["id"] and p["name"] not in names and not page_norm(p["content"]).startswith(mark):
-                self.page(doc_id, p["name"], f"{spec_docs.RETIRED}\n\n{p['content'].rstrip()}\n", parent["id"])
+            if p["parent"] != parent["id"] or p["name"] in names:
+                continue
+            held = page_norm(p["content"])
+            if held.startswith(mark):
+                continue  # said already
+            last = self.remembered(f"page:{p['id']}")
+            ours = last is not None and str(last.get("id")) == p["id"]
+            if not ours and not (held.startswith(page_norm(p["name"])) and page_norm(SCENARIO_MARK) in held):
+                # neither remembered nor in the shape of a scenario page: a person's page
+                self.left("page-not-ours", f"{core.redact(p['name'], self.cfg)}: {NOT_OURS}")
+                continue
+            # the page of a scenario that left the plan stays and says so: the text the tool wrote
+            # last while ClickUp still holds it (in its own layout), else what ClickUp holds now
+            text = last.get("text") if ours else None
+            if not isinstance(text, str) or page_norm(text) != held:
+                text = p["content"]
+            self.page(doc_id, p["name"], f"{spec_docs.RETIRED}\n\n{text.rstrip()}\n", parent["id"])
 
     def results_page(self, doc_id: str, parent: Optional[dict], entry: dict) -> Optional[dict]:
         """The Results page of one run, from its own files; None where they are not here."""
@@ -422,7 +569,22 @@ class DocSync(SpecSync):
             return None
         text = spec_docs.results_page(name, states, self.cards, self.ticket_links(entry["id"]), self.run_bugs(run_dir),
                                       spec_runs.ready(run_dir), self.cfg.get("reportUrl") or None, self.cfg)
-        return self.page(doc_id, name, text, parent["id"])
+        key = f"results:{entry['n']}"
+        page = self.page(doc_id, name, text, parent["id"], known=lambda: self.run_page(doc_id, parent["id"], entry["n"], key))
+        self.remember_page(key, page)
+        return page
+
+    def run_page(self, doc_id: str, parent: str, n: int, key: str) -> Optional[dict]:
+        """The Results page of run list `n` when none has the run's name now (its label changed):
+        the page remembered for it, else the one whose name starts with `Run <N> · ` (the first,
+        should there be several). The caller gives it the new name."""
+        under = [p for p in self.read_pages(doc_id) if p["parent"] == parent]
+        last = self.remembered(key)
+        if last is not None:
+            found = next((p for p in under if p["id"] == str(last.get("id"))), None)
+            if found is not None:
+                return found
+        return next((p for p in under if p["name"].startswith(f"Run {n} · ")), None)
 
     def link_results(self, entry: dict, page: dict) -> None:
         """The `Full results:` line of the run's summary ticket (every sync keeps it)."""
@@ -467,7 +629,8 @@ class DocSync(SpecSync):
     def row(self) -> dict:
         """This spec's row of the project page, from ClickUp: its newest run that has a list,
         how many scenario tickets stand in each status, and what its Run summary says."""
-        out: Dict[str, Any] = {"title": self.title, "url": self.doc_link() or link_of(self.folder_info()),
+        out: Dict[str, Any] = {"title": self.title,
+                               "url": self.doc_link() or self.link(self.folder_info(), "folder"),
                                "latestRun": None, "counts": {}, "ready": None}
         entries = self.bound()
         if not entries:
@@ -475,6 +638,7 @@ class DocSync(SpecSync):
         e = entries[-1]
         counts = dict({r: 0 for r in core.CASE_ROLES}, needs_review=0)
         review = self.fid(REVIEW_FIELD)
+        have = set()
         for t in self.list_tasks(e["id"]):
             p = self.ref_of(t)
             if p is None:
@@ -483,9 +647,28 @@ class DocSync(SpecSync):
                 counts["needs_review"] += 1
             if p["run"] is None and not t.get("parent"):  # a scenario ticket: not the summary, not a check
                 counts[self.shown(t) or "to_test"] += 1
+                have.add(p["key"])
+        # a scenario of the cards file with no ticket in the list (a fill that stopped half way)
+        # is still to be tested: it is counted, so a half-filled list never reads as complete
+        try:
+            missing: Optional[int] = sum(1 for card in self.cards.cards
+                                         if ref_key(self.target, e["n"], "card", card.id) not in have)
+        except (cards.CardsError, OSError):
+            missing = None  # the cards are not on this machine: whether the list is whole is not known
+        counts["to_test"] += missing or 0
         said = [ln.strip() for ln in (e["summary"].get("markdown_description") or "").splitlines()]
-        out.update(latestRun=self.run_name(e), counts=counts,
-                   ready=False if SAID_NOT_READY in said else True if SAID_READY in said else None)
+        ready = False if SAID_NOT_READY in said else True if SAID_READY in said else None
+        # the summary's word is as old as the last sync; the tickets are read now. Ready stands
+        # only while every scenario ticket stands passed (or skipped), at least one passed, and no
+        # result waits for a person's review.
+        if missing:
+            ready = None
+        elif ready is True and missing is None:
+            ready = None
+        elif ready is True and (any(counts[k] for k in ("to_test", "testing", "failed", "blocked", "needs_review"))
+                                or not counts["passed"]):
+            ready = False
+        out.update(latestRun=self.run_name(e), counts=counts, ready=ready)
         return out
 
     def project_rows(self) -> List[dict]:
@@ -563,10 +746,11 @@ class DocSync(SpecSync):
 
 def push_docs(ctx) -> None:
     """`tracker.sh push-docs [--run <id>]`: the spec's Doc and the project's Doc. With `--run`
-    (a verified run) the run must have its list, and `notify`, when set, mentions its person once."""
+    the run must have its list; `notify`, when set, mentions its person once, and only for a run
+    that was verified (`verified`). One that is not is said in a line that is not a failure."""
     run_id = getattr(ctx.args, "run", None)
-    if run_id:
-        run_dir_for(ctx.project, run_id)  # a run that is not there is an error, before anything is sent
+    # a run that is not there is an error, before anything is sent
+    run_dir = run_dir_for(ctx.project, run_id) if run_id else None
     user = notify_user(ctx.cfg)
     s = DocSync(ctx, cards.load(ctx.project, ctx.args.spec))
     if not s.ready():
@@ -574,8 +758,13 @@ def push_docs(ctx) -> None:
     entry = s.run_entry(run_id) if run_id else None
     if run_id and entry is None:
         return
-    s.push()
-    if entry is not None and user is not None and not ctx.log.counts.get("skip"):
+    with _keep_cache(ctx):
+        s.push()
+    if entry is None or user is None:
+        return
+    if not verified(run_dir):
+        s.left("not-verified", f"{s.run_name(entry)}: {NOT_VERIFIED}")
+    elif not ctx.log.counts.get("skip"):
         s.notify(entry, user)
 
 
@@ -611,12 +800,18 @@ def _wrote(log: core.ActionLog, before: Dict[str, int]) -> bool:
 
 
 def _run_behind(qctx, c: cards.Cards, reasons: List[str]) -> None:
-    """The newest run made here (or the named one) against its list: a sync's own dry run."""
+    """The newest run made here (or the named one) against its list: a sync's own dry run. No
+    run is nothing to compare; a run that is there and cannot be read is a reason of its own."""
+    try:
+        run_dir_for(qctx.project, getattr(qctx.args, "run", None))
+    except FileNotFoundError:
+        return  # no run here (or the named one is not): nothing to compare
     try:
         rs = RunSync(qctx, c)
         states = spec_runs.states(rs.run_dir, c, rs.cfg)
     except (OSError, core.RunError):
-        return  # no run here: nothing to compare
+        reasons.append(R_RUN_UNREADABLE)
+        return
     if not any(state.role for state in states):
         return
     entry = next((e for e in rs.run_lists() if e["run"] == run_hash(rs.run_id) and e["summary"] is not None), None)
@@ -658,11 +853,11 @@ def spec_status(ctx) -> None:
     if not s.ready():
         reasons.append(R_NOT_SET_UP)
     else:
-        out["folderUrl"], out["docUrl"] = link_of(s.folder_info()), s.doc_link()
+        out["folderUrl"], out["docUrl"] = s.link(s.folder_info(), "folder"), s.doc_link()
         entries = [e for e in s.run_lists() if not e.get("archived")]
         if entries:
             e = entries[-1]
-            out["list"] = {"n": e["n"], "url": link_of(s.get_list(e["id"])) or link_of(e["summary"]),
+            out["list"] = {"n": e["n"], "url": s.link(s.get_list(e["id"]), "list") or s.link(e["summary"], "task"),
                            "bound": e["run"] != OPEN}
         if c is None:
             reasons.append(R_CARDS_FILE)

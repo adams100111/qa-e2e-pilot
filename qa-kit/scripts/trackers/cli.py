@@ -34,6 +34,7 @@ SPEC_VERBS = {
 }
 SPEC_BACKEND = "clickup"
 NO_BACKEND_VERBS = ("lint",)  # reads local files only: no backend, no token
+NO_SUMMARY_VERBS = ("spec-status",)  # the handler's own JSON line is all of stdout: no summary line
 SPEC_OPTIONAL_CATALOG = ("push-bug", "update-retest")  # run without a catalog when --spec is given
 _SPEC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
@@ -117,7 +118,8 @@ def _spec_verb(args, project: Path, cfg) -> int:
     The handler gets a Ctx with: `args.spec` = the resolved target, `cfg` =
     `core.spec_settings(cfg, target)` (so `cfg["target"]` and `cfg["enabled"] is True`),
     `catalog` = None (spec verbs never load it), a fresh ActionLog (`--apply` or dry run) and
-    the project's MapCache. It prints nothing but log lines; the summary is printed here.
+    the project's MapCache. It prints nothing but log lines; the summary is printed here, except
+    after a NO_SUMMARY_VERBS handler, whose one JSON line is all that goes to stdout.
     """
     log = core.ActionLog(apply=args.apply)
     target, why = _spec_target(cfg, args.spec)
@@ -138,6 +140,7 @@ def _spec_verb(args, project: Path, cfg) -> int:
     args.spec = target
     ctx = Ctx(project=project, cfg=settings, catalog=None, log=log,
               cache=core.MapCache(project), args=args)
+    summary = args.verb not in NO_SUMMARY_VERBS
     try:
         handler(ctx)
     except core.ConfigError as exc:
@@ -145,7 +148,8 @@ def _spec_verb(args, project: Path, cfg) -> int:
         return 1
     except ApiError as exc:
         _api_error(exc, _token_env(settings))
-        sys.stdout.write(log.summary() + "\n")
+        if summary:
+            sys.stdout.write(log.summary() + "\n")
         return 1
     except (core.RunError, OSError) as exc:  # OSError: a file to read or upload is missing or unreadable
         sys.stderr.write(f"error: {exc}\n")
@@ -157,7 +161,8 @@ def _spec_verb(args, project: Path, cfg) -> int:
             raise
         sys.stderr.write(f"error: {exc}\n")
         return 1
-    sys.stdout.write(log.summary() + "\n")
+    if summary:
+        sys.stdout.write(log.summary() + "\n")
     return 1 if log.counts.get("skip") else 0
 
 
