@@ -2,25 +2,35 @@
 
 `states` gives one `CheckState` per check of the cards file: the status role, whether a person
 has to review it, a plain note, and the screenshots to attach. `card_role` rolls a card's checks
-up, `counts` totals them, `missing_evidence` lists the checks whose recorded screenshot is not on
-disk (P11) and `ready` reads the run's ship verdict.
+up, `counts` totals them, `missing_evidence` lists the checks whose recorded screenshot cannot be
+used (P11), `unjoined` lists the recorded rows that belong to no card and `ready` reads the run's
+ship verdict.
 
 Nothing here makes a result look better than the engine recorded it (ADR-0032, ADR-0033): a
-non-pass never maps to `passed`, and a pass whose confidence is not exactly `high` stays in
-`testing` until a person confirms it.
+non-pass never maps to `passed`, and a pass stays in `testing` until a person confirms it unless
+both its recorded confidence and its confidence after verification are exactly `high`. When a
+card is the only holder of a criterion and the run has both a row for the card's role and a live
+row without a persona, the worse of the two is shown.
 
 Screenshots are located the way `scripts/render-report.js` `collectEvidence` does (ADR-0028):
 the folder `evidence/<persona>/<criterion>` (`evidence/<criterion>` for a row without a persona)
 of the run, its `screenshot-*.json` records (each names its image in `image`), any other image in
 that folder, and the image paths in the row's `evidence_refs`; ordered before, after, other.
+The ids are joined as they are, so an id with `:` is one folder and an id with `/` is nested
+folders. Unlike the report, which only shows files, these picks are uploaded: every file is
+resolved and kept only when it is an image inside the run folder. A link that leaves the run, a
+persona or criterion id with `..` or an absolute path, and a recorded file that is not an image
+are dropped and reported by `missing_evidence`.
 
 `ready` does not work a ship verdict out. It reads the one the engine rendered into the run's
-`report.md` ("## Ship readiness"), and gives `None` when that is not there.
+`report.md` ("## Ship readiness"), and gives `None` when that is not there or not in the engine's
+shape. A section that says NOT SHIP-READY anywhere is never read as ready.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +72,11 @@ FIXED_SENTENCES: Tuple[str, ...] = (NOTE_ERROR, NOTE_REVIEW, NOTE_DEFERRED, REAS
 
 REPORT_NAME = "report.md"
 SHIP_HEADING = "## Ship readiness"
+# The two verdict lines scripts/render-report.js mdShip writes, at column 0.
+SHIP_READY_LINE = "**SHIP-READY**"
+SHIP_NOT_READY_LINE = "**NOT SHIP-READY**"
+SHIP_NOT_READY_MARK = "NOT SHIP-READY"
+_HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
 _IMAGE_RE = re.compile(r"\.(png|jpe?g|webp|gif)$", re.IGNORECASE)
 _SIDECAR_RE = re.compile(r"^screenshot-.*\.json$")
 _PHASE_ORDER = {"before": 0, "after": 1, "image": 2}
@@ -83,39 +98,86 @@ class CheckState:
 # ---------------------------------------------------------------- screenshots
 
 
-def _sha256(path: Path) -> str:
+_HASHES: Dict[Tuple[str, int, int], str] = {}
+_HASHES_MAX = 4096
+
+
+def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tuple[List[Path], bool]:
-    """`(files that exist, in the report's order; whether a recorded screenshot is unusable)`.
+def _sha256(path: Path) -> str:
+    """The file's digest, read once per file state (path, change time, size), so `states` and
+    `missing_evidence` of one sync do not read every image twice."""
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    got = _HASHES.get(key)
+    if got is None:
+        if len(_HASHES) >= _HASHES_MAX:
+            _HASHES.clear()
+        got = _HASHES[key] = _hash_file(path)
+    return got
 
-    Unusable = a screenshot record or an `evidence_refs` image whose file is not there, or a
-    recorded image whose content no longer matches its record.
-    """
-    rel_dir = f"evidence/{persona}/{criterion}" if persona else f"evidence/{criterion}"
-    abs_dir = run_dir / rel_dir
+
+def _unsafe_segment(value: str) -> bool:
+    """A persona or criterion id that must not be joined into a path."""
+    return ".." in value or os.path.isabs(value)
+
+
+def _inside(root: Path, path: Path) -> Optional[Path]:
+    """`path` with every link followed, when that is a file inside `root` (already resolved)."""
     try:
-        names = sorted(p.name for p in abs_dir.iterdir())
-    except OSError:
-        names = []
+        real = path.resolve()
+        real.relative_to(root)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return real if real.is_file() else None
 
-    shots: List[Tuple[int, str, Path]] = []  # (phase order, path relative to the run, file)
+
+def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tuple[List[Tuple[str, Path]], bool]:
+    """`((phase, file) of each usable image, in the report's order; whether one is unusable)`.
+
+    Every file returned is an image inside the run folder, with links followed. Unusable = a
+    screenshot record or an `evidence_refs` image whose file is not there, is not an image, is
+    outside the run, or no longer matches its record; or an id that cannot be a folder name.
+    """
+    root = Path(run_dir).resolve()
+    if _unsafe_segment(criterion) or (persona and _unsafe_segment(persona)):
+        return [], True
+    rel_dir = f"evidence/{persona}/{criterion}" if persona else f"evidence/{criterion}"
+    abs_dir = root / rel_dir
     missing = False
+    names: List[str] = []
+    try:
+        abs_dir.resolve().relative_to(root)
+        names = sorted(p.name for p in abs_dir.iterdir())
+    except ValueError:
+        missing = True  # the evidence folder is a link that leaves the run
+    except (OSError, RuntimeError):
+        pass
+
+    shots: List[Tuple[int, str, str, Path]] = []  # (phase order, path relative to the run, phase, file)
     claimed = set()
     for n in names:
         if not _SIDECAR_RE.match(n):
             continue
+        sidecar = _inside(root, abs_dir / n)
+        if sidecar is None:
+            missing = True
+            continue
         try:
-            sc = json.loads((abs_dir / n).read_text(encoding="utf-8"))
+            sc = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         image = sc.get("image") if isinstance(sc, dict) else None
-        if not isinstance(image, str) or not image or re.search(r"[/\\]|\.\.", image):
+        if not isinstance(image, str) or not image:
+            continue
+        if re.search(r"[/\\]|\.\.", image) or not _IMAGE_RE.search(image):
+            missing = True
             continue
         claimed.add(image)
-        img = abs_dir / image
-        if not img.is_file():
+        img = _inside(root, abs_dir / image)
+        if img is None:
             missing = True
             continue
         try:
@@ -126,41 +188,55 @@ def _screenshots(run_dir: Path, criterion: str, persona: str, row: dict) -> Tupl
             missing = True
             continue
         phase = sc.get("phase") if sc.get("phase") in ("before", "after") else "image"
-        shots.append((_PHASE_ORDER[phase], f"{rel_dir}/{image}", img))
+        shots.append((_PHASE_ORDER[phase], f"{rel_dir}/{image}", phase, img))
 
     loose = [f"{rel_dir}/{n}" for n in names if _IMAGE_RE.search(n) and n not in claimed]
-    known = {rel for _, rel, _ in shots} | set(loose) | {f"{rel_dir}/{n}" for n in claimed}
+    known = {rel for _, rel, _, _ in shots} | set(loose) | {f"{rel_dir}/{n}" for n in claimed}
     refs = row.get("evidence_refs") if isinstance(row, dict) else None
     for ref in refs if isinstance(refs, list) else []:
-        if not isinstance(ref, str) or not _IMAGE_RE.search(ref) or ".." in ref or ref.startswith("/"):
+        if not isinstance(ref, str) or not _IMAGE_RE.search(ref):
+            continue
+        if ".." in ref or os.path.isabs(ref):
+            missing = True
             continue
         if ref in known:
             continue
         known.add(ref)
-        if (run_dir / ref).is_file():
-            loose.append(ref)
-        else:
-            missing = True
+        loose.append(ref)
     for rel in loose:
-        img = run_dir / rel
-        if not img.is_file():
+        img = _inside(root, root / rel)
+        if img is None:
+            missing = True
             continue
         base = rel.rsplit("/", 1)[-1].lower()
         phase = "before" if "before" in base else ("after" if "after" in base else "image")
-        shots.append((_PHASE_ORDER[phase], rel, img))
+        shots.append((_PHASE_ORDER[phase], rel, phase, img))
     shots.sort(key=lambda s: (s[0], s[1]))
-    return [img for _, _, img in shots], missing
+    out: List[Tuple[str, Path]] = []
+    for _, _, phase, img in shots:
+        if all(img != seen for _, seen in out):
+            out.append((phase, img))
+    return out, missing
 
 
-def _wanted(role: Optional[str], mode: str, found: int) -> int:
-    """How many of a check's screenshots its ticket gets, before the cap."""
+def _wants(role: Optional[str], needs_review: bool, mode: str) -> bool:
+    """Whether a check's ticket gets screenshots at all."""
     if mode not in ("standard", "failures"):
-        return 0
-    if role in ("failed", "blocked"):
-        return found
-    if role in ("passed", "testing") and mode == "standard":
-        return min(found, 1)
-    return 0
+        return False
+    if needs_review or role in ("failed", "blocked"):
+        return True
+    return role == "passed" and mode == "standard"
+
+
+def _pick(shots: List[Tuple[str, Path]], role: Optional[str], needs_review: bool, mode: str, cap: int) -> List[Path]:
+    """A failed, blocked or waiting-for-review check gets its screenshots up to the cap. A passed
+    check gets one in `standard` mode: the first after-state image, else the first image."""
+    if not _wants(role, needs_review, mode):
+        return []
+    if needs_review or role in ("failed", "blocked"):
+        return [img for _, img in shots][:cap]
+    after = [img for phase, img in shots if phase == "after"]
+    return (after or [img for _, img in shots])[:min(cap, 1)]
 
 
 def _cap(cfg: dict) -> int:
@@ -178,50 +254,75 @@ def _mode(cfg: dict) -> str:
 # ---------------------------------------------------------------- states
 
 
-def _row_for(rows: Dict[Tuple[str, str], dict], c: cards_mod.Cards, card: cards_mod.Card,
-             criterion: str) -> Optional[Tuple[str, dict]]:
-    """The recorded row of `criterion` that belongs to `card`: the one recorded as the card's
-    role, else the one recorded without a persona when this is the only card holding it."""
+def _judge(got: dict) -> Tuple[str, bool, Optional[str]]:
+    """`(status role, needs review, note)` of one recorded row."""
+    verdict = got["verdict"] if got["verdict"] in VERDICT_ROLE else "error"
+    if verdict == "pass":
+        row = got.get("row")
+        recorded = row.get("confidence") if isinstance(row, dict) else None
+        # The lower of the recorded confidence and the one after verification: both must be high.
+        if recorded == "high" and got["confidence"] == "high":
+            return "passed", False, None
+        return "testing", True, NOTE_REVIEW
+    note = NOTE_ERROR if verdict == "error" else NOTE_DEFERRED if verdict == "deferred" else None
+    return VERDICT_ROLE[verdict], False, note
+
+
+def _candidates(rows: Dict[Tuple[str, str], dict], c: cards_mod.Cards, card: cards_mod.Card,
+                criterion: str) -> List[Tuple[str, dict]]:
+    """The recorded rows of `criterion` that belong to `card`: the one recorded as the card's
+    role, and the one recorded without a persona when this is the only card holding it."""
+    out: List[Tuple[str, dict]] = []
     got = rows.get((criterion, card.role))
     if got is not None:
-        return card.role, got
-    got = rows.get((criterion, ""))
-    if got is not None and cards_mod.card_for(c, criterion, "") is card:
-        return "", got
-    return None
+        out.append((card.role, got))
+    if card.role:
+        got = rows.get((criterion, ""))
+        if got is not None and cards_mod.card_for(c, criterion, "") is card:
+            out.append(("", got))
+    return out
+
+
+def _joined(run_dir: Path, c: cards_mod.Cards):
+    """`(per check: (card, check, None or (persona, row, role, needs review, note)), rows, used keys)`.
+
+    With two rows for one check the worse one is taken, by `ROLLUP_ORDER`; equal rows keep the
+    one recorded as the card's role.
+    """
+    rows = core.criterion_rows(Path(run_dir))
+    used = set()
+    out = []
+    for card in c.cards:
+        for ck in card.checks:
+            best = None
+            for persona, got in _candidates(rows, c, card, ck.criterion):
+                used.add((ck.criterion, persona))
+                role, needs_review, note = _judge(got)
+                if best is None or ROLLUP_ORDER.index(role) < ROLLUP_ORDER.index(best[2]):
+                    best = (persona, got, role, needs_review, note)
+            out.append((card, ck, best))
+    return out, rows, used
 
 
 def _build(run_dir: Path, c: cards_mod.Cards, cfg: dict) -> Tuple[List[CheckState], List[Tuple[str, str]]]:
     run_dir = Path(run_dir)
-    rows = core.criterion_rows(run_dir)
     mode, cap = _mode(cfg), _cap(cfg)
     out: List[CheckState] = []
     missing: List[Tuple[str, str]] = []
-    for card in c.cards:
-        for ck in card.checks:
-            hit = _row_for(rows, c, card, ck.criterion)
-            if hit is None:
-                out.append(CheckState(card_id=card.id, criterion=ck.criterion, persona=card.role, role=None))
-                continue
-            persona, got = hit
-            verdict = got["verdict"] if got["verdict"] in VERDICT_ROLE else "error"
-            role = VERDICT_ROLE[verdict]
-            needs_review, note = False, None
-            if verdict == "pass" and got["confidence"] != "high":
-                role, needs_review, note = "testing", True, NOTE_REVIEW
-            elif verdict == "error":
-                note = NOTE_ERROR
-            elif verdict == "deferred":
-                note = NOTE_DEFERRED
-            evidence: List[Path] = []
-            if mode != "none":
-                found, lost = _screenshots(run_dir, ck.criterion, persona, got["row"])
-                evidence = found[:min(_wanted(role, mode, len(found)), cap)]
-                if lost and _wanted(role, mode, 1) and (ck.criterion, persona) not in missing:
-                    missing.append((ck.criterion, persona))
-            raised = card.as_ == "checklist" and (role in ("failed", "blocked") or needs_review)
-            out.append(CheckState(card_id=card.id, criterion=ck.criterion, persona=persona, role=role,
-                                  needs_review=needs_review, note=note, evidence=evidence, raised=raised))
+    for card, ck, hit in _joined(run_dir, c)[0]:
+        if hit is None:
+            out.append(CheckState(card_id=card.id, criterion=ck.criterion, persona=card.role, role=None))
+            continue
+        persona, got, role, needs_review, note = hit
+        evidence: List[Path] = []
+        if _wants(role, needs_review, mode):
+            found, lost = _screenshots(run_dir, ck.criterion, persona, got["row"])
+            evidence = _pick(found, role, needs_review, mode, cap)
+            if lost and (ck.criterion, persona) not in missing:
+                missing.append((ck.criterion, persona))
+        raised = card.as_ == "checklist" and (role in ("failed", "blocked") or needs_review)
+        out.append(CheckState(card_id=card.id, criterion=ck.criterion, persona=persona, role=role,
+                              needs_review=needs_review, note=note, evidence=evidence, raised=raised))
     return out, missing
 
 
@@ -233,24 +334,29 @@ def states(run_dir: Path, c: cards_mod.Cards, cfg: dict) -> List[CheckState]:
 
 def missing_evidence(run_dir: Path, c: cards_mod.Cards, cfg: dict) -> List[Tuple[str, str]]:
     """`(criterion, persona)` of each check that would get screenshots and has a recorded one
-    that is not on disk or no longer matches its record. Reported, never an error (P11)."""
+    that cannot be used: not on disk, not an image, outside the run folder, or no longer matching
+    its record. Reported, never an error (P11)."""
     return _build(run_dir, c, cfg)[1]
+
+
+def unjoined(run_dir: Path, c: cards_mod.Cards) -> List[Tuple[str, str, str]]:
+    """`(criterion, persona, verdict)` of each recorded row that belongs to no card, sorted, so
+    the sync can report them. Raises `core.RunError` when the run has no `checkpoint.json`."""
+    _, rows, used = _joined(run_dir, c)
+    return sorted((cid, persona, got["verdict"]) for (cid, persona), got in rows.items()
+                  if (cid, persona) not in used)
 
 
 def card_role(states_of_card: List[CheckState]) -> str:
     """The status role of a card: the worst of its checks, and `testing` while some checks have
     a result and others are still open or wait for a review."""
-    roles = [s.role or "to_test" for s in states_of_card]
+    roles = [s.role if s.role in ROLLUP_ORDER else "to_test" for s in states_of_card]
     if not roles:
         return "to_test"
-    for bad in ("failed", "blocked"):
-        if bad in roles:
-            return bad
-    if "testing" in roles:
+    worst = min(roles, key=ROLLUP_ORDER.index)
+    if worst == "to_test" and any(r != "to_test" for r in roles):
         return "testing"
-    if "to_test" in roles:
-        return "to_test" if all(r == "to_test" for r in roles) else "testing"
-    return "skipped" if "skipped" in roles else "passed"
+    return worst
 
 
 def counts(states: List[CheckState]) -> Dict[str, int]:
@@ -273,30 +379,20 @@ def plain_reason(condition: str) -> str:
     return REASON_UNKNOWN
 
 
-def ready(run_dir: Path) -> Tuple[Optional[bool], List[str]]:
-    """The run's ship verdict as the engine rendered it, and why not in plain words.
-
-    Read from the "## Ship readiness" section of the run's `report.md`: `(True, [])` for
-    SHIP-READY, `(False, reasons)` for NOT SHIP-READY, `(None, [])` when the report or the
-    section is absent or cannot be read. Never worked out here.
-    """
-    try:
-        lines = (Path(run_dir) / REPORT_NAME).read_text(encoding="utf-8").splitlines()
-    except (OSError, ValueError):
-        return None, []
-    try:
-        at = next(i for i, line in enumerate(lines) if line.strip() == SHIP_HEADING)
-    except StopIteration:
-        return None, []
-    body = [line.strip() for line in lines[at + 1:]]
-    body = body[next((i for i, line in enumerate(body) if line), len(body)):]
-    if not body or body[0] not in ("**SHIP-READY**", "**NOT SHIP-READY**"):
-        return None, []
+def _ship_section(section: List[str]) -> Tuple[Optional[bool], List[str]]:
+    """The verdict of one "## Ship readiness" section (the lines under its heading)."""
+    said_not = any(SHIP_NOT_READY_MARK in line for line in section)
+    body = section[next((i for i, line in enumerate(section) if line.strip()), len(section)):]
+    if not body or body[0].rstrip() not in (SHIP_READY_LINE, SHIP_NOT_READY_LINE):
+        return (False, []) if said_not else (None, [])
     conditions: List[str] = []
     for line in body[1:]:
+        line = line.rstrip()
         if not line:
             if conditions:
                 break
+            continue
+        if not conditions and line in (SHIP_READY_LINE, SHIP_NOT_READY_LINE):
             continue
         if not line.startswith("- "):
             break
@@ -306,6 +402,38 @@ def ready(run_dir: Path) -> Tuple[Optional[bool], List[str]]:
         text = plain_reason(cond)
         if text not in reasons:
             reasons.append(text)
-    if body[0] == "**SHIP-READY**" and not conditions:
-        return True, []
-    return False, reasons
+    if said_not or conditions:
+        return False, reasons
+    return True, []
+
+
+def ready(run_dir: Path) -> Tuple[Optional[bool], List[str]]:
+    """The run's ship verdict as the engine rendered it, and why not in plain words.
+
+    Read from the "## Ship readiness" section of the run's `report.md`, whose heading and verdict
+    line are matched at the start of the line as `scripts/render-report.js` writes them:
+    `(True, [])` only when the one section's verdict line is the engine's ready line, it lists no
+    condition and no line of it says NOT SHIP-READY; `(False, reasons)` when a section says NOT
+    SHIP-READY anywhere; `(None, [])` when the report or the section is absent, cannot be read,
+    appears more than once without saying not ready, or is not in the engine's shape. Never
+    worked out here.
+    """
+    try:
+        lines = (Path(run_dir) / REPORT_NAME).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return None, []
+    starts = [i for i, line in enumerate(lines) if line.rstrip() == SHIP_HEADING]
+    if not starts:
+        return None, []
+    found: List[Tuple[Optional[bool], List[str]]] = []
+    for at in starts:
+        end = next((j for j in range(at + 1, len(lines)) if _HEADING_RE.match(lines[j])), len(lines))
+        found.append(_ship_section(lines[at + 1:end]))
+    if any(ok is False for ok, _ in found):
+        reasons: List[str] = []
+        for ok, why in found:
+            for text in why if ok is False else []:
+                if text not in reasons:
+                    reasons.append(text)
+        return False, reasons
+    return found[0] if len(found) == 1 else (None, [])
