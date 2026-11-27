@@ -127,6 +127,44 @@ class CardsTest(Base):
         self.assertIsNone(cards.card_for(c, "nope", ""))
 
 
+class CardsFixRound1Test(Base):
+    def test_role_name_with_emoji_reported_with_card_id(self):
+        d = self.raw()
+        d["cards"][1]["roleName"] = "Admin \u2705"
+        out = self.problems(d)
+        self.assertEqual(out, [{"card": "admin-watches-the-ranking", "criterion": "", "reason": "emoji"}])
+
+    def test_plan_rows_public_and_alias(self):
+        rows = cards.plan_rows(self.project, TARGET)
+        self.assertEqual(rows, self.rows())
+        self.assertEqual(cards._plan_rows(self.project, TARGET), rows)
+
+    def test_plan_rows_unknown_dict_raises_naming_file(self):
+        (self.dir / "checklist.json").write_text('{"other": []}', encoding="utf-8")
+        with self.assertRaises(cards.CardsError) as cm:
+            cards.plan_rows(self.project, TARGET)
+        self.assertEqual(str(cm.exception), f"{self.dir / 'checklist.json'}: not a plan the tracker can read")
+
+    def test_plan_rows_invalid_json_raises_naming_file(self):
+        (self.dir / "checklist.json").write_text("{not json", encoding="utf-8")
+        with self.assertRaises(cards.CardsError) as cm:
+            cards.plan_rows(self.project, TARGET)
+        self.assertIn(str(self.dir / "checklist.json"), str(cm.exception))
+
+    def test_duplicate_row_in_plan_reported_once(self):
+        rows = self.rows()
+        rows.append(copy.deepcopy(rows[0]))
+        out = self.problems(rows=rows)
+        self.assertEqual(out, [{"card": "", "criterion": rows[0]["id"], "reason": "duplicate row in the plan"}])
+
+    def test_check_repeated_in_same_card(self):
+        d = self.raw()
+        d["cards"][0]["checks"].append(copy.deepcopy(d["cards"][0]["checks"][0]))
+        out = self.problems(d)
+        self.assertEqual(out, [{"card": "judge-scores-a-submission", "criterion": "C-SCORE-01",
+                                "reason": "check is repeated in this card"}])
+
+
 class LintVerbTest(Base):
     def ctx(self):
         log = core.ActionLog(False, out=io.StringIO())
