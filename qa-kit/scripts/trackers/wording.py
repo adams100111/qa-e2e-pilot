@@ -38,8 +38,9 @@ ID_RES = [
     # camelCase identifier: lowercase start, then at least one capitalised hump
     re.compile(r"(?<![A-Za-z0-9_])[a-z]+(?:[A-Z][a-z0-9]+)+(?![A-Za-z0-9_])"),
 ]
-# a person mention: @ directly followed by a letter (any script)
-PERSON_RE = re.compile(r"@[^\W\d_]")
+# a person mention: @ directly followed by a letter (any script) and not preceded by a word
+# character, so an email address (name@host) is not a mention
+PERSON_RE = re.compile(r"(?<!\w)@[^\W\d_]")
 
 
 def _wording(cfg: dict) -> dict:

@@ -52,6 +52,12 @@ class WordingLintTest(unittest.TestCase):
         arabic_cfg = dict(CFG, language="ar")
         self.assertEqual(lint("Judge Can Save Score For Submission", "title", arabic_cfg), [])
 
+    def test_email_is_not_a_mention(self):
+        self.assertEqual(lint("Sign in as noura.alqahtani@innovation-lab.co"), [])
+
+    def test_real_mention_still_flagged(self):
+        self.assertIn("mentions a person", lint("@Faisal please check"))
+
     def test_mentions_person(self):
         self.assertIn("mentions a person", lint("Ask @faisal about it"))
 
