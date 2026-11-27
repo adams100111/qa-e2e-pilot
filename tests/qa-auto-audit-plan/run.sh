@@ -25,7 +25,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 T_OLD=202611270700; T_MID=202611270710
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
@@ -87,7 +87,7 @@ artifact() {
     run)          mkdir -p "$R"
                   printf '{"run_id":"r1","target_feature":"checkout","started_at":"2026-11-27T08:30:00Z","status":"complete"}\n' > "$R/run-manifest.json"
                   printf '{"criteria":[{"criterion_id":"C-001","persona":"admin","verdict":"pass","confidence":"high"}]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
-    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+    verify)       mkdir -p "$R"; printf '%s\n' '[{"criterionId":"C-001","persona":"admin","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"high","reasons":[]}]' > "$R/verification.json" ;;
   esac
 }
 done_step() {
@@ -109,6 +109,8 @@ fin() {
   local shape="${1:-plain}" tpl="$ROOT/tpl-$E-${1:-plain}" P S flags=""
   if [ ! -d "$tpl" ]; then
     P="$(mktemp -d "$ROOT/p.XXXXXX")"; S="$P/.qa/specs/checkout"; mkdir -p "$S"
+    # the project's tracker settings: without this file the audit does not ask the tracker at all
+    mkdir -p "$P/docs/agents"; printf '{"specs":{}}\n' > "$P/docs/agents/qa-tracker.json"
     if [ "$shape" = rich ]; then printf '%s\n' "$RICH_CONFIG" > "$P/.qa/config.json"; else cp "$FX/config-local.json" "$P/.qa/config.json"; fi
     artifact "$P" constitution; artifact "$P" spec; artifact "$P" scenarios
     case "$shape" in
@@ -223,6 +225,29 @@ run_engine() {
   expect "plan-unreadable (empty file)" "$P" 1 '"plan-unreadable"'
   P="$(fin)"; printf '{"criteria":%s}\n' "$(cat "$FX/checklist.json")" > "$P/.qa/specs/checkout/checklist.json"; touch -t "$T_OLD" "$P/.qa/specs/checkout/checklist.json"
   expect "plan-unreadable (not a list of rows)" "$P" 1 '"plan-unreadable"'
+  # item 25: half of a surrogate pair written as an escape. Both engines read it one way: a first
+  # half with no second half after it makes the plan unreadable; a second half alone is U+FFFD.
+  # surr <project> <title as JSON text> — add one row with that title to the plan, as raw text
+  surr() {
+    local f="$1/.qa/specs/checkout/checklist.json" t
+    t="$(cat "$f")"; t="${t%]*}"
+    printf '%s,\n  {"id": "C-900", "title": %s, "kind": "bake", "priority": "P2"}\n]\n' "$t" "$2" > "$f"; touch -t "$T_OLD" "$f"
+  }
+  for k in '"\ud800"' '"x\uD83Dy"' '"\ud800\u0041"' '"\udc00\ud800"' '"\ud800\ud800"'; do
+    P="$(fin)"; surr "$P" "$k"
+    expect "plan_unreadable_lone_surrogate [$k]" "$P" 1 '"plan-unreadable"'
+  done
+  for k in '"\ud83d\ude00"' '"\udc00"' '"a\uDFFFb"' '"\\ud800 as plain text"'; do
+    P="$(fin)"; surr "$P" "$k"
+    expect "a plan with the title [$k] is readable (a row was added)" "$P" 0 ""
+  done
+  P="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$P/.qa/specs/checkout"; cp "$FX/config-local.json" "$P/.qa/config.json"
+  cp "$FX/checklist.json" "$P/.qa/specs/checkout/checklist.json"; surr "$P" '"\ud800"'
+  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E start refuses a plan with a lone surrogate" "$rc|$out" "1|auto: .qa/specs/checkout/checklist.json is not valid JSON"
+  P="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$P/.qa"; printf '{"baseUrl":"http://localhost:3000","note":"\\ud800"}\n' > "$P/.qa/config.json"
+  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E start refuses a config with a lone surrogate" "$rc|$out" "1|auto: .qa/config.json is not valid JSON"
   P="$(fin)"; rm "$P/.qa/specs/checkout/checklist.json"
   expect "a deleted plan loses every row and the scenarios result" "$P" 1 '"plan-row-removed:C-001","plan-row-removed:C-002","plan-row-removed:C-003","plan-row-removed:C-004","plan-row-removed:C-005","step-without-result:scenarios"'
   P="$(fin)"; ed "$P/.qa/specs/checkout/checklist.json" 'd.append({"id":"C-901","kind":"bake"})'

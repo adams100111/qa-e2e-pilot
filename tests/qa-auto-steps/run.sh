@@ -27,7 +27,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 # auto <args…> — run the script under the current engine with an injected clock.
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 # jv <file> <python expr over d> — read one value out of a JSON file.
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -63,7 +63,7 @@ artifact() {
     run)          mkdir -p "$R"
                   printf '{"run_id":"%s","target_feature":"checkout","started_at":"%s","status":"complete"}\n' "${3:-r1}" "${4-2026-11-27T08:30:00Z}" > "$R/run-manifest.json"
                   printf '{"criteria":[{"criterion_id":"C-001","persona":"admin","verdict":"pass","confidence":"high"}]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
-    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+    verify)       mkdir -p "$R"; printf '%s\n' '[{"criterionId":"C-001","persona":"admin","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"high","reasons":[]}]' > "$R/verification.json" ;;
   esac
 }
 # done_step <project> <step> — put the artifact on disk and mark the step done.
@@ -223,7 +223,7 @@ run_engine_steps() {
     check "$E a run with the start time [$s] is refused" "$rc|$out|$(jv "$Q/.qa/specs/checkout/auto/journey.json" 'd["runId"]')" "1|auto: that run has no start time|null"
   done
   Q="$(journey_at run)"
-  artifact "$Q" run; printf '{"run_id":"r1","started_at":null}\n' > "$Q/.qa/runs/r1/run-manifest.json"
+  artifact "$Q" run; printf '{"run_id":"r1","started_at":null,"status":"complete"}\n' > "$Q/.qa/runs/r1/run-manifest.json"
   out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
   check "$E a manifest with a null start time is refused" "$rc|$out" "1|auto: that run has no start time"
   printf '{"run_id":' > "$Q/.qa/runs/r1/run-manifest.json"
@@ -272,6 +272,13 @@ run_engine_steps() {
 p=sys.argv[1]; d=json.load(open(p)); d["runId"]=None; json.dump(d,open(p,"w"))' "$Q/.qa/specs/checkout/auto/journey.json"
   out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
   check "$E verify without a recorded run id is refused" "$rc|$out" "1|auto: no run is recorded for this journey"
+  # a recorded run id that is not one plain folder name is no run (the plan checks are never pointed outside .qa/runs)
+  for r in '../r1' '..' '-r1' 'a/b'; do
+    "$PY" -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["runId"]=sys.argv[2]; json.dump(d,open(p,"w"))' "$Q/.qa/specs/checkout/auto/journey.json" "$r"
+    out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+    check "$E verify with the run id [$r] is refused" "$rc|$out" "1|auto: no run is recorded for this journey"
+  done
 
   # ---- step-start counts attempts ----
   P="$(journey_at constitution)"; J="$P/.qa/specs/checkout/auto/journey.json"

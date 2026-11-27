@@ -19,7 +19,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 # jv <file> <python expr over d> — read one value out of a JSON file.
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -275,8 +275,18 @@ run_engine() {
   dec "$P" gaps low "analysis.md:14" >/dev/null 2>&1               # D6 low, after the next step
   out="$(auto second checkout --unavailable --project "$P" 2>&1)"; rc=$?
   check "$E --unavailable after a later step marks the new decision" "$rc|$out|$(jv "$D" 'd[5]["needsPerson"]')" '0|{"marked":["D6"]}|true'
-  auto second checkout D2 stands --reason "Seen later by a reviewer agent." --project "$P" >/dev/null 2>&1
-  check "$E stands after --unavailable does not clear needsPerson" "$(jv "$D" '[d[1]["second"],d[1]["needsPerson"]]')" '["stands", true]'
+  # item 28: once the second look was recorded as unavailable, no decision can be let stand
+  before="$(snapshot "$P")"
+  out="$(auto second checkout D2 stands --reason "Seen later by a reviewer agent." --project "$P" 2>&1)"; rc=$?
+  check "$E second_stands_refused_after_unavailable" "$rc|$out" "1|auto: the second look was recorded as unavailable; a decision cannot be let stand"
+  check "$E second_stands_refused_after_unavailable changes no file" "$(snapshot "$P")" "$before"
+  check "$E the refused decision still needs a person" "$(jv "$D" '[d[1]["second"],d[1]["needsPerson"]]')" '[null, true]'
+  out="$(auto second checkout D1 stands --reason "x" --project "$P" 2>&1)"; rc=$?
+  check "$E stands is refused for a high-confidence decision too" "$rc|$out" "1|auto: the second look was recorded as unavailable; a decision cannot be let stand"
+  out="$(auto second checkout D99 stands --reason "x" --project "$P" 2>&1)"; rc=$?
+  check "$E stands for an unknown decision is refused the same way" "$rc|$out" "1|auto: the second look was recorded as unavailable; a decision cannot be let stand"
+  out="$(auto second checkout D2 ask --reason "A person should look." --project "$P" 2>&1)"; rc=$?
+  check "$E ask is still taken after --unavailable" "$rc|$out" '0|{"id":"D2","needsPerson":true,"second":"ask"}'
   P="$(newj)"; J="$P/.qa/specs/checkout/auto/journey.json"
   out="$(auto second checkout --unavailable --project "$P" 2>&1)"; rc=$?
   check "$E --unavailable with no decisions" "$rc|$out|$(jv "$J" 'd["secondLook"]')|$([ -e "$P/.qa/specs/checkout/auto/decisions.json" ] && echo made || echo none)" '0|{"marked":[]}|unavailable|none'
@@ -379,6 +389,7 @@ if command -v jq >/dev/null 2>&1; then
   crossd "second unavailable" second checkout --unavailable
   crossd "second unavailable again" second checkout --unavailable
   crossd "second ask after stands" second checkout D3 ask --reason "$NASTY"
+  crossd "second stands after unavailable" second checkout D2 stands --reason "late"
   crossd "note seed" note checkout --kind seed-not-run --text "$NASTY_NL"
   crossd "note left out" note checkout --kind check-left-out --text "$(printf 'tab\there 🧾\177')"
   crossd "note usage" note checkout --kind other --text x

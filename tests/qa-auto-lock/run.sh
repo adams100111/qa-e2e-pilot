@@ -22,7 +22,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
@@ -34,6 +34,8 @@ print(json.dumps(v,sort_keys=True,ensure_ascii=False) if isinstance(v,(dict,list
 # mkproj [config json] — a project with .qa/config.json (the local fixture by default).
 mkproj() {
   local P; P="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$P/.qa"
+  # the project's tracker settings: without this file the audit does not ask the tracker at all
+  mkdir -p "$P/docs/agents"; printf '{"specs":{}}\n' > "$P/docs/agents/qa-tracker.json"
   if [ "$#" -ge 1 ]; then printf '%s' "$1" > "$P/.qa/config.json"; else cp "$FX/config-local.json" "$P/.qa/config.json"; fi
   printf '%s' "$P"
 }
@@ -155,8 +157,8 @@ b" "" "_x"; do
   auto start checkout --project "$P" --restart >/dev/null 2>&1
   check "$E restart of a stopped journey records nothing" "$?|$(jv "$J" '"restartedFrom" in d')|$([ -d "$P/.qa/specs/checkout/auto/history/3" ] && echo yes || echo no)" "0|false|yes"
   auto stop checkout --project "$P" --reason blocked --detail "a person must act" >/dev/null 2>&1
-  auto start checkout --project "$P" >/dev/null 2>&1
-  check "$E a new journey after a finished one records nothing" "$?|$(jv "$J" '"restartedFrom" in d')" "0|false"
+  auto start checkout --project "$P" --restart >/dev/null 2>&1
+  check "$E a new journey after a stopped one records nothing" "$?|$(jv "$J" '"restartedFrom" in d')" "0|false"
 
   # ---- M2: a byte order mark in front of a file changes nothing ----
   P="$(mkproj)"; B="$P/.qa/specs/checkout/auto/baseline.json"; mkdir -p "$P/.qa/specs/checkout"
@@ -197,6 +199,7 @@ b" "" "_x"; do
   # ---- M4: a relative --project that starts with a dash ----
   Q="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$Q/-proj/.qa" "$Q/-proj/.qa/specs/checkout"; cp "$FX/config-local.json" "$Q/-proj/.qa/config.json"
   cp "$FX/checklist.json" "$Q/-proj/.qa/specs/checkout/checklist.json"; cp "$FX/known-defects.json" "$Q/-proj/.qa/known-defects.json"
+  mkdir -p "$Q/-proj/docs/agents"; printf '{"specs":{}}\n' > "$Q/-proj/docs/agents/qa-tracker.json"
   out="$(cd "$Q" && auto start checkout --project -proj 2>&1)"; rc=$?
   check "$E start with --project -proj" "$rc|$(js "$out" 'd["state"]')|$(jv "$Q/-proj/.qa/specs/checkout/auto/baseline.json" 'len(d["knownDefectsHash"])')" "0|open|64"
   out="$(cd "$Q" && auto stop checkout --project -proj --reason time-limit --detail "paused" 2>&1)"; rc=$?
@@ -292,6 +295,25 @@ b" "" "_x"; do
   check "$E start into a linked journey folder" "$(first auto start checkout --project "$P")|$(ls -A "$P/elsewhere/auto" | wc -l | tr -d ' ')" "1|$L_REAL|0"
   P="$(mkproj)"; mkdir -p "$P/.qa/specs/checkout"; ln -s "$P/nowhere" "$P/.qa/specs/checkout/auto"
   check "$E start into a journey folder that is a link leading nowhere" "$(first auto start checkout --project "$P")" "1|$L_REAL"
+  # item 29: the history folder must be a real folder too: `start --restart` moves the journey there
+  hlnk() {
+    local P; P="$(tpl "$1")"
+    mkdir -p "$P/elsewhere/history"; ln -s "$P/elsewhere/history" "$P/.qa/specs/checkout/auto/history"
+    printf '%s' "$P"
+  }
+  P="$(hlnk open)"; before="$(snapshot "$P")"
+  check "$E history_link_refused: start --restart" "$(first auto start checkout --restart --project "$P")" "1|$L_REAL"
+  check "$E history_link_refused: stop" "$(first auto stop checkout --project "$P" --reason step-failed --detail x)" "1|$L_REAL"
+  check "$E history_link_refused: decide" "$(first auto decide checkout --project "$P" --step spec --class scope --question q --answer a --evidence e --confidence high)" "1|$L_REAL"
+  check "$E history_link_refused: handoff" "$(first auto handoff checkout --project "$P")" "1|$L_REAL"
+  check "$E history_link_refused: nothing was written, here or through the link" "$(snapshot "$P")|$(ls -A "$P/elsewhere/history" | wc -l | tr -d ' ')" "$before|0"
+  check "$E reading beside a linked history folder still works" "$(first auto next checkout --project "$P")" '0|{"next":"constitution"}'
+  P="$(tpl open)"; ln -s "$P/nowhere" "$P/.qa/specs/checkout/auto/history"
+  check "$E history_link_refused: a link leading nowhere" "$(first auto start checkout --restart --project "$P")|$([ -e "$P/nowhere" ] && echo made || echo none)" "1|$L_REAL|none"
+  P="$(hlnk stopped)"
+  check "$E history_link_refused: resume" "$(first auto resume checkout --project "$P")" "1|$L_REAL"
+  P="$(mkproj)"; mkdir -p "$P/elsewhere/history" "$P/.qa/specs/checkout/auto"; ln -s "$P/elsewhere/history" "$P/.qa/specs/checkout/auto/history"
+  check "$E history_link_refused: a first start" "$(first auto start checkout --project "$P")|$([ -e "$P/.qa/specs/checkout/auto/journey.json" ] && echo made || echo none)" "1|$L_REAL|none"
   # a folder at the path of a journey file: the write fails, it does not vanish into the folder
   P="$(tpl open)"; A="$P/.qa/specs/checkout/auto"; mkdir "$A/decisions.json" "$A/notes.json" "$A/handoff.md"
   out="$(auto decide checkout --project "$P" --step spec --class scope --question q --answer a --evidence e --confidence high 2>&1)"; rc=$?
@@ -354,7 +376,7 @@ if command -v jq >/dev/null 2>&1; then
     printf '%s' "$P"
   }
   XJ="$(build_x)"; XP="$(build_x)"
-  for v in "start checkout --max-hours 0.1" "status checkout" "start checkout --restart --max-hours 72" "stop checkout --reason time-limit --detail توقف" "resume checkout --max-hours 71.5" "start checkout --restart --until spec" "status checkout" "stop checkout --reason blocked --detail coverage" "start checkout"; do
+  for v in "start checkout --max-hours 0.1" "status checkout" "start checkout --restart --max-hours 72" "stop checkout --reason time-limit --detail توقف" "resume checkout --max-hours 71.5" "start checkout --restart --until spec" "status checkout" "stop checkout --reason blocked --detail coverage" "start checkout" "start checkout --restart"; do
     # shellcheck disable=SC2086
     oj="$(E=jq; auto $v --project "$XJ" 2>&1; echo "rc=$?")"
     # shellcheck disable=SC2086

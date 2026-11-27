@@ -29,7 +29,7 @@ lacks(){ if [ -f "$2" ] && ! grep -qF -- "$3" "$2" 2>/dev/null; then pass=$((pas
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 T_OLD=202611270700; T_MID=202611270710
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@" </dev/null; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@" </dev/null; }
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
 v=eval(sys.argv[2])
@@ -77,6 +77,8 @@ fin() {
   local shape="${1:-done}" tpl="$ROOT/tpl-$E-${1:-done}" P S
   if [ ! -d "$tpl" ]; then
     P="$(mktemp -d "$ROOT/p.XXXXXX")"; S="$P/.qa/specs/checkout"; mkdir -p "$S" "$P/.qa/auth"
+    # the project's tracker settings: without this file the audit does not ask the tracker at all
+    mkdir -p "$P/docs/agents"; printf '{"specs":{}}\n' > "$P/docs/agents/qa-tracker.json"
     cp "$FX/config-local.json" "$P/.qa/config.json"; printf '{"cookies":[]}\n' > "$P/.qa/auth/storageState.json"
     artifact "$P" constitution; artifact "$P" spec; artifact "$P" scenarios
     auto start checkout --project "$P" >/dev/null 2>&1
@@ -276,7 +278,14 @@ run_engine() {
   rm "$R/verification.json"
   check "$E ship-ready with no second check on disk" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}The results have not had their second check."
   cp "$HX/verification-override.json" "$R/verification.json"
-  check "$E ship-ready stays ready when the second check overrode a check the engine does not count" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
+  # item 23: an override on the run is never `ready`, also when the engine's ship verdict did not count it
+  check "$E override_under_ship_ready_is_not_verified" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"not verified\",\"needsPerson\":0}|Not verified.${NL}The second check did not confirm every passed result."
+  ed "$R/verification.json" 'd[1]["verifierVerdict"]="blocked"'
+  check "$E override_under_ship_ready_is_not_verified (a pass turned into blocked)" "$(ho "$P")" '0|{"result":"not verified","needsPerson":0}'
+  cp "$HX/verification-clean.json" "$R/verification.json"
+  ed "$R/verification.json" 'd.append({"criterionId":"C-002","persona":"cashier","inRunVerdict":"fail","verifierVerdict":"fail"})'
+  check "$E ship-ready: a recorded fail the second check left a fail is no override" "$(ho "$P")" '0|{"result":"ready","needsPerson":0}'
+  cp "$HX/verification-clean.json" "$R/verification.json"
   printf '{"criteria":' > "$R/checkpoint.json"
   check "$E ship-ready with results that cannot be read" "$(ho "$P")|$(sec "$H" Result)|$(sec "$H" "Needs a person")" "0|{\"result\":\"not verified\",\"needsPerson\":1}|Not verified. 1 items need a person.${NL}The results of the run could not be read.|- The results of the run could not be read."
 
@@ -376,6 +385,44 @@ Before the limits were checked, this journey had stopped because the time limit 
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
   ed "$J" 'd["restartedFrom"]=2'
   check "$E a restarted journey says so in the Result section" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}This journey was restarted; the earlier one is kept in its history."
+
+  # ---- item 12: the next action named in "How to confirm" is a command that works ----
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  ho "$P" >/dev/null
+  check "$E next_action_after_a_finished_journey" "$(sec "$H" "How to confirm" | tail -1)" "- Then run \`/qa-auto checkout\` again. It starts a new journey on the confirmed plan."
+  out="$(auto start checkout --project "$P" 2>&1)"
+  check "$E next_action_after_a_finished_journey works" "$?" "0"
+  for r in blocked audit no-sign-in tracker; do
+    P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"
+    auto stop checkout --project "$P" --reason "$r" --detail "x" >/dev/null 2>&1
+    ho "$P" >/dev/null
+    check "$E next_action_after_a_${r}_stop" "$(sec "$H" "How to confirm" | tail -1)" "- Then run \`/qa-auto checkout --restart\`. It starts a new journey on the confirmed plan."
+    auto start checkout --project "$P" >/dev/null 2>&1; rc=$?
+    auto start checkout --project "$P" --restart >/dev/null 2>&1
+    check "$E next_action_after_a_${r}_stop: the plain start is refused, the named command works" "$rc|$?" "1|0"
+  done
+  for r in time-limit step-failed until; do
+    P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"
+    auto stop checkout --project "$P" --reason "$r" --detail "x" >/dev/null 2>&1
+    ho "$P" >/dev/null
+    check "$E next_action_after_a_${r}_stop" "$(sec "$H" "How to confirm" | tail -2)" "- Then run \`/qa-auto checkout --restart\`. It starts a new journey on the confirmed plan.${NL}- To continue this journey with nothing confirmed, run \`/qa-auto checkout\`."
+    auto resume checkout --project "$P" >/dev/null 2>&1
+    check "$E next_action_after_a_${r}_stop: the journey can be continued" "$?" "0"
+  done
+  P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"
+  ho "$P" >/dev/null
+  check "$E next_action_on_an_open_journey" "$(sec "$H" "How to confirm" | tail -1)" "- Then run \`/qa-auto checkout --restart\`. It starts a new journey on the confirmed plan."
+  # a journey that replaced one stopped by its audit says so, in one sentence
+  P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  ed "$J" 'd["replacedFrom"]=1; d["replacedAfterAudit"]=True'
+  check "$E replaced_after_audit_sentence" "$(ho "$P")|$(sec "$H" Result)" "0|{\"result\":\"ready\",\"needsPerson\":0}|Ready.${NL}An earlier journey for this target was replaced; it is kept in the history.${NL}The earlier journey had stopped because a limit was broken; this one started from the settings as they were after that."
+  ed "$J" 'd["replacedAfterAudit"]="yes"'
+  check "$E replacedAfterAudit must be true to be said" "$(sec "$(ho "$P" >/dev/null; echo "$H")" Result | wc -l | tr -d ' ')" "2"
+  P="$(fin open)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"
+  auto stop checkout --project "$P" --reason audit --detail "seed-added" >/dev/null 2>&1
+  auto start checkout --project "$P" --restart >/dev/null 2>&1
+  ho "$P" >/dev/null
+  check "$E replaced_after_audit_sentence through the verbs" "$(jv "$J" 'd.get("replacedAfterAudit")')|$(sec "$H" Result | tail -1)" "true|The earlier journey had stopped because a limit was broken; this one started from the settings as they were after that."
 
   # ---- H5: a journey that was continued, or that took the place of an earlier one, says so ----
   P="$(fin)"; S="$P/.qa/specs/checkout"; H="$S/auto/handoff.md"; J="$S/auto/journey.json"

@@ -25,7 +25,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 # auto <args…> — run the script under the current engine with an injected clock.
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 # jv <file> <python expr over d> — read one value out of a JSON file.
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -301,20 +301,37 @@ run_engine() {
   check "$E replacing an open journey records both" "$(js "$(auto status checkout --project "$P" 2>/dev/null)" '[d.get("replacedFrom"),d.get("restartedFrom")]')" "[2, 2]"
 
   # ---- finished_journey_archived_on_next_start ----
+  # item 12: a journey that is not finished is never replaced by a plain start, whatever stopped it
+  for r in blocked audit no-sign-in tracker; do
+    P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
+    auto start checkout --project "$P" >/dev/null 2>&1
+    auto stop checkout --project "$P" --reason "$r" --detail "stopped for $r" >/dev/null 2>&1
+    before="$(snapshot "$P")"
+    out="$(NOW="2026-11-28T08:00:00Z" auto start checkout --project "$P" 2>&1)"; rc=$?
+    check "$E plain_start_refused_after_${r}_stop" "$rc|$out" "1|auto: a journey for checkout is stopped ($r); pass --restart to start a new one"
+    check "$E plain_start_refused_after_${r}_stop wrote nothing" "$(snapshot "$P")" "$before"
+    NOW="2026-11-28T08:00:00Z" auto start checkout --project "$P" --restart >/dev/null 2>&1; rc=$?
+    check "$E restart_replaces_${r}_stop" "$rc|$(jv "$P/.qa/specs/checkout/auto/history/1/journey.json" 'd["state"]+"/"+d["stop"]["reason"]')|$(jv "$J" 'd["state"]+" "+d["startedAt"]')" "0|stopped/$r|open 2026-11-28T08:00:00Z"
+    check "$E replacing a journey that had ended is recorded ($r)" "$(jv "$J" '[d.get("replacedFrom"),d.get("restartedFrom")]')" "[1, null]"
+    if [ "$r" = audit ]; then want=true; else want=null; fi
+    check "$E restart_after_audit_is_recorded ($r)" "$(jv "$J" 'd.get("replacedAfterAudit")')" "$want"
+  done
+  # a stop whose reason was not recorded is not finished either
   P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
   auto start checkout --project "$P" >/dev/null 2>&1
-  auto stop checkout --project "$P" --reason audit --detail "safety-setting-changed:allowApiWrites" >/dev/null 2>&1
-  NOW="2026-11-28T08:00:00Z" auto start checkout --project "$P" >/dev/null 2>&1; rc=$?
-  check "$E replacing a journey that had ended is recorded" "$(jv "$J" '[d.get("replacedFrom"),d.get("restartedFrom")]')" "[1, null]"
-  check "$E finished_journey_archived_on_next_start (stopped, not resumable)" "$rc|$(jv "$P/.qa/specs/checkout/auto/history/1/journey.json" 'd["state"]+"/"+d["stop"]["reason"]')" "0|stopped/audit"
-  check "$E the new journey is open" "$(jv "$J" 'd["state"]+" "+d["startedAt"]')" "open 2026-11-28T08:00:00Z"
+  auto stop checkout --project "$P" --reason blocked --detail "x" >/dev/null 2>&1
+  ed "$J" 'd["stop"]=None'
+  out="$(auto start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E plain_start_refused_after_a_stop_without_reason" "$rc|$out" "1|auto: a journey for checkout is stopped (no reason recorded); pass --restart to start a new one"
+  P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  auto start checkout --project "$P" >/dev/null 2>&1
   # a journey that reached done (written here as Task 13's `next` will leave it)
   python3 -c 'import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["state"]="done"; d["endedAt"]="2026-11-28T09:00:00Z"
 for s in d["steps"]: s["state"]="done"
 json.dump(d,open(p,"w"))' "$J"
   NOW="2026-11-29T08:00:00Z" auto start checkout --project "$P" >/dev/null 2>&1; rc=$?
-  check "$E finished_journey_archived_on_next_start (done)" "$rc|$(jv "$P/.qa/specs/checkout/auto/history/2/journey.json" 'd["state"]')" "0|done"
+  check "$E finished_journey_archived_on_next_start (done)" "$rc|$(jv "$P/.qa/specs/checkout/auto/history/1/journey.json" 'd["state"]')|$(jv "$J" '[d.get("replacedFrom"),d.get("replacedAfterAudit")]')" "0|done|[1, null]"
   check "$E the journey after a done one starts fresh" "$(jv "$J" 'd["state"]+" "+d["startedAt"]')$(steps "$J")" "open 2026-11-29T08:00:00Zconstitution=pending,spec=pending,scenarios=pending,analyze=pending,run=pending,verify=pending"
   auto start returns --project "$P" >/dev/null 2>&1
   check "$E the new open journey holds the project lock again" "$?" "1"
@@ -322,6 +339,27 @@ json.dump(d,open(p,"w"))' "$J"
 
 command -v jq >/dev/null 2>&1 && run_engine jq
 run_engine python3
+
+# ---- item 11: the clock override is for the suites only ----
+clock_engine() {
+  E="$1"
+  local P J out rc today
+  today="$(date -u +%Y-%m-%d)"
+  P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  out="$(QA_ENGINE="$E" QA_AUTO_NOW="2020-01-01T00:00:00Z" bash "$SH" start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E clock_override_ignored_without_test_flag" "$rc|$(jv "$J" 'd["startedAt"][:10]')" "0|$today"
+  P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  out="$(QA_ENGINE="$E" QA_AUTO_TEST=0 QA_AUTO_NOW="2020-01-01T00:00:00Z" bash "$SH" start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E clock_override_needs_test_flag_exactly_1" "$rc|$(jv "$J" 'd["startedAt"][:10]')" "0|$today"
+  P="$(mkproj)"; J="$P/.qa/specs/checkout/auto/journey.json"
+  out="$(QA_ENGINE="$E" QA_AUTO_NOW="not a time" bash "$SH" start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E a clock override that is not a time is ignored without the test flag" "$rc|$(jv "$J" 'd["state"]')" "0|open"
+  P="$(mkproj)"
+  out="$(QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="not a time" bash "$SH" start checkout --project "$P" 2>&1)"; rc=$?
+  check "$E with the test flag a bad clock override is refused" "$rc|$out" "1|auto: QA_AUTO_NOW must look like 2026-11-27T08:00:00Z"
+}
+command -v jq >/dev/null 2>&1 && clock_engine jq
+clock_engine python3
 
 # ---- both engines: byte-identical files and output ----
 if command -v jq >/dev/null 2>&1; then
@@ -337,7 +375,7 @@ if command -v jq >/dev/null 2>&1; then
     printf '%s' "$P"
   }
   XJ="$(build_x)"; XP="$(build_x)"
-  for v in "start checkout --until scenarios --max-hours 2.5" "status checkout" "stop checkout --reason until --detail توقف-قبل-التشغيل" "status checkout" "resume checkout" "status checkout" "stop checkout --reason blocked --detail coverage" "start checkout"; do
+  for v in "start checkout --until scenarios --max-hours 2.5" "status checkout" "stop checkout --reason until --detail توقف-قبل-التشغيل" "status checkout" "resume checkout" "status checkout" "stop checkout --reason blocked --detail coverage" "start checkout" "stop checkout --reason audit --detail broken" "start checkout --restart"; do
     # shellcheck disable=SC2086
     oj="$(E=jq; auto $v --project "$XJ" 2>&1; echo "rc=$?")"
     # shellcheck disable=SC2086

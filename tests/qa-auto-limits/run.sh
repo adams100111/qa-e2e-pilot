@@ -29,7 +29,7 @@ check(){ if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo 
 E=jq
 NOW_DEFAULT="2026-11-27T08:00:00Z"
 # auto <args…> — run the script under the current engine with an injected clock.
-auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+auto() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" QA_AUTO_VERIFY_PLAN_CMD="${VP-true}" bash "$SH" "$@"; }
 # jv <file> <python expr over d> — read one value out of a JSON file.
 jv() { "$PY" -c 'import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -40,6 +40,10 @@ js() { printf '%s' "$1" | "$PY" -c 'import json,sys
 d=json.load(sys.stdin)
 v=eval(sys.argv[1])
 print(json.dumps(v,sort_keys=True,ensure_ascii=False) if isinstance(v,(dict,list,bool)) or v is None else v)' "$2" 2>/dev/null || echo "<unreadable>"; }
+# ed <json file> <python statements over d> — change a JSON file in place.
+ed() { "$PY" -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); exec(sys.argv[2])
+json.dump(d,open(p,"w",encoding="utf-8"),ensure_ascii=False)' "$1" "$2"; }
 # mkproj [config json] — a project with .qa/config.json (the local fixture by default).
 mkproj() {
   local P; P="$(mktemp -d "$ROOT/p.XXXXXX")"; mkdir -p "$P/.qa"
@@ -65,7 +69,7 @@ artifact() {
     run)          mkdir -p "$R"
                   printf '{"run_id":"%s","target_feature":"checkout","started_at":"%s","status":"complete"}\n' "${3:-r1}" "${4-2026-11-27T08:30:00Z}" > "$R/run-manifest.json"
                   printf '{"criteria":[{"criterion_id":"C-001","persona":"admin","verdict":"pass","confidence":"high"}]}\n' > "$R/checkpoint.json"; printf '# Report\n' > "$R/report.md" ;;
-    verify)       mkdir -p "$R"; printf '{"overrides":[]}\n' > "$R/verification.json" ;;
+    verify)       mkdir -p "$R"; printf '%s\n' '[{"criterionId":"C-001","persona":"admin","inRunVerdict":"pass","verifierVerdict":"pass","confidence":"high","reasons":[]}]' > "$R/verification.json" ;;
   esac
 }
 # done_step <project> <step> — put the artifact on disk and mark the step done.
@@ -176,6 +180,23 @@ run_engine_limits() {
   artifact "$Q" run; : > "$R/report.md"
   out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
   check "$E an empty report.md is no result" "$rc|$out|$(jv "$J" '[d["runId"],d["steps"][4]["state"]]')" '1|auto: run has no result yet|[null, "pending"]'
+  # item 13: a report with only blanks is empty
+  for r in '   ' $'\n\n' $' \t\r\n \n'; do
+    artifact "$Q" run; printf '%s' "$r" > "$R/report.md"
+    out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+    check "$E run_report_with_only_blanks_is_empty" "$rc|$out|$(jv "$J" '[d["runId"],d["steps"][4]["state"]]')" '1|auto: run has no result yet|[null, "pending"]'
+  done
+  # item 13: the manifest must say itself that the run ended: a status that is text and is not in-progress
+  for r in '' ',"status":null' ',"status":7' ',"status":true' ',"status":["complete"]' ',"status":{"is":"complete"}' ',"status":""' ',"status":"  "'; do
+    artifact "$Q" run; printf '{"run_id":"r1","started_at":"2026-11-27T08:30:00Z"%s}\n' "$r" > "$R/run-manifest.json"
+    before="$(snapshot "$Q")"
+    out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+    check "$E run_status_must_be_text [$r]" "$rc|$out" "1|auto: that run has no status"
+    check "$E run_status_must_be_text [$r] changes nothing" "$(snapshot "$Q")" "$before"
+  done
+  artifact "$Q" run; printf '{"run_id":"r1","started_at":"2026-11-27T08:30:00Z","status":" in-progress "}\n' > "$R/run-manifest.json"
+  out="$(auto step-done checkout run --run r1 --project "$Q" 2>&1)"; rc=$?
+  check "$E a status of in-progress with blanks around it is still in progress" "$rc|$out" "1|auto: that run is still in progress"
   # a list of rows, the other spellings of the row id, a status that says the run ended
   artifact "$Q" run; printf '[{"criterionId":"C-002","verdict":"fail"}]\n' > "$R/checkpoint.json"
   printf '{"run_id":"r1","started_at":"2026-11-27T08:30:00Z","status":"Complete"}\n' > "$R/run-manifest.json"
@@ -188,9 +209,70 @@ run_engine_limits() {
   printf '{"overrides":' > "$R/verification.json"
   out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
   check "$E a verification.json that does not parse is no result" "$rc|$out|$(jv "$J" 'd["steps"][5]["state"]')" "1|auto: verify has no result yet|pending"
-  printf '[]\n' > "$R/verification.json"
-  auto step-done checkout verify --project "$Q" >/dev/null 2>&1
-  check "$E a verification.json that parses is a result" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
+  # item 14: a document that parses and holds no rows is not a result
+  for r in 'null' '[]' '{}' '{"overrides":[]}' '{"rows":[]}' '{"criteria":[]}' '"verified"' '7' 'true' '[1]' '[null]' '{"rows":["C-001"]}' '{"rows":null,"criteria":{}}'; do
+    printf '%s\n' "$r" > "$R/verification.json"
+    before="$(snapshot "$Q")"
+    out="$(auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+    check "$E verify_needs_rows [$r]" "$rc|$out" "1|auto: verify has no result yet"
+    check "$E verify_needs_rows [$r] changes nothing" "$(snapshot "$Q")" "$before"
+  done
+  # item 22: the plan checks decide. The stub records how it was called and fails when told to.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/vp-args.txt"\ncase "$1" in --drift) exit "${VP_DRIFT_RC:-0}" ;; *) exit "${VP_PLAIN_RC:-0}" ;; esac\n' "$ROOT" > "$ROOT/vp.sh"
+  artifact "$Q" verify
+  : > "$ROOT/vp-args.txt"
+  before="$(snapshot "$Q")"
+  out="$(VP="bash $ROOT/vp.sh" VP_PLAIN_RC=1 auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_refused_when_plan_check_fails" "$rc|$out|$(snapshot "$Q" | cksum)" "1|auto: the plan check did not pass for this run|$(printf '%s\n' "$before" | cksum)"
+  check "$E the drift check is not run after a failed plan check" "$(cat "$ROOT/vp-args.txt")" "$Q/.qa/runs/r1/checkpoint.json $Q/.qa/specs/checkout/checklist.json"
+  : > "$ROOT/vp-args.txt"
+  out="$(VP="bash $ROOT/vp.sh" VP_DRIFT_RC=1 auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_refused_when_drift_check_fails" "$rc|$out|$(jv "$J" 'd["steps"][5]["state"]')" "1|auto: the plan drift check did not pass for this run|pending"
+  check "$E both plan checks are called with the run's files and the spec's plan" "$(cat "$ROOT/vp-args.txt")" "$Q/.qa/runs/r1/checkpoint.json $Q/.qa/specs/checkout/checklist.json
+--drift $Q/.qa/runs/r1/checklist.json $Q/.qa/specs/checkout/checklist.json"
+  out="$(VP="bash $ROOT/vp.sh" VP_PLAIN_RC=3 auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E any exit other than 0 is a refusal" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  out="$(VP="   " auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E an empty plan check command is a refusal" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  out="$(VP="$ROOT/no-such-command" auto step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E a plan check command that cannot be run is a refusal" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  # the override is for the suites: without QA_AUTO_TEST=1 the real verify-plan.sh is run, and it
+  # does not read this run's checkpoint (a bare list), so the step is refused where the stub
+  # `true` would have let it through (the journey's deadline has long passed by the real clock;
+  # the step is running, so the result is still looked at)
+  auto step-start checkout verify --project "$Q" >/dev/null 2>&1
+  out="$(QA_ENGINE="$E" QA_AUTO_VERIFY_PLAN_CMD=true bash "$SH" step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_plan_override_ignored_without_test_flag" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  # the real verify-plan.sh on a fixture run (no stub: VP is set and empty is a refusal, so unset it)
+  real() { QA_ENGINE="$E" QA_AUTO_TEST=1 QA_AUTO_NOW="${NOW:-$NOW_DEFAULT}" bash "$SH" "$@"; }
+  cp "$Q/.qa/specs/checkout/checklist.json" "$R/checklist.json"
+  printf '[{"criterionId":"C-002","verdict":"fail"},{"criterionId":"R-900","verdict":"pass"}]\n' > "$R/checkpoint.json"
+  out="$(real step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_plan_real_script_refuses_a_checkpoint_it_cannot_read" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  printf '{"criteria":[{"criterion_id":"C-002","verdict":"fail"},{"criterion_id":"R-900","verdict":"pass"}]}\n' > "$R/checkpoint.json"
+  out="$(real step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_plan_real_script_refuses_an_act_outside_the_plan" "$rc|$out" "1|auto: the plan check did not pass for this run"
+  printf '{"criteria":[{"criterion_id":"C-002","verdict":"fail"}]}\n' > "$R/checkpoint.json"
+  ed "$R/checklist.json" 'd[0]["fixture"]["expect"]["oracleSource"]="spec"'
+  out="$(real step-done checkout verify --project "$Q" 2>&1)"; rc=$?
+  check "$E verify_plan_real_script_refuses_a_drifted_run_plan" "$rc|$out|$(jv "$J" 'd["steps"][5]["state"]')" "1|auto: the plan drift check did not pass for this run|running"
+  cp "$Q/.qa/specs/checkout/checklist.json" "$R/checklist.json"
+  real step-done checkout verify --project "$Q" >/dev/null 2>&1
+  check "$E verify_plan_real_script_passes_a_clean_run" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
+  # item 14: the two shapes that hold rows are a result
+  for r in '[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]' '{"rows":[{"criterionId":"C-001","inRunVerdict":"pass","verifierVerdict":"pass"}]}' '{"criteria":[{"criterionId":"C-001"}]}'; do
+    Q="$(journey_at verify)"; J="$Q/.qa/specs/checkout/auto/journey.json"; R="$Q/.qa/runs/r1"
+    printf '%s\n' "$r" > "$R/verification.json"
+    auto step-done checkout verify --project "$Q" >/dev/null 2>&1
+    check "$E a verification.json that holds rows is a result [$r]" "$?|$(jv "$J" 'd["steps"][5]["state"]')" "0|done"
+  done
+  # item 11: the clock override cannot hold a passed deadline open in a real journey
+  Q="$(journey_at analyze)"; J="$Q/.qa/specs/checkout/auto/journey.json"
+  out="$(QA_ENGINE="$E" QA_AUTO_NOW="2026-11-27T08:30:00Z" bash "$SH" next checkout --project "$Q" 2>&1)"; rc=$?
+  check "$E clock_override_cannot_hold_a_passed_deadline_open" "$rc|$out|$(jv "$J" 'd["state"]')" '0|{"detail":"the deadline 2026-11-27T14:00:00Z has passed","next":"stopped","reason":"time-limit"}|stopped'
+  Q="$(journey_at analyze)"; J="$Q/.qa/specs/checkout/auto/journey.json"
+  out="$(QA_ENGINE="$E" QA_AUTO_NOW="2026-11-27T08:30:00Z" bash "$SH" step-start checkout analyze --project "$Q" 2>&1)"; rc=$?
+  check "$E clock_override_cannot_let_a_step_start_after_the_deadline" "$rc|$(jv "$J" '[d["state"],d["stop"]["reason"]]')" '1|["stopped", "time-limit"]'
 
   # ---- H1: the time limit and --until hold for step-start and step-done, not only for next ----
   local UNTIL_LINE='{"detail":"stopped after scenarios, as asked","next":"stopped","reason":"until"}'
