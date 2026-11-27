@@ -725,3 +725,22 @@ def sync_run(ctx) -> None:
     in `clickup_spec_sync` (imported here on use: that module builds on this one)."""
     from trackers import clickup_spec_sync
     clickup_spec_sync.sync_run(ctx)
+
+
+def push_docs(ctx) -> None:
+    """`tracker.sh push-docs`: the spec's Doc and the project's "QA overview" Doc. The code of
+    this verb and the next two is in `clickup_spec_docs` (imported on use, like `sync_run`)."""
+    from trackers import clickup_spec_docs
+    clickup_spec_docs.push_docs(ctx)
+
+
+def spec_note(ctx) -> None:
+    """`tracker.sh spec-note`: one linted note as a comment on a Run summary ticket."""
+    from trackers import clickup_spec_docs
+    clickup_spec_docs.spec_note(ctx)
+
+
+def spec_status(ctx) -> None:
+    """`tracker.sh spec-status`: the spec's links and whether ClickUp is behind. Read-only."""
+    from trackers import clickup_spec_docs
+    clickup_spec_docs.spec_status(ctx)
