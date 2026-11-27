@@ -209,13 +209,16 @@ An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.s
    carries an owner, a capped deadline and a severity.
 
 7b. **ClickUp tracking (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
-   If the spec is not enabled, offer `/qa-tracker --spec <target>` once, in one line, and go on; the
-   spec works the same without it. If it is enabled, create its ClickUp structure and Overview doc:
+   Create the spec's ClickUp structure and Overview doc, asking nothing:
    ```
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-init --spec <target> --apply
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" push-docs --spec <target> --apply
    ```
-   Under `autonomousSetup` ask nothing: sync an enabled spec, leave a spec that is not enabled alone.
+
+   **A spec that is not tracked yet.** Only when `docs/agents/qa-tracker.json` has `backend: "clickup"` and
+   `specs.<target>.enabled` is not `true`: offer `/qa-tracker --spec <target>` once, in one line, and go
+   on; the spec works the same without it. Make no offer under an unattended journey or `autonomousSetup`.
+   On the local or GitHub backend, or with no tracker config, say nothing about ClickUp.
 
 8. **Report plainly:** the target, the stamped `constitutionVersion` + role count, any overrides
    applied, the drift result, the data-baseline entity count (seeded vs created), the journeys written (count, how many P1), any known-defect entry

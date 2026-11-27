@@ -18,16 +18,26 @@ With `--global`, do only this: ask for the ClickUp workspace and the name of the
 that holds the token (default `CLICKUP_API_TOKEN`), and write them to `~/.config/qa-kit/tracker.json`
 after showing the user the content. Never ask for the token, never write it anywhere. Then stop.
 
-With `--spec <target>`, do only this, and only for a project whose `docs/agents/qa-tracker.json`
-already has `backend: "clickup"`. Ask one question: create a subfolder for the spec in the QA folder,
-or use a ClickUp folder or list URL the user pastes. For a pasted URL, parse the id from it and
-confirm it with a GET through the API before saving it. Save `specs.<target>.enabled: true` and the
-`folder` or `list` id in `docs/agents/qa-tracker.json`. Then build it, dry first, and show the output:
+With `--spec <target>`, do only this. First read `docs/agents/qa-tracker.json`. If it is missing or
+its `backend` is not `clickup`, stop and tell the person to run `/qa-tracker` first.
+
+Never read, print, paste or pass the ClickUp token yourself; only the tracker script uses it.
+
+Ask one question: create a subfolder for the spec in the QA folder, or use a ClickUp folder or list
+URL the person pastes.
+- Subfolder: save `specs.<target>.enabled: true` in `docs/agents/qa-tracker.json`.
+- Pasted URL: parse the id out of the URL and show it to the person. Save it under `specs.<target>`
+  with `enabled: true`: `folder` for a folder URL, `list` for a list URL.
+
+Then run the build dry, without `--apply`, and show the output:
 ```
 bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-init --spec <target>
 ```
-Run it again with `--apply` only after the user says yes. Under `autonomousSetup` ask nothing: an
-enabled spec is built, a spec that is not enabled is left alone. Then stop.
+The dry run changes nothing. It reads that folder or list through the tracker's own transport and
+fails with a one-line error when the id is wrong: then remove the saved id and ask again. Do not check
+the id any other way. Run it again with `--apply` only after the person says yes. Under
+`autonomousSetup` ask nothing: an enabled spec is built, a spec that is not enabled is left alone.
+Then stop.
 
 ## 1. Explore
 
@@ -100,7 +110,8 @@ Show the user the draft of each file below. Let them edit it. Write only after t
    backend, then add this project's answers (workspace and folder names, where bugs go, any custom
    statuses). For "Other", write only this file, with the user's prose in place of the seed.
    For ClickUp, also append `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md` to
-   `docs/agents/qa-tracker.md`, so the writing rules sit beside the answers.
+   `docs/agents/qa-tracker.md`, only if they are not already there (its `# Writing for ClickUp`
+   heading), so the writing rules sit beside the answers once.
 2. `docs/agents/qa-tracker.json`: start from `{{PLUGIN_ROOT}}/templates/qa-tracker-config.json` and set
    `backend` (`local`, `clickup`, `github` or `other`), `catalog` if it is not the default, the
    statuses if the user changed them, `ids` and `guideAs` for ClickUp. Keep every other key. For "Other",

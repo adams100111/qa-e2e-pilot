@@ -13,6 +13,8 @@ The journey lives on disk in `.qa/specs/<target>/auto/` (`journey.json`, `decisi
 files yourself and never keep the journey's place in your own memory: `auto.sh next` says what is next.
 Below, `auto.sh <verb> …` is short for `bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" <verb> …`. Every verb exits
 0 when it worked, 1 when it refused or failed (one line on stderr, `auto: <reason>`), 2 on a usage error.
+`stop`, `decide`, `second` and `note` work only on an open journey; on any other they exit 1 with
+`auto: no open journey for <target>`.
 
 This command is a loop over `auto.sh next`. For each step it sends you to that step's own command
 source. It holds no copy of any step's instructions: read the step's command and follow it.
@@ -32,13 +34,13 @@ one where the harness can.
    checkout or plugin root, ADR-0022; qa-kit cannot address it). Remember whether it exited 0. Do not
    change the file, whatever it says.
 
-3. **Open or continue the journey.** Look for `.qa/specs/<target>/auto/journey.json`:
-   - It exists, `auto.sh status <target>` shows `state: open`, and `--restart` was not given → the journey
-     continues. Go to step 4.
-   - It exists, `state` is `stopped`, `stop.reason` is `time-limit`, `step-failed` or `until`, and
+3. **Open or continue the journey.** Run `auto.sh status <target>`. Exit 1 with
+   `auto: no journey for <target>` means there is no journey yet; that is not an error.
+   - It shows `state: open`, and `--restart` was not given → the journey continues. Go to step 4.
+   - It shows `state: stopped` with a `stop.reason` of `time-limit`, `step-failed` or `until`, and
      `--restart` was not given → `auto.sh resume <target>` (add `--max-hours <n>` when it was given).
-   - Anything else → `auto.sh start <target>` with the flags from the input (`--profile`, `--until`,
-     `--max-hours`, `--restart`), plus `--known-defects-invalid` when step 2 exited non-zero.
+   - Anything else, no journey included → `auto.sh start <target>` with the flags from the input
+     (`--profile`, `--until`, `--max-hours`, `--restart`), plus `--known-defects-invalid` when step 2 exited non-zero.
 
    If `start` or `resume` exits 1, print its one line, release the machine (step 12) and end. There is
    no journey, so there is nothing to audit or hand off. Do not try to remove the cause yourself.
@@ -83,10 +85,12 @@ one where the harness can.
    **A step that fails** (its command stops on an error, or `step-done` refuses) is redone once from
    5.3. If it fails again: `auto.sh stop <target> --reason step-failed --detail "<one line>"`, then the end.
 
-   **A required ClickUp step that fails.** The step commands sync a spec that is tracked in ClickUp and
-   stop on a failed sync. When that happens, do not redo the step and do not go on without the sync:
-   `auto.sh stop <target> --reason tracker --detail "<the tracker's one-line error>"`, then the end. A spec
-   that is not tracked is never offered tracking and never contacts ClickUp.
+   **A required ClickUp step that fails.** The step commands sync a spec that is tracked in ClickUp.
+   When a sync fails, the step command still gives its own result first and then says ClickUp was not
+   updated. Do not redo the step and do not go on without the sync:
+   `auto.sh stop <target> --reason tracker --detail "<the tracker's one-line error>"`, then the end.
+   `lint` reporting problems is not a failed sync: fix the cards and run it again, as `/qa-scenarios`
+   says. A spec that is not tracked is never offered tracking and never contacts ClickUp.
 
    **When analyze ends `BLOCKED`**, `step-done` reopens `scenarios` and `analyze` itself, and stops the
    journey after the second round. Follow `next`; never mark the analysis anything other than what the
@@ -158,6 +162,7 @@ one where the harness can.
    **Never do these.** `auto.sh decide` refuses each class, the audit at the end checks each from the
    files, and the step goes on without it:
    - Never run a seed command, and never write `seed.json` (`seed`). The spec stays declare-and-verify.
+     When a seed command was proposed and not run, record that with `note --kind seed-not-run` (below).
    - Never exclude a screen or a screen and role pair from coverage, and never add to
      `coverage-exclusions.json` (`exclusion`). If coverage cannot be reached, analyze stays `BLOCKED`
      and the journey stops.
@@ -170,10 +175,17 @@ one where the harness can.
      `profile`, `humanInteraction.enforce`, `humanInteraction.maxOptOutRate`. They stay as the project
      set them. Do not turn `autonomousSetup` on in a file either: the open journey is the signal.
    - Never add to, edit or migrate a check into the known-defect registry (`known-defect`). A check
-     that asserts an application failure is left out of the plan; record that as a `scope` decision
-     naming the check in plain words, so the handoff lists it.
+     that asserts an application failure is left out of the plan; record that with
+     `note --kind check-left-out` (below), naming the check in plain words.
    - Never delete a record the run created, and never weaken a gate, a criterion or an expected value
      to get further. A step that cannot go on within these rules stops the journey.
+
+   **Facts for the handoff.** A seed command that was proposed and not run, and a check left out of the
+   plan because it asserts an application failure, are facts, not answers. Record each with `note`,
+   never with `decide`:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/auto.sh" note <target> --kind seed-not-run|check-left-out --text "<plain sentence>"
+   ```
 
 ## The second look
 
@@ -208,7 +220,10 @@ one where the harness can.
    ```
 
    The second look can only hand a decision to a person. It never changes an answer and never approves
-   one, and you never review your own decisions in its place.
+   one, and you never review your own decisions in its place. It runs only here, after these two steps,
+   while the journey is open: never at the end and never on a closed journey. `auto.sh handoff` itself
+   counts every low-confidence decision that has no second-look verdict as needing a person, on every
+   harness.
 
 ## The end, always
 
@@ -223,20 +238,20 @@ one where the harness can.
     deletes none of those records.
 
 11. **ClickUp note.** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. Write one
-    sentence to a temp file, nothing else and none of your own words:
+    sentence to a file under the session's temp directory, nothing else and none of your own words:
     `<n> items need a person's review. See the results page.` with `<n>` from step 10, or
     `Nothing needs a person's review.` when it is 0. Then:
     ```
     bash "${CLAUDE_PLUGIN_ROOT}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
     ```
-    If it exits non-zero, run `auto.sh stop <target> --reason tracker --detail "<its one-line error>"` and
-    `auto.sh handoff` again as in step 10; if the stop is refused because the journey is already closed,
-    lead your closing lines with that error.
+    If it exits non-zero, do not try to stop the journey (it is closed by now) and do not run the
+    handoff again. Keep its one-line error for step 12.
 
 12. **Close.** Release the machine (stop the `caffeinate` process from step 1). Print the `Result`
     section of `handoff.md` word for word and the path `.qa/specs/<target>/auto/handoff.md`. Add
     nothing that reads better than that section: the result is the one `auto.sh handoff` computed from
-    the files, never your own summary of how the journey went.
+    the files, never your own summary of how the journey went. When step 11 failed, end with one more
+    line: `The ClickUp comment was not posted: <its one-line error>`.
 
 Guardrails: one journey per project at a time; the journey's files are written only by `auto.sh`; every
 answer given in place of a person is recorded with `decide` before it is used; the never list holds for

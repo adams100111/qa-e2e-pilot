@@ -99,5 +99,17 @@ for h in pi codex opencode; do
   check "$h qa-auto leads the second look with the banner" "$(grep -c 'Print this line exactly' "$D/$h/commands/qa-auto.md" 2>/dev/null || true)" "1"
 done
 
+
+# (j) fix round 1: the token rule, the dry spec-init and the lint exception reach every harness
+for h in claude pi codex opencode; do
+  check "$h qa-tracker has no curl or API host" "$(grep -ci 'curl\|api\.clickup\.com' "$D/$h/commands/qa-tracker.md" 2>/dev/null || true)" "0"
+  grep -q 'only the tracker script uses it' "$D/$h/commands/qa-tracker.md" 2>/dev/null; check "$h qa-tracker states the token rule" "$?" "0"
+  grep -Eq 'tracker\.sh"? spec-init --spec <target>$' "$D/$h/commands/qa-tracker.md" 2>/dev/null; check "$h qa-tracker has the dry spec-init" "$?" "0"
+  grep -q '`lint` is the exception' "$D/$h/commands/qa-scenarios.md" 2>/dev/null; check "$h qa-scenarios has the lint exception" "$?" "0"
+  grep -Eq 'tracker\.sh"? push-bug --spec <target> --run <run-id> --apply' "$D/$h/commands/qa-verify.md" 2>/dev/null; check "$h qa-verify push-bug names the run" "$?" "0"
+  grep -Eq 'auto\.sh"? note <target> --kind' "$D/$h/commands/qa-auto.md" 2>/dev/null; check "$h qa-auto has the note verb" "$?" "0"
+  check "$h no residual token in any command" "$(cat "$D/$h/commands/"*.md 2>/dev/null | grep -c '{{' || true)" "0"
+done
+
 echo "qakit-adapters: PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

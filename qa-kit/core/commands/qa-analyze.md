@@ -152,12 +152,16 @@ An open unattended journey for this target (`bash {{PLUGIN_ROOT}}/scripts/auto.s
 
 5b. **ClickUp note (per spec).** Only when docs/agents/qa-tracker.json has specs.<target>.enabled: true. If the step below exits non-zero, stop and report its one-line error; do not continue the command.
    Write the coverage note in plain words (the gaps and whether the plan is ready, no criterion ids,
-   following `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md`) to a temp file, then:
+   following `{{PLUGIN_ROOT}}/templates/trackers/writing-rules.md`), in the configured `language` of
+   `docs/agents/qa-tracker.json`, to a file under the session's temp directory, never into the repo. Then:
    ```
    bash "{{PLUGIN_ROOT}}/scripts/tracker.sh" spec-note --spec <target> --file <note-file> --apply
    ```
    Add `--blocked` when the Verdict is `BLOCKED`. This writes to ClickUp only; the read-only rule below
    still holds for the spec's files.
+   A failed step here never hides this command's result. Whatever happens, give the step 6 report first
+   and in full: the Verdict and the gaps. When the step failed, add after it one line with its one-line
+   error and say that ClickUp was not updated.
 
 6. **Report:** the gap counts by category — **plan defects stated first and separately**, never summed
    into a single "N gaps" figure — plus the next step. State the Verdict plainly: `BLOCKED` with the
